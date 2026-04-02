@@ -10,6 +10,9 @@
 
 #include <algorithm>
 #include <array>
+
+#include "stb_image.h"
+
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -85,6 +88,10 @@ private:
     size_t modelUniformAlignment;
    */
   // Model *modelTransferSpace;
+
+  //Assets
+  std::vector<VkImage> textureImages;
+  std::vector<VkDeviceMemory> textureImageMemory;
 
   // pipeline
   VkPipeline graphicsPipeline;
@@ -170,4 +177,10 @@ private:
                               VkImageAspectFlags aspectFlags);
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
+
+  int createTextureImage(std::string filename);
+
+  // Loader functions
+  stbi_uc *loadTextureFile(std::string filename, int *width, int *height,
+                           VkDeviceSize *imageSize);
 };

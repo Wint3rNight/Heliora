@@ -26,7 +26,7 @@ void initWindow(const std::string &wName = "Vulkan Renderer",
 }
 
 int main() {
-  initWindow("Vulkan Renderer", 800, 600);
+  initWindow("Vulkan Renderer", 1366, 768);
 
   if (vulkanRenderer.init(window) == EXIT_FAILURE) {
     return EXIT_FAILURE;
@@ -50,10 +50,10 @@ int main() {
     glm::mat4 firstModel(1.0f);
     glm::mat4 secondModel(1.0f);
 
-    firstModel = glm::translate(firstModel, glm::vec3(0.0f, 0.0f, -2.5f));
+    firstModel = glm::translate(firstModel, glm::vec3(-1.0f, 0.0f, -1.0f));
     firstModel = glm::rotate(firstModel, glm::radians(angle),
                              glm::vec3(0.0f, 0.0f, 1.0f));
-    secondModel = glm::translate(secondModel, glm::vec3(0.0f, 0.0f, -3.0f));
+    secondModel = glm::translate(secondModel, glm::vec3(1.0f, 0.0f, -3.0f));
     secondModel = glm::rotate(secondModel, glm::radians(-angle * 100.0f),
                               glm::vec3(0.0f, 0.0f, 1.0f));
 

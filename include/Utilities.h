@@ -18,6 +18,7 @@ const std::vector<const char *> deviceExtensions = {
 struct Vertex {
   glm::vec3 pos; // position attribute for the vertex
   glm::vec3 col; // color attribute for the vertex
+  glm::vec2 tex; // texture coordinate attribute 
 };
 
 // Keep only the general utility structures here

@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(assimp REQUIRED)
 
 # Source File Management - Simplified
 # Note: Using GLOB is okay for small projects, but listing them is safer.
@@ -34,5 +35,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         glfw
         glm::glm
 )
+
+if(TARGET assimp::assimp)
+        target_link_libraries(${PROJECT_NAME} PRIVATE assimp::assimp)
+else()
+        target_include_directories(${PROJECT_NAME} PRIVATE ${ASSIMP_INCLUDE_DIRS})
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${ASSIMP_LIBRARIES})
+endif()
 
 message(STATUS "Vulkan SDK: ${Vulkan_INCLUDE_DIRS}")

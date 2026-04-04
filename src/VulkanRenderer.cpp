@@ -1,15 +1,18 @@
 #include "VulkanRenderer.h"
 #include "Mesh.h"
+#include "MeshModel.h"
 #include "Utilities.h"
 #include "VulkanValidation.h"
 
 #include <GLFW/glfw3.h>
 #include <array>
+#include <assimp/postprocess.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 #include <stdexcept>
 #include <sys/types.h>
@@ -71,43 +74,15 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         100.0f);
 
     uboViewProjection.view =
-        glm::lookAt(glm::vec3(2.0f, .0f, 2.0f), glm::vec3(0.0f, 0.0f, -2.0f),
+        glm::lookAt(glm::vec3(10.0f, .0f, 20.0f), glm::vec3(0.0f, 0.0f, -2.0f),
                     glm::vec3(0.0f, 1.0f, 0.0f));
 
     uboViewProjection.projection[1][1] *=
         -1; // invert the y coordinate of the clip coordinates, because
             // vulkan has a different coordinate system than opengl
 
-    // create a mesh(after creating the command pool ofc(i am a fucking
-    // dumbass))
-
-    // vertex data
-    std::vector<Vertex> meshVertices = {
-        {{-0.4f, 0.4f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},  // 0
-        {{-0.4f, -0.4f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}}, // 1
-        {{0.4f, -0.4f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},  // 2
-        {{0.4f, 0.4f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},   // 3
-    };
-
-    std::vector<Vertex> meshVertices2 = {
-        {{-0.25f, 0.6f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},  // 0
-        {{-0.25f, -0.6f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}}, // 1
-        {{0.25f, -0.6f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},  // 2
-        {{0.25f, 0.6f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},   // 3
-    };
-
-    // index data
-    std::vector<uint32_t> meshIndices = {0, 1, 2, 2, 3, 0};
-
-    Mesh firstMesh = Mesh(mainDevice.physicalDevice, mainDevice.logicalDevice,
-                          graphicsQueue, graphicsCommandPool, &meshVertices,
-                          &meshIndices, createTexture("giraffe.jpg"));
-    Mesh secondMesh = Mesh(mainDevice.physicalDevice, mainDevice.logicalDevice,
-                           graphicsQueue, graphicsCommandPool, &meshVertices2,
-                           &meshIndices, createTexture("giraffe.jpg"));
-
-    meshList.push_back(firstMesh);
-    meshList.push_back(secondMesh);
+    // default no texture texture
+    createTexture("plain.png");
 
   } catch (const std::runtime_error &e) {
     printf("%s\n", e.what());
@@ -117,10 +92,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 }
 
 void VulkanRenderer::updateModel(int modelId, glm::mat4 newModel) {
-  if (modelId >= meshList.size()) {
+  if (modelId >= modelList.size()) {
     return;
   }
-  meshList[modelId].setModel(newModel);
+  modelList[modelId].setModel(newModel);
 }
 
 void VulkanRenderer::draw() {
@@ -212,6 +187,10 @@ void VulkanRenderer::cleanup() {
   errors vkDestroyImageView(mainDevice.logicalDevice, depthBufferImageView,
   nullptr); vkDestroyImage(mainDevice.logicalDevice, depthBufferImage, nullptr);
     vkFreeMemory(mainDevice.logicalDevice, depthBufferImageMemory, nullptr); */
+  for (size_t i = 0; i < modelList.size(); i++) {
+    modelList[i].destroyMeshModel();
+  }
+
   vkDestroyDescriptorPool(mainDevice.logicalDevice, samplerDescriptorPool,
                           nullptr);
   vkDestroyDescriptorSetLayout(mainDevice.logicalDevice, samplerSetLayout,
@@ -238,9 +217,6 @@ void VulkanRenderer::cleanup() {
   cleanupSwapChain();
   // wait for the logical device to finish operations before destroying
   // resources
-  for (std::size_t i = 0; i < meshList.size(); i++) {
-    meshList[i].destroyBuffers();
-  }
   for (size_t i = 0; i < MAX_FRAMES_DRAWS; i++) {
     vkDestroySemaphore(mainDevice.logicalDevice, renderFinished[i], nullptr);
     vkDestroySemaphore(mainDevice.logicalDevice, imageAvailable[i], nullptr);
@@ -1531,42 +1507,51 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   // bind the graphics pipeline so that it will be used for rendering
   vkCmdBindPipeline(commandBuffers[currentImage],
                     VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-  for (std::size_t j = 0; j < meshList.size(); j++) {
-    VkBuffer vertexBuffers[] = {
-        meshList[j].getVertexBuffer()}; // buffers to bind
-    VkDeviceSize offsets[] = {0};       // offsets into buffers to start from
-    vkCmdBindVertexBuffers(commandBuffers[currentImage], 0, 1, vertexBuffers,
-                           offsets); // command to bind vertex buffers (also
-                                     // binds the vertex input
-    // state specified during pipeline creation)
+  for (std::size_t j = 0; j < modelList.size(); j++) {
+    MeshModel thisModel = modelList[j]; // error fix
+    glm::mat4 modelMatrix = thisModel.getModel();
 
-    // bind index buffer
-    vkCmdBindIndexBuffer(commandBuffers[currentImage],
-                         meshList[j].getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
-
-    // dynamoc offset amount
-    // uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment) *
-    // j;
-
-    // push constant for model data
     vkCmdPushConstants(commandBuffers[currentImage], pipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Model),
-                       &meshList[j].getModel());
+                       &modelMatrix);
 
-    std::array<VkDescriptorSet, 2> descriptorSetGroup = {
-        descriptorSets[currentImage],
-        samplerDescriptorSets[meshList[j].getTexId()]}; // list of descriptor
-                                                        // sets to bind
+    for (size_t k = 0; k < thisModel.getMeshCount(); k++) {
 
-    // bind descriptor sets (for MVP matrix)
-    vkCmdBindDescriptorSets(commandBuffers[currentImage],
-                            VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0,
-                            static_cast<uint32_t>(descriptorSetGroup.size()),
-                            descriptorSetGroup.data(), 0, nullptr);
+      VkBuffer vertexBuffers[] = {
+          thisModel.getMesh(k)->getVertexBuffer()}; // buffers to bind
+      VkDeviceSize offsets[] = {0}; // offsets into buffers to start from
+      vkCmdBindVertexBuffers(commandBuffers[currentImage], 0, 1, vertexBuffers,
+                             offsets); // command to bind vertex buffers (also
+                                       // binds the vertex input
+      // state specified during pipeline creation)
 
-    // ececute a draw command with the pipeline
-    vkCmdDrawIndexed(commandBuffers[currentImage], meshList[j].getIndexCount(),
-                     1, 0, 0, 0);
+      // bind index buffer
+      vkCmdBindIndexBuffer(commandBuffers[currentImage],
+                           thisModel.getMesh(k)->getIndexBuffer(), 0,
+                           VK_INDEX_TYPE_UINT32);
+
+      // dynamoc offset amount
+      // uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment) *
+      // j;
+
+      // push constant for model data
+
+      std::array<VkDescriptorSet, 2> descriptorSetGroup = {
+          descriptorSets[currentImage],
+          samplerDescriptorSets[thisModel.getMesh(k)
+                                    ->getTexId()]}; // list of descriptor
+                                                    // sets to bind
+
+      // bind descriptor sets (for MVP matrix)
+      vkCmdBindDescriptorSets(
+          commandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS,
+          pipelineLayout, 0, static_cast<uint32_t>(descriptorSetGroup.size()),
+          descriptorSetGroup.data(), 0, nullptr);
+
+      // ececute a draw command with the pipeline
+      vkCmdDrawIndexed(commandBuffers[currentImage],
+                       thisModel.getMesh(k)->getIndexCount(), 1, 0, 0, 0);
+    }
   }
 
   vkCmdEndRenderPass(commandBuffers[currentImage]);
@@ -2171,6 +2156,62 @@ int VulkanRenderer::createTextureDescriptor(VkImageView textureImage) {
   samplerDescriptorSets.push_back(descriptorSet);
   // return descriptor set index for reference
   return static_cast<int>(samplerDescriptorSets.size() - 1);
+}
+
+int VulkanRenderer::createMeshModel(std::string modelFile) {
+  Assimp::Importer importer;
+  const aiScene *scene = nullptr;
+
+  std::vector<std::string> candidatePaths;
+  candidatePaths.push_back(modelFile);
+
+  const std::filesystem::path inputPath(modelFile);
+  if (!inputPath.is_absolute()) {
+    candidatePaths.push_back(
+        (std::filesystem::path("..") / inputPath).string());
+  }
+
+  for (const std::string &path : candidatePaths) {
+    scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs |
+                                        aiProcess_JoinIdenticalVertices);
+    if (scene && !(scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) &&
+        scene->mRootNode) {
+      break;
+    }
+  }
+
+  if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE ||
+      !scene->mRootNode) {
+    throw std::runtime_error("Failed to load model: " +
+                             std::string(importer.GetErrorString()));
+  }
+
+  // get vector of all materials with 1:1 id placement
+  std::vector<std::string> textureNames = MeshModel::LoadMaterials(scene);
+
+  // converstion from material list id to descriptor set id for texture
+  std::vector<int> matToTex(textureNames.size());
+
+  // loop over texture names and create texture for them
+  for (size_t i = 0; i < textureNames.size(); i++) {
+    // if no texture for this material set 0 to indicate that
+    if (textureNames[i].empty()) {
+      matToTex[i] = 0;
+      // else create texture and set matToTex to descriptor set index of texture
+    } else {
+      matToTex[i] = createTexture(textureNames[i]);
+    }
+  }
+  // lead in all meshes
+  std::vector<Mesh> modelMeshes = MeshModel::LoadNode(
+      mainDevice.physicalDevice, mainDevice.logicalDevice, graphicsQueue,
+      graphicsCommandPool, scene->mRootNode, scene, matToTex);
+
+  // create mesh model and add to list of models to render
+  MeshModel meshModel = MeshModel(modelMeshes);
+  modelList.push_back(meshModel);
+
+  return modelList.size() - 1; // return index of model
 }
 
 stbi_uc *VulkanRenderer::loadTextureFile(std::string filename, int *width,

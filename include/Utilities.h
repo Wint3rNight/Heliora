@@ -9,7 +9,7 @@
 #include <vulkan/vulkan_core.h>
 
 const int MAX_FRAMES_DRAWS = 3;
-const int MAX_OBJECTS = 2;
+const int MAX_OBJECTS = 40;
 
 const std::vector<const char *> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -18,7 +18,7 @@ const std::vector<const char *> deviceExtensions = {
 struct Vertex {
   glm::vec3 pos; // position attribute for the vertex
   glm::vec3 col; // color attribute for the vertex
-  glm::vec2 tex; // texture coordinate attribute 
+  glm::vec2 tex; // texture coordinate attribute
 };
 
 // Keep only the general utility structures here

@@ -1,4 +1,5 @@
 #pragma once
+#include "MeshModel.h"
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
@@ -7,6 +8,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vulkan/vulkan_core.h>
+
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
 
 #include <algorithm>
 #include <array>
@@ -19,6 +24,7 @@
 #include <vector>
 
 #include "Mesh.h"
+#include "MeshModel.h"
 #include "Utilities.h"
 #include "VulkanValidation.h"
 
@@ -28,6 +34,7 @@ public:
 
   int init(GLFWwindow *newWindow);
   void draw();
+  int createMeshModel(std::string modelFile);
   void updateModel(int modelId, glm::mat4 newModel);
   void cleanup();
 
@@ -39,7 +46,7 @@ private:
   int currentFrame = 0;
 
   // scene objects
-  std::vector<Mesh> meshList;
+  std::vector<MeshModel> modelList;
 
   // scene settings
   struct UboViewProjection {
@@ -95,6 +102,7 @@ private:
   // Model *modelTransferSpace;
 
   // Assets
+
   VkSampler textureSampler;
   std::vector<VkImage> textureImages;
   std::vector<VkDeviceMemory> textureImageMemory;

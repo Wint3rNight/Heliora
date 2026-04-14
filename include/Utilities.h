@@ -55,7 +55,6 @@ static std::vector<char> readFile(const std::string &filename) {
   // get file size by reading the position of the cursor
   size_t fileSize = (size_t)file.tellg();
   std::vector<char> fileBuffer(fileSize);
-#
 
   // go back to the beginning of the file and read all the bytes at once
   file.seekg(0);

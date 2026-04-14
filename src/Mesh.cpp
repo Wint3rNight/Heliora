@@ -20,14 +20,14 @@ Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice,
   model.model = glm::mat4(1.0f);
 }
 
-void Mesh::setModel(glm::mat4 newModel) { model.model = newModel; }
+void Mesh::setModel(const glm::mat4 &newModel) { model.model = newModel; }
 
 const Model &Mesh::getModel() const { return model; }
-int Mesh::getTexId() { return texId; }
-int Mesh::getVertexCount() { return vertexCount; }
-VkBuffer Mesh::getVertexBuffer() { return vertexBuffer; }
-int Mesh::getIndexCount() { return indexCount; }
-VkBuffer Mesh::getIndexBuffer() { return indexBuffer; }
+int Mesh::getTexId() const { return texId; }
+int Mesh::getVertexCount() const { return vertexCount; }
+VkBuffer Mesh::getVertexBuffer() const { return vertexBuffer; }
+int Mesh::getIndexCount() const { return indexCount; }
+VkBuffer Mesh::getIndexBuffer() const { return indexBuffer; }
 
 void Mesh::destroyBuffers() {
   vkDestroyBuffer(device, vertexBuffer, nullptr);

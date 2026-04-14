@@ -11,11 +11,11 @@ public:
   MeshModel();
   MeshModel(std::vector<Mesh> meshList);
 
-  size_t getMeshCount();
-  Mesh *getMesh(size_t index);
+  size_t getMeshCount() const;
+  const Mesh *getMesh(size_t index) const;
 
-  glm::mat4 getModel();
-  void setModel(glm::mat4 newModel);
+  glm::mat4 getModel() const;
+  void setModel(const glm::mat4 &newModel);
 
   void destroyMeshModel();
 
@@ -24,16 +24,16 @@ public:
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiNode *node, const aiScene *scene,
-                                    std::vector<int> matToTex);
+                                    const std::vector<int> &matToTex);
   static std::vector<Mesh> LoadMesh(VkPhysicalDevice newPhysicalDevice,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiMesh *mesh, const aiScene *scene,
-                                    std::vector<int> matToTex);
+                                    const std::vector<int> &matToTex);
 
   ~MeshModel();
 
 private:
-  std::vector<Mesh> mesheList;
+  std::vector<Mesh> meshList;
   glm::mat4 model;
 };

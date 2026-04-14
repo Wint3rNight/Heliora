@@ -9,11 +9,6 @@ layout(set = 0, binding = 0) uniform UboViewProjection {
   mat4 view;
 } uboViewProjection;
 
-//not in use, can be removed but keeping it for reference lol
-layout(set = 0, binding = 1) uniform UboModel {
-  mat4 model;
-} uboModel;
-
 layout(push_constant)uniform PushModel{
   mat4 model;
 }pushModel;

@@ -1,8 +1,5 @@
 #pragma once
-#include "MeshModel.h"
-#include <cstddef>
-#include <cstdint>
-#include <sys/types.h>
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -15,13 +12,14 @@
 
 #include <algorithm>
 #include <array>
-
-#include "stb_image.h"
-
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <set>
 #include <stdexcept>
 #include <vector>
+
+#include "stb_image.h"
 
 #include "Mesh.h"
 #include "MeshModel.h"
@@ -34,14 +32,15 @@ public:
 
   int init(GLFWwindow *newWindow);
   void draw();
-  int createMeshModel(std::string modelFile);
-  void updateModel(int modelId, glm::mat4 newModel);
+  int createMeshModel(const std::string &modelFile);
+  void updateModel(int modelId, const glm::mat4 &newModel);
+  void updateCameraView(const glm::mat4 &viewMatrix);
   void cleanup();
 
   ~VulkanRenderer();
 
 private:
-  GLFWwindow *window;
+  GLFWwindow *window = nullptr;
 
   int currentFrame = 0;
 
@@ -56,22 +55,21 @@ private:
 
   // vk components
   // main
-  VkInstance instance;
+  VkInstance instance = VK_NULL_HANDLE;
 
-  VkDebugUtilsMessengerEXT debugMessenger;
+  VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
   struct {
-    VkPhysicalDevice physicalDevice;
-    VkDevice logicalDevice;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice logicalDevice = VK_NULL_HANDLE;
   } mainDevice;
-  VkQueue graphicsQueue;
-  VkQueue presentationQueue;
-  VkSurfaceKHR surface;
-  VkSwapchainKHR swapchain;
+  VkQueue graphicsQueue = VK_NULL_HANDLE;
+  VkQueue presentationQueue = VK_NULL_HANDLE;
+  VkSurfaceKHR surface = VK_NULL_HANDLE;
+  VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 
   std::vector<SwapChainImage> swapChainImages;
   std::vector<VkFramebuffer> swapChainFramebuffers;
-  std::vector<VkCommandBuffer>
-      commandBuffers; // what the fuck was i going to write here
+  std::vector<VkCommandBuffer> commandBuffers;
 
   std::vector<VkImage> colorBufferImage;
   std::vector<VkDeviceMemory> colorBufferImageMemory;
@@ -84,14 +82,14 @@ private:
   std::vector<VkImageView> textureImageViews;
 
   // descriptors
-  VkDescriptorSetLayout descriptorSetLayout;
-  VkDescriptorSetLayout samplerSetLayout;
-  VkDescriptorSetLayout inputSetLayout;
-  VkPushConstantRange pushConstantRange;
+  VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+  VkDescriptorSetLayout samplerSetLayout = VK_NULL_HANDLE;
+  VkDescriptorSetLayout inputSetLayout = VK_NULL_HANDLE;
+  VkPushConstantRange pushConstantRange = {};
 
-  VkDescriptorPool descriptorPool;
-  VkDescriptorPool samplerDescriptorPool;
-  VkDescriptorPool inputDescriptorPool;
+  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool samplerDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool inputDescriptorPool = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> descriptorSets;
   std::vector<VkDescriptorSet> samplerDescriptorSets;
   std::vector<VkDescriptorSet> inputDescriptorSets;
@@ -99,40 +97,33 @@ private:
   std::vector<VkBuffer> vpUniformBuffers;
   std::vector<VkDeviceMemory> vpUniformBufferMemory;
 
-  std::vector<VkBuffer> modelDUniformBuffers;
-  std::vector<VkDeviceMemory> modelDUniformBufferMemory;
 
-  /*
-    VkDeviceSize minUniformBufferOffset;
-    size_t modelUniformAlignment;
-   */
-  // Model *modelTransferSpace;
 
   // Assets
 
-  VkSampler textureSampler;
+  VkSampler textureSampler = VK_NULL_HANDLE;
   std::vector<VkImage> textureImages;
   std::vector<VkDeviceMemory> textureImageMemory;
 
   // pipeline
-  VkPipeline graphicsPipeline;
-  VkPipelineLayout pipelineLayout;
-  VkRenderPass renderPass;
-  VkPipeline secondPipeline;
-  VkPipelineLayout secondPipelineLayout;
+  VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+  VkRenderPass renderPass = VK_NULL_HANDLE;
+  VkPipeline secondPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout secondPipelineLayout = VK_NULL_HANDLE;
 
   // pools
-  VkCommandPool graphicsCommandPool;
+  VkCommandPool graphicsCommandPool = VK_NULL_HANDLE;
 
   // utils
-  VkFormat swapChainImageFormat;
-  VkExtent2D swapChainExtent;
+  VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
+  VkExtent2D swapChainExtent = {};
 
-  // syncronization
+  // synchronization
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
   std::vector<VkFence> drawFences;
-  std::vector<VkFence> imagesInFlight; // crash fix
+  std::vector<VkFence> imagesInFlight;
 
   // vulkan functions
   // create functions
@@ -168,14 +159,10 @@ private:
   void getPhysicalDevice();
   int rateDeviceSuitability(VkPhysicalDevice device);
 
-  // allocation functions
-  void allocateDynamicBufferTransferSpace();
-
   // support functions
   // checker functions
-  bool checkInstanceExtensionSupport(std::vector<const char *> *checkEtensions);
+  bool checkInstanceExtensionSupport(std::vector<const char *> *checkExtensions);
   bool checkDeviceExtensionSupport(VkPhysicalDevice device);
-  bool checkValidationLayerSupport();
   bool checkDeviceSuitable(VkPhysicalDevice device);
 
   // getter functions
@@ -204,11 +191,11 @@ private:
 
   VkShaderModule createShaderModule(const std::vector<char> &code);
 
-  int createTextureImage(std::string filename);
-  int createTexture(std::string filename);
+  int createTextureImage(const std::string &filename);
+  int createTexture(const std::string &filename);
   int createTextureDescriptor(VkImageView textureImage);
 
   // Loader functions
-  stbi_uc *loadTextureFile(std::string filename, int *width, int *height,
+  stbi_uc *loadTextureFile(const std::string &filename, int *width, int *height,
                            VkDeviceSize *imageSize);
 };

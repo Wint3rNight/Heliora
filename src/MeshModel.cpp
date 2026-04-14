@@ -4,26 +4,28 @@
 #include <stdexcept>
 #include <vector>
 
+MeshModel::MeshModel() : model(glm::mat4(1.0f)) {}
+
 MeshModel::MeshModel(std::vector<Mesh> newMeshList) {
-  mesheList = newMeshList;
+  meshList = std::move(newMeshList);
   model = glm::mat4(1.0f);
 }
 
-size_t MeshModel::getMeshCount() { return mesheList.size(); }
+size_t MeshModel::getMeshCount() const { return meshList.size(); }
 
-Mesh *MeshModel::getMesh(size_t index) {
-  if (index >= mesheList.size()) {
+const Mesh *MeshModel::getMesh(size_t index) const {
+  if (index >= meshList.size()) {
     throw std::runtime_error("Mesh index out of range");
   }
-  return &mesheList[index];
+  return &meshList[index];
 }
 
-glm::mat4 MeshModel::getModel() { return model; }
+glm::mat4 MeshModel::getModel() const { return model; }
 
-void MeshModel::setModel(glm::mat4 newModel) { model = newModel; }
+void MeshModel::setModel(const glm::mat4 &newModel) { model = newModel; }
 
 void MeshModel::destroyMeshModel() {
-  for (auto &mesh : mesheList) {
+  for (auto &mesh : meshList) {
     mesh.destroyBuffers();
   }
 }
@@ -53,7 +55,7 @@ std::vector<Mesh> MeshModel::LoadNode(VkPhysicalDevice newPhysicalDevice,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiNode *node, const aiScene *scene,
-                                      std::vector<int> matToTex) {
+                                      const std::vector<int> &matToTex) {
   std::vector<Mesh> meshList;
   // go throug all meshes in node and load them
   for (size_t i = 0; i < node->mNumMeshes; i++) {
@@ -78,7 +80,7 @@ std::vector<Mesh> MeshModel::LoadMesh(VkPhysicalDevice newPhysicalDevice,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiMesh *mesh, const aiScene *scene,
-                                      std::vector<int> matToTex) {
+                                      const std::vector<int> &matToTex) {
   std::vector<Vertex> vertices;
   std::vector<uint32_t> indices;
   // resize the vertices vector to the number of vertices in the mesh

@@ -58,3 +58,6 @@ compile_commands.json
 # Resource/Temp files
 *.log
 *.tmp
+
+# Project documents
+TODO.md

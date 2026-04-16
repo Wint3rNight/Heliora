@@ -4,9 +4,148 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
+#include "vk_mem_alloc.h"
+
+class AllocatedBuffer {
+public:
+  AllocatedBuffer() = default;
+  AllocatedBuffer(VmaAllocator allocator, VkBuffer buffer,
+                  VmaAllocation allocation)
+      : allocator(allocator), buffer(buffer), allocation(allocation) {}
+
+  ~AllocatedBuffer() { reset(); }
+
+  AllocatedBuffer(const AllocatedBuffer &) = delete;
+  AllocatedBuffer &operator=(const AllocatedBuffer &) = delete;
+
+  AllocatedBuffer(AllocatedBuffer &&other) noexcept { swap(other); }
+
+  AllocatedBuffer &operator=(AllocatedBuffer &&other) noexcept {
+    if (this != &other) {
+      reset();
+      swap(other);
+    }
+    return *this;
+  }
+
+  void reset() {
+    if (buffer != VK_NULL_HANDLE) {
+      vmaDestroyBuffer(allocator, buffer, allocation);
+    }
+    allocator = VK_NULL_HANDLE;
+    buffer = VK_NULL_HANDLE;
+    allocation = VK_NULL_HANDLE;
+  }
+
+  VkBuffer get() const { return buffer; }
+  VmaAllocation getAllocation() const { return allocation; }
+  explicit operator bool() const { return buffer != VK_NULL_HANDLE; }
+
+private:
+  void swap(AllocatedBuffer &other) noexcept {
+    std::swap(allocator, other.allocator);
+    std::swap(buffer, other.buffer);
+    std::swap(allocation, other.allocation);
+  }
+
+  VmaAllocator allocator = VK_NULL_HANDLE;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+};
+
+class AllocatedImage {
+public:
+  AllocatedImage() = default;
+  AllocatedImage(VmaAllocator allocator, VkImage image,
+                 VmaAllocation allocation)
+      : allocator(allocator), image(image), allocation(allocation) {}
+
+  ~AllocatedImage() { reset(); }
+
+  AllocatedImage(const AllocatedImage &) = delete;
+  AllocatedImage &operator=(const AllocatedImage &) = delete;
+
+  AllocatedImage(AllocatedImage &&other) noexcept { swap(other); }
+
+  AllocatedImage &operator=(AllocatedImage &&other) noexcept {
+    if (this != &other) {
+      reset();
+      swap(other);
+    }
+    return *this;
+  }
+
+  void reset() {
+    if (image != VK_NULL_HANDLE) {
+      vmaDestroyImage(allocator, image, allocation);
+    }
+    allocator = VK_NULL_HANDLE;
+    image = VK_NULL_HANDLE;
+    allocation = VK_NULL_HANDLE;
+  }
+
+  VkImage get() const { return image; }
+  VmaAllocation getAllocation() const { return allocation; }
+  explicit operator bool() const { return image != VK_NULL_HANDLE; }
+
+private:
+  void swap(AllocatedImage &other) noexcept {
+    std::swap(allocator, other.allocator);
+    std::swap(image, other.image);
+    std::swap(allocation, other.allocation);
+  }
+
+  VmaAllocator allocator = VK_NULL_HANDLE;
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+};
+
+class ImageViewHandle {
+public:
+  ImageViewHandle() = default;
+  ImageViewHandle(VkDevice device, VkImageView imageView)
+      : device(device), imageView(imageView) {}
+
+  ~ImageViewHandle() { reset(); }
+
+  ImageViewHandle(const ImageViewHandle &) = delete;
+  ImageViewHandle &operator=(const ImageViewHandle &) = delete;
+
+  ImageViewHandle(ImageViewHandle &&other) noexcept { swap(other); }
+
+  ImageViewHandle &operator=(ImageViewHandle &&other) noexcept {
+    if (this != &other) {
+      reset();
+      swap(other);
+    }
+    return *this;
+  }
+
+  void reset() {
+    if (imageView != VK_NULL_HANDLE) {
+      vkDestroyImageView(device, imageView, nullptr);
+    }
+    device = VK_NULL_HANDLE;
+    imageView = VK_NULL_HANDLE;
+  }
+
+  VkImageView get() const { return imageView; }
+  explicit operator bool() const { return imageView != VK_NULL_HANDLE; }
+
+private:
+  void swap(ImageViewHandle &other) noexcept {
+    std::swap(device, other.device);
+    std::swap(imageView, other.imageView);
+  }
+
+  VkDevice device = VK_NULL_HANDLE;
+  VkImageView imageView = VK_NULL_HANDLE;
+};
 
 const int MAX_FRAMES_DRAWS = 3;
 const int MAX_OBJECTS = 40;
@@ -40,8 +179,8 @@ struct SwapChainDetails {
 };
 
 struct SwapChainImage {
-  VkImage image;
-  VkImageView imageView;
+  VkImage image = VK_NULL_HANDLE;
+  ImageViewHandle imageView;
 };
 
 static std::vector<char> readFile(const std::string &filename) {
@@ -82,51 +221,31 @@ static uint32_t findMemoryTypeIndex(
   throw std::runtime_error("Failed to find suitable memory type!");
 }
 
-static void createBuffer(VkPhysicalDevice physicalDevice, VkDevice device,
-                         VkDeviceSize bufferSize,
+static void createBuffer(VmaAllocator allocator, VkDeviceSize bufferSize,
                          VkBufferUsageFlags bufferUsage,
-                         VkMemoryPropertyFlags bufferProperties,
-                         VkBuffer *buffer, VkDeviceMemory *bufferMemory) {
-  // information to create the buffer(assigining memory not included)
+                         VmaMemoryUsage memoryUsage,
+                         VmaAllocationCreateFlags memoryFlags,
+                         AllocatedBuffer *outBuffer) {
   VkBufferCreateInfo bufferInfo = {};
   bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferInfo.size = bufferSize;   // size of buffer in bytes
   bufferInfo.usage = bufferUsage; // type of buffer we want to create
   bufferInfo.sharingMode =
       VK_SHARING_MODE_EXCLUSIVE; // buffer is shared between multiple
-                                 // queue families or not
 
-  VkResult result = vkCreateBuffer(device, &bufferInfo, nullptr, buffer);
+  VmaAllocationCreateInfo allocInfo = {};
+  allocInfo.usage = memoryUsage;
+  allocInfo.flags = memoryFlags;
+
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  VkResult result =
+      vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &buffer,
+                      &allocation, nullptr);
   if (result != VK_SUCCESS) {
-    throw std::runtime_error("failed to create vertex buffer!");
+    throw std::runtime_error("failed to create VMA buffer!");
   }
-
-  // get memory requirements for the buffer to allocate enough memory
-  VkMemoryRequirements memRequirements;
-  vkGetBufferMemoryRequirements(device, *buffer, &memRequirements);
-
-  // allocate memory for the buffer
-  VkMemoryAllocateInfo memoryAllocateInfo = {};
-  memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  memoryAllocateInfo.allocationSize =
-      memRequirements.size; // size of allocation in bytes
-  memoryAllocateInfo.memoryTypeIndex = findMemoryTypeIndex(
-      physicalDevice,
-      memRequirements.memoryTypeBits, // index of memory type on physical device
-                                      // that has required bit flags
-      bufferProperties);              // required memory property bit flags
-  // VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT means that we can map the memory and
-  // write to it from the CPU and VK_MEMORY_PROPERTY_HOST_COHERENT_BIT means
-  // that the memory will automatically be flushed
-
-  // allocate memory for the buffer
-  result = vkAllocateMemory(device, &memoryAllocateInfo, nullptr, bufferMemory);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate vertex buffer memory!");
-  }
-
-  // bind the buffer with the allocated memory
-  vkBindBufferMemory(device, *buffer, *bufferMemory, 0);
+  *outBuffer = AllocatedBuffer(allocator, buffer, allocation);
 }
 
 static VkCommandBuffer beginCommandBuffer(VkDevice device,

@@ -48,7 +48,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     // 6. Descriptors
     descriptorManager.init(device.getLogicalDevice(),
-                           device.getPhysicalDevice(),
+                           device.getAllocator(),
                            swapchain.getImageCount());
     descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
 
@@ -136,7 +136,7 @@ void VulkanRenderer::draw() {
 
   recordCommands(imageIndex);
 
-  descriptorManager.updateUniformBuffer(logicalDevice, imageIndex,
+  descriptorManager.updateUniformBuffer(device.getAllocator(), imageIndex,
                                         &uboViewProjection,
                                         sizeof(UboViewProjection));
 
@@ -196,12 +196,12 @@ void VulkanRenderer::cleanup() {
   vkDeviceWaitIdle(device.getLogicalDevice());
 
   modelManager.cleanup();
-  textureManager.cleanup(device.getLogicalDevice());
+  textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
 
   // Destroy subsystems (reverse order of creation)
-  descriptorManager.cleanup(device.getLogicalDevice(),
+  descriptorManager.cleanup(device.getLogicalDevice(), device.getAllocator(),
                             swapchain.getImageCount());
-  swapchain.cleanup(device.getLogicalDevice());
+  swapchain.cleanup(device.getLogicalDevice(), device.getAllocator());
 
   // Synchronization
   for (size_t i = 0; i < MAX_FRAMES_DRAWS; i++) {

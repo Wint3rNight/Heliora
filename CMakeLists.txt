@@ -10,6 +10,7 @@ find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(assimp REQUIRED)
+find_package(spdlog REQUIRED)
 
 # Source File Management - Simplified
 # Note: Using GLOB is okay for small projects, but listing them is safer.
@@ -34,6 +35,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         Vulkan::Vulkan
         glfw
         glm::glm
+        spdlog::spdlog
 )
 
 if(TARGET assimp::assimp)

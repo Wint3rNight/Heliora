@@ -29,6 +29,7 @@ private:
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   VkPipeline secondPipeline = VK_NULL_HANDLE;
   VkPipelineLayout secondPipelineLayout = VK_NULL_HANDLE;
+  VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 
   VkShaderModule createShaderModule(VkDevice device,
                                     const std::vector<char> &code);

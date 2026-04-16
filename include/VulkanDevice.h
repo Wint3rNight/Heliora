@@ -29,6 +29,7 @@ public:
   VkQueue getGraphicsQueue() const { return graphicsQueue; }
   VkQueue getPresentationQueue() const { return presentationQueue; }
   VkCommandPool getGraphicsCommandPool() const { return graphicsCommandPool; }
+  VmaAllocator getAllocator() const { return allocator; }
   QueueFamilyIndices getQueueFamilies() const;
 
 private:
@@ -45,6 +46,7 @@ private:
   VkQueue presentationQueue = VK_NULL_HANDLE;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkCommandPool graphicsCommandPool = VK_NULL_HANDLE;
+  VmaAllocator allocator = VK_NULL_HANDLE;
 
   GLFWwindow *window = nullptr;
 
@@ -54,6 +56,7 @@ private:
   void createLogicalDevice();
   void createCommandPool();
   void selectPhysicalDevice();
+  void createVmaAllocator();
 
   // --- Support functions ---
   bool checkInstanceExtensionSupport(

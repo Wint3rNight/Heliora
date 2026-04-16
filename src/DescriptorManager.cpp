@@ -14,16 +14,16 @@ struct UboViewProjection {
 
 // --- Public interface ---
 
-void DescriptorManager::init(VkDevice device, VkPhysicalDevice physicalDevice,
+void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
                              size_t swapchainImageCount) {
   createDescriptorSetLayout(device);
   createPushConstantRange();
-  createUniformBuffers(device, physicalDevice, swapchainImageCount);
+  createUniformBuffers(allocator, swapchainImageCount);
   createDescriptorPool(device, swapchainImageCount);
   createDescriptorSets(device, swapchainImageCount);
 }
 
-void DescriptorManager::cleanup(VkDevice device, size_t swapchainImageCount) {
+void DescriptorManager::cleanup(VkDevice device, VmaAllocator allocator, size_t swapchainImageCount) {
   // Destroy input descriptor pool and layout
   vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
   vkDestroyDescriptorSetLayout(device, inputSetLayout, nullptr);
@@ -36,19 +36,15 @@ void DescriptorManager::cleanup(VkDevice device, size_t swapchainImageCount) {
   vkDestroyDescriptorPool(device, descriptorPool, nullptr);
   vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
-  // Destroy uniform buffers
-  for (size_t i = 0; i < swapchainImageCount; i++) {
-    vkDestroyBuffer(device, vpUniformBuffers[i], nullptr);
-    vkFreeMemory(device, vpUniformBufferMemory[i], nullptr);
-  }
+  vpUniformBuffers.clear();
 }
 
-void DescriptorManager::updateUniformBuffer(VkDevice device, size_t imageIndex,
+void DescriptorManager::updateUniformBuffer(VmaAllocator allocator, size_t imageIndex,
                                             const void *data, size_t size) {
   void *mapped;
-  vkMapMemory(device, vpUniformBufferMemory[imageIndex], 0, size, 0, &mapped);
+  vmaMapMemory(allocator, vpUniformBuffers[imageIndex].getAllocation(), &mapped);
   memcpy(mapped, data, size);
-  vkUnmapMemory(device, vpUniformBufferMemory[imageIndex]);
+  vmaUnmapMemory(allocator, vpUniformBuffers[imageIndex].getAllocation());
 }
 
 int DescriptorManager::createTextureDescriptor(VkDevice device,
@@ -229,20 +225,18 @@ void DescriptorManager::createPushConstantRange() {
 
 // --- Uniform buffer creation ---
 
-void DescriptorManager::createUniformBuffers(VkDevice device,
-                                             VkPhysicalDevice physicalDevice,
+void DescriptorManager::createUniformBuffers(VmaAllocator allocator,
                                              size_t swapchainImageCount) {
   VkDeviceSize vpBufferSize = sizeof(UboViewProjection);
 
   vpUniformBuffers.resize(swapchainImageCount);
-  vpUniformBufferMemory.resize(swapchainImageCount);
 
   for (size_t i = 0; i < swapchainImageCount; i++) {
-    createBuffer(physicalDevice, device, vpBufferSize,
+    createBuffer(allocator, vpBufferSize,
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                 &vpUniformBuffers[i], &vpUniformBufferMemory[i]);
+                 VMA_MEMORY_USAGE_AUTO,
+                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                 &vpUniformBuffers[i]);
   }
 }
 
@@ -370,7 +364,7 @@ void DescriptorManager::createDescriptorSets(VkDevice device,
     // view projection descriptor
     //  buffer info and data offset info
     VkDescriptorBufferInfo vpBufferInfo = {};
-    vpBufferInfo.buffer = vpUniformBuffers[i]; // buffer to bind to descriptor
+    vpBufferInfo.buffer = vpUniformBuffers[i].get(); // buffer to bind to descriptor
     vpBufferInfo.offset = 0;                   // offset of data in buffer
     vpBufferInfo.range = sizeof(UboViewProjection); // size of data in buffer
 

@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
+#include "Utilities.h"
 
 class VulkanDevice;
 class DescriptorManager;
@@ -18,7 +19,7 @@ public:
   TextureManager &operator=(const TextureManager &) = delete;
 
   void init(const VulkanDevice &device);
-  void cleanup(VkDevice logicalDevice);
+  void cleanup(VkDevice logicalDevice, VmaAllocator allocator);
 
   // Loads a texture or retrieves it if already loaded. Returns descriptor set index.
   int loadTexture(const std::string &filename, const VulkanDevice &device,
@@ -28,9 +29,8 @@ private:
   VkSampler textureSampler = VK_NULL_HANDLE;
 
   // Caches for textures we own
-  std::vector<VkImage> textureImages;
-  std::vector<VkDeviceMemory> textureImageMemory;
-  std::vector<VkImageView> textureImageViews;
+  std::vector<AllocatedImage> textureImages;
+  std::vector<ImageViewHandle> textureImageViews;
 
   // Map to deduplicate textures (filename -> descriptor location ID)
   std::unordered_map<std::string, int> textureMap;

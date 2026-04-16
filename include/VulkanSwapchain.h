@@ -21,7 +21,7 @@ public:
             GLFWwindow *window);
   void recreate(const VulkanDevice &device, VkRenderPass renderPass,
                 GLFWwindow *window);
-  void cleanup(VkDevice device);
+  void cleanup(VkDevice device, VmaAllocator allocator);
 
   // --- Accessors ---
   VkSwapchainKHR getSwapchain() const { return swapchain; }
@@ -38,10 +38,10 @@ public:
     return commandBuffers[index];
   }
   VkImageView getColorBufferView(size_t index) const {
-    return colorBufferImageView[index];
+    return colorBufferImageView[index].get();
   }
   VkImageView getDepthBufferView(size_t index) const {
-    return depthBufferImageView[index];
+    return depthBufferImageView[index].get();
   }
 
   // --- Format queries (no Vulkan objects created) ---
@@ -60,13 +60,11 @@ private:
   std::vector<VkFramebuffer> swapChainFramebuffers;
   std::vector<VkCommandBuffer> commandBuffers;
 
-  std::vector<VkImage> colorBufferImage;
-  std::vector<VkDeviceMemory> colorBufferImageMemory;
-  std::vector<VkImageView> colorBufferImageView;
+  std::vector<AllocatedImage> colorBufferImage;
+  std::vector<ImageViewHandle> colorBufferImageView;
 
-  std::vector<VkImage> depthBufferImage;
-  std::vector<VkDeviceMemory> depthBufferImageMemory;
-  std::vector<VkImageView> depthBufferImageView;
+  std::vector<AllocatedImage> depthBufferImage;
+  std::vector<ImageViewHandle> depthBufferImageView;
 
   // --- Creation functions ---
   void createSwapChain(const VulkanDevice &device, GLFWwindow *window);
@@ -74,7 +72,7 @@ private:
   void createDepthBufferImage(const VulkanDevice &device);
   void createFramebuffers(VkDevice device, VkRenderPass renderPass);
   void createCommandBuffers(VkDevice device, VkCommandPool commandPool);
-  void cleanupSwapChain(VkDevice device);
+  void cleanupSwapChain(VkDevice device, VmaAllocator allocator);
 
   // --- Support functions ---
   VkSurfaceFormatKHR
@@ -86,11 +84,9 @@ private:
                    GLFWwindow *window);
 
   // --- Image helpers ---
-  VkImage createImage(VkPhysicalDevice physicalDevice, VkDevice device,
-                      uint32_t width, uint32_t height, VkFormat format,
-                      VkImageTiling tiling, VkImageUsageFlags useFlags,
-                      VkMemoryPropertyFlags propFlags,
-                      VkDeviceMemory *imageMemory);
+  AllocatedImage createImage(VmaAllocator allocator,
+                             uint32_t width, uint32_t height, VkFormat format,
+                             VkImageTiling tiling, VkImageUsageFlags useFlags);
   VkImageView createImageView(VkDevice device, VkImage image, VkFormat format,
                               VkImageAspectFlags aspectFlags);
 };

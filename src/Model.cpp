@@ -1,24 +1,23 @@
 #include "Model.h"
 #include <stdexcept>
 #include <cstring>
+#include <iterator>
 
 // =============================================================================
 // Mesh Implementation
 // =============================================================================
 
 Mesh::Mesh()
-    : physicalDevice(VK_NULL_HANDLE), device(VK_NULL_HANDLE), vertexCount(0),
-      vertexBuffer(VK_NULL_HANDLE), vertexBufferMemory(VK_NULL_HANDLE),
-      indexCount(0), indexBuffer(VK_NULL_HANDLE),
-      indexBufferMemory(VK_NULL_HANDLE) {}
+    : allocator(VK_NULL_HANDLE), device(VK_NULL_HANDLE), vertexCount(0),
+      indexCount(0) {}
 
-Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice,
+Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice,
            VkQueue transferQueue, VkCommandPool transferCommandPool,
            std::vector<Vertex> *vertices, std::vector<uint32_t> *indices,
            Material newMaterial) {
   vertexCount = vertices->size();
   indexCount = indices->size();
-  physicalDevice = newPhysicalDevice;
+  allocator = newAllocator;
   device = newDevice;
   material = newMaterial;
   createVertexBuffer(transferQueue, transferCommandPool, vertices);
@@ -27,15 +26,13 @@ Mesh::Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice,
 
 const Material &Mesh::getMaterial() const { return material; }
 int Mesh::getVertexCount() const { return vertexCount; }
-VkBuffer Mesh::getVertexBuffer() const { return vertexBuffer; }
+VkBuffer Mesh::getVertexBuffer() const { return vertexBuffer.get(); }
 int Mesh::getIndexCount() const { return indexCount; }
-VkBuffer Mesh::getIndexBuffer() const { return indexBuffer; }
+VkBuffer Mesh::getIndexBuffer() const { return indexBuffer.get(); }
 
 void Mesh::destroyBuffers() {
-  vkDestroyBuffer(device, vertexBuffer, nullptr);
-  vkFreeMemory(device, vertexBufferMemory, nullptr);
-  vkDestroyBuffer(device, indexBuffer, nullptr);
-  vkFreeMemory(device, indexBufferMemory, nullptr);
+  vertexBuffer.reset();
+  indexBuffer.reset();
 }
 
 Mesh::~Mesh() {}
@@ -45,29 +42,26 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
                               std::vector<Vertex> *vertices) {
   VkDeviceSize bufferSize = sizeof(Vertex) * vertices->size();
 
-  VkBuffer stagingBuffer;
-  VkDeviceMemory stagingBufferMemory;
-  createBuffer(physicalDevice, device, bufferSize,
+  AllocatedBuffer stagingBuffer;
+  createBuffer(allocator, bufferSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-               &stagingBuffer, &stagingBufferMemory);
+               VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &stagingBuffer);
 
   void *data;
-  vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+  vmaMapMemory(allocator, stagingBuffer.getAllocation(), &data);
   memcpy(data, vertices->data(), (size_t)bufferSize);
-  vkUnmapMemory(device, stagingBufferMemory);
+  vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
 
   createBuffer(
-      physicalDevice, device, bufferSize,
+      allocator, bufferSize,
       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vertexBuffer, &vertexBufferMemory);
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      0, &vertexBuffer);
 
-  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer,
-             vertexBuffer, bufferSize);
-
-  vkDestroyBuffer(device, stagingBuffer, nullptr);
-  vkFreeMemory(device, stagingBufferMemory, nullptr);
+  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
+             vertexBuffer.get(), bufferSize);
 }
 
 void Mesh::createIndexBuffer(VkQueue transferQueue,
@@ -75,29 +69,26 @@ void Mesh::createIndexBuffer(VkQueue transferQueue,
                              std::vector<uint32_t> *indices) {
   VkDeviceSize bufferSize = sizeof(uint32_t) * indices->size();
 
-  VkBuffer stagingBuffer;
-  VkDeviceMemory stagingBufferMemory;
-  createBuffer(physicalDevice, device, bufferSize,
+  AllocatedBuffer stagingBuffer;
+  createBuffer(allocator, bufferSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-               &stagingBuffer, &stagingBufferMemory);
+               VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &stagingBuffer);
 
   void *data;
-  vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+  vmaMapMemory(allocator, stagingBuffer.getAllocation(), &data);
   memcpy(data, indices->data(), (size_t)bufferSize);
-  vkUnmapMemory(device, stagingBufferMemory);
+  vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
 
   createBuffer(
-      physicalDevice, device, bufferSize,
+      allocator, bufferSize,
       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &indexBuffer, &indexBufferMemory);
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      0, &indexBuffer);
 
-  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer,
-             indexBuffer, bufferSize);
-
-  vkDestroyBuffer(device, stagingBuffer, nullptr);
-  vkFreeMemory(device, stagingBufferMemory, nullptr);
+  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
+             indexBuffer.get(), bufferSize);
 }
 
 // =============================================================================
@@ -142,7 +133,7 @@ std::vector<std::string> MeshModel::LoadMaterials(const aiScene *scene) {
   return textureList;
 }
 
-std::vector<Mesh> MeshModel::LoadNode(VkPhysicalDevice newPhysicalDevice,
+std::vector<Mesh> MeshModel::LoadNode(VmaAllocator allocator,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiNode *node, const aiScene *scene,
@@ -151,21 +142,25 @@ std::vector<Mesh> MeshModel::LoadNode(VkPhysicalDevice newPhysicalDevice,
   for (size_t i = 0; i < node->mNumMeshes; i++) {
     aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
     std::vector<Mesh> newMeshes =
-        LoadMesh(newPhysicalDevice, newDevice, transferQueue,
+        LoadMesh(allocator, newDevice, transferQueue,
                  transferCommandPool, mesh, scene, materials);
-    meshList.insert(meshList.end(), newMeshes.begin(), newMeshes.end());
+    meshList.insert(meshList.end(),
+                    std::make_move_iterator(newMeshes.begin()),
+                    std::make_move_iterator(newMeshes.end()));
   }
 
   for (size_t i = 0; i < node->mNumChildren; i++) {
     std::vector<Mesh> newList =
-        LoadNode(newPhysicalDevice, newDevice, transferQueue,
+        LoadNode(allocator, newDevice, transferQueue,
                  transferCommandPool, node->mChildren[i], scene, materials);
-    meshList.insert(meshList.end(), newList.begin(), newList.end());
+    meshList.insert(meshList.end(),
+                    std::make_move_iterator(newList.begin()),
+                    std::make_move_iterator(newList.end()));
   }
   return meshList;
 }
 
-std::vector<Mesh> MeshModel::LoadMesh(VkPhysicalDevice newPhysicalDevice,
+std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiMesh *mesh, const aiScene *scene,
@@ -194,9 +189,11 @@ std::vector<Mesh> MeshModel::LoadMesh(VkPhysicalDevice newPhysicalDevice,
   }
   
   Mesh newMesh =
-      Mesh(newPhysicalDevice, newDevice, transferQueue, transferCommandPool,
+      Mesh(allocator, newDevice, transferQueue, transferCommandPool,
            &vertices, &indices, materials[mesh->mMaterialIndex]);
-  return {newMesh};
+  std::vector<Mesh> meshList;
+  meshList.emplace_back(std::move(newMesh));
+  return meshList;
 }
 
 MeshModel::~MeshModel() {}

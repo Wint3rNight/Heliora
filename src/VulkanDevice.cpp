@@ -1,6 +1,7 @@
 #include "VulkanDevice.h"
 #include <iostream>
 #include <cstring>
+#include <spdlog/spdlog.h>
 
 namespace {
 // wanted vulkan validation layer
@@ -20,8 +21,7 @@ debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
               const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
               void *pUserData) {
 
-  std::cerr << "Validation Layer Error: " << pCallbackData->pMessage
-            << std::endl;
+  spdlog::error("Validation Layer: {}", pCallbackData->pMessage);
   return VK_FALSE; // Always return false per Vulkan spec
 }
 
@@ -97,10 +97,12 @@ void VulkanDevice::init(GLFWwindow *newWindow) {
   createSurface();
   selectPhysicalDevice();
   createLogicalDevice();
+  createVmaAllocator();
   createCommandPool();
 }
 
 void VulkanDevice::cleanup() {
+  vmaDestroyAllocator(allocator);
   vkDestroyCommandPool(mainDevice.logicalDevice, graphicsCommandPool, nullptr);
   vkDestroyDevice(mainDevice.logicalDevice, nullptr);
   vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -285,6 +287,19 @@ void VulkanDevice::createCommandPool() {
   }
 }
 
+void VulkanDevice::createVmaAllocator() {
+  VmaAllocatorCreateInfo allocatorInfo = {};
+  allocatorInfo.physicalDevice = mainDevice.physicalDevice;
+  allocatorInfo.device = mainDevice.logicalDevice;
+  allocatorInfo.instance = instance;
+  allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+
+  if (vmaCreateAllocator(&allocatorInfo, &allocator) != VK_SUCCESS) {
+    spdlog::critical("Failed to create VMA Allocator");
+    throw std::runtime_error("Failed to create VMA Allocator");
+  }
+}
+
 // --- Physical device selection ---
 
 void VulkanDevice::selectPhysicalDevice() {
@@ -317,14 +332,15 @@ void VulkanDevice::selectPhysicalDevice() {
     VkPhysicalDeviceProperties deviceProperties;
     vkGetPhysicalDeviceProperties(mainDevice.physicalDevice, &deviceProperties);
 
-    printf("Selected GPU: %s\n", deviceProperties.deviceName);
-    printf("Device Type: %d\n", deviceProperties.deviceType);
-    printf("Total Devices Found %d\n", deviceCount);
-    printf("API Version: %d.%d.%d\n",
-           VK_VERSION_MAJOR(deviceProperties.apiVersion),
-           VK_VERSION_MINOR(deviceProperties.apiVersion),
-           VK_VERSION_PATCH(deviceProperties.apiVersion));
+    spdlog::info("Selected GPU: {}", deviceProperties.deviceName);
+    spdlog::info("Device Type: {}", static_cast<int>(deviceProperties.deviceType));
+    spdlog::info("Total Devices Found: {}", deviceCount);
+    spdlog::info("API Version: {}.{}.{}",
+                 VK_VERSION_MAJOR(deviceProperties.apiVersion),
+                 VK_VERSION_MINOR(deviceProperties.apiVersion),
+                 VK_VERSION_PATCH(deviceProperties.apiVersion));
   } else {
+    spdlog::critical("Failed to find a suitable GPU");
     throw std::runtime_error("Failed to find a suitable GPU");
   }
 }

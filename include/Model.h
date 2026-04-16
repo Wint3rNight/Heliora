@@ -15,10 +15,15 @@ struct Model {
 class Mesh {
 public:
   Mesh();
-  Mesh(VkPhysicalDevice newPhysicalDevice, VkDevice newDevice,
+  Mesh(VmaAllocator allocator, VkDevice device,
        VkQueue transferQueue, VkCommandPool transferCommandPool,
        std::vector<Vertex> *vertices, std::vector<uint32_t> *indices,
        Material newMaterial);
+
+  Mesh(const Mesh &) = delete;
+  Mesh &operator=(const Mesh &) = delete;
+  Mesh(Mesh &&) noexcept = default;
+  Mesh &operator=(Mesh &&) noexcept = default;
 
   const Material &getMaterial() const;
 
@@ -36,14 +41,12 @@ private:
   Material material;
 
   int vertexCount;
-  VkBuffer vertexBuffer;
-  VkDeviceMemory vertexBufferMemory;
+  AllocatedBuffer vertexBuffer;
 
   int indexCount;
-  VkBuffer indexBuffer;
-  VkDeviceMemory indexBufferMemory;
+  AllocatedBuffer indexBuffer;
 
-  VkPhysicalDevice physicalDevice;
+  VmaAllocator allocator;
   VkDevice device;
 
   void createVertexBuffer(VkQueue transferQueue,
@@ -59,18 +62,23 @@ public:
   MeshModel();
   MeshModel(std::vector<Mesh> meshList);
 
+  MeshModel(const MeshModel &) = delete;
+  MeshModel &operator=(const MeshModel &) = delete;
+  MeshModel(MeshModel &&) noexcept = default;
+  MeshModel &operator=(MeshModel &&) noexcept = default;
+
   size_t getMeshCount() const;
   const Mesh *getMesh(size_t index) const;
 
   void destroyMeshModel();
 
   static std::vector<std::string> LoadMaterials(const aiScene *scene);
-  static std::vector<Mesh> LoadNode(VkPhysicalDevice newPhysicalDevice,
+  static std::vector<Mesh> LoadNode(VmaAllocator allocator,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiNode *node, const aiScene *scene,
                                     const std::vector<Material> &materials);
-  static std::vector<Mesh> LoadMesh(VkPhysicalDevice newPhysicalDevice,
+  static std::vector<Mesh> LoadMesh(VmaAllocator allocator,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiMesh *mesh, const aiScene *scene,

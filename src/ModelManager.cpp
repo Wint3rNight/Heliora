@@ -61,12 +61,12 @@ int ModelManager::loadModel(const std::string &modelFile,
   }
 
   std::vector<Mesh> modelMeshes = MeshModel::LoadNode(
-      device.getPhysicalDevice(), device.getLogicalDevice(),
+      device.getAllocator(), device.getLogicalDevice(),
       device.getGraphicsQueue(), device.getGraphicsCommandPool(),
       scene->mRootNode, scene, materials);
 
-  MeshModel meshModel = MeshModel(modelMeshes);
-  models.push_back(meshModel);
+  MeshModel meshModel = MeshModel(std::move(modelMeshes));
+  models.push_back(std::move(meshModel));
 
   int id = models.size() - 1;
   modelMap[modelFile] = id;

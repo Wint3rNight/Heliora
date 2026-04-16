@@ -11,18 +11,13 @@ void TextureManager::init(const VulkanDevice &device) {
   createTextureSampler(device.getLogicalDevice(), device.getPhysicalDevice());
 }
 
-void TextureManager::cleanup(VkDevice logicalDevice) {
-  for (auto imageView : textureImageViews) {
-    vkDestroyImageView(logicalDevice, imageView, nullptr);
-  }
-  for (auto image : textureImages) {
-    vkDestroyImage(logicalDevice, image, nullptr);
-  }
-  for (auto memory : textureImageMemory) {
-    vkFreeMemory(logicalDevice, memory, nullptr);
-  }
+void TextureManager::cleanup(VkDevice logicalDevice, VmaAllocator allocator) {
+  textureImageViews.clear();
+  textureImages.clear();
+  textureMap.clear();
   if (textureSampler != VK_NULL_HANDLE) {
     vkDestroySampler(logicalDevice, textureSampler, nullptr);
+    textureSampler = VK_NULL_HANDLE;
   }
 }
 
@@ -41,7 +36,7 @@ int TextureManager::loadTexture(const std::string &filename,
   // Create image view
   VkImageViewCreateInfo viewCreateInfo = {};
   viewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  viewCreateInfo.image = textureImages[textureImageLoc];
+  viewCreateInfo.image = textureImages[textureImageLoc].get();
   viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
   viewCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
   viewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -60,7 +55,7 @@ int TextureManager::loadTexture(const std::string &filename,
   if (result != VK_SUCCESS) {
     throw std::runtime_error("Failed to create texture image view");
   }
-  textureImageViews.push_back(imageView);
+  textureImageViews.emplace_back(device.getLogicalDevice(), imageView);
 
   // Generate descriptor
   int descriptorLoc = descriptorManager.createTextureDescriptor(
@@ -104,25 +99,22 @@ int TextureManager::createTextureImage(const std::string &filename,
   VkDeviceSize imageSize;
   unsigned char *imageData = loadTextureFile(filename, &width, &height, &imageSize);
 
-  VkBuffer imageStagingBuffer;
-  VkDeviceMemory imageStagingBufferMemory;
-  createBuffer(device.getPhysicalDevice(), device.getLogicalDevice(), imageSize,
+  AllocatedBuffer imageStagingBuffer;
+  createBuffer(device.getAllocator(), imageSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-               &imageStagingBuffer, &imageStagingBufferMemory);
+               VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &imageStagingBuffer);
 
   void *data;
-  vkMapMemory(device.getLogicalDevice(), imageStagingBufferMemory, 0, imageSize,
-              0, &data);
+  vmaMapMemory(device.getAllocator(), imageStagingBuffer.getAllocation(), &data);
   memcpy(data, imageData, static_cast<size_t>(imageSize));
-  vkUnmapMemory(device.getLogicalDevice(), imageStagingBufferMemory);
+  vmaUnmapMemory(device.getAllocator(), imageStagingBuffer.getAllocation());
 
   stbi_image_free(imageData); // Now it's stbi_uc* equivalent
 
-  VkImage texImage;
-  VkDeviceMemory texImageMemory;
-  
+  AllocatedImage texImage;
+
   VkImageCreateInfo imageCreateInfo = {};
   imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -138,45 +130,33 @@ int TextureManager::createTextureImage(const std::string &filename,
   imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
   imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-  if (vkCreateImage(device.getLogicalDevice(), &imageCreateInfo, nullptr, &texImage) != VK_SUCCESS) {
-      throw std::runtime_error("Failed to create image");
+  VmaAllocationCreateInfo allocCreateInfo = {};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  if (vmaCreateImage(device.getAllocator(), &imageCreateInfo, &allocCreateInfo,
+                     &image, &allocation, nullptr) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create and allocate VMA image");
   }
-
-  VkMemoryRequirements memoryRequirements;
-  vkGetImageMemoryRequirements(device.getLogicalDevice(), texImage, &memoryRequirements);
-
-  VkMemoryAllocateInfo memoryAllocInfo = {};
-  memoryAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  memoryAllocInfo.allocationSize = memoryRequirements.size;
-  memoryAllocInfo.memoryTypeIndex = findMemoryTypeIndex(
-      device.getPhysicalDevice(), memoryRequirements.memoryTypeBits,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-  if (vkAllocateMemory(device.getLogicalDevice(), &memoryAllocInfo, nullptr, &texImageMemory) != VK_SUCCESS) {
-      throw std::runtime_error("Failed to allocate image memory");
-  }
-
-  vkBindImageMemory(device.getLogicalDevice(), texImage, texImageMemory, 0);
+  texImage = AllocatedImage(device.getAllocator(), image, allocation);
 
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), texImage,
+                        device.getGraphicsCommandPool(), texImage.get(),
                         VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
   copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
-                  device.getGraphicsCommandPool(), imageStagingBuffer, texImage,
+                  device.getGraphicsCommandPool(), imageStagingBuffer.get(),
+                  texImage.get(),
                   width, height);
 
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), texImage,
+                        device.getGraphicsCommandPool(), texImage.get(),
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-  textureImages.push_back(texImage);
-  textureImageMemory.push_back(texImageMemory);
-
-  vkDestroyBuffer(device.getLogicalDevice(), imageStagingBuffer, nullptr);
-  vkFreeMemory(device.getLogicalDevice(), imageStagingBufferMemory, nullptr);
+  textureImages.push_back(std::move(texImage));
 
   return static_cast<int>(textureImages.size() - 1);
 }

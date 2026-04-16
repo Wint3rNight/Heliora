@@ -56,7 +56,7 @@ void VulkanSwapchain::recreate(const VulkanDevice &device,
   vkResetCommandPool(device.getLogicalDevice(),
                      device.getGraphicsCommandPool(), 0);
 
-  cleanupSwapChain(device.getLogicalDevice());
+  cleanupSwapChain(device.getLogicalDevice(), device.getAllocator());
   createSwapChain(device, window);
   createColorBufferImage(device);
   createDepthBufferImage(device);
@@ -65,7 +65,7 @@ void VulkanSwapchain::recreate(const VulkanDevice &device,
                        device.getGraphicsCommandPool());
 }
 
-void VulkanSwapchain::cleanup(VkDevice device) { cleanupSwapChain(device); }
+void VulkanSwapchain::cleanup(VkDevice device, VmaAllocator allocator) { cleanupSwapChain(device, allocator); }
 
 // --- Swapchain creation ---
 
@@ -196,45 +196,31 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
     swapChainImage.image = image;
 
     // create image view
-    swapChainImage.imageView = createImageView(
-        device.getLogicalDevice(), image, swapChainImageFormat,
-        VK_IMAGE_ASPECT_COLOR_BIT);
+    swapChainImage.imageView = ImageViewHandle(
+        device.getLogicalDevice(),
+        createImageView(device.getLogicalDevice(), image, swapChainImageFormat,
+                        VK_IMAGE_ASPECT_COLOR_BIT));
 
     // add swap chain image to list
-    swapChainImages.push_back(swapChainImage);
+    swapChainImages.push_back(std::move(swapChainImage));
   }
 }
 
 // --- Swapchain cleanup ---
 
-void VulkanSwapchain::cleanupSwapChain(VkDevice device) {
+void VulkanSwapchain::cleanupSwapChain(VkDevice device, VmaAllocator allocator) {
   for (auto framebuffer : swapChainFramebuffers) {
     vkDestroyFramebuffer(device, framebuffer, nullptr);
   }
   swapChainFramebuffers.clear();
 
-  for (auto image : swapChainImages) {
-    vkDestroyImageView(device, image.imageView, nullptr);
-  }
   swapChainImages.clear();
 
-  for (size_t i = 0; i < depthBufferImage.size(); i++) {
-    vkDestroyImageView(device, depthBufferImageView[i], nullptr);
-    vkDestroyImage(device, depthBufferImage[i], nullptr);
-    vkFreeMemory(device, depthBufferImageMemory[i], nullptr);
-  }
   depthBufferImage.clear();
   depthBufferImageView.clear();
-  depthBufferImageMemory.clear();
 
-  for (size_t i = 0; i < colorBufferImage.size(); i++) {
-    vkDestroyImageView(device, colorBufferImageView[i], nullptr);
-    vkDestroyImage(device, colorBufferImage[i], nullptr);
-    vkFreeMemory(device, colorBufferImageMemory[i], nullptr);
-  }
   colorBufferImage.clear();
   colorBufferImageView.clear();
-  colorBufferImageMemory.clear();
 
   if (swapchain != VK_NULL_HANDLE) {
     vkDestroySwapchainKHR(device, swapchain, nullptr);
@@ -247,7 +233,6 @@ void VulkanSwapchain::cleanupSwapChain(VkDevice device) {
 void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
   // resize supported format for color attachment
   colorBufferImage.resize(swapChainImages.size());
-  colorBufferImageMemory.resize(swapChainImages.size());
   colorBufferImageView.resize(swapChainImages.size());
 
   // get supported format for color attachment
@@ -258,17 +243,17 @@ void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
   for (size_t i = 0; i < swapChainImages.size(); i++) {
     // create the color buffer image and its memory
     colorBufferImage[i] = createImage(
-        device.getPhysicalDevice(), device.getLogicalDevice(),
+        device.getAllocator(),
         swapChainExtent.width, swapChainExtent.height, colorFormat,
         VK_IMAGE_TILING_OPTIMAL,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &colorBufferImageMemory[i]);
+            VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
 
     // create color buffer image view
-    colorBufferImageView[i] = createImageView(device.getLogicalDevice(),
-                                              colorBufferImage[i], colorFormat,
-                                              VK_IMAGE_ASPECT_COLOR_BIT);
+    colorBufferImageView[i] = ImageViewHandle(
+        device.getLogicalDevice(),
+        createImageView(device.getLogicalDevice(), colorBufferImage[i].get(),
+                        colorFormat, VK_IMAGE_ASPECT_COLOR_BIT));
   }
 }
 
@@ -276,7 +261,6 @@ void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
 
 void VulkanSwapchain::createDepthBufferImage(const VulkanDevice &device) {
   depthBufferImage.resize(swapChainImages.size());
-  depthBufferImageMemory.resize(swapChainImages.size());
   depthBufferImageView.resize(swapChainImages.size());
 
   // get supported depth format for depth buffer image
@@ -290,17 +274,17 @@ void VulkanSwapchain::createDepthBufferImage(const VulkanDevice &device) {
 
     // create depth buffer image and its memory
     depthBufferImage[i] = createImage(
-        device.getPhysicalDevice(), device.getLogicalDevice(),
+        device.getAllocator(),
         swapChainExtent.width, swapChainExtent.height, depthFormat,
         VK_IMAGE_TILING_OPTIMAL,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &depthBufferImageMemory[i]);
+            VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
 
     // create depth buffer image view
-    depthBufferImageView[i] =
-        createImageView(device.getLogicalDevice(), depthBufferImage[i],
-                        depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+    depthBufferImageView[i] = ImageViewHandle(
+        device.getLogicalDevice(),
+        createImageView(device.getLogicalDevice(), depthBufferImage[i].get(),
+                        depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT));
   }
 }
 
@@ -312,9 +296,9 @@ void VulkanSwapchain::createFramebuffers(VkDevice device,
       swapChainImages.size()); // resize fb list to no.of swapchain images
                                // create framebuffer for each swap chain image
   for (size_t i = 0; i < swapChainImages.size(); i++) {
-    std::array<VkImageView, 3> attachments = {swapChainImages[i].imageView,
-                                              colorBufferImageView[i],
-                                              depthBufferImageView[i]};
+    std::array<VkImageView, 3> attachments = {swapChainImages[i].imageView.get(),
+                                              colorBufferImageView[i].get(),
+                                              depthBufferImageView[i].get()};
 
     VkFramebufferCreateInfo framebufferCreateInfo = {};
     framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -452,13 +436,11 @@ VkFormat VulkanSwapchain::chooseSupportedFormat(
 
 // --- Image helpers ---
 
-VkImage VulkanSwapchain::createImage(VkPhysicalDevice physicalDevice,
-                                     VkDevice device, uint32_t width,
+AllocatedImage VulkanSwapchain::createImage(VmaAllocator allocator,
+                                     uint32_t width,
                                      uint32_t height, VkFormat format,
                                      VkImageTiling tiling,
-                                     VkImageUsageFlags useFlags,
-                                     VkMemoryPropertyFlags propFlags,
-                                     VkDeviceMemory *imageMemory) {
+                                     VkImageUsageFlags useFlags) {
   // CREATE IMAGE
   // image create info
   VkImageCreateInfo imageCreateInfo = {};
@@ -483,39 +465,20 @@ VkImage VulkanSwapchain::createImage(VkPhysicalDevice physicalDevice,
   imageCreateInfo.sharingMode =
       VK_SHARING_MODE_EXCLUSIVE; // how image will be shared between queues
 
+  VmaAllocationCreateInfo allocCreateInfo = {};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
   // create image
-  VkImage image;
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
   VkResult result =
-      vkCreateImage(device, &imageCreateInfo, nullptr, &image);
+      vmaCreateImage(allocator, &imageCreateInfo, &allocCreateInfo, &image,
+                     &allocation, nullptr);
   if (result != VK_SUCCESS) {
     throw std::runtime_error("Failed to create image");
   }
 
-  // CREATE MEMORY FOR IMAGE
-  // get memory requirements for the image
-  VkMemoryRequirements memoryRequirements;
-  vkGetImageMemoryRequirements(device, image, &memoryRequirements);
-  // allocate memory for image
-  VkMemoryAllocateInfo memoryAllocInfo = {};
-  memoryAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-  memoryAllocInfo.allocationSize =
-      memoryRequirements.size; // size of memory to allocate (from requirements)
-  memoryAllocInfo.memoryTypeIndex = findMemoryTypeIndex(
-      physicalDevice, memoryRequirements.memoryTypeBits,
-      propFlags); // type of memory to allocate, check
-                  // requirements against memory types of
-                  // device to find suitable memory type
-
-  result =
-      vkAllocateMemory(device, &memoryAllocInfo, nullptr, imageMemory);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate image memory");
-  }
-
-  // bind memory to image
-  vkBindImageMemory(device, image, *imageMemory, 0);
-
-  return image;
+  return AllocatedImage(allocator, image, allocation);
 }
 
 VkImageView VulkanSwapchain::createImageView(VkDevice device, VkImage image,

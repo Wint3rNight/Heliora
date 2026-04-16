@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <glm/glm.hpp>
+#include "Utilities.h"
 
 // Forward declarations
 class VulkanSwapchain;
@@ -17,9 +18,9 @@ public:
   DescriptorManager(const DescriptorManager &) = delete;
   DescriptorManager &operator=(const DescriptorManager &) = delete;
 
-  void init(VkDevice device, VkPhysicalDevice physicalDevice,
+  void init(VkDevice device, VmaAllocator allocator,
             size_t swapchainImageCount);
-  void cleanup(VkDevice device, size_t swapchainImageCount);
+  void cleanup(VkDevice device, VmaAllocator allocator, size_t swapchainImageCount);
 
   // --- Layout accessors ---
   VkDescriptorSetLayout getVPLayout() const { return descriptorSetLayout; }
@@ -41,7 +42,7 @@ public:
   }
 
   // --- Operations ---
-  void updateUniformBuffer(VkDevice device, size_t imageIndex,
+  void updateUniformBuffer(VmaAllocator allocator, size_t imageIndex,
                            const void *data, size_t size);
   int createTextureDescriptor(VkDevice device, VkImageView textureImageView,
                               VkSampler sampler);
@@ -66,13 +67,12 @@ private:
   std::vector<VkDescriptorSet> inputDescriptorSets;
 
   // --- Uniform buffers ---
-  std::vector<VkBuffer> vpUniformBuffers;
-  std::vector<VkDeviceMemory> vpUniformBufferMemory;
+  std::vector<AllocatedBuffer> vpUniformBuffers;
 
   // --- Creation functions ---
   void createDescriptorSetLayout(VkDevice device);
   void createPushConstantRange();
-  void createUniformBuffers(VkDevice device, VkPhysicalDevice physicalDevice,
+  void createUniformBuffers(VmaAllocator allocator,
                             size_t swapchainImageCount);
   void createDescriptorPool(VkDevice device, size_t swapchainImageCount);
   void createDescriptorSets(VkDevice device, size_t swapchainImageCount);

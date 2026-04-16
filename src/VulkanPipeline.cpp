@@ -3,6 +3,8 @@
 
 #include <array>
 #include <stdexcept>
+#include <fstream>
+#include <spdlog/spdlog.h>
 
 void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass renderPass,
                                      VkExtent2D extent,
@@ -23,6 +25,28 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass renderPass,
   vertShaderCreateInfo.module =
       vertShaderModule; // shader module containing code for shader stage
   vertShaderCreateInfo.pName = "main"; // entry point function
+
+  VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
+  pipelineCacheCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+  // Try to read existing cache from disk
+  std::vector<char> cacheData;
+  std::ifstream cacheFile("pipeline_cache.bin", std::ios::ate | std::ios::binary);
+  if (cacheFile.is_open()) {
+    size_t fileSize = (size_t)cacheFile.tellg();
+    cacheData.resize(fileSize);
+    cacheFile.seekg(0);
+    cacheFile.read(cacheData.data(), fileSize);
+    cacheFile.close();
+
+    pipelineCacheCreateInfo.initialDataSize = cacheData.size();
+    pipelineCacheCreateInfo.pInitialData = cacheData.data();
+    spdlog::info("Loaded pipeline cache from disk ({} bytes)", fileSize);
+  }
+
+  if (vkCreatePipelineCache(device, &pipelineCacheCreateInfo, nullptr, &pipelineCache) != VK_SUCCESS) {
+      spdlog::warn("Failed to create pipeline cache!");
+  }
 
   // fragment shader stage creation info
   VkPipelineShaderStageCreateInfo fragShaderCreateInfo = {};
@@ -200,7 +224,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass renderPass,
   pipelineCreateInfo.basePipelineIndex = -1;
 
   // create graphics pipeline
-  result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+  result = vkCreateGraphicsPipelines(device, pipelineCache, 1,
                                      &pipelineCreateInfo, nullptr,
                                      &graphicsPipeline);
   if (result != VK_SUCCESS) {
@@ -263,7 +287,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass renderPass,
   pipelineCreateInfo.subpass = 1;
 
   // create second pipeline
-  result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+  result = vkCreateGraphicsPipelines(device, pipelineCache, 1,
                                      &pipelineCreateInfo, nullptr,
                                      &secondPipeline);
   if (result != VK_SUCCESS) {
@@ -275,6 +299,25 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass renderPass,
 }
 
 void VulkanPipeline::cleanup(VkDevice device) {
+  // Write pipeline cache to disk
+  if (pipelineCache != VK_NULL_HANDLE) {
+    size_t dataSize = 0;
+    if (vkGetPipelineCacheData(device, pipelineCache, &dataSize, nullptr) == VK_SUCCESS && dataSize > 0) {
+      std::vector<char> cacheData(dataSize);
+      if (vkGetPipelineCacheData(device, pipelineCache, &dataSize, cacheData.data()) == VK_SUCCESS) {
+        std::ofstream cacheFile("pipeline_cache.bin", std::ios::binary);
+        if (cacheFile.is_open()) {
+          cacheFile.write(cacheData.data(), dataSize);
+          cacheFile.close();
+          spdlog::info("Saved pipeline cache to disk ({} bytes)", dataSize);
+        } else {
+          spdlog::warn("Failed to open pipeline_cache.bin to save pipeline cache");
+        }
+      }
+    }
+    vkDestroyPipelineCache(device, pipelineCache, nullptr);
+  }
+
   vkDestroyPipeline(device, secondPipeline, nullptr);
   vkDestroyPipelineLayout(device, secondPipelineLayout, nullptr);
   vkDestroyPipeline(device, graphicsPipeline, nullptr);

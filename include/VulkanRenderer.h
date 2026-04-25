@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "DescriptorManager.h"
+#include "PerformanceMetrics.h"
 #include "Model.h"
 #include "ModelManager.h"
 #include "SceneNode.h"
@@ -60,6 +61,7 @@ private:
   // --- Resource Managers ---
   TextureManager textureManager;
   ModelManager modelManager;
+  PerformanceMetrics metrics;
 
   // --- Synchronization ---
   std::vector<VkSemaphore> imageAvailable;

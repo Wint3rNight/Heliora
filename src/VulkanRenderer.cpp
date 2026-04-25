@@ -1,6 +1,7 @@
 #include "VulkanRenderer.h"
 #include "Model.h"
 #include "Utilities.h"
+#include <spdlog/spdlog.h>
 
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
@@ -63,6 +64,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 9. Synchronization
     createSynchronization();
 
+    // 10. Performance Metrics
+    QueueFamilyIndices queueIndices = device.getQueueFamilies();
+    metrics.init(device.getLogicalDevice(), device.getPhysicalDevice(),
+                 static_cast<uint32_t>(queueIndices.graphicsFamily));
+
     // 10. Projection matrix
     uboViewProjection.projection = glm::perspective(
         glm::radians(45.0f),
@@ -79,11 +85,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         -1; // invert the y coordinate of the clip coordinates, because
             // vulkan has a different coordinate system than opengl
 
-    // 11. Default no-texture texture
+    // 12. Default no-texture texture
     textureManager.loadTexture("plain.png", device, descriptorManager);
 
   } catch (const std::runtime_error &e) {
-    printf("%s\n", e.what());
+    spdlog::critical("Renderer initialization failed: {}", e.what());
     return EXIT_FAILURE;
   }
   return 0;
@@ -108,6 +114,8 @@ void VulkanRenderer::draw() {
   // wait for the fence to signal that command buffer has finished executing
   vkWaitForFences(logicalDevice, 1, &drawFences[currentFrame], VK_TRUE,
                   std::numeric_limits<uint64_t>::max());
+
+  metrics.beginFrame();
 
   // acquire an image from the swap chain and signal when it is available
   uint32_t imageIndex;
@@ -180,6 +188,8 @@ void VulkanRenderer::draw() {
     throw std::runtime_error("Failed to present swap chain image");
   }
   currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
+
+  metrics.endFrame(logicalDevice);
 }
 
 void VulkanRenderer::recreateSwapChain() {
@@ -194,6 +204,9 @@ void VulkanRenderer::recreateSwapChain() {
 
 void VulkanRenderer::cleanup() {
   vkDeviceWaitIdle(device.getLogicalDevice());
+
+  // Print benchmark report before destroying anything
+  metrics.printReport(device.getAllocator());
 
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
@@ -212,6 +225,7 @@ void VulkanRenderer::cleanup() {
 
   pipeline.cleanup(device.getLogicalDevice());
   renderPassManager.cleanup(device.getLogicalDevice());
+  metrics.cleanup(device.getLogicalDevice());
   device.cleanup();
 }
 
@@ -247,8 +261,14 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     throw std::runtime_error("Failed to begin recording command buffer");
   }
 
+  // GPU timing: reset query pool (must be outside render pass)
+  metrics.resetGpuQueries(cmdBuffer);
+
   vkCmdBeginRenderPass(cmdBuffer, &renderPassBeginInfo,
                        VK_SUBPASS_CONTENTS_INLINE);
+
+  // GPU timing: start
+  metrics.beginGpuTimestamp(cmdBuffer);
 
   // bind the graphics pipeline so that it will be used for rendering
   vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -283,6 +303,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
               descriptorSetGroup.data(), 0, nullptr);
 
           vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(), 1, 0, 0, 0);
+          metrics.recordDrawCall(mesh->getIndexCount());
         }
       }
     }
@@ -305,6 +326,9 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                           nullptr);
 
   vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
+
+  // GPU timing: end
+  metrics.endGpuTimestamp(cmdBuffer);
 
   vkCmdEndRenderPass(cmdBuffer);
 

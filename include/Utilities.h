@@ -149,6 +149,10 @@ private:
 
 const int MAX_FRAMES_DRAWS = 3;
 const int MAX_OBJECTS = 40;
+const int MAX_POINT_LIGHTS = 4;
+const int MAX_SPOT_LIGHTS = 2;
+const uint32_t SHADOW_MAP_SIZE = 2048;
+const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
 
 const std::vector<const char *> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -158,6 +162,53 @@ struct Vertex {
   glm::vec3 pos; // position attribute for the vertex
   glm::vec3 col; // color attribute for the vertex
   glm::vec2 tex; // texture coordinate attribute
+  glm::vec3 normal;
+  glm::vec3 tangent;
+  glm::vec3 bitangent;
+};
+
+struct DirectionalLight {
+  alignas(16) glm::vec4 direction;
+  alignas(16) glm::vec4 colorIntensity;
+};
+
+struct PointLight {
+  alignas(16) glm::vec4 position;
+  alignas(16) glm::vec4 colorIntensity;
+};
+
+struct SpotLight {
+  alignas(16) glm::vec4 position;
+  alignas(16) glm::vec4 direction;
+  alignas(16) glm::vec4 colorIntensity;
+  alignas(16) glm::vec4 cutoffAngles;
+};
+
+struct SceneUniformBuffer {
+  alignas(16) glm::mat4 projection;
+  alignas(16) glm::mat4 view;
+  alignas(16) glm::mat4 lightSpaceMatrix;
+  alignas(16) glm::mat4 pointShadowMatrices[6];
+  alignas(16) glm::vec4 cameraPosition;
+  alignas(16) DirectionalLight directionalLight;
+  alignas(16) PointLight pointLights[MAX_POINT_LIGHTS];
+  alignas(16) SpotLight spotLights[MAX_SPOT_LIGHTS];
+  alignas(16) glm::ivec4 lightCounts;
+  alignas(16) glm::vec4 shadowParams;
+  alignas(16) glm::mat4 invProj;
+  alignas(16) glm::mat4 invView;
+};
+
+const int IBL_PREFILTER_MIPS = 5;
+
+struct ModelPushConstants {
+  alignas(16) glm::mat4 model;
+  alignas(16) glm::mat4 normal;
+};
+
+struct ShadowPushConstants {
+  alignas(16) glm::mat4 model;
+  alignas(16) glm::mat4 lightSpaceMatrix;
 };
 
 // Keep only the general utility structures here
@@ -323,7 +374,8 @@ static void copyBuffer(VkDevice device, VkQueue transferQueue,
 static void copyImageBuffer(VkDevice device, VkQueue transferQueue,
                             VkCommandPool transferCommandPool,
                             VkBuffer srcBuffer, VkImage dstImage,
-                            uint32_t width, uint32_t height) {
+                            uint32_t width, uint32_t height,
+                            uint32_t layerCount = 1) {
   // create command buffer
   VkCommandBuffer transferCommandBuffer =
       beginCommandBuffer(device, transferCommandPool);
@@ -340,7 +392,8 @@ static void copyImageBuffer(VkDevice device, VkQueue transferQueue,
   imageRegion.imageSubresource.mipLevel = 0; // mip level to copy to
   imageRegion.imageSubresource.baseArrayLayer =
       0; // starting array layer to copy to
-  imageRegion.imageSubresource.layerCount = 1; // number of array layers to copy
+  imageRegion.imageSubresource.layerCount =
+      layerCount; // number of array layers to copy
   imageRegion.imageOffset = {0, 0, 0}; // offset into image to start copying to
   imageRegion.imageExtent = {width, height, 1}; // size of region to copy
 
@@ -355,7 +408,8 @@ static void copyImageBuffer(VkDevice device, VkQueue transferQueue,
 static void transitionImageLayout(VkDevice device, VkQueue queue,
                                   VkCommandPool commandPool, VkImage image,
                                   VkImageLayout oldLayout,
-                                  VkImageLayout newLayout) {
+                                  VkImageLayout newLayout,
+                                  uint32_t layerCount = 1) {
 
   VkCommandBuffer commandBuffer = beginCommandBuffer(device, commandPool);
 
@@ -377,7 +431,7 @@ static void transitionImageLayout(VkDevice device, VkQueue queue,
   imageMemoryBarrier.subresourceRange.baseArrayLayer =
       0; // first array layer to transition
   imageMemoryBarrier.subresourceRange.layerCount =
-      1; // number of array layers to transition
+      layerCount; // number of array layers to transition
 
   VkPipelineStageFlags
       srcStage; // pipeline stage to wait for before starting the transition

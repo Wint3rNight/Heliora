@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
+#include "Material.h"
 #include "Utilities.h"
 
 class VulkanDevice;
@@ -14,31 +15,77 @@ public:
   TextureManager() = default;
   ~TextureManager() = default;
 
-  // Non-copyable
   TextureManager(const TextureManager &) = delete;
   TextureManager &operator=(const TextureManager &) = delete;
 
   void init(const VulkanDevice &device);
   void cleanup(VkDevice logicalDevice, VmaAllocator allocator);
 
-  // Loads a texture or retrieves it if already loaded. Returns descriptor set index.
   int loadTexture(const std::string &filename, const VulkanDevice &device,
                   DescriptorManager &descriptorManager);
 
+  Material loadMaterial(const std::string &albedoFilename,
+                        const std::string &normalFilename,
+                        const std::string &metallicFilename,
+                        const std::string &roughnessFilename,
+                        const std::string &aoFilename,
+                        const VulkanDevice &device,
+                        DescriptorManager &descriptorManager);
+
+  int loadSkybox(const std::string &filename, const VulkanDevice &device,
+                 DescriptorManager &descriptorManager);
+
+  void setModelDirectory(const std::string &dir) { modelBaseDirectory = dir; }
+
+  // IBL: generates irradiance + prefiltered env maps from the loaded skybox cubemap.
+  // Must be called after loadSkybox(). Returns the raw image index in textureImages[].
+  int createIrradianceMap(int skyboxImageIndex, const VulkanDevice &device);
+  int createPrefilteredEnvMap(int skyboxImageIndex, const VulkanDevice &device);
+  int loadBrdfLut(const VulkanDevice &device);
+  int createSsaoNoiseTexture(const VulkanDevice &device);
+
+  VkImageView getImageView(int index) const { return textureImageViews[index].get(); }
+  VkSampler   getTextureSampler() const { return textureSampler; }
+  VkSampler   getSkyboxSampler()  const { return skyboxSampler; }
+
 private:
   VkSampler textureSampler = VK_NULL_HANDLE;
+  VkSampler skyboxSampler  = VK_NULL_HANDLE;
 
-  // Caches for textures we own
-  std::vector<AllocatedImage> textureImages;
+  std::vector<AllocatedImage>  textureImages;
   std::vector<ImageViewHandle> textureImageViews;
 
-  // Map to deduplicate textures (filename -> descriptor location ID)
   std::unordered_map<std::string, int> textureMap;
+  std::unordered_map<std::string, int> materialMap;
+  std::unordered_map<std::string, int> skyboxMap;
 
-  // --- Helpers ---
-  void createTextureSampler(VkDevice logicalDevice,
-                            VkPhysicalDevice physicalDevice);
-  int createTextureImage(const std::string &filename, const VulkanDevice &device);
+  void createTextureSampler(VkDevice logicalDevice, VkPhysicalDevice physicalDevice);
+  void createSkyboxSampler(VkDevice logicalDevice, VkPhysicalDevice physicalDevice);
+
+  int  getOrCreateTexture(const std::string &filename, const VulkanDevice &device);
+  int  getOrCreateFlatTexture(const std::string &cacheKey, uint8_t r, uint8_t g, uint8_t b, uint8_t a, const VulkanDevice &device);
+  int  createTextureImage(const std::string &filename, const VulkanDevice &device);
+  int  createTextureImageFromPixels(const std::string &cacheKey,
+                                    const unsigned char *pixels, int width,
+                                    int height, const VulkanDevice &device);
   unsigned char *loadTextureFile(const std::string &filename, int *width,
                                  int *height, VkDeviceSize *imageSize);
+  std::string resolveTexturePath(const std::string &filename) const;
+  std::string normalizeTextureKey(const std::string &filename) const;
+  int createHdrCubemap(const std::string &filename, const VulkanDevice &device,
+                       uint32_t faceSize);
+
+  std::string modelBaseDirectory;  // set before loading each model's materials
+
+  // GPU compute IBL precomputation
+  VkPipeline            irradiancePipeline = VK_NULL_HANDLE;
+  VkPipeline            prefilterPipeline  = VK_NULL_HANDLE;
+  VkPipelineLayout      computeLayout      = VK_NULL_HANDLE;
+  VkDescriptorSetLayout computeSetLayout   = VK_NULL_HANDLE;
+  VkDescriptorPool      computePool        = VK_NULL_HANDLE;
+
+  void createComputePipelines(const VulkanDevice &device);
+  void destroyComputePipelines(VkDevice device);
+  int  dispatchIrradianceCompute(int srcImageIndex, const VulkanDevice &device);
+  int  dispatchPrefilterCompute(int srcImageIndex, const VulkanDevice &device);
 };

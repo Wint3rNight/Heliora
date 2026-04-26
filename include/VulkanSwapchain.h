@@ -2,9 +2,7 @@
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-
 #include <vector>
-
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
@@ -13,38 +11,23 @@ public:
   VulkanSwapchain() = default;
   ~VulkanSwapchain() = default;
 
-  // Non-copyable
   VulkanSwapchain(const VulkanSwapchain &) = delete;
   VulkanSwapchain &operator=(const VulkanSwapchain &) = delete;
 
-  void init(const VulkanDevice &device, VkRenderPass renderPass,
-            GLFWwindow *window);
-  void recreate(const VulkanDevice &device, VkRenderPass renderPass,
-                GLFWwindow *window);
+  // compositionRenderPass must have swapchain as attachment 0, colorBuffer as attachment 1.
+  void init(const VulkanDevice &device, VkRenderPass compositionRenderPass, GLFWwindow *window);
+  void recreate(const VulkanDevice &device, VkRenderPass compositionRenderPass, GLFWwindow *window);
   void cleanup(VkDevice device, VmaAllocator allocator);
 
-  // --- Accessors ---
-  VkSwapchainKHR getSwapchain() const { return swapchain; }
-  VkFormat getImageFormat() const { return swapChainImageFormat; }
-  VkExtent2D getExtent() const { return swapChainExtent; }
-  const std::vector<SwapChainImage> &getImages() const {
-    return swapChainImages;
-  }
-  size_t getImageCount() const { return swapChainImages.size(); }
-  VkFramebuffer getFramebuffer(size_t index) const {
-    return swapChainFramebuffers[index];
-  }
-  VkCommandBuffer getCommandBuffer(size_t index) const {
-    return commandBuffers[index];
-  }
-  VkImageView getColorBufferView(size_t index) const {
-    return colorBufferImageView[index].get();
-  }
-  VkImageView getDepthBufferView(size_t index) const {
-    return depthBufferImageView[index].get();
-  }
+  VkSwapchainKHR                      getSwapchain()   const { return swapchain; }
+  VkFormat                            getImageFormat() const { return swapChainImageFormat; }
+  VkExtent2D                          getExtent()      const { return swapChainExtent; }
+  const std::vector<SwapChainImage>  &getImages()      const { return swapChainImages; }
+  size_t                              getImageCount()  const { return swapChainImages.size(); }
+  VkFramebuffer                       getFramebuffer(size_t i) const { return swapChainFramebuffers[i]; }
+  VkCommandBuffer                     getCommandBuffer(size_t i) const { return commandBuffers[i]; }
+  VkImageView                         getColorBufferView(size_t i) const { return colorBufferImageView[i].get(); }
 
-  // --- Format queries (no Vulkan objects created) ---
   VkFormat queryImageFormat(const VulkanDevice &device) const;
   VkFormat chooseSupportedFormat(VkPhysicalDevice physicalDevice,
                                  const std::vector<VkFormat> &formats,
@@ -52,41 +35,30 @@ public:
                                  VkFormatFeatureFlags featureFlags);
 
 private:
-  VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-  VkFormat swapChainImageFormat = VK_FORMAT_UNDEFINED;
-  VkExtent2D swapChainExtent = {};
+  VkSwapchainKHR swapchain            = VK_NULL_HANDLE;
+  VkFormat       swapChainImageFormat = VK_FORMAT_UNDEFINED;
+  VkExtent2D     swapChainExtent      = {};
 
-  std::vector<SwapChainImage> swapChainImages;
-  std::vector<VkFramebuffer> swapChainFramebuffers;
-  std::vector<VkCommandBuffer> commandBuffers;
+  std::vector<SwapChainImage>    swapChainImages;
+  std::vector<VkFramebuffer>     swapChainFramebuffers;
+  std::vector<VkCommandBuffer>   commandBuffers;
 
-  std::vector<AllocatedImage> colorBufferImage;
+  // HDR intermediate attachment (written by deferred pass, read as input attachment in tone-mapping subpass).
+  std::vector<AllocatedImage>  colorBufferImage;
   std::vector<ImageViewHandle> colorBufferImageView;
 
-  std::vector<AllocatedImage> depthBufferImage;
-  std::vector<ImageViewHandle> depthBufferImageView;
-
-  // --- Creation functions ---
   void createSwapChain(const VulkanDevice &device, GLFWwindow *window);
   void createColorBufferImage(const VulkanDevice &device);
-  void createDepthBufferImage(const VulkanDevice &device);
   void createFramebuffers(VkDevice device, VkRenderPass renderPass);
   void createCommandBuffers(VkDevice device, VkCommandPool commandPool);
   void cleanupSwapChain(VkDevice device, VmaAllocator allocator);
 
-  // --- Support functions ---
-  VkSurfaceFormatKHR
-  chooseBestSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &formats);
-  VkPresentModeKHR chooseBestPresentationMode(
-      const std::vector<VkPresentModeKHR> &presentationModes);
-  VkExtent2D
-  chooseSwapExtent(const VkSurfaceCapabilitiesKHR &surfaceCapabilities,
-                   GLFWwindow *window);
+  VkSurfaceFormatKHR chooseBestSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &formats);
+  VkPresentModeKHR   chooseBestPresentationMode(const std::vector<VkPresentModeKHR> &modes);
+  VkExtent2D         chooseSwapExtent(const VkSurfaceCapabilitiesKHR &caps, GLFWwindow *window);
 
-  // --- Image helpers ---
-  AllocatedImage createImage(VmaAllocator allocator,
-                             uint32_t width, uint32_t height, VkFormat format,
-                             VkImageTiling tiling, VkImageUsageFlags useFlags);
-  VkImageView createImageView(VkDevice device, VkImage image, VkFormat format,
-                              VkImageAspectFlags aspectFlags);
+  AllocatedImage createImage(VmaAllocator allocator, uint32_t width, uint32_t height,
+                             VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage);
+  VkImageView    createImageView(VkDevice device, VkImage image, VkFormat format,
+                                 VkImageAspectFlags aspectFlags);
 };

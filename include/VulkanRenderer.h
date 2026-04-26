@@ -29,53 +29,81 @@ public:
   void draw();
   int createMeshModel(const std::string &modelFile);
   SceneNode &getRootNode();
-  void updateCameraView(const glm::mat4 &viewMatrix);
+  void updateCameraView(const glm::mat4 &viewMatrix, const glm::vec3 &cameraPosition);
   void cleanup();
-
-  // Called by main loop when framebuffer was resized
   void notifyResize();
 
   ~VulkanRenderer();
 
 private:
   GLFWwindow *window = nullptr;
+  int currentFrame   = 0;
 
-  int currentFrame = 0;
+  SceneNode           rootNode;
+  SceneUniformBuffer  sceneUbo = {};
+  VkFormat            shadowDepthFormat = VK_FORMAT_UNDEFINED;
 
-  // scene objects
-  SceneNode rootNode;
+  // --- Directional shadow ---
+  AllocatedImage  shadowDepthImage;
+  ImageViewHandle shadowDepthImageView;
+  VkFramebuffer   shadowFramebuffer = VK_NULL_HANDLE;
+  VkSampler       shadowSampler     = VK_NULL_HANDLE;
 
-  // scene settings
-  struct UboViewProjection {
-    glm::mat4 projection;
-    glm::mat4 view;
-  } uboViewProjection;
+  // --- Omnidirectional point shadow ---
+  AllocatedImage             pointShadowDepthImage;
+  ImageViewHandle            pointShadowCubeView;
+  std::vector<ImageViewHandle> pointShadowFaceViews;
+  std::vector<VkFramebuffer>   pointShadowFramebuffers;
+  std::vector<glm::mat4>       pointShadowMatrices;
+
+  // --- G-buffer (per swapchain image) ---
+  VkFormat gBufferDepthFormat = VK_FORMAT_UNDEFINED;
+  std::vector<AllocatedImage>  gBuffer0Images,  gBuffer1Images,  gBuffer2Images,  gBufferDepthImages;
+  std::vector<ImageViewHandle> gBuffer0Views,   gBuffer1Views,   gBuffer2Views,   gBufferDepthViews;
+  std::vector<VkFramebuffer>   gBufferFramebuffers;
+  std::vector<VkFramebuffer>   deferredFramebuffers; // colorBuffer-only, for deferred subpass 0
+
+  // --- IBL resources ---
+  int iblSkyboxImageIndex     = -1; // index into TextureManager::textureImages
+  int irradianceImageIndex    = -1;
+  int prefilteredEnvImageIndex = -1;
+  int brdfLutImageIndex       = -1;
+  int ssaoNoiseImageIndex     = -1;
+  VkSampler iblSampler       = VK_NULL_HANDLE;
+  VkSampler ssaoNoiseSampler = VK_NULL_HANDLE;
 
   // --- Subsystems ---
-  VulkanDevice device;
-  VulkanSwapchain swapchain;
+  VulkanDevice      device;
+  VulkanSwapchain   swapchain;
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;
-  VulkanPipeline pipeline;
-
-  // --- Resource Managers ---
-  TextureManager textureManager;
-  ModelManager modelManager;
+  VulkanPipeline    pipeline;
+  TextureManager    textureManager;
+  ModelManager      modelManager;
   PerformanceMetrics metrics;
 
   // --- Synchronization ---
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
-  std::vector<VkFence> drawFences;
-  std::vector<VkFence> imagesInFlight;
-
+  std::vector<VkFence>     drawFences;
+  std::vector<VkFence>     imagesInFlight;
   bool framebufferResized = false;
 
-  // --- Initialization helpers ---
+  // --- Init helpers ---
   void createSynchronization();
+  void createShadowResources();
+  void cleanupShadowResources();
+  void createGBuffer();
+  void cleanupGBuffer();
+  void initIBL();
+  void cleanupIBL();
+
+  void updateLightSpaceMatrix();
+  void updatePointShadowMatrices();
 
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);
+  void recordShadowPass(VkCommandBuffer cmdBuffer);
+  void recordPointShadowPass(VkCommandBuffer cmdBuffer);
   void recreateSwapChain();
-
 };

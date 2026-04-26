@@ -13,8 +13,8 @@ GLFWwindow *window;
 VulkanRenderer vulkanRenderer;
 InputManager inputManager;
 
-// Camera settings
-Camera camera(glm::vec3(10.0f, 0.0f, 20.0f));
+// Camera settings — positioned inside Sponza hall, looking along the length
+Camera camera(glm::vec3(0.0f, 2.0f, 0.0f));
 
 // Timing
 float deltaTime = 0.0f;
@@ -58,14 +58,18 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  float angle = 0.0f;
+  int sponzaId = vulkanRenderer.createMeshModel(
+      "Resources/Models/Sponza/glTF/Sponza.gltf");
+  auto sponzaNode = std::make_unique<SceneNode>();
+  sponzaNode->setModelId(sponzaId);
+  vulkanRenderer.getRootNode().addChild(std::move(sponzaNode));
 
-  int plantModelId = vulkanRenderer.createMeshModel("Models/indoor plant_02.obj");
-
-  auto plantNode = std::make_unique<SceneNode>();
-  plantNode->setModelId(plantModelId);
-  SceneNode* plantNodePtr = plantNode.get(); // keep raw pointer for animation
-  vulkanRenderer.getRootNode().addChild(std::move(plantNode));
+  int helmetId = vulkanRenderer.createMeshModel(
+      "Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf");
+  auto helmetNode = std::make_unique<SceneNode>();
+  helmetNode->setModelId(helmetId);
+  helmetNode->setLocalTransform(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.5f, 0.0f)));
+  vulkanRenderer.getRootNode().addChild(std::move(helmetNode));
 
   // Initialize global transforms
   vulkanRenderer.getRootNode().update(glm::mat4(1.0f));
@@ -90,20 +94,9 @@ int main() {
       inputManager.resetResizedFlag();
     }
 
-    angle += 10.0f * deltaTime;
-    if (angle > 360.0f) {
-      angle -= 360.0f;
-    }
-
-    glm::mat4 testMat = glm::rotate(glm::mat4(1.0f), glm::radians(angle),
-                                    glm::vec3(0.0f, 1.0f, 0.0f));
-    testMat =
-        glm::rotate(testMat, glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-        
-    plantNodePtr->setLocalTransform(testMat);
     vulkanRenderer.getRootNode().update(glm::mat4(1.0f));
     
-    vulkanRenderer.updateCameraView(camera.GetViewMatrix());
+    vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
 
     vulkanRenderer.draw();
   }

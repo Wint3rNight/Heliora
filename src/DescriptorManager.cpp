@@ -2,17 +2,14 @@
 #include "Utilities.h"
 #include "VulkanSwapchain.h"
 
+#include <array>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
 
-// --- UBO struct (matches shader layout) ---
-struct UboViewProjection {
-  glm::mat4 projection;
-  glm::mat4 view;
-};
-
-// --- Public interface ---
+// ---------------------------------------------------------------------------
+// Public interface
+// ---------------------------------------------------------------------------
 
 void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
                              size_t swapchainImageCount) {
@@ -23,443 +20,397 @@ void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
   createDescriptorSets(device, swapchainImageCount);
 }
 
-void DescriptorManager::cleanup(VkDevice device, VmaAllocator allocator, size_t swapchainImageCount) {
-  // Destroy input descriptor pool and layout
-  vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
-  vkDestroyDescriptorSetLayout(device, inputSetLayout, nullptr);
-
-  // Destroy sampler descriptor pool and layout
+void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
+                                size_t /*swapchainImageCount*/) {
+  vkDestroyDescriptorPool(device, inputDescriptorPool,   nullptr);
+  vkDestroyDescriptorPool(device, gBufferDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
-  vkDestroyDescriptorSetLayout(device, samplerSetLayout, nullptr);
+  vkDestroyDescriptorPool(device, descriptorPool,        nullptr);
 
-  // Destroy uniform descriptor pool and layout
-  vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+  vkDestroyDescriptorSetLayout(device, inputSetLayout,     nullptr);
+  vkDestroyDescriptorSetLayout(device, gBufferSetLayout,   nullptr);
+  vkDestroyDescriptorSetLayout(device, samplerSetLayout,   nullptr);
   vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
   vpUniformBuffers.clear();
 }
 
-void DescriptorManager::updateUniformBuffer(VmaAllocator allocator, size_t imageIndex,
+void DescriptorManager::updateUniformBuffer(VmaAllocator allocator, size_t idx,
                                             const void *data, size_t size) {
   void *mapped;
-  vmaMapMemory(allocator, vpUniformBuffers[imageIndex].getAllocation(), &mapped);
+  vmaMapMemory(allocator, vpUniformBuffers[idx].getAllocation(), &mapped);
   memcpy(mapped, data, size);
-  vmaUnmapMemory(allocator, vpUniformBuffers[imageIndex].getAllocation());
+  vmaUnmapMemory(allocator, vpUniformBuffers[idx].getAllocation());
 }
 
 int DescriptorManager::createTextureDescriptor(VkDevice device,
-                                               VkImageView textureImageView,
+                                               VkImageView albedo,
+                                               VkImageView normal,
+                                               VkImageView metallic,
+                                               VkImageView roughness,
+                                               VkImageView ao,
                                                VkSampler sampler) {
-  VkDescriptorSet descriptorSet;
-  // allocate descriptor set for texture
-  VkDescriptorSetAllocateInfo setAllocInfo = {};
-  setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  setAllocInfo.descriptorPool =
-      samplerDescriptorPool;           // descriptor pool to allocate from
-  setAllocInfo.descriptorSetCount = 1; // number of descriptor sets to allocate
-  setAllocInfo.pSetLayouts =
-      &samplerSetLayout; // layout to use for allocated descriptor set
+  VkDescriptorSet set;
+  VkDescriptorSetAllocateInfo allocInfo = {};
+  allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool     = samplerDescriptorPool;
+  allocInfo.descriptorSetCount = 1;
+  allocInfo.pSetLayouts        = &samplerSetLayout;
+  if (vkAllocateDescriptorSets(device, &allocInfo, &set) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate PBR material descriptor set");
 
-  // allocate descriptor set
-  VkResult result =
-      vkAllocateDescriptorSets(device, &setAllocInfo, &descriptorSet);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate descriptor set for texture");
+  VkDescriptorImageInfo imgs[5] = {};
+  VkImageView views[5] = { albedo, normal, metallic, roughness, ao };
+  for (int i = 0; i < 5; ++i) {
+    imgs[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imgs[i].imageView   = views[i];
+    imgs[i].sampler     = sampler;
   }
 
-  // texture image info
-  VkDescriptorImageInfo imageInfo = {};
-  imageInfo.imageLayout =
-      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // layout of image during shader
-                                                 // access
-  imageInfo.imageView = textureImageView; // image view to write to descriptor
-  imageInfo.sampler = sampler;           // sampler to write to descriptor
+  VkWriteDescriptorSet writes[5] = {};
+  for (int i = 0; i < 5; ++i) {
+    writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet          = set;
+    writes[i].dstBinding      = static_cast<uint32_t>(i);
+    writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[i].descriptorCount = 1;
+    writes[i].pImageInfo      = &imgs[i];
+  }
+  vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 
-  // descriptor write info
-  VkWriteDescriptorSet descriptorWrite = {};
-  descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  descriptorWrite.dstSet = descriptorSet; // descriptor set to update
-  descriptorWrite.dstBinding = 0;         // binding of the descriptor to update
-  descriptorWrite.dstArrayElement = 0;    // first index in array to update
-  descriptorWrite.descriptorType =
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // type of descriptor
-  descriptorWrite.descriptorCount = 1;     // number of descriptors to update
-  descriptorWrite.pImageInfo = &imageInfo; // image info to write to descriptor
-
-  // update descriptor set with texture image info
-  vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-
-  // add descriptor set to vector for reference
-  samplerDescriptorSets.push_back(descriptorSet);
-  // return descriptor set index for reference
+  samplerDescriptorSets.push_back(set);
   return static_cast<int>(samplerDescriptorSets.size() - 1);
 }
 
-void DescriptorManager::recreateInputSets(VkDevice device,
-                                          const VulkanSwapchain &swapchain) {
+void DescriptorManager::updateShadowMapDescriptor(VkDevice device,
+                                                   VkImageView shadowView,
+                                                   VkImageView pointShadowView,
+                                                   VkSampler sampler) {
+  VkDescriptorImageInfo shadowInfo = {};
+  shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  shadowInfo.imageView   = shadowView;
+  shadowInfo.sampler     = sampler;
+
+  VkDescriptorImageInfo pointInfo = shadowInfo;
+  pointInfo.imageView = pointShadowView;
+
+  std::vector<VkWriteDescriptorSet> writes;
+  writes.reserve(descriptorSets.size() * 2);
+  for (VkDescriptorSet s : descriptorSets) {
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = s;
+    w.dstBinding      = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.descriptorCount = 1;
+    w.pImageInfo      = &shadowInfo;
+    writes.push_back(w);
+
+    w.dstBinding = 2;
+    w.pImageInfo = &pointInfo;
+    writes.push_back(w);
+  }
+  vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void DescriptorManager::updateIblDescriptors(VkDevice device,
+                                              VkImageView irradianceView,
+                                              VkSampler iblSampler,
+                                              VkImageView prefilteredView,
+                                              VkImageView brdfLutView,
+                                              VkImageView ssaoNoiseView,
+                                              VkSampler noiseSampler,
+                                              VkImageView skyboxView) {
+  // Bindings 3-7 in every VP descriptor set
+  VkDescriptorImageInfo irrInfo  = { iblSampler,   irradianceView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+  VkDescriptorImageInfo prefInfo = { iblSampler,   prefilteredView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+  VkDescriptorImageInfo brdfInfo = { iblSampler,   brdfLutView,     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+  VkDescriptorImageInfo noiseInfo = { noiseSampler, ssaoNoiseView,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+  VkDescriptorImageInfo skyboxInfo = { iblSampler,  skyboxView,      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+  std::vector<VkWriteDescriptorSet> writes;
+  writes.reserve(descriptorSets.size() * 5);
+  for (VkDescriptorSet s : descriptorSets) {
+    VkDescriptorImageInfo *infos[5] = { &irrInfo, &prefInfo, &brdfInfo, &noiseInfo, &skyboxInfo };
+    for (int b = 0; b < 5; ++b) {
+      VkWriteDescriptorSet w = {};
+      w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w.dstSet          = s;
+      w.dstBinding      = static_cast<uint32_t>(3 + b);
+      w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      w.descriptorCount = 1;
+      w.pImageInfo      = infos[b];
+      writes.push_back(w);
+    }
+  }
+  vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void DescriptorManager::recreateGBufferSets(VkDevice device,
+                                             const std::vector<VkImageView> &gb0,
+                                             const std::vector<VkImageView> &gb1,
+                                             const std::vector<VkImageView> &gb2,
+                                             const std::vector<VkImageView> &gbDepth,
+                                             VkSampler sampler) {
+  vkResetDescriptorPool(device, gBufferDescriptorPool, 0);
+
+  size_t count = gb0.size();
+  gBufferDescriptorSets.resize(count);
+  std::vector<VkDescriptorSetLayout> layouts(count, gBufferSetLayout);
+
+  VkDescriptorSetAllocateInfo allocInfo = {};
+  allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool     = gBufferDescriptorPool;
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(count);
+  allocInfo.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(device, &allocInfo, gBufferDescriptorSets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate G-buffer descriptor sets");
+
+  for (size_t i = 0; i < count; ++i) {
+    VkDescriptorImageInfo imgs[4] = {
+      { sampler, gb0[i],    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+      { sampler, gb1[i],    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+      { sampler, gb2[i],    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+      { sampler, gbDepth[i],VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+    };
+    VkWriteDescriptorSet writes[4] = {};
+    for (int b = 0; b < 4; ++b) {
+      writes[b].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[b].dstSet          = gBufferDescriptorSets[i];
+      writes[b].dstBinding      = static_cast<uint32_t>(b);
+      writes[b].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[b].descriptorCount = 1;
+      writes[b].pImageInfo      = &imgs[b];
+    }
+    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+  }
+}
+
+void DescriptorManager::recreateInputSets(VkDevice device, const VulkanSwapchain &swapchain) {
   vkResetDescriptorPool(device, inputDescriptorPool, 0);
   createInputDescriptorSets(device, swapchain);
 }
 
-// --- Descriptor set layout creation ---
+// ---------------------------------------------------------------------------
+// Layout creation
+// ---------------------------------------------------------------------------
 
 void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
-  // UNIFORM VALUES DESCRIPTOR SET LAYOUT
+  // --- VP / scene layout (set 0): 8 bindings ---
+  VkDescriptorSetLayoutBinding bindings[8] = {};
 
-  // mvp binding info
-  VkDescriptorSetLayoutBinding vpLayoutBinding = {};
-  vpLayoutBinding.binding = 0; // binding number referenced in the shader
-  vpLayoutBinding.descriptorType =
-      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // type of resource (uniform buffer)
-  vpLayoutBinding.descriptorCount =
-      1; // number of resources for binding, can be more than 1 for arrays
-  vpLayoutBinding.stageFlags =
-      VK_SHADER_STAGE_VERTEX_BIT; // shader stage to bind the resources to
-  vpLayoutBinding.pImmutableSamplers =
-      nullptr; // used for image sampling, not used for uniform buffers
+  // 0: SceneUBO
+  bindings[0].binding         = 0;
+  bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  bindings[0].descriptorCount = 1;
+  bindings[0].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  std::vector<VkDescriptorSetLayoutBinding> layoutBindings = {vpLayoutBinding};
-
-  // create info for descriptor set layout creation
-  VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
-  layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layoutCreateInfo.bindingCount = static_cast<uint32_t>(
-      layoutBindings.size()); // number of bindings in the descriptor set
-  layoutCreateInfo.pBindings =
-      layoutBindings.data(); // list of bindings in the descriptor set
-
-  // create the descriptor set layout
-  VkResult result = vkCreateDescriptorSetLayout(device, &layoutCreateInfo,
-                                                nullptr, &descriptorSetLayout);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor set layout");
+  // 1..7: samplers
+  for (int i = 1; i <= 7; ++i) {
+    bindings[i].binding         = static_cast<uint32_t>(i);
+    bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[i].descriptorCount = 1;
+    bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
   }
 
-  // CREATE TEXTURE SAMPLER DESCRIPTOR SET LAYOUT
-  // texture binding info
-  VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-  samplerLayoutBinding.binding = 0; // binding number referenced in the shader
-  samplerLayoutBinding.descriptorType =
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // type of resource
-  samplerLayoutBinding.descriptorCount =
-      1; // number of resources for binding, can be more than 1 for arrays
-  samplerLayoutBinding.stageFlags =
-      VK_SHADER_STAGE_FRAGMENT_BIT; // shader stage to bind the resources to
-  samplerLayoutBinding.pImmutableSamplers =
-      nullptr; // used for image sampling, not used for uniform buffers
+  VkDescriptorSetLayoutCreateInfo ci = {};
+  ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  ci.bindingCount = 8;
+  ci.pBindings    = bindings;
+  if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create VP descriptor set layout");
 
-  // create a descriptor set layout with given binding for texture sampler
-  VkDescriptorSetLayoutCreateInfo textureLayoutCreateInfo = {};
-  textureLayoutCreateInfo.sType =
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  textureLayoutCreateInfo.bindingCount = 1;
-  textureLayoutCreateInfo.pBindings =
-      &samplerLayoutBinding; // list of bindings in the descriptor set
-
-  // create the descriptor set layout
-  result = vkCreateDescriptorSetLayout(device, &textureLayoutCreateInfo,
-                                       nullptr, &samplerSetLayout);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create texture sampler descriptor set layout");
+  // --- PBR material sampler layout (set 1, geometry pass): 5 bindings ---
+  VkDescriptorSetLayoutBinding samplerBindings[5] = {};
+  for (int i = 0; i < 5; ++i) {
+    samplerBindings[i].binding         = static_cast<uint32_t>(i);
+    samplerBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerBindings[i].descriptorCount = 1;
+    samplerBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
   }
+  VkDescriptorSetLayoutCreateInfo samplerCI = {};
+  samplerCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  samplerCI.bindingCount = 5;
+  samplerCI.pBindings    = samplerBindings;
+  if (vkCreateDescriptorSetLayout(device, &samplerCI, nullptr, &samplerSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create PBR sampler descriptor set layout");
 
-  // CREATE INPUT ATTACHMENT IMAGE DESCRIPTOR SET LAYOUT
-
-  // image input attachment binding info
-  VkDescriptorSetLayoutBinding colorInputLayoutBinding = {};
-  colorInputLayoutBinding.binding = 0;
-  colorInputLayoutBinding.descriptorType =
-      VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; // type of resource
-  colorInputLayoutBinding.descriptorCount =
-      1; // number of resources for binding, can be more than 1 for arrays
-  colorInputLayoutBinding.stageFlags =
-      VK_SHADER_STAGE_FRAGMENT_BIT; // shader stage to bind the resources to
-  colorInputLayoutBinding.pImmutableSamplers =
-      nullptr; // used for image sampling, not used for uniform buffers
-
-  // depth input attachment binding info
-  VkDescriptorSetLayoutBinding depthInputLayoutBinding = {};
-  depthInputLayoutBinding.binding = 1;
-  depthInputLayoutBinding.descriptorType =
-      VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; // type of resource
-  depthInputLayoutBinding.descriptorCount =
-      1; // number of resources for binding, can be more than 1 for arrays
-  depthInputLayoutBinding.stageFlags =
-      VK_SHADER_STAGE_FRAGMENT_BIT; // shader stage to bind the resources to
-  depthInputLayoutBinding.pImmutableSamplers =
-      nullptr; // used for image sampling, not used for uniform buffers
-
-  // array on input attachment bindings
-  std::vector<VkDescriptorSetLayoutBinding> inputBindings = {
-      colorInputLayoutBinding, depthInputLayoutBinding};
-
-  // create a descriptor set layout with given bindings for input attachments
-  VkDescriptorSetLayoutCreateInfo inputLayoutCreateInfo = {};
-  inputLayoutCreateInfo.sType =
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  inputLayoutCreateInfo.bindingCount = static_cast<uint32_t>(
-      inputBindings.size()); // number of bindings in the descriptor set
-  inputLayoutCreateInfo.pBindings =
-      inputBindings.data(); // list of bindings in the descriptor set
-
-  // create the descriptor set layout
-  result = vkCreateDescriptorSetLayout(device, &inputLayoutCreateInfo, nullptr,
-                                       &inputSetLayout);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create input attachment descriptor set layout");
+  // --- G-buffer sampler layout (set 1, deferred pass): 4 bindings ---
+  VkDescriptorSetLayoutBinding gbBindings[4] = {};
+  for (int i = 0; i < 4; ++i) {
+    gbBindings[i].binding         = static_cast<uint32_t>(i);
+    gbBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    gbBindings[i].descriptorCount = 1;
+    gbBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
   }
+  VkDescriptorSetLayoutCreateInfo gbCI = {};
+  gbCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  gbCI.bindingCount = 4;
+  gbCI.pBindings    = gbBindings;
+  if (vkCreateDescriptorSetLayout(device, &gbCI, nullptr, &gBufferSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create G-buffer sampler descriptor set layout");
+
+  // --- Input attachment layout (set 0, tone-mapping subpass): 1 binding ---
+  VkDescriptorSetLayoutBinding colorInput = {};
+  colorInput.binding         = 0;
+  colorInput.descriptorType  = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+  colorInput.descriptorCount = 1;
+  colorInput.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorSetLayoutCreateInfo inputCI = {};
+  inputCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  inputCI.bindingCount = 1;
+  inputCI.pBindings    = &colorInput;
+  if (vkCreateDescriptorSetLayout(device, &inputCI, nullptr, &inputSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create input attachment descriptor set layout");
 }
 
-// --- Push constant range ---
+// ---------------------------------------------------------------------------
+// Push constant range
+// ---------------------------------------------------------------------------
 
 void DescriptorManager::createPushConstantRange() {
-  // define the push constant range(no creation needed because it is not a
-  // vulkan object)
-  pushConstantRange.stageFlags =
-      VK_SHADER_STAGE_VERTEX_BIT; // shader stage to bind the push constant to
-  pushConstantRange.offset = 0;   // offset of the push constant range
-  pushConstantRange.size = sizeof(glm::mat4); // size of the push constant range
+  pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  pushConstantRange.offset     = 0;
+  pushConstantRange.size       = sizeof(ModelPushConstants);
 }
 
-// --- Uniform buffer creation ---
+// ---------------------------------------------------------------------------
+// Uniform buffer creation
+// ---------------------------------------------------------------------------
 
-void DescriptorManager::createUniformBuffers(VmaAllocator allocator,
-                                             size_t swapchainImageCount) {
-  VkDeviceSize vpBufferSize = sizeof(UboViewProjection);
-
-  vpUniformBuffers.resize(swapchainImageCount);
-
-  for (size_t i = 0; i < swapchainImageCount; i++) {
-    createBuffer(allocator, vpBufferSize,
+void DescriptorManager::createUniformBuffers(VmaAllocator allocator, size_t count) {
+  vpUniformBuffers.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    createBuffer(allocator, sizeof(SceneUniformBuffer),
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                  VMA_MEMORY_USAGE_AUTO,
-                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
                  &vpUniformBuffers[i]);
   }
 }
 
-// --- Descriptor pool creation ---
+// ---------------------------------------------------------------------------
+// Descriptor pool creation
+// ---------------------------------------------------------------------------
 
-void DescriptorManager::createDescriptorPool(VkDevice device,
-                                             size_t swapchainImageCount) {
-  // CREATE UNIFORM DESCRIPTOR POOL
-  VkDescriptorPoolSize vpPoolSize = {};
-  vpPoolSize.type =
-      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // type of resource in pool
-  vpPoolSize.descriptorCount = static_cast<uint32_t>(
-      vpUniformBuffers.size()); // number of descriptors in pool
+void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
+  // VP pool: 1 UBO + 7 samplers per frame
+  VkDescriptorPoolSize vpSizes[2] = {};
+  vpSizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  vpSizes[0].descriptorCount = static_cast<uint32_t>(count);
+  vpSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  vpSizes[1].descriptorCount = static_cast<uint32_t>(count * 7);
 
-  std::vector<VkDescriptorPoolSize> descriptorPoolSizes = {vpPoolSize};
+  VkDescriptorPoolCreateInfo vpCI = {};
+  vpCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  vpCI.maxSets       = static_cast<uint32_t>(count);
+  vpCI.poolSizeCount = 2;
+  vpCI.pPoolSizes    = vpSizes;
+  if (vkCreateDescriptorPool(device, &vpCI, nullptr, &descriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create VP descriptor pool");
 
-  // create info for descriptor pool creation
-  VkDescriptorPoolCreateInfo poolCreateInfo = {};
-  poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolCreateInfo.maxSets = static_cast<uint32_t>(
-      swapchainImageCount); // max number of descriptor
-                            // sets that can be allocated
-  poolCreateInfo.poolSizeCount = static_cast<uint32_t>(
-      descriptorPoolSizes.size()); // number of descriptor types in pool
-  poolCreateInfo.pPoolSizes =
-      descriptorPoolSizes.data(); // list of descriptor types and counts in pool
+  // Material sampler pool: 5 samplers per material, up to MAX_OBJECTS
+  VkDescriptorPoolSize samplerSize = {};
+  samplerSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  samplerSize.descriptorCount = MAX_OBJECTS * 5;
 
-  // create descriptor pool
-  VkResult result =
-      vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &descriptorPool);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor pool");
-  }
+  VkDescriptorPoolCreateInfo samplerCI = {};
+  samplerCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  samplerCI.maxSets       = MAX_OBJECTS;
+  samplerCI.poolSizeCount = 1;
+  samplerCI.pPoolSizes    = &samplerSize;
+  if (vkCreateDescriptorPool(device, &samplerCI, nullptr, &samplerDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create material sampler descriptor pool");
 
-  // CREATE COMBINED IMAGE SAMPLER DESCRIPTOR POOL
-  // texture sampler pool size info
-  VkDescriptorPoolSize samplerPoolSize = {};
-  samplerPoolSize.type =
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // type of resource in pool
-  samplerPoolSize.descriptorCount =
-      MAX_OBJECTS; // number of descriptors in pool
+  // G-buffer sampler pool: 4 samplers per frame
+  VkDescriptorPoolSize gbSize = {};
+  gbSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  gbSize.descriptorCount = static_cast<uint32_t>(count * 4);
 
-  // create info for combined image sampler descriptor pool creation
-  VkDescriptorPoolCreateInfo samplerPoolCreateInfo = {};
-  samplerPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  samplerPoolCreateInfo.maxSets = MAX_OBJECTS; // max number of descriptor sets
-  samplerPoolCreateInfo.poolSizeCount =
-      1; // number of descriptor types in pool
-  samplerPoolCreateInfo.pPoolSizes =
-      &samplerPoolSize; // list of descriptor types and counts in pool
+  VkDescriptorPoolCreateInfo gbCI = {};
+  gbCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  gbCI.maxSets       = static_cast<uint32_t>(count);
+  gbCI.poolSizeCount = 1;
+  gbCI.pPoolSizes    = &gbSize;
+  if (vkCreateDescriptorPool(device, &gbCI, nullptr, &gBufferDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create G-buffer descriptor pool");
 
-  // create combined image sampler descriptor pool
-  result = vkCreateDescriptorPool(device, &samplerPoolCreateInfo, nullptr,
-                                  &samplerDescriptorPool);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create combined image sampler descriptor pool");
-  }
+  // Input attachment pool: 1 input attachment per frame
+  VkDescriptorPoolSize inputSize = {};
+  inputSize.type            = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+  inputSize.descriptorCount = static_cast<uint32_t>(count);
 
-  // CREATE INPUT ATTACHMENT DESCRIPTOR POOL
-  //  color attachment pool size info
-  VkDescriptorPoolSize colorInputPoolSize = {};
-  colorInputPoolSize.type =
-      VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; // type of resource in pool
-  colorInputPoolSize.descriptorCount =
-      static_cast<uint32_t>(swapchainImageCount);
+  VkDescriptorPoolCreateInfo inputCI = {};
+  inputCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  inputCI.maxSets       = static_cast<uint32_t>(count);
+  inputCI.poolSizeCount = 1;
+  inputCI.pPoolSizes    = &inputSize;
+  if (vkCreateDescriptorPool(device, &inputCI, nullptr, &inputDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create input attachment descriptor pool");
+}
 
-  // depth attachment pool size info
-  VkDescriptorPoolSize depthInputPoolSize = {};
-  depthInputPoolSize.type =
-      VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; // type of resource in pool
-  depthInputPoolSize.descriptorCount =
-      static_cast<uint32_t>(swapchainImageCount);
+// ---------------------------------------------------------------------------
+// Descriptor set creation
+// ---------------------------------------------------------------------------
 
-  // list of pool sizes for input attachment descriptor pool
-  std::vector<VkDescriptorPoolSize> inputPoolSizes = {colorInputPoolSize,
-                                                      depthInputPoolSize};
+void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
+  descriptorSets.resize(count);
+  std::vector<VkDescriptorSetLayout> layouts(count, descriptorSetLayout);
 
-  // create info for input attachment descriptor pool creation
-  VkDescriptorPoolCreateInfo inputPoolCreateInfo = {};
-  inputPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  inputPoolCreateInfo.maxSets = static_cast<uint32_t>(
-      swapchainImageCount); // max number of descriptor sets
-  inputPoolCreateInfo.poolSizeCount = static_cast<uint32_t>(
-      inputPoolSizes.size()); // number of descriptor types in pool
-  inputPoolCreateInfo.pPoolSizes =
-      inputPoolSizes.data(); // list of descriptor types and counts in pool
+  VkDescriptorSetAllocateInfo allocInfo = {};
+  allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool     = descriptorPool;
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(count);
+  allocInfo.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate VP descriptor sets");
 
-  // create input attachment descriptor pool
-  result = vkCreateDescriptorPool(device, &inputPoolCreateInfo, nullptr,
-                                  &inputDescriptorPool);
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to create input attachment descriptor pool");
+  for (size_t i = 0; i < count; ++i) {
+    VkDescriptorBufferInfo bufInfo = {};
+    bufInfo.buffer = vpUniformBuffers[i].get();
+    bufInfo.offset = 0;
+    bufInfo.range  = sizeof(SceneUniformBuffer);
+
+    VkWriteDescriptorSet write = {};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = descriptorSets[i];
+    write.dstBinding      = 0;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.descriptorCount = 1;
+    write.pBufferInfo     = &bufInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
 }
 
-// --- Descriptor set creation ---
+void DescriptorManager::createInputDescriptorSets(VkDevice device,
+                                                   const VulkanSwapchain &swapchain) {
+  size_t count = swapchain.getImageCount();
+  inputDescriptorSets.resize(count);
+  std::vector<VkDescriptorSetLayout> layouts(count, inputSetLayout);
 
-void DescriptorManager::createDescriptorSets(VkDevice device,
-                                             size_t swapchainImageCount) {
-  descriptorSets.resize(swapchainImageCount);
+  VkDescriptorSetAllocateInfo allocInfo = {};
+  allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool     = inputDescriptorPool;
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(count);
+  allocInfo.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(device, &allocInfo, inputDescriptorSets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate input attachment descriptor sets");
 
-  std::vector<VkDescriptorSetLayout> setLayouts(swapchainImageCount,
-                                                descriptorSetLayout);
+  for (size_t i = 0; i < count; ++i) {
+    VkDescriptorImageInfo colorInfo = {};
+    colorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    colorInfo.imageView   = swapchain.getColorBufferView(i);
+    colorInfo.sampler     = VK_NULL_HANDLE;
 
-  VkDescriptorSetAllocateInfo setAllocInfo = {};
-  setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  setAllocInfo.descriptorPool =
-      descriptorPool; // descriptor pool to allocate from
-  setAllocInfo.descriptorSetCount =
-      static_cast<uint32_t>(swapchainImageCount);
-  setAllocInfo.pSetLayouts =
-      setLayouts.data(); // layout to use for each allocated descriptor set
-
-  // allocate descriptor sets, multiple
-  VkResult result = vkAllocateDescriptorSets(device, &setAllocInfo,
-                                             descriptorSets.data());
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate descriptor sets");
-  }
-
-  // update descriptor sets with buffer info for each swap chain image
-  for (size_t i = 0; i < swapchainImageCount; i++) {
-    // view projection descriptor
-    //  buffer info and data offset info
-    VkDescriptorBufferInfo vpBufferInfo = {};
-    vpBufferInfo.buffer = vpUniformBuffers[i].get(); // buffer to bind to descriptor
-    vpBufferInfo.offset = 0;                   // offset of data in buffer
-    vpBufferInfo.range = sizeof(UboViewProjection); // size of data in buffer
-
-    // data about connection bwtn descriptor set and buffer info to update
-    // descriptor set with
-    VkWriteDescriptorSet vpSetWrite = {};
-    vpSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    vpSetWrite.dstSet = descriptorSets[i]; // descriptor set to update
-    vpSetWrite.dstBinding = 0;
-    vpSetWrite.dstArrayElement = 0; // first index in array to update
-    vpSetWrite.descriptorType =
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // type of descriptor
-    vpSetWrite.descriptorCount =
-        1; // number of descriptors to update (size of array)
-    vpSetWrite.pBufferInfo =
-        &vpBufferInfo; // buffer info to write to descriptor
-
-    // list of descriptor set writes to update
-    std::vector<VkWriteDescriptorSet> setWrites = {vpSetWrite};
-
-    // update the descriptor set with new buffer info
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(setWrites.size()),
-                           setWrites.data(), 0, nullptr);
-  }
-}
-
-// --- Input descriptor set creation ---
-
-void DescriptorManager::createInputDescriptorSets(
-    VkDevice device, const VulkanSwapchain &swapchain) {
-  size_t imageCount = swapchain.getImageCount();
-  inputDescriptorSets.resize(imageCount);
-
-  std::vector<VkDescriptorSetLayout> setLayouts(imageCount, inputSetLayout);
-
-  // create info for allocating descriptor sets
-  VkDescriptorSetAllocateInfo setAllocInfo = {};
-  setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  setAllocInfo.descriptorPool =
-      inputDescriptorPool; // descriptor pool to allocate from
-  setAllocInfo.descriptorSetCount =
-      static_cast<uint32_t>(imageCount);
-  setAllocInfo.pSetLayouts =
-      setLayouts.data(); // list of descriptor set layouts to use for each
-                         // allocated descriptor set
-
-  // allocate descriptor sets
-  VkResult result = vkAllocateDescriptorSets(device, &setAllocInfo,
-                                             inputDescriptorSets.data());
-  if (result != VK_SUCCESS) {
-    throw std::runtime_error(
-        "Failed to allocate input attachment descriptor sets");
-  }
-
-  // update descriptor sets with image info for each swap chain image
-  for (size_t i = 0; i < imageCount; i++) {
-    // color attachment descriptor
-    VkDescriptorImageInfo colorAttachmentDescriptor = {};
-    colorAttachmentDescriptor.imageLayout =
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    colorAttachmentDescriptor.imageView = swapchain.getColorBufferView(i);
-    colorAttachmentDescriptor.sampler = VK_NULL_HANDLE;
-
-    // color attachment descriptor write
-    VkWriteDescriptorSet colorWrite = {};
-    colorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    colorWrite.dstSet = inputDescriptorSets[i]; // descriptor set to update
-    colorWrite.dstBinding = 0;
-    colorWrite.dstArrayElement = 0;
-    colorWrite.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-    colorWrite.descriptorCount = 1;
-    colorWrite.pImageInfo = &colorAttachmentDescriptor;
-
-    // depth attachment descriptor write
-    VkDescriptorImageInfo depthAttachmentDescriptor = {};
-    depthAttachmentDescriptor.imageLayout =
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    depthAttachmentDescriptor.imageView = swapchain.getDepthBufferView(i);
-    depthAttachmentDescriptor.sampler = VK_NULL_HANDLE;
-
-    // depth attachment descriptor
-    VkWriteDescriptorSet depthWrite = {};
-    depthWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    depthWrite.dstSet = inputDescriptorSets[i];
-    depthWrite.dstBinding = 1;
-    depthWrite.dstArrayElement = 0;
-    depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-    depthWrite.descriptorCount = 1;
-    depthWrite.pImageInfo = &depthAttachmentDescriptor;
-
-    // list of descriptor set writes to update
-    std::vector<VkWriteDescriptorSet> setWrites = {colorWrite, depthWrite};
-
-    // update the descriptor set with new image info
-    vkUpdateDescriptorSets(device, static_cast<uint32_t>(setWrites.size()),
-                           setWrites.data(), 0, nullptr);
+    VkWriteDescriptorSet w = {};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = inputDescriptorSets[i];
+    w.dstBinding      = 0;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+    w.descriptorCount = 1;
+    w.pImageInfo      = &colorInfo;
+    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
   }
 }

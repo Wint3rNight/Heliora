@@ -16,6 +16,12 @@ for shader in $FRAG_SHADERS; do
     glslangValidator -V "$shader" -o "$shader.spv"
 done
 
+COMP_SHADERS=$(find "$DIR" -maxdepth 1 -name "*.comp")
+for shader in $COMP_SHADERS; do
+    echo "Compiling $shader..."
+    glslangValidator -V "$shader" -o "$shader.spv"
+done
+
 echo "Done. Shaders compiled to .spv"
 
 #chmod +x compile_shaders.sh then ./compile_shaders.sh

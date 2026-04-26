@@ -1,0 +1,51 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) uniform writeonly image2DArray outImage;
+layout(set = 0, binding = 1) uniform samplerCube envMap;
+
+const float PI = 3.14159265359;
+
+vec3 faceDirection(uint face, float u, float v) {
+    switch (face) {
+        case 0: return normalize(vec3( 1.0, -v, -u));
+        case 1: return normalize(vec3(-1.0, -v,  u));
+        case 2: return normalize(vec3( u,  1.0,  v));
+        case 3: return normalize(vec3( u, -1.0, -v));
+        case 4: return normalize(vec3( u, -v,  1.0));
+        default:return normalize(vec3(-u, -v, -1.0));
+    }
+}
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    ivec3 sz = imageSize(outImage);
+    if (id.x >= sz.x || id.y >= sz.y) return;
+
+    float u = (float(id.x) + 0.5) / float(sz.x) * 2.0 - 1.0;
+    float v = (float(id.y) + 0.5) / float(sz.y) * 2.0 - 1.0;
+    vec3 N = faceDirection(uint(id.z), u, v);
+
+    vec3 up      = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 right   = normalize(cross(up, N));
+    vec3 upLocal = cross(N, right);
+
+    vec3 irradiance = vec3(0.0);
+    const uint nPhi   = 64u;
+    const uint nTheta = 32u;
+
+    for (uint pi = 0u; pi < nPhi; pi++) {
+        for (uint ti = 0u; ti < nTheta; ti++) {
+            float phi   = 2.0 * PI * float(pi) / float(nPhi);
+            float theta = 0.5 * PI * float(ti) / float(nTheta);
+            vec3 L = right    * cos(phi) * sin(theta)
+                   + upLocal  * sin(phi) * sin(theta)
+                   + N        *            cos(theta);
+            irradiance += texture(envMap, normalize(L)).rgb * cos(theta) * sin(theta);
+        }
+    }
+    irradiance *= PI / float(nPhi * nTheta);
+
+    imageStore(outImage, ivec3(id.xy, id.z), vec4(irradiance, 1.0));
+}

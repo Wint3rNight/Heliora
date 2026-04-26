@@ -5,11 +5,20 @@
 #include <assimp/scene.h>
 #include <cstddef>
 #include <glm/glm.hpp>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan_core.h>
 
 struct Model {
   glm::mat4 model;
+};
+
+struct MaterialTextureNames {
+  std::string albedo;
+  std::string normal;
+  std::string metallic;
+  std::string roughness;
+  std::string ao;
 };
 
 class Mesh {
@@ -72,7 +81,7 @@ public:
 
   void destroyMeshModel();
 
-  static std::vector<std::string> LoadMaterials(const aiScene *scene);
+  static std::vector<MaterialTextureNames> LoadMaterials(const aiScene *scene);
   static std::vector<Mesh> LoadNode(VmaAllocator allocator,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,

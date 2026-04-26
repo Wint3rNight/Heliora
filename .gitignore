@@ -38,6 +38,8 @@ VulkanRenderer
 .vscode/
 *.swp
 *.swo
+.claude
+.codex
 
 # Build Directories
 build/
@@ -61,3 +63,4 @@ compile_commands.json
 
 # Project documents
 TODO.md
+IMPLEMENTATION_NOTES.md

@@ -31,8 +31,11 @@ int ModelManager::loadModel(const std::string &modelFile,
   }
 
   for (const std::string &path : candidatePaths) {
-    scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs |
-                                        aiProcess_JoinIdenticalVertices);
+    scene = importer.ReadFile(path,
+                              aiProcess_Triangulate | aiProcess_FlipUVs |
+                                  aiProcess_JoinIdenticalVertices |
+                                  aiProcess_GenSmoothNormals |
+                                  aiProcess_CalcTangentSpace);
     if (scene && !(scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) &&
         scene->mRootNode) {
       break;
@@ -45,19 +48,28 @@ int ModelManager::loadModel(const std::string &modelFile,
                              std::string(importer.GetErrorString()));
   }
 
+  // Tell TextureManager where this model lives so it can find textures
+  // that sit next to the model file (common for glTF)
+  for (const std::string &path : candidatePaths) {
+    if (std::filesystem::exists(path)) {
+      textureManager.setModelDirectory(
+          std::filesystem::path(path).parent_path().string());
+      break;
+    }
+  }
+
   // get vector of all materials with 1:1 id placement
-  std::vector<std::string> textureNames = MeshModel::LoadMaterials(scene);
+  std::vector<MaterialTextureNames> textureNames =
+      MeshModel::LoadMaterials(scene);
 
   // conversion from material list id to Material
   std::vector<Material> materials(textureNames.size());
 
   for (size_t i = 0; i < textureNames.size(); i++) {
-    if (textureNames[i].empty()) {
-      materials[i].albedoTextureId = 0;
-    } else {
-      materials[i].albedoTextureId = textureManager.loadTexture(
-          textureNames[i], device, descriptorManager);
-    }
+    materials[i] = textureManager.loadMaterial(
+        textureNames[i].albedo, textureNames[i].normal,
+        textureNames[i].metallic, textureNames[i].roughness, textureNames[i].ao,
+        device, descriptorManager);
   }
 
   std::vector<Mesh> modelMeshes = MeshModel::LoadNode(

@@ -1,4 +1,6 @@
 #include "Model.h"
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
 #include <cstring>
 #include <iterator>
@@ -116,18 +118,106 @@ void MeshModel::destroyMeshModel() {
   }
 }
 
-std::vector<std::string> MeshModel::LoadMaterials(const aiScene *scene) {
-  std::vector<std::string> textureList(scene->mNumMaterials);
+namespace {
+std::string filenameFromAssimpPath(const aiString &path) {
+  std::string value(path.C_Str());
+  size_t slash = value.find_last_of("\\/");
+  if (slash != std::string::npos) {
+    return value.substr(slash + 1);
+  }
+  return value;
+}
+
+std::string toLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value;
+}
+
+bool looksLikeNormalMap(const std::string &filename) {
+  std::string lower = toLower(filename);
+  return lower.find("_nor") != std::string::npos ||
+         lower.find("normal") != std::string::npos ||
+         lower.find("_nrm") != std::string::npos;
+}
+
+void replaceAll(std::string &value, const std::string &from,
+                const std::string &to) {
+  size_t pos = 0;
+  while ((pos = value.find(from, pos)) != std::string::npos) {
+    value.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+}
+
+std::string colorMapForNormalNamedDiffuse(std::string filename) {
+  replaceAll(filename, "_NOR", "_COL");
+  replaceAll(filename, "_nor", "_col");
+  replaceAll(filename, "_NRM", "_COL");
+  replaceAll(filename, "_nrm", "_col");
+  replaceAll(filename, "NormalGL", "Color");
+  replaceAll(filename, "NormalDX", "Color");
+  replaceAll(filename, "normalgl", "color");
+  replaceAll(filename, "normaldx", "color");
+  replaceAll(filename, "Normal", "Color");
+  replaceAll(filename, "normal", "color");
+  return filename;
+}
+}
+
+std::vector<MaterialTextureNames> MeshModel::LoadMaterials(
+    const aiScene *scene) {
+  std::vector<MaterialTextureNames> textureList(scene->mNumMaterials);
   for (size_t i = 0; i < scene->mNumMaterials; i++) {
-    aiMaterial *material = scene->mMaterials[i];
-    textureList[i] = "";
-    if (material->GetTextureCount(aiTextureType_DIFFUSE)) {
-      aiString path; 
-      if (material->GetTexture(aiTextureType_DIFFUSE, 0, &path) == AI_SUCCESS) {
-        int idx = std::string(path.data).rfind('\\');
-        std::string fileName = std::string(path.data).substr(idx + 1);
-        textureList[i] = fileName;
-      }
+    aiMaterial *mat = scene->mMaterials[i];
+    aiString path;
+
+    // Albedo
+    if (mat->GetTextureCount(aiTextureType_DIFFUSE) &&
+        mat->GetTexture(aiTextureType_DIFFUSE, 0, &path) == AI_SUCCESS) {
+      textureList[i].albedo = filenameFromAssimpPath(path);
+      if (looksLikeNormalMap(textureList[i].albedo))
+        textureList[i].albedo = colorMapForNormalNamedDiffuse(textureList[i].albedo);
+    } else if (mat->GetTextureCount(aiTextureType_BASE_COLOR) &&
+               mat->GetTexture(aiTextureType_BASE_COLOR, 0, &path) == AI_SUCCESS) {
+      textureList[i].albedo = filenameFromAssimpPath(path);
+    }
+
+    // Normal
+    if (mat->GetTextureCount(aiTextureType_NORMALS) &&
+        mat->GetTexture(aiTextureType_NORMALS, 0, &path) == AI_SUCCESS) {
+      textureList[i].normal = filenameFromAssimpPath(path);
+    } else if (mat->GetTextureCount(aiTextureType_HEIGHT) &&
+               mat->GetTexture(aiTextureType_HEIGHT, 0, &path) == AI_SUCCESS) {
+      textureList[i].normal = filenameFromAssimpPath(path);
+    } else if (mat->GetTextureCount(aiTextureType_DISPLACEMENT) &&
+               mat->GetTexture(aiTextureType_DISPLACEMENT, 0, &path) == AI_SUCCESS) {
+      textureList[i].normal = filenameFromAssimpPath(path);
+    }
+
+    // Metallic
+    if (mat->GetTextureCount(aiTextureType_METALNESS) &&
+        mat->GetTexture(aiTextureType_METALNESS, 0, &path) == AI_SUCCESS) {
+      textureList[i].metallic = filenameFromAssimpPath(path);
+    } else if (mat->GetTextureCount(aiTextureType_UNKNOWN) &&
+               mat->GetTexture(aiTextureType_UNKNOWN, 0, &path) == AI_SUCCESS) {
+      // glTF ORM packed texture often lands here
+      textureList[i].metallic = filenameFromAssimpPath(path);
+    }
+
+    // Roughness
+    if (mat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS) &&
+        mat->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &path) == AI_SUCCESS) {
+      textureList[i].roughness = filenameFromAssimpPath(path);
+    }
+
+    // AO
+    if (mat->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) &&
+        mat->GetTexture(aiTextureType_AMBIENT_OCCLUSION, 0, &path) == AI_SUCCESS) {
+      textureList[i].ao = filenameFromAssimpPath(path);
+    } else if (mat->GetTextureCount(aiTextureType_LIGHTMAP) &&
+               mat->GetTexture(aiTextureType_LIGHTMAP, 0, &path) == AI_SUCCESS) {
+      textureList[i].ao = filenameFromAssimpPath(path);
     }
   }
   return textureList;
@@ -179,6 +269,22 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
       vertices[i].tex = {0.0f, 0.0f};
     }
     vertices[i].col = {1.0f, 1.0f, 1.0f};
+    if (mesh->HasNormals()) {
+      vertices[i].normal = {mesh->mNormals[i].x, mesh->mNormals[i].y,
+                            mesh->mNormals[i].z};
+    } else {
+      vertices[i].normal = {0.0f, 1.0f, 0.0f};
+    }
+    if (mesh->HasTangentsAndBitangents()) {
+      vertices[i].tangent = {mesh->mTangents[i].x, mesh->mTangents[i].y,
+                             mesh->mTangents[i].z};
+      vertices[i].bitangent = {mesh->mBitangents[i].x,
+                               mesh->mBitangents[i].y,
+                               mesh->mBitangents[i].z};
+    } else {
+      vertices[i].tangent = {1.0f, 0.0f, 0.0f};
+      vertices[i].bitangent = {0.0f, 0.0f, 1.0f};
+    }
   }
   
   for (size_t i = 0; i < mesh->mNumFaces; i++) {

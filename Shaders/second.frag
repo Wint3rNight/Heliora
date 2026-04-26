@@ -1,23 +1,21 @@
 #version 450
 
-layout(input_attachment_index = 0,binding = 0) uniform subpassInput inputColor; // color output from first subpass
-layout(input_attachment_index = 1,binding = 1) uniform subpassInput inputDepth; // depth output from first subpass
+layout(input_attachment_index = 0, binding = 0) uniform subpassInput inputColor;
 
-layout(location = 0) out vec4 color; // output color of the fragment
+layout(location = 0) out vec4 outColor;
 
-
+vec3 acesFilm(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 
 void main() {
-    int xHalf = 1366/2;
-    if(gl_FragCoord.x>xHalf){
-        float lowerBound = 0.98;
-        float upperBound = 1;
-
-        float depth = subpassLoad(inputDepth).r;
-        float depthColorScaled = 1.0f -((depth-lowerBound) / (upperBound - lowerBound));
-        color = vec4(subpassLoad(inputColor).rgb * depthColorScaled, 1.0f);
-    }
-    else{
-        color = subpassLoad(inputColor).rgba;
-    }
+    vec3 hdr    = subpassLoad(inputColor).rgb;
+    vec3 mapped = acesFilm(hdr);
+    mapped      = pow(mapped, vec3(1.0 / 2.2));
+    outColor    = vec4(mapped, 1.0);
 }

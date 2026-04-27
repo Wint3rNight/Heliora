@@ -39,12 +39,22 @@ public:
   int getVertexCount() const;
   VkBuffer getVertexBuffer() const;
 
-  int getIndexCount() const;
-  VkBuffer getIndexBuffer() const;
+  // LOD 0 = full detail, LOD 1 = ~50%, LOD 2 = ~12%
+  int      getIndexCount(int lod = 0) const;
+  VkBuffer getIndexBuffer(int lod = 0) const;
+  int      getLodCount() const;
+
+  // Called after construction to append a reduced-index LOD level
+  void addLod(VmaAllocator allocator, VkDevice device,
+              VkQueue transferQueue, VkCommandPool transferCommandPool,
+              std::vector<uint32_t> *indices);
 
   void destroyBuffers();
 
   ~Mesh();
+
+  glm::vec3 boundingCenter = glm::vec3(0.0f);
+  float     boundingRadius = 0.0f;
 
 private:
   Material material;
@@ -54,6 +64,10 @@ private:
 
   int indexCount;
   AllocatedBuffer indexBuffer;
+
+  // Extra LOD index buffers: [0] = LOD1, [1] = LOD2
+  std::vector<AllocatedBuffer> extraLodIndexBuffers;
+  std::vector<int>             extraLodIndexCounts;
 
   VmaAllocator allocator;
   VkDevice device;
@@ -80,6 +94,9 @@ public:
   const Mesh *getMesh(size_t index) const;
 
   void destroyMeshModel();
+
+  glm::vec3 boundingCenter = glm::vec3(0.0f);
+  float     boundingRadius = 0.0f;
 
   static std::vector<MaterialTextureNames> LoadMaterials(const aiScene *scene);
   static std::vector<Mesh> LoadNode(VmaAllocator allocator,

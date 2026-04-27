@@ -20,21 +20,27 @@ constexpr float PI = 3.14159265358979323846f;
 
 glm::vec3 faceDirection(uint32_t face, float u, float v) {
   switch (face) {
-  case 0:  return glm::normalize(glm::vec3( 1.0f, -v, -u));
-  case 1:  return glm::normalize(glm::vec3(-1.0f, -v,  u));
-  case 2:  return glm::normalize(glm::vec3( u,  1.0f,  v));
-  case 3:  return glm::normalize(glm::vec3( u, -1.0f, -v));
-  case 4:  return glm::normalize(glm::vec3( u, -v,  1.0f));
-  default: return glm::normalize(glm::vec3(-u, -v, -1.0f));
+  case 0:
+    return glm::normalize(glm::vec3(1.0f, -v, -u));
+  case 1:
+    return glm::normalize(glm::vec3(-1.0f, -v, u));
+  case 2:
+    return glm::normalize(glm::vec3(u, 1.0f, v));
+  case 3:
+    return glm::normalize(glm::vec3(u, -1.0f, -v));
+  case 4:
+    return glm::normalize(glm::vec3(u, -v, 1.0f));
+  default:
+    return glm::normalize(glm::vec3(-u, -v, -1.0f));
   }
 }
 
 glm::vec4 sampleEquirectangular(const float *pixels, int width, int height,
                                 const glm::vec3 &direction) {
-  float phi   = std::atan2(direction.z, direction.x);
+  float phi = std::atan2(direction.z, direction.x);
   float theta = std::asin(std::clamp(direction.y, -1.0f, 1.0f));
-  float uf = (phi + PI) / (2.0f * PI) * static_cast<float>(width  - 1);
-  float vf = (0.5f - theta / PI)      * static_cast<float>(height - 1);
+  float uf = (phi + PI) / (2.0f * PI) * static_cast<float>(width - 1);
+  float vf = (0.5f - theta / PI) * static_cast<float>(height - 1);
 
   int x0 = static_cast<int>(std::floor(uf));
   int y0 = static_cast<int>(std::floor(vf));
@@ -45,7 +51,8 @@ glm::vec4 sampleEquirectangular(const float *pixels, int width, int height,
 
   auto texel = [&](int x, int y) {
     size_t idx = (static_cast<size_t>(y) * width + x) * 4;
-    return glm::vec4(pixels[idx], pixels[idx+1], pixels[idx+2], pixels[idx+3]);
+    return glm::vec4(pixels[idx], pixels[idx + 1], pixels[idx + 2],
+                     pixels[idx + 3]);
   };
   glm::vec4 a = glm::mix(texel(x0, y0), texel(x1, y0), tx);
   glm::vec4 b = glm::mix(texel(x0, y1), texel(x1, y1), tx);
@@ -55,67 +62,91 @@ glm::vec4 sampleEquirectangular(const float *pixels, int width, int height,
 // Layout transition helper for layered/mipped images
 static void transitionCubemapLayout(VkDevice device, VkQueue queue,
                                     VkCommandPool pool, VkImage image,
-                                    VkImageLayout oldLayout, VkImageLayout newLayout,
-                                    uint32_t layerCount, uint32_t levelCount = 1) {
+                                    VkImageLayout oldLayout,
+                                    VkImageLayout newLayout,
+                                    uint32_t layerCount,
+                                    uint32_t levelCount = 1) {
   VkCommandBuffer cmd = beginCommandBuffer(device, pool);
 
   VkImageMemoryBarrier b = {};
-  b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  b.oldLayout           = oldLayout;
-  b.newLayout           = newLayout;
+  b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  b.oldLayout = oldLayout;
+  b.newLayout = newLayout;
   b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image               = image;
-  b.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, levelCount, 0, layerCount };
+  b.image = image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levelCount, 0,
+                        layerCount};
 
   VkPipelineStageFlags srcStage, dstStage;
 
   auto srcFor = [&](VkImageLayout l) -> VkAccessFlags {
     switch (l) {
-    case VK_IMAGE_LAYOUT_UNDEFINED:                 return 0;
-    case VK_IMAGE_LAYOUT_GENERAL:                   return VK_ACCESS_SHADER_WRITE_BIT;
-    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:      return VK_ACCESS_TRANSFER_WRITE_BIT;
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:      return VK_ACCESS_TRANSFER_READ_BIT;
-    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:  return VK_ACCESS_SHADER_READ_BIT;
-    default:                                        return VK_ACCESS_MEMORY_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+      return 0;
+    case VK_IMAGE_LAYOUT_GENERAL:
+      return VK_ACCESS_SHADER_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      return VK_ACCESS_TRANSFER_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      return VK_ACCESS_TRANSFER_READ_BIT;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      return VK_ACCESS_SHADER_READ_BIT;
+    default:
+      return VK_ACCESS_MEMORY_WRITE_BIT;
     }
   };
   auto dstFor = [&](VkImageLayout l) -> VkAccessFlags {
     switch (l) {
-    case VK_IMAGE_LAYOUT_GENERAL:                   return VK_ACCESS_SHADER_WRITE_BIT;
-    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:      return VK_ACCESS_TRANSFER_WRITE_BIT;
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:      return VK_ACCESS_TRANSFER_READ_BIT;
-    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:  return VK_ACCESS_SHADER_READ_BIT;
-    default:                                        return VK_ACCESS_MEMORY_READ_BIT;
+    case VK_IMAGE_LAYOUT_GENERAL:
+      return VK_ACCESS_SHADER_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+      return VK_ACCESS_TRANSFER_WRITE_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      return VK_ACCESS_TRANSFER_READ_BIT;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      return VK_ACCESS_SHADER_READ_BIT;
+    default:
+      return VK_ACCESS_MEMORY_READ_BIT;
     }
   };
   auto stageFor = [&](VkImageLayout l, bool /*isSrc*/) -> VkPipelineStageFlags {
     switch (l) {
-    case VK_IMAGE_LAYOUT_UNDEFINED:                 return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    case VK_IMAGE_LAYOUT_GENERAL:                   return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+      return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    case VK_IMAGE_LAYOUT_GENERAL:
+      return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:      return VK_PIPELINE_STAGE_TRANSFER_BIT;
-    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:  return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    default:                                        return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+      return VK_PIPELINE_STAGE_TRANSFER_BIT;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+      return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    default:
+      return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     }
   };
 
   b.srcAccessMask = srcFor(oldLayout);
   b.dstAccessMask = dstFor(newLayout);
-  srcStage        = stageFor(oldLayout, true);
-  dstStage        = stageFor(newLayout, false);
+  srcStage = stageFor(oldLayout, true);
+  dstStage = stageFor(newLayout, false);
 
-  vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+  vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1,
+                       &b);
   endAndSubmitCommandBuffer(device, pool, queue, cmd);
 }
 
 static VkShaderModule loadSpv(VkDevice device, const std::string &relPath) {
-  std::vector<std::string> candidates = { relPath, "../" + relPath };
+  std::vector<std::string> candidates = {relPath, "../" + relPath};
   std::string found;
   for (const auto &c : candidates)
-    if (std::filesystem::exists(c)) { found = c; break; }
+    if (std::filesystem::exists(c)) {
+      found = c;
+      break;
+    }
   if (found.empty())
-    throw std::runtime_error("Compute shader not found: " + relPath + ". Run compile_shaders.sh");
+    throw std::runtime_error("Compute shader not found: " + relPath +
+                             ". Run compile_shaders.sh");
 
   std::ifstream file(found, std::ios::ate | std::ios::binary);
   if (!file.is_open())
@@ -126,9 +157,9 @@ static VkShaderModule loadSpv(VkDevice device, const std::string &relPath) {
   file.read(code.data(), static_cast<std::streamsize>(sz));
 
   VkShaderModuleCreateInfo ci = {};
-  ci.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
   ci.codeSize = sz;
-  ci.pCode    = reinterpret_cast<const uint32_t *>(code.data());
+  ci.pCode = reinterpret_cast<const uint32_t *>(code.data());
   VkShaderModule mod;
   if (vkCreateShaderModule(device, &ci, nullptr, &mod) != VK_SUCCESS)
     throw std::runtime_error("Failed to create shader module: " + found);
@@ -146,21 +177,29 @@ void TextureManager::init(const VulkanDevice &device) {
   createComputePipelines(device);
 }
 
-void TextureManager::cleanup(VkDevice logicalDevice, VmaAllocator /*allocator*/) {
+void TextureManager::cleanup(VkDevice logicalDevice,
+                             VmaAllocator /*allocator*/) {
   destroyComputePipelines(logicalDevice);
   textureImageViews.clear();
   textureImages.clear();
   textureMap.clear();
   materialMap.clear();
   skyboxMap.clear();
-  if (skyboxSampler  != VK_NULL_HANDLE) { vkDestroySampler(logicalDevice, skyboxSampler,  nullptr); skyboxSampler  = VK_NULL_HANDLE; }
-  if (textureSampler != VK_NULL_HANDLE) { vkDestroySampler(logicalDevice, textureSampler, nullptr); textureSampler = VK_NULL_HANDLE; }
+  if (skyboxSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(logicalDevice, skyboxSampler, nullptr);
+    skyboxSampler = VK_NULL_HANDLE;
+  }
+  if (textureSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(logicalDevice, textureSampler, nullptr);
+    textureSampler = VK_NULL_HANDLE;
+  }
 }
 
 int TextureManager::loadTexture(const std::string &filename,
                                 const VulkanDevice &device,
                                 DescriptorManager &descriptorManager) {
-  return loadMaterial(filename, "", "", "", "", device, descriptorManager).descriptorSetId;
+  return loadMaterial(filename, "", "", "", "", device, descriptorManager)
+      .descriptorSetId;
 }
 
 Material TextureManager::loadMaterial(const std::string &albedoFilename,
@@ -170,17 +209,28 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
                                       const std::string &aoFilename,
                                       const VulkanDevice &device,
                                       DescriptorManager &descriptorManager) {
-  std::string albedoKey    = albedoFilename.empty()    ? "plain.png"         : normalizeTextureKey(albedoFilename);
-  std::string normalKey    = normalFilename.empty()    ? "__flat_normal__"   : normalizeTextureKey(normalFilename);
-  std::string metallicKey  = metallicFilename.empty()  ? "__flat_black__"    : normalizeTextureKey(metallicFilename);
-  std::string roughnessKey = roughnessFilename.empty() ? "__flat_white__"    : normalizeTextureKey(roughnessFilename);
-  std::string aoKey        = aoFilename.empty()        ? "__flat_white_ao__" : normalizeTextureKey(aoFilename);
+  std::string albedoKey = albedoFilename.empty()
+                              ? "plain.png"
+                              : normalizeTextureKey(albedoFilename);
+  std::string normalKey = normalFilename.empty()
+                              ? "__flat_normal__"
+                              : normalizeTextureKey(normalFilename);
+  std::string metallicKey = metallicFilename.empty()
+                                ? "__flat_black__"
+                                : normalizeTextureKey(metallicFilename);
+  std::string roughnessKey = roughnessFilename.empty()
+                                 ? "__flat_white__"
+                                 : normalizeTextureKey(roughnessFilename);
+  std::string aoKey = aoFilename.empty() ? "__flat_white_ao__"
+                                         : normalizeTextureKey(aoFilename);
 
-  std::string materialKey = albedoKey + "|" + normalKey + "|" + metallicKey + "|" + roughnessKey + "|" + aoKey;
+  std::string materialKey = albedoKey + "|" + normalKey + "|" + metallicKey +
+                            "|" + roughnessKey + "|" + aoKey;
 
-  auto resolveTex = [&](const std::string &key, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  auto resolveTex = [&](const std::string &key, uint8_t r, uint8_t g, uint8_t b,
+                        uint8_t a) {
     if (key == "__flat_normal__" || key == "__flat_black__" ||
-        key == "__flat_white__"  || key == "__flat_white_ao__")
+        key == "__flat_white__" || key == "__flat_white_ao__")
       return getOrCreateFlatTexture(key, r, g, b, a, device);
     return getOrCreateTexture(key, device);
   };
@@ -188,30 +238,28 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
   auto matIt = materialMap.find(materialKey);
   if (matIt != materialMap.end()) {
     Material cached;
-    cached.descriptorSetId  = matIt->second;
-    cached.albedoTextureId    = resolveTex(albedoKey,    255, 255, 255, 255);
-    cached.normalTextureId    = resolveTex(normalKey,    128, 128, 255, 255);
-    cached.metallicTextureId  = resolveTex(metallicKey,    0,   0,   0, 255);
+    cached.descriptorSetId = matIt->second;
+    cached.albedoTextureId = resolveTex(albedoKey, 255, 255, 255, 255);
+    cached.normalTextureId = resolveTex(normalKey, 128, 128, 255, 255);
+    cached.metallicTextureId = resolveTex(metallicKey, 0, 0, 0, 255);
     cached.roughnessTextureId = resolveTex(roughnessKey, 255, 255, 255, 255);
-    cached.aoTextureId        = resolveTex(aoKey,        255, 255, 255, 255);
+    cached.aoTextureId = resolveTex(aoKey, 255, 255, 255, 255);
     return cached;
   }
 
   Material mat;
-  mat.albedoTextureId    = resolveTex(albedoKey,    255, 255, 255, 255);
-  mat.normalTextureId    = resolveTex(normalKey,    128, 128, 255, 255);
-  mat.metallicTextureId  = resolveTex(metallicKey,    0,   0,   0, 255);
+  mat.albedoTextureId = resolveTex(albedoKey, 255, 255, 255, 255);
+  mat.normalTextureId = resolveTex(normalKey, 128, 128, 255, 255);
+  mat.metallicTextureId = resolveTex(metallicKey, 0, 0, 0, 255);
   mat.roughnessTextureId = resolveTex(roughnessKey, 255, 255, 255, 255);
-  mat.aoTextureId        = resolveTex(aoKey,        255, 255, 255, 255);
+  mat.aoTextureId = resolveTex(aoKey, 255, 255, 255, 255);
 
   mat.descriptorSetId = descriptorManager.createTextureDescriptor(
-      device.getLogicalDevice(),
-      textureImageViews[mat.albedoTextureId].get(),
+      device.getLogicalDevice(), textureImageViews[mat.albedoTextureId].get(),
       textureImageViews[mat.normalTextureId].get(),
       textureImageViews[mat.metallicTextureId].get(),
       textureImageViews[mat.roughnessTextureId].get(),
-      textureImageViews[mat.aoTextureId].get(),
-      textureSampler);
+      textureImageViews[mat.aoTextureId].get(), textureSampler);
   materialMap[materialKey] = mat.descriptorSetId;
   return mat;
 }
@@ -221,7 +269,8 @@ int TextureManager::loadSkybox(const std::string &filename,
                                DescriptorManager & /*descriptorManager*/) {
   std::string key = normalizeTextureKey(filename);
   auto it = skyboxMap.find(key);
-  if (it != skyboxMap.end()) return it->second;
+  if (it != skyboxMap.end())
+    return it->second;
 
   int imageLoc = createHdrCubemap(key, device, 512);
   skyboxMap[key] = imageLoc;
@@ -232,27 +281,33 @@ int TextureManager::loadSkybox(const std::string &filename,
 // IBL generation – delegates to GPU compute
 // ---------------------------------------------------------------------------
 
-int TextureManager::createIrradianceMap(int skyboxImageIndex, const VulkanDevice &device) {
+int TextureManager::createIrradianceMap(int skyboxImageIndex,
+                                        const VulkanDevice &device) {
   constexpr const char *cacheKey = "__irradiance_map__";
   auto it = textureMap.find(cacheKey);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
   return dispatchIrradianceCompute(skyboxImageIndex, device);
 }
 
-int TextureManager::createPrefilteredEnvMap(int skyboxImageIndex, const VulkanDevice &device) {
+int TextureManager::createPrefilteredEnvMap(int skyboxImageIndex,
+                                            const VulkanDevice &device) {
   constexpr const char *cacheKey = "__prefiltered_env__";
   auto it = textureMap.find(cacheKey);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
   return dispatchPrefilterCompute(skyboxImageIndex, device);
 }
 
 int TextureManager::loadBrdfLut(const VulkanDevice &device) {
   constexpr const char *cacheKey = "__brdf_lut__";
   auto it = textureMap.find(cacheKey);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
 
-  for (const char *rel : { "Resources/LUTs/ibl_brdf_lut.png", "LUTs/ibl_brdf_lut.png",
-                            "../Resources/LUTs/ibl_brdf_lut.png" }) {
+  for (const char *rel :
+       {"Resources/LUTs/ibl_brdf_lut.png", "LUTs/ibl_brdf_lut.png",
+        "../Resources/LUTs/ibl_brdf_lut.png"}) {
     if (std::filesystem::exists(rel)) {
       int w, h, c;
       unsigned char *data = stbi_load(rel, &w, &h, &c, STBI_rgb_alpha);
@@ -271,16 +326,18 @@ int TextureManager::loadBrdfLut(const VulkanDevice &device) {
     float a = roughness * roughness;
     for (uint32_t n = 0; n < sz; n++) {
       float NdotV = (n + 0.5f) / sz;
-      float k     = a / 2.0f;
-      float A     = NdotV / (NdotV * (1.0f - k) + k);
-      float fres  = std::pow(1.0f - NdotV, 5.0f);
+      float k = a / 2.0f;
+      float A = NdotV / (NdotV * (1.0f - k) + k);
+      float fres = std::pow(1.0f - NdotV, 5.0f);
       float scale = A * (1.0f - fres);
-      float bias  = A *         fres;
+      float bias = A * fres;
       size_t idx = (r * sz + n) * 4;
-      pixels[idx+0] = static_cast<uint8_t>(std::clamp(scale, 0.0f, 1.0f) * 255.0f);
-      pixels[idx+1] = static_cast<uint8_t>(std::clamp(bias,  0.0f, 1.0f) * 255.0f);
-      pixels[idx+2] = 0;
-      pixels[idx+3] = 255;
+      pixels[idx + 0] =
+          static_cast<uint8_t>(std::clamp(scale, 0.0f, 1.0f) * 255.0f);
+      pixels[idx + 1] =
+          static_cast<uint8_t>(std::clamp(bias, 0.0f, 1.0f) * 255.0f);
+      pixels[idx + 2] = 0;
+      pixels[idx + 3] = 255;
     }
   }
   return createTextureImageFromPixels(cacheKey, pixels.data(), sz, sz, device);
@@ -289,18 +346,21 @@ int TextureManager::loadBrdfLut(const VulkanDevice &device) {
 int TextureManager::createSsaoNoiseTexture(const VulkanDevice &device) {
   constexpr const char *cacheKey = "__ssao_noise__";
   auto it = textureMap.find(cacheKey);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
 
   std::mt19937 rng(42);
   std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
-  std::array<uint8_t, 4*4*4> pixels{};
+  std::array<uint8_t, 4 * 4 * 4> pixels{};
   for (int i = 0; i < 16; i++) {
     float angle = dist(rng) * 2.0f * PI;
-    pixels[i*4+0] = static_cast<uint8_t>((std::cos(angle) * 0.5f + 0.5f) * 255.0f);
-    pixels[i*4+1] = static_cast<uint8_t>((std::sin(angle) * 0.5f + 0.5f) * 255.0f);
-    pixels[i*4+2] = 0;
-    pixels[i*4+3] = 255;
+    pixels[i * 4 + 0] =
+        static_cast<uint8_t>((std::cos(angle) * 0.5f + 0.5f) * 255.0f);
+    pixels[i * 4 + 1] =
+        static_cast<uint8_t>((std::sin(angle) * 0.5f + 0.5f) * 255.0f);
+    pixels[i * 4 + 2] = 0;
+    pixels[i * 4 + 3] = 255;
   }
   return createTextureImageFromPixels(cacheKey, pixels.data(), 4, 4, device);
 }
@@ -309,42 +369,44 @@ int TextureManager::createSsaoNoiseTexture(const VulkanDevice &device) {
 // Private – samplers
 // ---------------------------------------------------------------------------
 
-void TextureManager::createTextureSampler(VkDevice device, VkPhysicalDevice physDevice) {
+void TextureManager::createTextureSampler(VkDevice device,
+                                          VkPhysicalDevice physDevice) {
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(physDevice, &props);
 
   VkSamplerCreateInfo ci = {};
-  ci.sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  ci.magFilter        = VK_FILTER_LINEAR;
-  ci.minFilter        = VK_FILTER_LINEAR;
-  ci.addressModeU     = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  ci.addressModeV     = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  ci.addressModeW     = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  ci.borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-  ci.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  ci.magFilter = VK_FILTER_LINEAR;
+  ci.minFilter = VK_FILTER_LINEAR;
+  ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  ci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+  ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   ci.anisotropyEnable = VK_TRUE;
-  ci.maxAnisotropy    = props.limits.maxSamplerAnisotropy;
+  ci.maxAnisotropy = props.limits.maxSamplerAnisotropy;
   if (vkCreateSampler(device, &ci, nullptr, &textureSampler) != VK_SUCCESS)
     throw std::runtime_error("Failed to create texture sampler");
 }
 
-void TextureManager::createSkyboxSampler(VkDevice device, VkPhysicalDevice physDevice) {
+void TextureManager::createSkyboxSampler(VkDevice device,
+                                         VkPhysicalDevice physDevice) {
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(physDevice, &props);
 
   VkSamplerCreateInfo ci = {};
-  ci.sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  ci.magFilter        = VK_FILTER_LINEAR;
-  ci.minFilter        = VK_FILTER_LINEAR;
-  ci.addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  ci.addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  ci.addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  ci.borderColor      = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-  ci.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  ci.minLod           = 0.0f;
-  ci.maxLod           = static_cast<float>(IBL_PREFILTER_MIPS);
+  ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  ci.magFilter = VK_FILTER_LINEAR;
+  ci.minFilter = VK_FILTER_LINEAR;
+  ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+  ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  ci.minLod = 0.0f;
+  ci.maxLod = static_cast<float>(IBL_PREFILTER_MIPS);
   ci.anisotropyEnable = VK_TRUE;
-  ci.maxAnisotropy    = props.limits.maxSamplerAnisotropy;
+  ci.maxAnisotropy = props.limits.maxSamplerAnisotropy;
   if (vkCreateSampler(device, &ci, nullptr, &skyboxSampler) != VK_SUCCESS)
     throw std::runtime_error("Failed to create skybox sampler");
 }
@@ -357,179 +419,204 @@ void TextureManager::createComputePipelines(const VulkanDevice &device) {
   VkDevice dev = device.getLogicalDevice();
 
   std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
-  bindings[0].binding        = 0;
+  bindings[0].binding = 0;
   bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  bindings[0].descriptorCount= 1;
-  bindings[0].stageFlags     = VK_SHADER_STAGE_COMPUTE_BIT;
-  bindings[1].binding        = 1;
+  bindings[0].descriptorCount = 1;
+  bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  bindings[1].binding = 1;
   bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  bindings[1].descriptorCount= 1;
-  bindings[1].stageFlags     = VK_SHADER_STAGE_COMPUTE_BIT;
+  bindings[1].descriptorCount = 1;
+  bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
   VkDescriptorSetLayoutCreateInfo dslCI = {};
-  dslCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dslCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   dslCI.bindingCount = 2;
-  dslCI.pBindings    = bindings.data();
-  if (vkCreateDescriptorSetLayout(dev, &dslCI, nullptr, &computeSetLayout) != VK_SUCCESS)
+  dslCI.pBindings = bindings.data();
+  if (vkCreateDescriptorSetLayout(dev, &dslCI, nullptr, &computeSetLayout) !=
+      VK_SUCCESS)
     throw std::runtime_error("Failed to create compute descriptor set layout");
 
   // Push constants used by prefilter (roughness + mip dimensions)
   VkPushConstantRange pcRange = {};
   pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-  pcRange.offset     = 0;
-  pcRange.size       = sizeof(float) + sizeof(uint32_t) * 2;
+  pcRange.offset = 0;
+  pcRange.size = sizeof(float) + sizeof(uint32_t) * 2;
 
   VkPipelineLayoutCreateInfo plCI = {};
-  plCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  plCI.setLayoutCount         = 1;
-  plCI.pSetLayouts            = &computeSetLayout;
+  plCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plCI.setLayoutCount = 1;
+  plCI.pSetLayouts = &computeSetLayout;
   plCI.pushConstantRangeCount = 1;
-  plCI.pPushConstantRanges    = &pcRange;
+  plCI.pPushConstantRanges = &pcRange;
   if (vkCreatePipelineLayout(dev, &plCI, nullptr, &computeLayout) != VK_SUCCESS)
     throw std::runtime_error("Failed to create compute pipeline layout");
 
   std::array<VkDescriptorPoolSize, 2> poolSizes{};
-  poolSizes[0] = { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          8 };
-  poolSizes[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 };
+  poolSizes[0] = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8};
+  poolSizes[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8};
   VkDescriptorPoolCreateInfo poolCI = {};
-  poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  poolCI.maxSets       = 8;
+  poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  poolCI.maxSets = 8;
   poolCI.poolSizeCount = 2;
-  poolCI.pPoolSizes    = poolSizes.data();
+  poolCI.pPoolSizes = poolSizes.data();
   if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &computePool) != VK_SUCCESS)
     throw std::runtime_error("Failed to create compute descriptor pool");
 
   VkShaderModule irradianceMod = loadSpv(dev, "Shaders/irradiance.comp.spv");
-  VkShaderModule prefilterMod  = loadSpv(dev, "Shaders/prefilter.comp.spv");
+  VkShaderModule prefilterMod = loadSpv(dev, "Shaders/prefilter.comp.spv");
 
   auto makeComputePipeline = [&](VkShaderModule module) -> VkPipeline {
     VkPipelineShaderStageCreateInfo stageCI = {};
-    stageCI.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageCI.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageCI.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stageCI.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stageCI.module = module;
-    stageCI.pName  = "main";
+    stageCI.pName = "main";
     VkComputePipelineCreateInfo pCI = {};
-    pCI.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pCI.stage  = stageCI;
+    pCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pCI.stage = stageCI;
     pCI.layout = computeLayout;
     VkPipeline pipeline;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pCI, nullptr, &pipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pCI, nullptr,
+                                 &pipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create compute pipeline");
     return pipeline;
   };
 
   irradiancePipeline = makeComputePipeline(irradianceMod);
-  prefilterPipeline  = makeComputePipeline(prefilterMod);
+  prefilterPipeline = makeComputePipeline(prefilterMod);
 
   vkDestroyShaderModule(dev, irradianceMod, nullptr);
-  vkDestroyShaderModule(dev, prefilterMod,  nullptr);
+  vkDestroyShaderModule(dev, prefilterMod, nullptr);
 }
 
 void TextureManager::destroyComputePipelines(VkDevice dev) {
-  if (computePool)        { vkDestroyDescriptorPool(dev,      computePool,        nullptr); computePool        = VK_NULL_HANDLE; }
-  if (irradiancePipeline) { vkDestroyPipeline(dev,            irradiancePipeline, nullptr); irradiancePipeline = VK_NULL_HANDLE; }
-  if (prefilterPipeline)  { vkDestroyPipeline(dev,            prefilterPipeline,  nullptr); prefilterPipeline  = VK_NULL_HANDLE; }
-  if (computeLayout)      { vkDestroyPipelineLayout(dev,      computeLayout,      nullptr); computeLayout      = VK_NULL_HANDLE; }
-  if (computeSetLayout)   { vkDestroyDescriptorSetLayout(dev, computeSetLayout,   nullptr); computeSetLayout   = VK_NULL_HANDLE; }
+  if (computePool) {
+    vkDestroyDescriptorPool(dev, computePool, nullptr);
+    computePool = VK_NULL_HANDLE;
+  }
+  if (irradiancePipeline) {
+    vkDestroyPipeline(dev, irradiancePipeline, nullptr);
+    irradiancePipeline = VK_NULL_HANDLE;
+  }
+  if (prefilterPipeline) {
+    vkDestroyPipeline(dev, prefilterPipeline, nullptr);
+    prefilterPipeline = VK_NULL_HANDLE;
+  }
+  if (computeLayout) {
+    vkDestroyPipelineLayout(dev, computeLayout, nullptr);
+    computeLayout = VK_NULL_HANDLE;
+  }
+  if (computeSetLayout) {
+    vkDestroyDescriptorSetLayout(dev, computeSetLayout, nullptr);
+    computeSetLayout = VK_NULL_HANDLE;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Private – GPU IBL dispatch
 // ---------------------------------------------------------------------------
 
-int TextureManager::dispatchIrradianceCompute(int srcImageIndex, const VulkanDevice &device) {
+int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
+                                              const VulkanDevice &device) {
   VkDevice dev = device.getLogicalDevice();
   constexpr uint32_t OUT_SIZE = 32;
   constexpr const char *cacheKey = "__irradiance_map__";
 
   VkImageCreateInfo imgCI = {};
-  imgCI.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  imgCI.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  imgCI.imageType   = VK_IMAGE_TYPE_2D;
-  imgCI.extent      = { OUT_SIZE, OUT_SIZE, 1 };
-  imgCI.mipLevels   = 1;
+  imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imgCI.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  imgCI.imageType = VK_IMAGE_TYPE_2D;
+  imgCI.extent = {OUT_SIZE, OUT_SIZE, 1};
+  imgCI.mipLevels = 1;
   imgCI.arrayLayers = 6;
-  imgCI.format      = VK_FORMAT_R32G32B32A32_SFLOAT;
-  imgCI.tiling      = VK_IMAGE_TILING_OPTIMAL;
-  imgCI.usage       = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  imgCI.samples     = VK_SAMPLE_COUNT_1_BIT;
+  imgCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
   imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VmaAllocationCreateInfo aci = {}; aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-  VkImage img = VK_NULL_HANDLE; VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &imgCI, &aci, &img, &alloc, nullptr) != VK_SUCCESS)
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  VkImage img = VK_NULL_HANDLE;
+  VmaAllocation alloc = VK_NULL_HANDLE;
+  if (vmaCreateImage(device.getAllocator(), &imgCI, &aci, &img, &alloc,
+                     nullptr) != VK_SUCCESS)
     throw std::runtime_error("Failed to create irradiance cubemap image");
   AllocatedImage irradianceImg(device.getAllocator(), img, alloc);
 
-  transitionCubemapLayout(dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(),
-                          img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6);
+  transitionCubemapLayout(
+      dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(), img,
+      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6);
 
   // 2D_ARRAY view for storage image write (compute sees 6 layers)
   VkImageViewCreateInfo avCI = {};
-  avCI.sType               = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  avCI.image               = img;
-  avCI.viewType            = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-  avCI.format              = VK_FORMAT_R32G32B32A32_SFLOAT;
-  avCI.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+  avCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  avCI.image = img;
+  avCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+  avCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  avCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
   VkImageView arrayView = VK_NULL_HANDLE;
   vkCreateImageView(dev, &avCI, nullptr, &arrayView);
 
   // Descriptor set
   VkDescriptorSetAllocateInfo dsAI = {};
-  dsAI.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  dsAI.descriptorPool     = computePool;
+  dsAI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsAI.descriptorPool = computePool;
   dsAI.descriptorSetCount = 1;
-  dsAI.pSetLayouts        = &computeSetLayout;
+  dsAI.pSetLayouts = &computeSetLayout;
   VkDescriptorSet ds = VK_NULL_HANDLE;
   vkAllocateDescriptorSets(dev, &dsAI, &ds);
 
   VkDescriptorImageInfo storageInfo = {};
-  storageInfo.imageView   = arrayView;
+  storageInfo.imageView = arrayView;
   storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
   VkDescriptorImageInfo srcInfo = {};
-  srcInfo.sampler     = skyboxSampler;
-  srcInfo.imageView   = textureImageViews[srcImageIndex].get();
+  srcInfo.sampler = skyboxSampler;
+  srcInfo.imageView = textureImageViews[srcImageIndex].get();
   srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   std::array<VkWriteDescriptorSet, 2> writes{};
-  writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[0].dstSet          = ds;
-  writes[0].dstBinding      = 0;
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[0].dstSet = ds;
+  writes[0].dstBinding = 0;
   writes[0].descriptorCount = 1;
-  writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  writes[0].pImageInfo      = &storageInfo;
-  writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[1].dstSet          = ds;
-  writes[1].dstBinding      = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  writes[0].pImageInfo = &storageInfo;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[1].dstSet = ds;
+  writes[1].dstBinding = 1;
   writes[1].descriptorCount = 1;
-  writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[1].pImageInfo      = &srcInfo;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[1].pImageInfo = &srcInfo;
   vkUpdateDescriptorSets(dev, 2, writes.data(), 0, nullptr);
 
   // Dispatch: each workgroup is 8×8×1 threads, cover 32×32×6 pixels
-  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+  VkCommandBuffer cmd =
+      beginCommandBuffer(dev, device.getGraphicsCommandPool());
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout, 0, 1, &ds, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout, 0,
+                          1, &ds, 0, nullptr);
   uint32_t groups = (OUT_SIZE + 7) / 8;
   vkCmdDispatch(cmd, groups, groups, 6);
 
   // Barrier: compute writes done → fragment shader reads
   VkImageMemoryBarrier barrier = {};
-  barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  barrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-  barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-  barrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.image               = img;
-  barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
-  vkCmdPipelineBarrier(cmd,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-      0, 0, nullptr, 0, nullptr, 1, &barrier);
+  barrier.image = img;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
 
-  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(), device.getGraphicsQueue(), cmd);
+  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
+                            device.getGraphicsQueue(), cmd);
 
   vkDestroyImageView(dev, arrayView, nullptr);
   vkFreeDescriptorSets(dev, computePool, 1, &ds);
@@ -538,11 +625,11 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex, const VulkanDev
   int loc = static_cast<int>(textureImages.size() - 1);
 
   VkImageViewCreateInfo cvCI = {};
-  cvCI.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  cvCI.image            = textureImages[loc].get();
-  cvCI.viewType         = VK_IMAGE_VIEW_TYPE_CUBE;
-  cvCI.format           = VK_FORMAT_R32G32B32A32_SFLOAT;
-  cvCI.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+  cvCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  cvCI.image = textureImages[loc].get();
+  cvCI.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  cvCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  cvCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
   VkImageView cubeView = VK_NULL_HANDLE;
   if (vkCreateImageView(dev, &cvCI, nullptr, &cubeView) != VK_SUCCESS)
     throw std::runtime_error("Failed to create irradiance cube view");
@@ -551,99 +638,113 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex, const VulkanDev
   return loc;
 }
 
-int TextureManager::dispatchPrefilterCompute(int srcImageIndex, const VulkanDevice &device) {
+int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
+                                             const VulkanDevice &device) {
   VkDevice dev = device.getLogicalDevice();
   constexpr const char *cacheKey = "__prefiltered_env__";
   constexpr uint32_t BASE_SIZE = 128;
   const uint32_t nMips = static_cast<uint32_t>(IBL_PREFILTER_MIPS);
 
   VkImageCreateInfo imgCI = {};
-  imgCI.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  imgCI.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  imgCI.imageType   = VK_IMAGE_TYPE_2D;
-  imgCI.extent      = { BASE_SIZE, BASE_SIZE, 1 };
-  imgCI.mipLevels   = nMips;
+  imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imgCI.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  imgCI.imageType = VK_IMAGE_TYPE_2D;
+  imgCI.extent = {BASE_SIZE, BASE_SIZE, 1};
+  imgCI.mipLevels = nMips;
   imgCI.arrayLayers = 6;
-  imgCI.format      = VK_FORMAT_R32G32B32A32_SFLOAT;
-  imgCI.tiling      = VK_IMAGE_TILING_OPTIMAL;
-  imgCI.usage       = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  imgCI.samples     = VK_SAMPLE_COUNT_1_BIT;
+  imgCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
   imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VmaAllocationCreateInfo aci = {}; aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-  VkImage img = VK_NULL_HANDLE; VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &imgCI, &aci, &img, &alloc, nullptr) != VK_SUCCESS)
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  VkImage img = VK_NULL_HANDLE;
+  VmaAllocation alloc = VK_NULL_HANDLE;
+  if (vmaCreateImage(device.getAllocator(), &imgCI, &aci, &img, &alloc,
+                     nullptr) != VK_SUCCESS)
     throw std::runtime_error("Failed to create prefiltered env map image");
   AllocatedImage prefilterImg(device.getAllocator(), img, alloc);
 
   // All mip levels start as GENERAL so compute can write to them
-  transitionCubemapLayout(dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(),
-                          img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6, nMips);
+  transitionCubemapLayout(
+      dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(), img,
+      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6, nMips);
 
   // One descriptor set, updated per mip
   VkDescriptorSetAllocateInfo dsAI = {};
-  dsAI.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  dsAI.descriptorPool     = computePool;
+  dsAI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsAI.descriptorPool = computePool;
   dsAI.descriptorSetCount = 1;
-  dsAI.pSetLayouts        = &computeSetLayout;
+  dsAI.pSetLayouts = &computeSetLayout;
   VkDescriptorSet ds = VK_NULL_HANDLE;
   vkAllocateDescriptorSets(dev, &dsAI, &ds);
 
   VkDescriptorImageInfo srcInfo = {};
-  srcInfo.sampler     = skyboxSampler;
-  srcInfo.imageView   = textureImageViews[srcImageIndex].get();
+  srcInfo.sampler = skyboxSampler;
+  srcInfo.imageView = textureImageViews[srcImageIndex].get();
   srcInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   for (uint32_t mip = 0; mip < nMips; mip++) {
-    uint32_t mipSize  = BASE_SIZE >> mip;
-    float    roughness = static_cast<float>(mip) / static_cast<float>(nMips - 1);
+    uint32_t mipSize = BASE_SIZE >> mip;
+    float roughness = static_cast<float>(mip) / static_cast<float>(nMips - 1);
 
     // Per-mip 2D_ARRAY view (compute writes to exactly this mip level)
     VkImageViewCreateInfo mvCI = {};
-    mvCI.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    mvCI.image            = img;
-    mvCI.viewType         = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    mvCI.format           = VK_FORMAT_R32G32B32A32_SFLOAT;
-    mvCI.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6 };
+    mvCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    mvCI.image = img;
+    mvCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    mvCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    mvCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
     VkImageView mipView = VK_NULL_HANDLE;
     vkCreateImageView(dev, &mvCI, nullptr, &mipView);
 
     VkDescriptorImageInfo storageInfo = {};
-    storageInfo.imageView   = mipView;
+    storageInfo.imageView = mipView;
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     std::array<VkWriteDescriptorSet, 2> writes{};
-    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = ds;
-    writes[0].dstBinding      = 0;
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = ds;
+    writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
-    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo      = &storageInfo;
-    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = ds;
-    writes[1].dstBinding      = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].pImageInfo = &storageInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = ds;
+    writes[1].dstBinding = 1;
     writes[1].descriptorCount = 1;
-    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo      = &srcInfo;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &srcInfo;
     vkUpdateDescriptorSets(dev, 2, writes.data(), 0, nullptr);
 
-    struct { float roughness; uint32_t w; uint32_t h; } pc { roughness, mipSize, mipSize };
+    struct {
+      float roughness;
+      uint32_t w;
+      uint32_t h;
+    } pc{roughness, mipSize, mipSize};
 
-    VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+    VkCommandBuffer cmd =
+        beginCommandBuffer(dev, device.getGraphicsCommandPool());
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout, 0, 1, &ds, 0, nullptr);
-    vkCmdPushConstants(cmd, computeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout,
+                            0, 1, &ds, 0, nullptr);
+    vkCmdPushConstants(cmd, computeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(pc), &pc);
     uint32_t gx = (mipSize + 7) / 8;
     uint32_t gy = (mipSize + 7) / 8;
     vkCmdDispatch(cmd, gx, gy, 6);
-    endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(), device.getGraphicsQueue(), cmd);
+    endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
+                              device.getGraphicsQueue(), cmd);
 
     vkDestroyImageView(dev, mipView, nullptr);
   }
 
   // All mips written: transition to shader-read for fragment sampling
-  transitionCubemapLayout(dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(),
-                          img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                          6, nMips);
+  transitionCubemapLayout(dev, device.getGraphicsQueue(),
+                          device.getGraphicsCommandPool(), img,
+                          VK_IMAGE_LAYOUT_GENERAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6, nMips);
 
   vkFreeDescriptorSets(dev, computePool, 1, &ds);
 
@@ -651,11 +752,11 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex, const VulkanDevi
   int loc = static_cast<int>(textureImages.size() - 1);
 
   VkImageViewCreateInfo cvCI = {};
-  cvCI.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  cvCI.image            = textureImages[loc].get();
-  cvCI.viewType         = VK_IMAGE_VIEW_TYPE_CUBE;
-  cvCI.format           = VK_FORMAT_R32G32B32A32_SFLOAT;
-  cvCI.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, nMips, 0, 6 };
+  cvCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  cvCI.image = textureImages[loc].get();
+  cvCI.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  cvCI.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  cvCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, nMips, 0, 6};
   VkImageView cubeView = VK_NULL_HANDLE;
   if (vkCreateImageView(dev, &cvCI, nullptr, &cubeView) != VK_SUCCESS)
     throw std::runtime_error("Failed to create prefiltered env cube view");
@@ -668,23 +769,28 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex, const VulkanDevi
 // Private – texture creation helpers
 // ---------------------------------------------------------------------------
 
-int TextureManager::getOrCreateTexture(const std::string &filename, const VulkanDevice &device) {
+int TextureManager::getOrCreateTexture(const std::string &filename,
+                                       const VulkanDevice &device) {
   std::string key = normalizeTextureKey(filename);
   auto it = textureMap.find(key);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
   return createTextureImage(key, device);
 }
 
 int TextureManager::getOrCreateFlatTexture(const std::string &cacheKey,
-                                            uint8_t r, uint8_t g, uint8_t b, uint8_t a,
-                                            const VulkanDevice &device) {
+                                           uint8_t r, uint8_t g, uint8_t b,
+                                           uint8_t a,
+                                           const VulkanDevice &device) {
   auto it = textureMap.find(cacheKey);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
   const unsigned char px[] = {r, g, b, a};
   return createTextureImageFromPixels(cacheKey, px, 1, 1, device);
 }
 
-int TextureManager::createTextureImage(const std::string &filename, const VulkanDevice &device) {
+int TextureManager::createTextureImage(const std::string &filename,
+                                       const VulkanDevice &device) {
   int w, h;
   VkDeviceSize sz;
   unsigned char *data = loadTextureFile(filename, &w, &h, &sz);
@@ -702,58 +808,64 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   AllocatedBuffer staging;
   createBuffer(device.getAllocator(), imageSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
-               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, &staging);
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &staging);
   void *mapped;
   vmaMapMemory(device.getAllocator(), staging.getAllocation(), &mapped);
   memcpy(mapped, pixels, static_cast<size_t>(imageSize));
   vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
 
   VkImageCreateInfo ci = {};
-  ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  ci.imageType     = VK_IMAGE_TYPE_2D;
-  ci.extent        = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-  ci.mipLevels     = 1;
-  ci.arrayLayers   = 1;
-  ci.format        = VK_FORMAT_R8G8B8A8_UNORM;
-  ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  ci.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  ci.samples       = VK_SAMPLE_COUNT_1_BIT;
-  ci.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
   VkImage img = VK_NULL_HANDLE;
   VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &ci, &aci, &img, &alloc, nullptr) != VK_SUCCESS)
+  if (vmaCreateImage(device.getAllocator(), &ci, &aci, &img, &alloc, nullptr) !=
+      VK_SUCCESS)
     throw std::runtime_error("Failed to create texture image");
   AllocatedImage texImg(device.getAllocator(), img, alloc);
 
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
                         device.getGraphicsCommandPool(), texImg.get(),
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                        VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
                   device.getGraphicsCommandPool(), staging.get(), texImg.get(),
                   static_cast<uint32_t>(width), static_cast<uint32_t>(height));
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
                         device.getGraphicsCommandPool(), texImg.get(),
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
   textureImages.push_back(std::move(texImg));
   int loc = static_cast<int>(textureImages.size() - 1);
 
   VkImageViewCreateInfo vci = {};
-  vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  vci.image    = textureImages[loc].get();
+  vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vci.image = textureImages[loc].get();
   vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  vci.format   = VK_FORMAT_R8G8B8A8_UNORM;
-  vci.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                     VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
-  vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+  vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+  vci.components = {
+      VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+      VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
   VkImageView view;
-  if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) != VK_SUCCESS)
+  if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) !=
+      VK_SUCCESS)
     throw std::runtime_error("Failed to create texture image view");
   textureImageViews.emplace_back(device.getLogicalDevice(), view);
   textureMap[cacheKey] = loc;
@@ -765,45 +877,52 @@ unsigned char *TextureManager::loadTextureFile(const std::string &filename,
                                                VkDeviceSize *imageSize) {
   int channels;
   std::string path = resolveTexturePath(filename);
-  unsigned char *data = stbi_load(path.c_str(), width, height, &channels, STBI_rgb_alpha);
-  if (!data) throw std::runtime_error("Failed to load texture: " + path);
+  unsigned char *data =
+      stbi_load(path.c_str(), width, height, &channels, STBI_rgb_alpha);
+  if (!data)
+    throw std::runtime_error("Failed to load texture: " + path);
   *imageSize = static_cast<VkDeviceSize>(*width) * (*height) * 4;
   return data;
 }
 
-std::string TextureManager::resolveTexturePath(const std::string &filename) const {
+std::string
+TextureManager::resolveTexturePath(const std::string &filename) const {
   std::string norm = normalizeTextureKey(filename);
   std::filesystem::path input(norm);
   std::vector<std::filesystem::path> candidates = {
-    input,
-    std::filesystem::path("Textures")           / input.filename(),
-    std::filesystem::path("Models")             / input,
-    std::filesystem::path("Resources")          / input,
-    std::filesystem::path("Resources/Textures") / input,
-    std::filesystem::path("Resources/HDRIs")    / input.filename(),
-    std::filesystem::path("Resources/LUTs")     / input.filename(),
-    std::filesystem::path("..")                 / input,
-    std::filesystem::path("../Textures")        / input.filename(),
-    std::filesystem::path("../Resources")       / input,
+      input,
+      std::filesystem::path("Textures") / input.filename(),
+      std::filesystem::path("Models") / input,
+      std::filesystem::path("Resources") / input,
+      std::filesystem::path("Resources/Textures") / input,
+      std::filesystem::path("Resources/HDRIs") / input.filename(),
+      std::filesystem::path("Resources/LUTs") / input.filename(),
+      std::filesystem::path("..") / input,
+      std::filesystem::path("../Textures") / input.filename(),
+      std::filesystem::path("../Resources") / input,
   };
-  // Also search relative to the model file's directory (glTF textures live there)
+  // Also search relative to the model file's directory (glTF textures live
+  // there)
   if (!modelBaseDirectory.empty()) {
     std::filesystem::path mdir(modelBaseDirectory);
     candidates.push_back(mdir / input.filename());
     candidates.push_back(mdir / input);
   }
   for (const auto &c : candidates)
-    if (std::filesystem::exists(c)) return c.string();
+    if (std::filesystem::exists(c))
+      return c.string();
   return candidates.front().string();
 }
 
-std::string TextureManager::normalizeTextureKey(const std::string &filename) const {
+std::string
+TextureManager::normalizeTextureKey(const std::string &filename) const {
   std::string key = filename;
   std::replace(key.begin(), key.end(), '\\', '/');
   constexpr const char *prefix = "textures/";
   if (key.size() > std::strlen(prefix) &&
-      std::equal(prefix, prefix + std::strlen(prefix), key.begin(),
-                 [](char a, char b) { return std::tolower(a) == std::tolower(b); }))
+      std::equal(
+          prefix, prefix + std::strlen(prefix), key.begin(),
+          [](char a, char b) { return std::tolower(a) == std::tolower(b); }))
     key = key.substr(std::strlen(prefix));
   return key;
 }
@@ -813,14 +932,17 @@ std::string TextureManager::normalizeTextureKey(const std::string &filename) con
 // ---------------------------------------------------------------------------
 
 int TextureManager::createHdrCubemap(const std::string &filename,
-                                     const VulkanDevice &device, uint32_t faceSize) {
+                                     const VulkanDevice &device,
+                                     uint32_t faceSize) {
   auto it = textureMap.find(filename);
-  if (it != textureMap.end()) return it->second;
+  if (it != textureMap.end())
+    return it->second;
 
   int w = 0, h = 0, ch = 0;
   std::string path = resolveTexturePath(filename);
   float *hdr = stbi_loadf(path.c_str(), &w, &h, &ch, STBI_rgb_alpha);
-  if (!hdr) throw std::runtime_error("Failed to load HDR skybox: " + path);
+  if (!hdr)
+    throw std::runtime_error("Failed to load HDR skybox: " + path);
 
   std::vector<float> cubemap(static_cast<size_t>(faceSize) * faceSize * 6 * 4);
   for (uint32_t face = 0; face < 6; face++) {
@@ -828,10 +950,14 @@ int TextureManager::createHdrCubemap(const std::string &filename,
       for (uint32_t x = 0; x < faceSize; x++) {
         float u = 2.0f * (x + 0.5f) / faceSize - 1.0f;
         float v = 2.0f * (y + 0.5f) / faceSize - 1.0f;
-        glm::vec4 s = sampleEquirectangular(hdr, w, h, faceDirection(face, u, v));
-        size_t dst = ((static_cast<size_t>(face) * faceSize + y) * faceSize + x) * 4;
-        cubemap[dst+0] = s.r; cubemap[dst+1] = s.g;
-        cubemap[dst+2] = s.b; cubemap[dst+3] = 1.0f;
+        glm::vec4 s =
+            sampleEquirectangular(hdr, w, h, faceDirection(face, u, v));
+        size_t dst =
+            ((static_cast<size_t>(face) * faceSize + y) * faceSize + x) * 4;
+        cubemap[dst + 0] = s.r;
+        cubemap[dst + 1] = s.g;
+        cubemap[dst + 2] = s.b;
+        cubemap[dst + 3] = 1.0f;
       }
     }
   }
@@ -841,23 +967,24 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   AllocatedBuffer staging;
   createBuffer(device.getAllocator(), imageSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
-               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, &staging);
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &staging);
   void *mapped;
   vmaMapMemory(device.getAllocator(), staging.getAllocation(), &mapped);
   memcpy(mapped, cubemap.data(), static_cast<size_t>(imageSize));
   vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
 
   VkImageCreateInfo ci = {};
-  ci.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  ci.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  ci.imageType   = VK_IMAGE_TYPE_2D;
-  ci.extent      = { faceSize, faceSize, 1 };
-  ci.mipLevels   = 1;
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.extent = {faceSize, faceSize, 1};
+  ci.mipLevels = 1;
   ci.arrayLayers = 6;
-  ci.format      = VK_FORMAT_R32G32B32A32_SFLOAT;
-  ci.tiling      = VK_IMAGE_TILING_OPTIMAL;
-  ci.usage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  ci.samples     = VK_SAMPLE_COUNT_1_BIT;
+  ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   VmaAllocationCreateInfo aci = {};
@@ -865,31 +992,35 @@ int TextureManager::createHdrCubemap(const std::string &filename,
 
   VkImage img = VK_NULL_HANDLE;
   VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &ci, &aci, &img, &alloc, nullptr) != VK_SUCCESS)
+  if (vmaCreateImage(device.getAllocator(), &ci, &aci, &img, &alloc, nullptr) !=
+      VK_SUCCESS)
     throw std::runtime_error("Failed to create HDR cubemap image");
   AllocatedImage cubemapImg(device.getAllocator(), img, alloc);
 
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
                         device.getGraphicsCommandPool(), cubemapImg.get(),
-                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6);
+                        VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6);
   copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
-                  device.getGraphicsCommandPool(), staging.get(), cubemapImg.get(),
-                  faceSize, faceSize, 6);
+                  device.getGraphicsCommandPool(), staging.get(),
+                  cubemapImg.get(), faceSize, faceSize, 6);
   transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
                         device.getGraphicsCommandPool(), cubemapImg.get(),
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6);
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6);
 
   textureImages.push_back(std::move(cubemapImg));
   int loc = static_cast<int>(textureImages.size() - 1);
 
   VkImageViewCreateInfo vci = {};
-  vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  vci.image    = textureImages[loc].get();
+  vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vci.image = textureImages[loc].get();
   vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-  vci.format   = VK_FORMAT_R32G32B32A32_SFLOAT;
-  vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6 };
+  vci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
   VkImageView view;
-  if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) != VK_SUCCESS)
+  if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) !=
+      VK_SUCCESS)
     throw std::runtime_error("Failed to create HDR cubemap view");
   textureImageViews.emplace_back(device.getLogicalDevice(), view);
   textureMap[filename] = loc;

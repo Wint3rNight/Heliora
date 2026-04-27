@@ -16,8 +16,12 @@ void InputManager::init(GLFWwindow *newWindow) {
   glfwSetCursorPosCallback(window, mouseCallback);
   glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
-  // Capture the cursor for FPS-style camera
+  // Capture the cursor for FPS-style camera.
+  // Raw mouse motion avoids XGrabPointer on X11, which can suppress touchpad
+  // events while keyboard keys are held simultaneously.
   glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  if (glfwRawMouseMotionSupported())
+    glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 }
 
 void InputManager::pollEvents() {
@@ -40,9 +44,7 @@ void InputManager::resetMouseDelta() {
   deltaY = 0.0f;
 }
 
-bool InputManager::shouldClose() const {
-  return glfwWindowShouldClose(window);
-}
+bool InputManager::shouldClose() const { return glfwWindowShouldClose(window); }
 
 bool InputManager::wasResized() const { return framebufferResized; }
 
@@ -64,8 +66,8 @@ void InputManager::mouseCallback(GLFWwindow *w, double xposIn, double yposIn) {
     self->firstMouse = false;
   }
 
-  self->deltaX = xpos - self->lastX;
-  self->deltaY = self->lastY - ypos; // reversed: y goes bottom to top
+  self->deltaX += xpos - self->lastX;
+  self->deltaY += self->lastY - ypos; // reversed: y goes bottom to top
 
   self->lastX = xpos;
   self->lastY = ypos;

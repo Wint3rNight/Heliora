@@ -2,6 +2,7 @@
 
 #include <fstream>
 #define GLFW_INCLUDE_VULKAN
+#include "vk_mem_alloc.h"
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <stdexcept>
@@ -9,7 +10,6 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
-#include "vk_mem_alloc.h"
 
 class AllocatedBuffer {
 public:
@@ -153,6 +153,7 @@ const int MAX_POINT_LIGHTS = 4;
 const int MAX_SPOT_LIGHTS = 2;
 const uint32_t SHADOW_MAP_SIZE = 2048;
 const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
+constexpr int NUM_CSM_CASCADES = 4;
 
 const std::vector<const char *> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -187,9 +188,10 @@ struct SpotLight {
 struct SceneUniformBuffer {
   alignas(16) glm::mat4 projection;
   alignas(16) glm::mat4 view;
-  alignas(16) glm::mat4 lightSpaceMatrix;
+  alignas(16) glm::mat4 lightSpaceMatrices[NUM_CSM_CASCADES];
   alignas(16) glm::mat4 pointShadowMatrices[6];
   alignas(16) glm::vec4 cameraPosition;
+  alignas(16) glm::vec4 cascadeSplits;
   alignas(16) DirectionalLight directionalLight;
   alignas(16) PointLight pointLights[MAX_POINT_LIGHTS];
   alignas(16) SpotLight spotLights[MAX_SPOT_LIGHTS];
@@ -204,6 +206,11 @@ const int IBL_PREFILTER_MIPS = 5;
 struct ModelPushConstants {
   alignas(16) glm::mat4 model;
   alignas(16) glm::mat4 normal;
+};
+
+struct InstanceData {
+  glm::mat4 model;
+  glm::mat4 normal;
 };
 
 struct ShadowPushConstants {
@@ -290,9 +297,8 @@ static void createBuffer(VmaAllocator allocator, VkDeviceSize bufferSize,
 
   VkBuffer buffer = VK_NULL_HANDLE;
   VmaAllocation allocation = VK_NULL_HANDLE;
-  VkResult result =
-      vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &buffer,
-                      &allocation, nullptr);
+  VkResult result = vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &buffer,
+                                    &allocation, nullptr);
   if (result != VK_SUCCESS) {
     throw std::runtime_error("failed to create VMA buffer!");
   }
@@ -393,7 +399,7 @@ static void copyImageBuffer(VkDevice device, VkQueue transferQueue,
   imageRegion.imageSubresource.baseArrayLayer =
       0; // starting array layer to copy to
   imageRegion.imageSubresource.layerCount =
-      layerCount; // number of array layers to copy
+      layerCount;                      // number of array layers to copy
   imageRegion.imageOffset = {0, 0, 0}; // offset into image to start copying to
   imageRegion.imageExtent = {width, height, 1}; // size of region to copy
 

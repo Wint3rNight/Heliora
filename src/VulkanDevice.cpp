@@ -1,6 +1,6 @@
 #include "VulkanDevice.h"
-#include <iostream>
 #include <cstring>
+#include <iostream>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -333,7 +333,8 @@ void VulkanDevice::selectPhysicalDevice() {
     vkGetPhysicalDeviceProperties(mainDevice.physicalDevice, &deviceProperties);
 
     spdlog::info("Selected GPU: {}", deviceProperties.deviceName);
-    spdlog::info("Device Type: {}", static_cast<int>(deviceProperties.deviceType));
+    spdlog::info("Device Type: {}",
+                 static_cast<int>(deviceProperties.deviceType));
     spdlog::info("Total Devices Found: {}", deviceCount);
     spdlog::info("API Version: {}.{}.{}",
                  VK_VERSION_MAJOR(deviceProperties.apiVersion),

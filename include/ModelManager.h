@@ -18,7 +18,8 @@ public:
   ModelManager(const ModelManager &) = delete;
   ModelManager &operator=(const ModelManager &) = delete;
 
-  // Loads an OBJ file and returns its unique ID. Returns cached ID if already loaded.
+  // Loads an OBJ file and returns its unique ID. Returns cached ID if already
+  // loaded.
   int loadModel(const std::string &modelFile, const VulkanDevice &device,
                 TextureManager &textureManager,
                 DescriptorManager &descriptorManager);

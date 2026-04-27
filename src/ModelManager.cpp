@@ -31,11 +31,10 @@ int ModelManager::loadModel(const std::string &modelFile,
   }
 
   for (const std::string &path : candidatePaths) {
-    scene = importer.ReadFile(path,
-                              aiProcess_Triangulate | aiProcess_FlipUVs |
-                                  aiProcess_JoinIdenticalVertices |
-                                  aiProcess_GenSmoothNormals |
-                                  aiProcess_CalcTangentSpace);
+    scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs |
+                                        aiProcess_JoinIdenticalVertices |
+                                        aiProcess_GenSmoothNormals |
+                                        aiProcess_CalcTangentSpace);
     if (scene && !(scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) &&
         scene->mRootNode) {
       break;

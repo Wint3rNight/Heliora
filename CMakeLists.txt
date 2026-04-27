@@ -16,6 +16,16 @@ find_package(glm CONFIG REQUIRED)
 find_package(assimp REQUIRED)
 find_package(spdlog REQUIRED)
 
+# meshoptimizer — mesh simplification for LOD generation
+include(FetchContent)
+FetchContent_Declare(
+  meshoptimizer
+  GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+  GIT_TAG        v0.21
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(meshoptimizer)
+
 # Source File Management - Simplified
 # Note: Using GLOB is okay for small projects, but listing them is safer.
 file(GLOB_RECURSE ALL_SOURCES
@@ -48,5 +58,7 @@ else()
         target_include_directories(${PROJECT_NAME} PRIVATE ${ASSIMP_INCLUDE_DIRS})
         target_link_libraries(${PROJECT_NAME} PRIVATE ${ASSIMP_LIBRARIES})
 endif()
+
+target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer)
 
 message(STATUS "Vulkan SDK: ${Vulkan_INCLUDE_DIRS}")

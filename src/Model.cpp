@@ -1,9 +1,11 @@
 #include "Model.h"
 #include <algorithm>
 #include <cctype>
-#include <stdexcept>
 #include <cstring>
+#include <glm/glm.hpp>
 #include <iterator>
+#include <meshoptimizer.h>
+#include <stdexcept>
 
 // =============================================================================
 // Mesh Implementation
@@ -13,15 +15,27 @@ Mesh::Mesh()
     : allocator(VK_NULL_HANDLE), device(VK_NULL_HANDLE), vertexCount(0),
       indexCount(0) {}
 
-Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice,
-           VkQueue transferQueue, VkCommandPool transferCommandPool,
-           std::vector<Vertex> *vertices, std::vector<uint32_t> *indices,
-           Material newMaterial) {
+Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice, VkQueue transferQueue,
+           VkCommandPool transferCommandPool, std::vector<Vertex> *vertices,
+           std::vector<uint32_t> *indices, Material newMaterial) {
   vertexCount = vertices->size();
   indexCount = indices->size();
   allocator = newAllocator;
   device = newDevice;
   material = newMaterial;
+
+  if (!vertices->empty()) {
+    glm::vec3 center(0.0f);
+    for (const Vertex &v : *vertices)
+      center += v.pos;
+    center /= static_cast<float>(vertices->size());
+    float radius = 0.0f;
+    for (const Vertex &v : *vertices)
+      radius = glm::max(radius, glm::length(v.pos - center));
+    boundingCenter = center;
+    boundingRadius = radius;
+  }
+
   createVertexBuffer(transferQueue, transferCommandPool, vertices);
   createIndexBuffer(transferQueue, transferCommandPool, indices);
 }
@@ -29,12 +43,66 @@ Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice,
 const Material &Mesh::getMaterial() const { return material; }
 int Mesh::getVertexCount() const { return vertexCount; }
 VkBuffer Mesh::getVertexBuffer() const { return vertexBuffer.get(); }
-int Mesh::getIndexCount() const { return indexCount; }
-VkBuffer Mesh::getIndexBuffer() const { return indexBuffer.get(); }
+
+int Mesh::getIndexCount(int lod) const {
+  if (lod <= 0 || extraLodIndexCounts.empty())
+    return indexCount;
+  int i = lod - 1;
+  return (i < static_cast<int>(extraLodIndexCounts.size()))
+             ? extraLodIndexCounts[i]
+             : indexCount;
+}
+
+VkBuffer Mesh::getIndexBuffer(int lod) const {
+  if (lod <= 0 || extraLodIndexBuffers.empty())
+    return indexBuffer.get();
+  int i = lod - 1;
+  return (i < static_cast<int>(extraLodIndexBuffers.size()))
+             ? extraLodIndexBuffers[i].get()
+             : indexBuffer.get();
+}
+
+int Mesh::getLodCount() const {
+  return 1 + static_cast<int>(extraLodIndexBuffers.size());
+}
+
+void Mesh::addLod(VmaAllocator newAllocator, VkDevice newDevice,
+                  VkQueue transferQueue, VkCommandPool transferCommandPool,
+                  std::vector<uint32_t> *indices) {
+  if (indices->empty())
+    return;
+
+  VkDeviceSize bufferSize = sizeof(uint32_t) * indices->size();
+  AllocatedBuffer stagingBuffer;
+  createBuffer(newAllocator, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+               &stagingBuffer);
+
+  void *data;
+  vmaMapMemory(newAllocator, stagingBuffer.getAllocation(), &data);
+  memcpy(data, indices->data(), static_cast<size_t>(bufferSize));
+  vmaUnmapMemory(newAllocator, stagingBuffer.getAllocation());
+
+  AllocatedBuffer lodBuf;
+  createBuffer(newAllocator, bufferSize,
+               VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &lodBuf);
+  copyBuffer(newDevice, transferQueue, transferCommandPool, stagingBuffer.get(),
+             lodBuf.get(), bufferSize);
+
+  extraLodIndexBuffers.push_back(std::move(lodBuf));
+  extraLodIndexCounts.push_back(static_cast<int>(indices->size()));
+}
 
 void Mesh::destroyBuffers() {
   vertexBuffer.reset();
   indexBuffer.reset();
+  for (auto &b : extraLodIndexBuffers)
+    b.reset();
+  extraLodIndexBuffers.clear();
+  extraLodIndexCounts.clear();
 }
 
 Mesh::~Mesh() {}
@@ -45,8 +113,7 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
   VkDeviceSize bufferSize = sizeof(Vertex) * vertices->size();
 
   AllocatedBuffer stagingBuffer;
-  createBuffer(allocator, bufferSize,
-               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+  createBuffer(allocator, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                VMA_MEMORY_USAGE_AUTO,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &stagingBuffer);
@@ -56,11 +123,10 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
   memcpy(data, vertices->data(), (size_t)bufferSize);
   vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
 
-  createBuffer(
-      allocator, bufferSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      0, &vertexBuffer);
+  createBuffer(allocator, bufferSize,
+               VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &vertexBuffer);
 
   copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
              vertexBuffer.get(), bufferSize);
@@ -72,8 +138,7 @@ void Mesh::createIndexBuffer(VkQueue transferQueue,
   VkDeviceSize bufferSize = sizeof(uint32_t) * indices->size();
 
   AllocatedBuffer stagingBuffer;
-  createBuffer(allocator, bufferSize,
-               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+  createBuffer(allocator, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                VMA_MEMORY_USAGE_AUTO,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &stagingBuffer);
@@ -83,11 +148,10 @@ void Mesh::createIndexBuffer(VkQueue transferQueue,
   memcpy(data, indices->data(), (size_t)bufferSize);
   vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
 
-  createBuffer(
-      allocator, bufferSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      0, &indexBuffer);
+  createBuffer(allocator, bufferSize,
+               VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &indexBuffer);
 
   copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
              indexBuffer.get(), bufferSize);
@@ -101,6 +165,19 @@ MeshModel::MeshModel() {}
 
 MeshModel::MeshModel(std::vector<Mesh> newMeshList) {
   meshList = std::move(newMeshList);
+
+  if (!meshList.empty()) {
+    glm::vec3 center(0.0f);
+    for (const Mesh &m : meshList)
+      center += m.boundingCenter;
+    center /= static_cast<float>(meshList.size());
+    float radius = 0.0f;
+    for (const Mesh &m : meshList)
+      radius = glm::max(radius, glm::length(m.boundingCenter - center) +
+                                    m.boundingRadius);
+    boundingCenter = center;
+    boundingRadius = radius;
+  }
 }
 
 size_t MeshModel::getMeshCount() const { return meshList.size(); }
@@ -129,8 +206,9 @@ std::string filenameFromAssimpPath(const aiString &path) {
 }
 
 std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
 }
 
@@ -163,10 +241,10 @@ std::string colorMapForNormalNamedDiffuse(std::string filename) {
   replaceAll(filename, "normal", "color");
   return filename;
 }
-}
+} // namespace
 
-std::vector<MaterialTextureNames> MeshModel::LoadMaterials(
-    const aiScene *scene) {
+std::vector<MaterialTextureNames>
+MeshModel::LoadMaterials(const aiScene *scene) {
   std::vector<MaterialTextureNames> textureList(scene->mNumMaterials);
   for (size_t i = 0; i < scene->mNumMaterials; i++) {
     aiMaterial *mat = scene->mMaterials[i];
@@ -177,9 +255,11 @@ std::vector<MaterialTextureNames> MeshModel::LoadMaterials(
         mat->GetTexture(aiTextureType_DIFFUSE, 0, &path) == AI_SUCCESS) {
       textureList[i].albedo = filenameFromAssimpPath(path);
       if (looksLikeNormalMap(textureList[i].albedo))
-        textureList[i].albedo = colorMapForNormalNamedDiffuse(textureList[i].albedo);
+        textureList[i].albedo =
+            colorMapForNormalNamedDiffuse(textureList[i].albedo);
     } else if (mat->GetTextureCount(aiTextureType_BASE_COLOR) &&
-               mat->GetTexture(aiTextureType_BASE_COLOR, 0, &path) == AI_SUCCESS) {
+               mat->GetTexture(aiTextureType_BASE_COLOR, 0, &path) ==
+                   AI_SUCCESS) {
       textureList[i].albedo = filenameFromAssimpPath(path);
     }
 
@@ -191,7 +271,8 @@ std::vector<MaterialTextureNames> MeshModel::LoadMaterials(
                mat->GetTexture(aiTextureType_HEIGHT, 0, &path) == AI_SUCCESS) {
       textureList[i].normal = filenameFromAssimpPath(path);
     } else if (mat->GetTextureCount(aiTextureType_DISPLACEMENT) &&
-               mat->GetTexture(aiTextureType_DISPLACEMENT, 0, &path) == AI_SUCCESS) {
+               mat->GetTexture(aiTextureType_DISPLACEMENT, 0, &path) ==
+                   AI_SUCCESS) {
       textureList[i].normal = filenameFromAssimpPath(path);
     }
 
@@ -207,16 +288,19 @@ std::vector<MaterialTextureNames> MeshModel::LoadMaterials(
 
     // Roughness
     if (mat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS) &&
-        mat->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &path) == AI_SUCCESS) {
+        mat->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &path) ==
+            AI_SUCCESS) {
       textureList[i].roughness = filenameFromAssimpPath(path);
     }
 
     // AO
     if (mat->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) &&
-        mat->GetTexture(aiTextureType_AMBIENT_OCCLUSION, 0, &path) == AI_SUCCESS) {
+        mat->GetTexture(aiTextureType_AMBIENT_OCCLUSION, 0, &path) ==
+            AI_SUCCESS) {
       textureList[i].ao = filenameFromAssimpPath(path);
     } else if (mat->GetTextureCount(aiTextureType_LIGHTMAP) &&
-               mat->GetTexture(aiTextureType_LIGHTMAP, 0, &path) == AI_SUCCESS) {
+               mat->GetTexture(aiTextureType_LIGHTMAP, 0, &path) ==
+                   AI_SUCCESS) {
       textureList[i].ao = filenameFromAssimpPath(path);
     }
   }
@@ -232,19 +316,17 @@ std::vector<Mesh> MeshModel::LoadNode(VmaAllocator allocator,
   for (size_t i = 0; i < node->mNumMeshes; i++) {
     aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
     std::vector<Mesh> newMeshes =
-        LoadMesh(allocator, newDevice, transferQueue,
-                 transferCommandPool, mesh, scene, materials);
-    meshList.insert(meshList.end(),
-                    std::make_move_iterator(newMeshes.begin()),
+        LoadMesh(allocator, newDevice, transferQueue, transferCommandPool, mesh,
+                 scene, materials);
+    meshList.insert(meshList.end(), std::make_move_iterator(newMeshes.begin()),
                     std::make_move_iterator(newMeshes.end()));
   }
 
   for (size_t i = 0; i < node->mNumChildren; i++) {
     std::vector<Mesh> newList =
-        LoadNode(allocator, newDevice, transferQueue,
-                 transferCommandPool, node->mChildren[i], scene, materials);
-    meshList.insert(meshList.end(),
-                    std::make_move_iterator(newList.begin()),
+        LoadNode(allocator, newDevice, transferQueue, transferCommandPool,
+                 node->mChildren[i], scene, materials);
+    meshList.insert(meshList.end(), std::make_move_iterator(newList.begin()),
                     std::make_move_iterator(newList.end()));
   }
   return meshList;
@@ -258,7 +340,7 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
   std::vector<Vertex> vertices;
   std::vector<uint32_t> indices;
   vertices.resize(mesh->mNumVertices);
-  
+
   for (size_t i = 0; i < mesh->mNumVertices; i++) {
     vertices[i].pos = {mesh->mVertices[i].x, mesh->mVertices[i].y,
                        mesh->mVertices[i].z};
@@ -278,25 +360,47 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
     if (mesh->HasTangentsAndBitangents()) {
       vertices[i].tangent = {mesh->mTangents[i].x, mesh->mTangents[i].y,
                              mesh->mTangents[i].z};
-      vertices[i].bitangent = {mesh->mBitangents[i].x,
-                               mesh->mBitangents[i].y,
+      vertices[i].bitangent = {mesh->mBitangents[i].x, mesh->mBitangents[i].y,
                                mesh->mBitangents[i].z};
     } else {
       vertices[i].tangent = {1.0f, 0.0f, 0.0f};
       vertices[i].bitangent = {0.0f, 0.0f, 1.0f};
     }
   }
-  
+
   for (size_t i = 0; i < mesh->mNumFaces; i++) {
     aiFace face = mesh->mFaces[i];
     for (size_t j = 0; j < face.mNumIndices; j++) {
       indices.push_back(face.mIndices[j]);
     }
   }
-  
-  Mesh newMesh =
-      Mesh(allocator, newDevice, transferQueue, transferCommandPool,
-           &vertices, &indices, materials[mesh->mMaterialIndex]);
+
+  Mesh newMesh = Mesh(allocator, newDevice, transferQueue, transferCommandPool,
+                      &vertices, &indices, materials[mesh->mMaterialIndex]);
+
+  // Generate LOD1 (~50%) and LOD2 (~12%) using meshoptimizer
+  if (indices.size() >= 12) {
+    const float *positions = &vertices[0].pos.x;
+    size_t stride = sizeof(Vertex);
+
+    auto genLod = [&](size_t targetCount, float maxError) {
+      std::vector<uint32_t> lodIdx(indices.size());
+      size_t n = meshopt_simplify(lodIdx.data(), indices.data(), indices.size(),
+                                  positions, vertices.size(), stride,
+                                  targetCount, maxError);
+      lodIdx.resize(n);
+      return lodIdx;
+    };
+
+    auto lod1 = genLod(indices.size() / 2, 0.05f);
+    newMesh.addLod(allocator, newDevice, transferQueue, transferCommandPool,
+                   &lod1);
+
+    auto lod2 = genLod(indices.size() / 8, 0.15f);
+    newMesh.addLod(allocator, newDevice, transferQueue, transferCommandPool,
+                   &lod2);
+  }
+
   std::vector<Mesh> meshList;
   meshList.emplace_back(std::move(newMesh));
   return meshList;

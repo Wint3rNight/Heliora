@@ -21,6 +21,12 @@
 #include "VulkanPipeline.h"
 #include "VulkanSwapchain.h"
 
+struct InstancedDrawable {
+  int                    modelId;
+  std::vector<InstanceData> instances;
+  AllocatedBuffer        instanceBuffer;
+};
+
 class VulkanRenderer {
 public:
   VulkanRenderer();
@@ -30,6 +36,7 @@ public:
   int createMeshModel(const std::string &modelFile);
   SceneNode &getRootNode();
   void updateCameraView(const glm::mat4 &viewMatrix, const glm::vec3 &cameraPosition);
+  void addInstancedModel(int modelId, const std::vector<glm::mat4> &transforms);
   void cleanup();
   void notifyResize();
 
@@ -43,11 +50,12 @@ private:
   SceneUniformBuffer  sceneUbo = {};
   VkFormat            shadowDepthFormat = VK_FORMAT_UNDEFINED;
 
-  // --- Directional shadow ---
-  AllocatedImage  shadowDepthImage;
-  ImageViewHandle shadowDepthImageView;
-  VkFramebuffer   shadowFramebuffer = VK_NULL_HANDLE;
-  VkSampler       shadowSampler     = VK_NULL_HANDLE;
+  // --- Directional shadow (Cascaded Shadow Maps) ---
+  AllocatedImage               csmDepthImage;
+  ImageViewHandle              csmArrayView;
+  std::vector<ImageViewHandle> csmLayerViews;
+  std::vector<VkFramebuffer>   csmFramebuffers;
+  VkSampler                    shadowSampler = VK_NULL_HANDLE;
 
   // --- Omnidirectional point shadow ---
   AllocatedImage             pointShadowDepthImage;
@@ -71,6 +79,9 @@ private:
   int ssaoNoiseImageIndex     = -1;
   VkSampler iblSampler       = VK_NULL_HANDLE;
   VkSampler ssaoNoiseSampler = VK_NULL_HANDLE;
+
+  // --- Instanced drawables ---
+  std::vector<InstancedDrawable> instancedDrawables;
 
   // --- Subsystems ---
   VulkanDevice      device;
@@ -98,7 +109,7 @@ private:
   void initIBL();
   void cleanupIBL();
 
-  void updateLightSpaceMatrix();
+  void updateLightSpaceMatrices();
   void updatePointShadowMatrices();
 
   // --- Per-frame ---

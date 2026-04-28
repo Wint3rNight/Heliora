@@ -107,7 +107,7 @@ void RenderPassManager::createRenderPass(VkDevice device,
   swapAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   swapAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   swapAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  swapAtt.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  swapAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // ImGui renders on top before present
 
   // Attachment 1: HDR colorBuffer (written by subpass 0, read by subpass 1)
   VkAttachmentDescription colorAtt = {};
@@ -240,7 +240,51 @@ void RenderPassManager::createShadowRenderPass(VkDevice device,
     throw std::runtime_error("Failed to create shadow render pass");
 }
 
+void RenderPassManager::createImGuiRenderPass(VkDevice device,
+                                              VkFormat swapchainFormat) {
+  // Single swapchain attachment. LOAD to preserve the ACES output underneath.
+  VkAttachmentDescription att = {};
+  att.format         = swapchainFormat;
+  att.samples        = VK_SAMPLE_COUNT_1_BIT;
+  att.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+  att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  att.initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  att.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+  VkAttachmentReference colorRef = {};
+  colorRef.attachment = 0;
+  colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription subpass = {};
+  subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 1;
+  subpass.pColorAttachments    = &colorRef;
+
+  VkSubpassDependency dep = {};
+  dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+  dep.dstSubpass    = 0;
+  dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+  VkRenderPassCreateInfo ci = {};
+  ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  ci.attachmentCount = 1;
+  ci.pAttachments    = &att;
+  ci.subpassCount    = 1;
+  ci.pSubpasses      = &subpass;
+  ci.dependencyCount = 1;
+  ci.pDependencies   = &dep;
+  if (vkCreateRenderPass(device, &ci, nullptr, &imguiRenderPass) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create ImGui render pass");
+}
+
 void RenderPassManager::cleanup(VkDevice device) {
+  if (imguiRenderPass != VK_NULL_HANDLE)
+    vkDestroyRenderPass(device, imguiRenderPass, nullptr);
   vkDestroyRenderPass(device, gBufferRenderPass, nullptr);
   vkDestroyRenderPass(device, renderPass, nullptr);
   vkDestroyRenderPass(device, shadowRenderPass, nullptr);

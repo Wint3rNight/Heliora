@@ -199,6 +199,7 @@ struct SceneUniformBuffer {
   alignas(16) glm::vec4 shadowParams;
   alignas(16) glm::mat4 invProj;
   alignas(16) glm::mat4 invView;
+  int debugMode = 0;
 };
 
 const int IBL_PREFILTER_MIPS = 5;

@@ -30,6 +30,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 shadowParams;
     mat4 invProj;
     mat4 invView;
+    int debugMode;
 } scene;
 
 layout(set = 0, binding = 1) uniform sampler2DArray shadowMap;
@@ -364,6 +365,13 @@ void main() {
     float metallic = g0.a;
     vec3  worldN   = normalize(g1.xyz);
     float roughness = g1.a;
+
+    // G-buffer debug views — short-circuit full PBR when active
+    if (scene.debugMode == 1) { outColor = vec4(albedo, 1.0); return; }
+    if (scene.debugMode == 2) { outColor = vec4(worldN * 0.5 + 0.5, 1.0); return; }
+    if (scene.debugMode == 3) { outColor = vec4(vec3(metallic), 1.0); return; }
+    if (scene.debugMode == 4) { outColor = vec4(vec3(roughness), 1.0); return; }
+    if (scene.debugMode == 5) { outColor = vec4(vec3(texture(gBufferDepthSampler, uv).r), 1.0); return; }
 
     vec3 worldPos = reconstructWorldPos(uv, depth);
     vec3 viewPos  = reconstructViewPos(uv, depth);

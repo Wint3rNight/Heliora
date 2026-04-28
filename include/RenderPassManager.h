@@ -25,14 +25,20 @@ public:
   // Depth-only shadow pass (directional + point, unchanged).
   void createShadowRenderPass(VkDevice device, VkFormat depthFormat);
 
+  // Single-attachment pass that LOADs the swapchain image and transitions to
+  // PRESENT_SRC_KHR — used to render ImGui on top of the ACES output.
+  void createImGuiRenderPass(VkDevice device, VkFormat swapchainFormat);
+
   void cleanup(VkDevice device);
 
   VkRenderPass getGBufferRenderPass() const { return gBufferRenderPass; }
-  VkRenderPass getRenderPass() const { return renderPass; }
-  VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
+  VkRenderPass getRenderPass()        const { return renderPass; }
+  VkRenderPass getShadowRenderPass()  const { return shadowRenderPass; }
+  VkRenderPass getImGuiRenderPass()   const { return imguiRenderPass; }
 
 private:
   VkRenderPass gBufferRenderPass = VK_NULL_HANDLE;
-  VkRenderPass renderPass = VK_NULL_HANDLE;
-  VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
+  VkRenderPass renderPass        = VK_NULL_HANDLE;
+  VkRenderPass shadowRenderPass  = VK_NULL_HANDLE;
+  VkRenderPass imguiRenderPass   = VK_NULL_HANDLE;
 };

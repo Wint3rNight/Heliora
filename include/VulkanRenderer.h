@@ -4,6 +4,9 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 
 #include <cstdint>
 #include <string>
@@ -40,6 +43,12 @@ public:
   void cleanup();
   void notifyResize();
 
+  void setImGuiCameraInfo(glm::vec3 pos, float speed);
+  void setFov(float fovDegrees);
+  void setDrawDistance(float dist);
+  float getCameraSpeed() const { return imguiCameraSpeed; }
+  bool imguiWantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
+
   ~VulkanRenderer();
 
 private:
@@ -69,7 +78,6 @@ private:
   std::vector<AllocatedImage>  gBuffer0Images,  gBuffer1Images,  gBuffer2Images,  gBufferDepthImages;
   std::vector<ImageViewHandle> gBuffer0Views,   gBuffer1Views,   gBuffer2Views,   gBufferDepthViews;
   std::vector<VkFramebuffer>   gBufferFramebuffers;
-  std::vector<VkFramebuffer>   deferredFramebuffers; // colorBuffer-only, for deferred subpass 0
 
   // --- IBL resources ---
   int iblSkyboxImageIndex     = -1; // index into TextureManager::textureImages
@@ -100,6 +108,16 @@ private:
   std::vector<VkFence>     imagesInFlight;
   bool framebufferResized = false;
 
+  // --- ImGui ---
+  std::vector<VkFramebuffer> imguiFramebuffers;
+  glm::vec3                  imguiCameraPos       = {};
+  float                      imguiCameraSpeed     = 15.0f;
+  float                      imguiCameraFov       = 45.0f;
+  float                      imguiDrawDistance    = 2000.0f;
+  int                        imguiDebugMode       = 0;
+  float                      frameTimeGraphData[128] = {};
+  int                        frameTimeGraphOffset    = 0;
+
   // --- Init helpers ---
   void createSynchronization();
   void createShadowResources();
@@ -108,6 +126,11 @@ private:
   void cleanupGBuffer();
   void initIBL();
   void cleanupIBL();
+  void rebuildProjection();
+  void initImGui();
+  void cleanupImGui();
+  void createImGuiFramebuffers();
+  void cleanupImGuiFramebuffers();
 
   void updateLightSpaceMatrices();
   void updatePointShadowMatrices();
@@ -116,5 +139,7 @@ private:
   void recordCommands(uint32_t currentImage);
   void recordShadowPass(VkCommandBuffer cmdBuffer);
   void recordPointShadowPass(VkCommandBuffer cmdBuffer);
+  void recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex);
+  void buildImGuiUI();
   void recreateSwapChain();
 };

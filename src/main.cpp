@@ -61,6 +61,8 @@ int main() {
   }
 
   camera.MovementSpeed = 15.0f;
+  bool cameraMode = true;  // Tab toggles between camera fly-through and ImGui
+  bool prevTabPressed = false;
 
   int sponzaId = vulkanRenderer.createMeshModel(
       "Resources/Models/Sponza/glTF/Sponza.gltf");
@@ -100,9 +102,22 @@ int main() {
     inputManager.pollEvents();
     processInput();
 
-    // Process mouse movement for camera
+    // Tab toggles between camera fly-through (cursor hidden) and UI mode
+    // (cursor visible, ImGui panels interactive).
+    // WantCaptureMouse can't drive this because GLFW_CURSOR_DISABLED delivers
+    // only raw deltas — ImGui never sees absolute positions and can't detect
+    // hover.
+    bool tabNow = inputManager.isKeyPressed(GLFW_KEY_TAB);
+    if (tabNow && !prevTabPressed)
+      cameraMode = !cameraMode;
+    prevTabPressed = tabNow;
+
+    glfwSetInputMode(window, GLFW_CURSOR,
+                     cameraMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+
+    // Mouse drives camera only in camera mode
     glm::vec2 mouseDelta = inputManager.getMouseDelta();
-    if (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f) {
+    if (cameraMode && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
       camera.ProcessMouseMovement(mouseDelta.x, mouseDelta.y);
     }
 
@@ -116,7 +131,10 @@ int main() {
 
     vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
 
+    // Feed ImGui camera state; read back speed in case the slider changed it
+    vulkanRenderer.setImGuiCameraInfo(camera.Position, camera.MovementSpeed);
     vulkanRenderer.draw();
+    camera.MovementSpeed = vulkanRenderer.getCameraSpeed();
   }
 
   vulkanRenderer.cleanup();

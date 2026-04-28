@@ -3,6 +3,10 @@
 #include "Utilities.h"
 #include <spdlog/spdlog.h>
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -56,6 +60,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                                        swapchainFormat, colorFormat);
     renderPassManager.createShadowRenderPass(device.getLogicalDevice(),
                                              shadowDepthFormat);
+    renderPassManager.createImGuiRenderPass(device.getLogicalDevice(),
+                                            swapchainFormat);
 
     // 4. Swapchain
     swapchain.init(device, renderPassManager.getRenderPass(), window);
@@ -96,12 +102,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                  static_cast<uint32_t>(qi.graphicsFamily));
 
     // 13. Scene UBO defaults
-    sceneUbo.projection =
-        glm::perspective(glm::radians(45.0f),
-                         static_cast<float>(swapchain.getExtent().width) /
-                             static_cast<float>(swapchain.getExtent().height),
-                         0.1f, 500.0f);
-    sceneUbo.projection[1][1] *= -1;
+    rebuildProjection();
 
     sceneUbo.view =
         glm::lookAt(glm::vec3(10.0f, 0.0f, 20.0f), glm::vec3(0.0f, 0.0f, -2.0f),
@@ -139,6 +140,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     // 14. Default albedo texture
     textureManager.loadTexture("plain.png", device, descriptorManager);
+
+    // 15. ImGui overlay
+    initImGui();
+    createImGuiFramebuffers();
 
   } catch (const std::runtime_error &e) {
     spdlog::critical("Renderer initialization failed: {}", e.what());
@@ -261,6 +266,9 @@ void VulkanRenderer::draw() {
 void VulkanRenderer::recreateSwapChain() {
   swapchain.recreate(device, renderPassManager.getRenderPass(), window);
 
+  cleanupImGuiFramebuffers();
+  createImGuiFramebuffers();
+
   cleanupGBuffer();
   createGBuffer();
 
@@ -268,13 +276,7 @@ void VulkanRenderer::recreateSwapChain() {
 
   descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
 
-  sceneUbo.projection =
-      glm::perspective(glm::radians(45.0f),
-                       static_cast<float>(swapchain.getExtent().width) /
-                           static_cast<float>(swapchain.getExtent().height),
-                       0.1f, 500.0f);
-  sceneUbo.projection[1][1] *= -1;
-  sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+  rebuildProjection();
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +530,8 @@ void VulkanRenderer::cleanup() {
   metrics.printReport(device.getAllocator());
 
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
+  cleanupImGuiFramebuffers();
+  cleanupImGui();
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   cleanupGBuffer();
@@ -698,7 +702,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
           VkDeviceSize off[] = {0};
           vkCmdBindVertexBuffers(cmd, 0, 1, vb, off);
           vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &instanceOff);
-          vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(), 0,
+          vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(0), 0,
                                VK_INDEX_TYPE_UINT32);
 
           std::array<VkDescriptorSet, 2> sets = {
@@ -710,8 +714,8 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                                   sets.data(), 0, nullptr);
           uint32_t instanceCount =
               static_cast<uint32_t>(drawable.instances.size());
-          vkCmdDrawIndexed(cmd, mesh->getIndexCount(), instanceCount, 0, 0, 0);
-          metrics.recordDrawCall(mesh->getIndexCount() * instanceCount);
+          vkCmdDrawIndexed(cmd, mesh->getIndexCount(0), instanceCount, 0, 0, 0);
+          metrics.recordDrawCall(mesh->getIndexCount(0) * instanceCount);
         }
       }
     }
@@ -764,6 +768,8 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Deferred);
   }
 
+  recordImGuiCommands(cmd, currentImage);
+
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to stop recording command buffer");
 }
@@ -797,9 +803,9 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
           VkBuffer vb[] = {mesh->getVertexBuffer()};
           VkDeviceSize off[] = {0};
           vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
-          vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(), 0,
+          vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(0), 0,
                                VK_INDEX_TYPE_UINT32);
-          vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(), 1, 0, 0, 0);
+          vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(0), 1, 0, 0, 0);
         }
       }
     }
@@ -872,9 +878,9 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
             VkBuffer vb[] = {mesh->getVertexBuffer()};
             VkDeviceSize off[] = {0};
             vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
-            vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(), 0,
+            vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(0), 0,
                                  VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(), 1, 0, 0, 0);
+            vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(0), 1, 0, 0, 0);
           }
         }
       }
@@ -892,7 +898,7 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
 
 void VulkanRenderer::updateLightSpaceMatrices() {
   const float nearPlane = 0.1f;
-  const float farPlane = 500.0f;
+  const float farPlane  = imguiDrawDistance;
   const float lambda = 0.75f; // blend between log and uniform splits
 
   // Practical split scheme (Engel 2006)
@@ -1082,10 +1088,10 @@ void VulkanRenderer::createShadowResources() {
   pointShadowDepthImage = AllocatedImage(device.getAllocator(), img, alloc);
 
   VkImageViewCreateInfo cubeViewInfo = {};
-  cubeViewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  cubeViewInfo.image    = pointShadowDepthImage.get();
+  cubeViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  cubeViewInfo.image = pointShadowDepthImage.get();
   cubeViewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-  cubeViewInfo.format   = shadowDepthFormat;
+  cubeViewInfo.format = shadowDepthFormat;
   cubeViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 6};
   view = VK_NULL_HANDLE;
   if (vkCreateImageView(device.getLogicalDevice(), &cubeViewInfo, nullptr,
@@ -1097,8 +1103,8 @@ void VulkanRenderer::createShadowResources() {
   pointShadowFramebuffers.resize(6, VK_NULL_HANDLE);
   for (uint32_t face = 0; face < 6; ++face) {
     VkImageViewCreateInfo faceViewInfo = {};
-    faceViewInfo.sType  = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    faceViewInfo.image  = pointShadowDepthImage.get();
+    faceViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    faceViewInfo.image = pointShadowDepthImage.get();
     faceViewInfo.format = shadowDepthFormat;
     faceViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     faceViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, face, 1};
@@ -1140,6 +1146,217 @@ void VulkanRenderer::cleanupShadowResources() {
     vkDestroySampler(device.getLogicalDevice(), shadowSampler, nullptr);
     shadowSampler = VK_NULL_HANDLE;
   }
+}
+
+// ---------------------------------------------------------------------------
+// ImGui integration
+// ---------------------------------------------------------------------------
+
+void VulkanRenderer::initImGui() {
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  ImGui::StyleColorsDark();
+
+  ImGui_ImplGlfw_InitForVulkan(window, true);
+
+  QueueFamilyIndices qi = device.getQueueFamilies();
+  ImGui_ImplVulkan_InitInfo info = {};
+  info.ApiVersion                   = VK_API_VERSION_1_3;
+  info.Instance                     = device.getInstance();
+  info.PhysicalDevice               = device.getPhysicalDevice();
+  info.Device                       = device.getLogicalDevice();
+  info.QueueFamily                  = static_cast<uint32_t>(qi.graphicsFamily);
+  info.Queue                        = device.getGraphicsQueue();
+  info.DescriptorPoolSize           = 16; // let ImGui manage its own pool
+  info.MinImageCount                = 2;
+  info.ImageCount                   = static_cast<uint32_t>(swapchain.getImageCount());
+  info.PipelineInfoMain.RenderPass  = renderPassManager.getImGuiRenderPass();
+  info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+  ImGui_ImplVulkan_Init(&info);
+}
+
+void VulkanRenderer::cleanupImGui() {
+  ImGui_ImplVulkan_Shutdown();
+  ImGui_ImplGlfw_Shutdown();
+  ImGui::DestroyContext();
+}
+
+void VulkanRenderer::createImGuiFramebuffers() {
+  const auto &images = swapchain.getImages();
+  imguiFramebuffers.resize(images.size(), VK_NULL_HANDLE);
+  for (size_t i = 0; i < images.size(); i++) {
+    VkImageView view = images[i].imageView.get();
+    VkFramebufferCreateInfo fbci = {};
+    fbci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass      = renderPassManager.getImGuiRenderPass();
+    fbci.attachmentCount = 1;
+    fbci.pAttachments    = &view;
+    fbci.width           = swapchain.getExtent().width;
+    fbci.height          = swapchain.getExtent().height;
+    fbci.layers          = 1;
+    if (vkCreateFramebuffer(device.getLogicalDevice(), &fbci, nullptr,
+                            &imguiFramebuffers[i]) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create ImGui framebuffer");
+  }
+}
+
+void VulkanRenderer::cleanupImGuiFramebuffers() {
+  for (VkFramebuffer fb : imguiFramebuffers)
+    if (fb != VK_NULL_HANDLE)
+      vkDestroyFramebuffer(device.getLogicalDevice(), fb, nullptr);
+  imguiFramebuffers.clear();
+}
+
+void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
+  imguiCameraPos   = pos;
+  imguiCameraSpeed = speed;
+}
+
+void VulkanRenderer::rebuildProjection() {
+  float aspect = static_cast<float>(swapchain.getExtent().width) /
+                 static_cast<float>(swapchain.getExtent().height);
+  sceneUbo.projection =
+      glm::perspective(glm::radians(imguiCameraFov), aspect, 0.1f,
+                       imguiDrawDistance);
+  sceneUbo.projection[1][1] *= -1;
+  sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+}
+
+void VulkanRenderer::setFov(float fovDegrees) {
+  imguiCameraFov = fovDegrees;
+  rebuildProjection();
+}
+
+void VulkanRenderer::setDrawDistance(float dist) {
+  imguiDrawDistance = dist;
+  rebuildProjection();
+}
+
+void VulkanRenderer::buildImGuiUI() {
+  // Performance panel — pinned top-left
+  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
+  ImGui::Begin("Performance", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoCollapse);
+  ImGui::Text("FPS: %.1f  |  Avg: %.2f ms", metrics.getAverageFps(),
+              metrics.getAverageFrameTimeMs());
+  frameTimeGraphData[frameTimeGraphOffset] =
+      static_cast<float>(metrics.getAverageFrameTimeMs());
+  frameTimeGraphOffset = (frameTimeGraphOffset + 1) % 128;
+  ImGui::PlotLines("##ft", frameTimeGraphData, 128, frameTimeGraphOffset,
+                   "Frame time (ms)", 0.0f, 50.0f, ImVec2(322, 60));
+  ImGui::Text("Shadow:   %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow));
+  ImGui::Text("PtShadow: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
+  ImGui::Text("GBuffer:  %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::GBuffer));
+  ImGui::Text("Deferred: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Deferred));
+  ImGui::Text("Draws: %u  |  Tris: %uk", metrics.getLastDrawCallCount(),
+              metrics.getLastTriangleCount() / 1000);
+  auto vram = PerformanceMetrics::queryVram(device.getAllocator());
+  ImGui::Text("VRAM: %llu MiB / %llu MiB",
+              static_cast<unsigned long long>(vram.usedBytes >> 20),
+              static_cast<unsigned long long>(vram.budgetBytes >> 20));
+  ImGui::End();
+
+  // Camera panel
+  ImGui::SetNextWindowPos(ImVec2(10, 250), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Always);
+  ImGui::Begin("Camera", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoCollapse);
+  ImGui::Text("Pos: (%.1f, %.1f, %.1f)", imguiCameraPos.x, imguiCameraPos.y,
+              imguiCameraPos.z);
+  ImGui::SliderFloat("Speed", &imguiCameraSpeed, 0.5f, 50.0f);
+  if (ImGui::SliderFloat("FOV", &imguiCameraFov, 30.0f, 120.0f))
+    setFov(imguiCameraFov);
+  if (ImGui::SliderFloat("Draw Dist", &imguiDrawDistance, 100.0f, 5000.0f))
+    setDrawDistance(imguiDrawDistance);
+  ImGui::End();
+
+  // Lighting panel
+  ImGui::SetNextWindowPos(ImVec2(10, 380), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
+  ImGui::Begin("Lighting", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoCollapse);
+  if (ImGui::CollapsingHeader("Directional Light",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
+    glm::vec3 dir = glm::vec3(sceneUbo.directionalLight.direction);
+    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f)) {
+      sceneUbo.directionalLight.direction =
+          glm::vec4(glm::normalize(dir), 0.0f);
+      updateLightSpaceMatrices();
+    }
+    glm::vec3 col = glm::vec3(sceneUbo.directionalLight.colorIntensity);
+    if (ImGui::ColorEdit3("Color##sun", &col.x))
+      sceneUbo.directionalLight.colorIntensity =
+          glm::vec4(col, sceneUbo.directionalLight.colorIntensity.a);
+    float intens = sceneUbo.directionalLight.colorIntensity.a;
+    if (ImGui::SliderFloat("Intensity##sun", &intens, 0.0f, 5.0f))
+      sceneUbo.directionalLight.colorIntensity.a = intens;
+  }
+  int pointCount = sceneUbo.lightCounts.x;
+  for (int i = 0; i < pointCount; i++) {
+    char label[32];
+    snprintf(label, sizeof(label), "Point Light %d", i);
+    if (ImGui::CollapsingHeader(label)) {
+      glm::vec3 pos = glm::vec3(sceneUbo.pointLights[i].position);
+      char id[24];
+      snprintf(id, sizeof(id), "Pos##pt%d", i);
+      if (ImGui::DragFloat3(id, &pos.x, 0.1f))
+        sceneUbo.pointLights[i].position = glm::vec4(pos, 1.0f);
+      glm::vec3 col = glm::vec3(sceneUbo.pointLights[i].colorIntensity);
+      snprintf(id, sizeof(id), "Color##pt%d", i);
+      if (ImGui::ColorEdit3(id, &col.x))
+        sceneUbo.pointLights[i].colorIntensity =
+            glm::vec4(col, sceneUbo.pointLights[i].colorIntensity.a);
+      float intens = sceneUbo.pointLights[i].colorIntensity.a;
+      snprintf(id, sizeof(id), "Intensity##pt%d", i);
+      if (ImGui::SliderFloat(id, &intens, 0.0f, 10.0f))
+        sceneUbo.pointLights[i].colorIntensity.a = intens;
+    }
+  }
+  ImGui::End();
+
+  // Debug views panel
+  ImGui::SetNextWindowPos(ImVec2(10, 620), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 70), ImGuiCond_Always);
+  ImGui::Begin("Debug Views", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoCollapse);
+  const char *debugModes[] = {"None",     "Albedo",    "Normals",
+                              "Metallic", "Roughness", "Depth"};
+  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 6))
+    sceneUbo.debugMode = imguiDebugMode;
+  ImGui::End();
+}
+
+void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd,
+                                         uint32_t imageIndex) {
+  ImGui_ImplVulkan_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+
+  buildImGuiUI();
+
+  ImGui::Render();
+
+  VkClearValue clear = {};
+  VkRenderPassBeginInfo rpbi = {};
+  rpbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rpbi.renderPass      = renderPassManager.getImGuiRenderPass();
+  rpbi.framebuffer     = imguiFramebuffers[imageIndex];
+  rpbi.renderArea      = {{0, 0}, swapchain.getExtent()};
+  rpbi.clearValueCount = 1;
+  rpbi.pClearValues    = &clear;
+  vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+  ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+  vkCmdEndRenderPass(cmd);
 }
 
 // ---------------------------------------------------------------------------

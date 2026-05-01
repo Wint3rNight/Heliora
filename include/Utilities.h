@@ -199,6 +199,8 @@ struct SceneUniformBuffer {
   alignas(16) glm::vec4 shadowParams;
   alignas(16) glm::mat4 invProj;
   alignas(16) glm::mat4 invView;
+  // (density, falloff, clampMax, _) — exposed via ImGui at runtime.
+  alignas(16) glm::vec4 fogParams = glm::vec4(0.002f, 0.25f, 0.4f, 0.0f);
   int debugMode = 0;
 };
 

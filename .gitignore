@@ -32,7 +32,7 @@
 *.app
 VulkanRenderer
 
-# IDE Specific (based on your folder structure)
+# IDE Specific
 .idea/
 .cache/
 .vscode/
@@ -63,4 +63,5 @@ compile_commands.json
 
 # Project documents
 TODO.md
+todo.md
 IMPLEMENTATION_NOTES.md

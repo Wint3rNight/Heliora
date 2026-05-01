@@ -117,6 +117,19 @@ void PerformanceMetrics::endFrame(VkDevice device) {
       }
     }
   }
+
+  // Periodic one-line snapshot — useful when shutdown is killed by timeout
+  // (so the full report in printReport() may never run).
+  if (totalFrames > 0 && totalFrames % 120 == 0) {
+    spdlog::info("[perf] frame={} avg={:.2f}ms fps={:.1f} draws={} tris={}k "
+                 "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} deferred={:.2f}",
+                 totalFrames, getAverageFrameTimeMs(), getAverageFps(),
+                 lastDrawCalls, lastTriangles / 1000,
+                 lastPassGpuMs[(int)GpuPass::Shadow],
+                 lastPassGpuMs[(int)GpuPass::PointShadow],
+                 lastPassGpuMs[(int)GpuPass::GBuffer],
+                 lastPassGpuMs[(int)GpuPass::Deferred]);
+  }
 }
 
 double PerformanceMetrics::getAverageFrameTimeMs() const {

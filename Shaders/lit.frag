@@ -30,6 +30,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 shadowParams;
     mat4 invProj;
     mat4 invView;
+    vec4 fogParams; // x=density, y=falloff, z=clampMax
     int debugMode;
 } scene;
 
@@ -78,24 +79,17 @@ vec3 reconstructWorldPos(vec2 uv, float depth) {
 }
 
 // ---- Cascaded Shadow Maps ----
-float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
-    float viewDepth = -viewPos.z;
-
-    int cascade = 3;
-    if      (viewDepth < scene.cascadeSplits.x) cascade = 0;
-    else if (viewDepth < scene.cascadeSplits.y) cascade = 1;
-    else if (viewDepth < scene.cascadeSplits.z) cascade = 2;
-
+// 3×3 PCF on a single cascade. Returns 1.0 = fully shadowed, 0.0 = lit,
+// -1.0 = fragment is outside this cascade's shadow map (caller must fall back).
+float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     vec4 lsPos = scene.lightSpaceMatrices[cascade] * vec4(worldPos, 1.0);
     vec3 proj  = lsPos.xyz / lsPos.w;
     proj.xy    = proj.xy * 0.5 + 0.5;
 
-    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 ||
-        proj.y < 0.0 || proj.y > 1.0) return 0.0;
+    if (proj.z > 1.0 || proj.z < 0.0 || proj.x < 0.0 || proj.x > 1.0 ||
+        proj.y < 0.0 || proj.y > 1.0) return -1.0;
 
-    // Tighter bias for near cascades (larger texel coverage = less acne)
-    float biasScale = 1.0 / (scene.cascadeSplits[cascade] * 0.5 + 1.0);
-    float bias = max(0.006 * biasScale * (1.0 - dot(N, L)), 0.0005);
+    float bias = max(0.0008 * float(cascade + 1) * (1.0 - dot(N, L)), 0.0005);
 
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
     float shadow = 0.0;
@@ -105,6 +99,44 @@ float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
             shadow += proj.z - bias > d ? 1.0 : 0.0;
         }
     return shadow / 9.0;
+}
+
+float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
+    float viewDepth = -viewPos.z;
+
+    int primaryCascade = 3;
+    if      (viewDepth < scene.cascadeSplits.x) primaryCascade = 0;
+    else if (viewDepth < scene.cascadeSplits.y) primaryCascade = 1;
+    else if (viewDepth < scene.cascadeSplits.z) primaryCascade = 2;
+
+    // Fall back to progressively larger cascades when the fragment projects
+    // outside the primary cascade's shadow map. This fixes fragments that are
+    // below or beside the camera: view-Z depth is near zero for them (they
+    // map to cascade 0) but the small near-cascade sphere AABB sits high in
+    // the air and misses the geometry.
+    int cascade = primaryCascade;
+    float shadow = -1.0;
+    for (int c = primaryCascade; c <= 3; ++c) {
+        shadow = sampleCascade(c, worldPos, N, L);
+        if (shadow >= 0.0) { cascade = c; break; }
+    }
+    if (shadow < 0.0) return 0.0;  // outside all cascades — assume lit
+
+    // Blend with the next cascade in the last 15% of this cascade's range
+    // to hide hard popping at boundaries.
+    if (cascade < 3) {
+        float thisSplit = scene.cascadeSplits[cascade];
+        float prevSplit = (cascade == 0) ? 0.0 : scene.cascadeSplits[cascade - 1];
+        float bandStart = mix(prevSplit, thisSplit, 0.85);
+        if (viewDepth > bandStart) {
+            float t = clamp((viewDepth - bandStart) / (thisSplit - bandStart),
+                            0.0, 1.0);
+            float shadowNext = sampleCascade(cascade + 1, worldPos, N, L);
+            if (shadowNext >= 0.0)
+                shadow = mix(shadow, shadowNext, t);
+        }
+    }
+    return shadow;
 }
 
 int pointShadowFace(vec3 dir) {
@@ -195,7 +227,8 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
         vec4 offset = scene.projection * vec4(samplePos, 1.0);
         offset.xy  /= offset.w;
         offset.xy   = offset.xy * 0.5 + 0.5;
-        offset.y    = 1.0 - offset.y;  // Vulkan NDC flip
+        // No y-flip: projection's [1][1] *= -1 already aligns NDC with
+        // Vulkan's screen-down convention, so this UV matches gl_FragCoord/H.
 
         if (offset.x < 0.0 || offset.x > 1.0 ||
             offset.y < 0.0 || offset.y > 1.0) continue;
@@ -216,7 +249,7 @@ vec3 computeBloom(vec2 uv) {
     vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
     vec3  bloom      = vec3(0.0);
     float totalW     = 0.0;
-    const float threshold = 1.5;
+    const float threshold = 0.85;
     for (int x = -2; x <= 2; ++x) {
         for (int y = -2; y <= 2; ++y) {
             vec3  s   = texture(gBuffer0Sampler, uv + vec2(x, y) * texelSize * 2.0).rgb;
@@ -240,7 +273,7 @@ vec3 applyFXAA(vec2 uv, vec3 litColor) {
 
     float depthRange = max(max(max(dN, dS), max(dE, dW)), dC) -
                        min(min(min(dN, dS), min(dE, dW)), dC);
-    if (depthRange < 0.0002) return litColor;
+    if (depthRange < 0.005) return litColor;
 
     // Check that it is also a shading edge (not just a smooth surface curve)
     vec3 nC = texture(gBuffer1Sampler, uv).rgb;
@@ -264,79 +297,19 @@ vec3 applyFXAA(vec2 uv, vec3 litColor) {
     return mix(litColor, clamp(blended, vec3(0.0), vec3(50.0)), 0.25);
 }
 
-// ---- Screen Space Reflections ----
-// Ray-marches in view space, binary-searches the hit, returns Fresnel-weighted
-// reflected albedo. Returns vec3(0) when no screen-space hit is found.
-vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness, vec3 F0) {
-    if (roughness > 0.45) return vec3(0.0);
-
-    vec3 reflDir = normalize(reflect(normalize(viewPos), viewN));
-    if (reflDir.z > 0.0) return vec3(0.0); // pointing toward camera — skip
-
-    const int   MAX_STEPS = 48;
-    const float MAX_DIST  = 12.0;
-    float stepSize = MAX_DIST / float(MAX_STEPS);
-
-    vec3 rayPos = viewPos + viewN * 0.15; // offset to avoid self-hit
-
-    for (int i = 0; i < MAX_STEPS; i++) {
-        rayPos += reflDir * stepSize;
-
-        vec4 clipPos = scene.projection * vec4(rayPos, 1.0);
-        if (clipPos.w <= 0.0) break;
-
-        vec2 sUV = clipPos.xy / clipPos.w * 0.5 + 0.5;
-        sUV.y = 1.0 - sUV.y;
-        if (sUV.x < 0.01 || sUV.x > 0.99 || sUV.y < 0.01 || sUV.y > 0.99) break;
-
-        float sceneDepth = texture(gBufferDepthSampler, sUV).r;
-        float rayDepth   = clipPos.z / clipPos.w;
-
-        if (rayDepth > sceneDepth && (rayDepth - sceneDepth) < 0.15) {
-            // Binary search to refine hit position
-            vec3 lo = rayPos - reflDir * stepSize;
-            vec3 hi = rayPos;
-            for (int j = 0; j < 8; j++) {
-                vec3 mid = (lo + hi) * 0.5;
-                vec4 mc  = scene.projection * vec4(mid, 1.0);
-                vec2 mUV = mc.xy / mc.w * 0.5 + 0.5;
-                mUV.y    = 1.0 - mUV.y;
-                float mRay   = mc.z / mc.w;
-                float mScene = texture(gBufferDepthSampler, mUV).r;
-                if (mRay > mScene) hi = mid; else lo = mid;
-            }
-            vec4 fc  = scene.projection * vec4(lo, 1.0);
-            vec2 fUV = fc.xy / fc.w * 0.5 + 0.5;
-            fUV.y    = 1.0 - fUV.y;
-
-            if (texture(gBufferDepthSampler, fUV).r > 0.9999) return vec3(0.0); // hit sky
-
-            vec3 reflColor = texture(gBuffer0Sampler, fUV).rgb;
-
-            // Fade at screen edges and for rough surfaces
-            vec2 edgeDist   = smoothstep(0.95, 1.0, abs(fUV * 2.0 - 1.0));
-            float edgeFade  = 1.0 - clamp(max(edgeDist.x, edgeDist.y), 0.0, 1.0);
-            float cosTheta  = max(dot(-normalize(viewPos), viewN), 0.0);
-            float fresnel   = FresnelSchlick(cosTheta, F0).r;
-            float ssrWeight = fresnel * (1.0 - roughness) * edgeFade;
-
-            return reflColor * ssrWeight;
-        }
-    }
-    return vec3(0.0);
-}
-
 // ---- Exponential height fog ----
+// Exponential distance fog with height-based attenuation. The previous
+// integral form degenerated to 0 when the ray was horizontal (heightDiff≈0),
+// which is the common indoor case. This form is well-behaved everywhere.
 vec3 applyHeightFog(vec3 color, vec3 worldPos) {
-    vec3  camPos     = scene.cameraPosition.xyz;
-    float dist       = length(worldPos - camPos);
-    float heightDiff = worldPos.y - camPos.y;
-    const float density  = 0.004;
-    const float falloff  = 0.25;
-    float fogAmt = density * exp(-falloff * camPos.y) *
-                   (1.0 - exp(-falloff * heightDiff * dist)) /
-                   (falloff * (abs(heightDiff) + 0.0001));
-    fogAmt = clamp(fogAmt, 0.0, 0.6);
+    vec3  camPos    = scene.cameraPosition.xyz;
+    float dist      = length(worldPos - camPos);
+    float density   = scene.fogParams.x;
+    float falloff   = scene.fogParams.y;
+    float clampMax  = scene.fogParams.z;
+    float heightFactor = exp(-falloff * max(camPos.y, 0.0));
+    float fogAmt = (1.0 - exp(-density * dist)) * heightFactor;
+    fogAmt = clamp(fogAmt, 0.0, clampMax);
     vec3 fogColor = vec3(0.55, 0.62, 0.72);
     return mix(color, fogColor, fogAmt);
 }
@@ -394,10 +367,8 @@ void main() {
     vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughness)).rg;
     vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
 
-    // Screen-space reflections augment IBL specular for smooth surfaces
-    vec3 ssrColor = computeSSR(uv, viewPos, viewN, roughness, F0);
-    // Blend SSR over IBL: if SSR found a hit it's more accurate than the prefiltered map
-    specularIBL = mix(specularIBL, ssrColor, step(0.001, length(ssrColor)));
+    // Note: SSR is applied in a separate composite pass that samples this lit
+    // image; here we keep IBL specular only.
 
     vec3 ambient = (diffuseIBL + specularIBL) * ao * ssaoFactor;
     vec3 lighting = ambient;
@@ -415,7 +386,7 @@ void main() {
         vec3  toLight = scene.pointLights[i].position.xyz - worldPos;
         float dist    = length(toLight);
         vec3  L       = toLight / max(dist, 0.0001);
-        float att     = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist);
+        float att     = 1.0 / (1.0 + 0.1 * dist * dist);
         float shadow  = (i == 0) ? pointShadowFactor(worldPos, scene.pointLights[i].position.xyz) : 0.0;
         lighting += (1.0 - shadow) * cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
                         scene.pointLights[i].colorIntensity.rgb,
@@ -431,7 +402,7 @@ void main() {
         float theta   = dot(L, normalize(-scene.spotLights[i].direction.xyz));
         float eps     = scene.spotLights[i].cutoffAngles.x - scene.spotLights[i].cutoffAngles.y;
         float cone    = clamp((theta - scene.spotLights[i].cutoffAngles.y) / max(eps, 0.0001), 0.0, 1.0);
-        float att     = 1.0 / (1.0 + 0.09 * dist + 0.032 * dist * dist);
+        float att     = 1.0 / (1.0 + 0.1 * dist * dist);
         lighting += cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
                        scene.spotLights[i].colorIntensity.rgb,
                        scene.spotLights[i].colorIntensity.a * att * cone);

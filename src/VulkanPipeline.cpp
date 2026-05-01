@@ -33,6 +33,7 @@ static VkPipelineCache createPipelineCache(VkDevice device) {
 
 // ---------------------------------------------------------------------------
 void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
+                                     VkRenderPass litPass,
                                      VkRenderPass compositionPass,
                                      VkRenderPass shadowPassRP,
                                      VkExtent2D extent,
@@ -313,33 +314,74 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   vkDestroyShaderModule(device, shadowVertMod, nullptr);
 
   // =========================================================================
-  // 3. DEFERRED PBR PIPELINE  (second.vert + deferred.frag → colorBuffer,
-  // subpass 0)
+  // 3a. LIT PBR PIPELINE  (second.vert + lit.frag → litBuffer, lit pass)
+  // Same shape as the SSR composite pipeline below; differs only in shader
+  // and render pass.
   // =========================================================================
-  auto deferredVertCode = readFile("../Shaders/second.vert.spv");
-  auto deferredFragCode = readFile("../Shaders/deferred.frag.spv");
-  VkShaderModule deferredVertMod = createShaderModule(device, deferredVertCode);
-  VkShaderModule deferredFragMod = createShaderModule(device, deferredFragCode);
+  auto fullscreenVertCode = readFile("../Shaders/second.vert.spv");
+  auto litFragCode        = readFile("../Shaders/lit.frag.spv");
+  VkShaderModule fullscreenVertMod = createShaderModule(device, fullscreenVertCode);
+  VkShaderModule litFragMod        = createShaderModule(device, litFragCode);
 
-  VkPipelineShaderStageCreateInfo deferredStages[2] = {};
-  deferredStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                       nullptr,
-                       0,
-                       VK_SHADER_STAGE_VERTEX_BIT,
-                       deferredVertMod,
-                       "main",
-                       nullptr};
-  deferredStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                       nullptr,
-                       0,
-                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                       deferredFragMod,
-                       "main",
-                       nullptr};
+  VkPipelineShaderStageCreateInfo litStages[2] = {};
+  litStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                  VK_SHADER_STAGE_VERTEX_BIT, fullscreenVertMod, "main", nullptr};
+  litStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                  VK_SHADER_STAGE_FRAGMENT_BIT, litFragMod, "main", nullptr};
 
   // No vertex buffer for fullscreen triangle
   VkPipelineVertexInputStateCreateInfo emptyVI = {};
   emptyVI.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+  VkDescriptorSetLayout litLayoutsArr[] = {descriptors.getVPLayout(),
+                                           descriptors.getGBufferLayout()};
+  VkPipelineLayoutCreateInfo litLayoutCI = {};
+  litLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  litLayoutCI.setLayoutCount = 2;
+  litLayoutCI.pSetLayouts = litLayoutsArr;
+  if (vkCreatePipelineLayout(device, &litLayoutCI, nullptr,
+                             &litPipelineLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create lit pipeline layout");
+
+  VkPipelineDepthStencilStateCreateInfo noDepth = {};
+  noDepth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+  VkPipelineColorBlendStateCreateInfo singleColorBlend = {};
+  singleColorBlend.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  singleColorBlend.attachmentCount = 1;
+  singleColorBlend.pAttachments = &blendOff;
+
+  VkGraphicsPipelineCreateInfo litPCI = geoPCI;
+  litPCI.stageCount = 2;
+  litPCI.pStages = litStages;
+  litPCI.pVertexInputState = &emptyVI;
+  litPCI.pDepthStencilState = &noDepth;
+  litPCI.pColorBlendState = &singleColorBlend;
+  litPCI.layout = litPipelineLayout;
+  litPCI.renderPass = litPass;
+  litPCI.subpass = 0;
+  if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &litPCI, nullptr,
+                                &litPipeline) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create lit pipeline");
+
+  vkDestroyShaderModule(device, litFragMod, nullptr);
+
+  // =========================================================================
+  // 3b. SSR COMPOSITE PIPELINE  (second.vert + ssr_composite.frag → colorBuffer,
+  // composition subpass 0). Shares fullscreen vert shader and most state
+  // with the lit pipeline.
+  // =========================================================================
+  auto compositeFragCode = readFile("../Shaders/ssr_composite.frag.spv");
+  VkShaderModule compositeFragMod = createShaderModule(device, compositeFragCode);
+
+  VkPipelineShaderStageCreateInfo deferredStages[2] = {};
+  deferredStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                       nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
+                       fullscreenVertMod, "main", nullptr};
+  deferredStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                       nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
+                       compositeFragMod, "main", nullptr};
 
   VkDescriptorSetLayout deferredLayouts[] = {descriptors.getVPLayout(),
                                              descriptors.getGBufferLayout()};
@@ -349,32 +391,23 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   deferredLayoutCI.pSetLayouts = deferredLayouts;
   if (vkCreatePipelineLayout(device, &deferredLayoutCI, nullptr,
                              &deferredPipelineLayout) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create deferred pipeline layout");
-
-  VkPipelineDepthStencilStateCreateInfo noDepth = {};
-  noDepth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-
-  VkPipelineColorBlendStateCreateInfo deferredBlendState = {};
-  deferredBlendState.sType =
-      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  deferredBlendState.attachmentCount = 1;
-  deferredBlendState.pAttachments = &blendOff;
+    throw std::runtime_error("Failed to create SSR composite pipeline layout");
 
   VkGraphicsPipelineCreateInfo deferredPCI = geoPCI;
   deferredPCI.stageCount = 2;
   deferredPCI.pStages = deferredStages;
   deferredPCI.pVertexInputState = &emptyVI;
   deferredPCI.pDepthStencilState = &noDepth;
-  deferredPCI.pColorBlendState = &deferredBlendState;
+  deferredPCI.pColorBlendState = &singleColorBlend;
   deferredPCI.layout = deferredPipelineLayout;
   deferredPCI.renderPass = compositionPass;
   deferredPCI.subpass = 0;
   if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &deferredPCI, nullptr,
                                 &deferredPipeline) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create deferred pipeline");
+    throw std::runtime_error("Failed to create SSR composite pipeline");
 
-  vkDestroyShaderModule(device, deferredFragMod, nullptr);
-  vkDestroyShaderModule(device, deferredVertMod, nullptr);
+  vkDestroyShaderModule(device, compositeFragMod, nullptr);
+  vkDestroyShaderModule(device, fullscreenVertMod, nullptr);
 
   // =========================================================================
   // 4. TONE-MAPPING / POST PIPELINE  (second.vert + second.frag → swapchain,
@@ -446,6 +479,8 @@ void VulkanPipeline::cleanup(VkDevice device) {
   vkDestroyPipelineLayout(device, secondPipelineLayout, nullptr);
   vkDestroyPipeline(device, deferredPipeline, nullptr);
   vkDestroyPipelineLayout(device, deferredPipelineLayout, nullptr);
+  vkDestroyPipeline(device, litPipeline, nullptr);
+  vkDestroyPipelineLayout(device, litPipelineLayout, nullptr);
   vkDestroyPipeline(device, shadowPipeline, nullptr);
   vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
   vkDestroyPipeline(device, instancedPipeline, nullptr);

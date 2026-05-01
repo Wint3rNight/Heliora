@@ -60,11 +60,13 @@ public:
                             VkSampler noiseSampler, VkImageView skyboxView);
 
   // (Re)creates per-swapchain-image G-buffer descriptor sets.
+  // Binds gb0/gb1/gb2/depth + the lit-pass output (for SSR composite).
   void recreateGBufferSets(VkDevice device,
                            const std::vector<VkImageView> &gb0Views,
                            const std::vector<VkImageView> &gb1Views,
                            const std::vector<VkImageView> &gb2Views,
                            const std::vector<VkImageView> &gbDepthViews,
+                           const std::vector<VkImageView> &litViews,
                            VkSampler sampler);
 
   // (Re)creates per-swapchain-image input attachment descriptor sets.

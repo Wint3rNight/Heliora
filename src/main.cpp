@@ -1,5 +1,3 @@
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-
 #include "Camera.h"
 #include "InputManager.h"
 #include "VulkanRenderer.h"
@@ -54,7 +52,7 @@ void initWindow(const std::string &wName = "Vulkan Renderer",
 }
 
 int main() {
-  initWindow("Vulkan Renderer", 1366, 768);
+  initWindow("Vulkan Renderer", 1920, 1080);
 
   if (vulkanRenderer.init(window) == EXIT_FAILURE) {
     return EXIT_FAILURE;
@@ -70,12 +68,12 @@ int main() {
   sponzaNode->setModelId(sponzaId);
   vulkanRenderer.getRootNode().addChild(std::move(sponzaNode));
 
-  // 8 helmets arranged in a circle — rendered with one instanced draw call each
-  // mesh
+  // 8 helmets arranged in a circle, rendered with one instanced draw call
+  // per mesh. Set N higher (e.g. 64 in a multi-ring layout) to stress-test.
   int helmetId = vulkanRenderer.createMeshModel(
       "Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf");
   {
-    const int N = 8;
+    const int N = 64;
     const float radius = 5.0f;
     const float yPos = 1.5f;
     std::vector<glm::mat4> helmetTransforms;

@@ -16,9 +16,14 @@ public:
                                VkFormat gb1Format, VkFormat gb2Format,
                                VkFormat depthFormat);
 
+  // Creates the lit pass: single subpass that runs full PBR+IBL+SSAO+bloom+FXAA
+  // and writes the lit HDR color into a sampleable image. SSR is NOT applied
+  // here — it samples this image in the next pass.
+  void createLitRenderPass(VkDevice device, VkFormat litFormat);
+
   // Creates the composition pass: 2 subpasses.
-  //   Subpass 0 (deferred PBR+IBL+SSAO+bloom+FXAA) → colorBuffer
-  //   Subpass 1 (ACES+gamma)                        → swapchain
+  //   Subpass 0 (SSR composite — samples litBuffer + G-buffer) → colorBuffer
+  //   Subpass 1 (ACES+gamma)                                    → swapchain
   void createRenderPass(VkDevice device, VkFormat swapchainFormat,
                         VkFormat colorFormat);
 
@@ -32,12 +37,14 @@ public:
   void cleanup(VkDevice device);
 
   VkRenderPass getGBufferRenderPass() const { return gBufferRenderPass; }
+  VkRenderPass getLitRenderPass()     const { return litRenderPass; }
   VkRenderPass getRenderPass()        const { return renderPass; }
   VkRenderPass getShadowRenderPass()  const { return shadowRenderPass; }
   VkRenderPass getImGuiRenderPass()   const { return imguiRenderPass; }
 
 private:
   VkRenderPass gBufferRenderPass = VK_NULL_HANDLE;
+  VkRenderPass litRenderPass     = VK_NULL_HANDLE;
   VkRenderPass renderPass        = VK_NULL_HANDLE;
   VkRenderPass shadowRenderPass  = VK_NULL_HANDLE;
   VkRenderPass imguiRenderPass   = VK_NULL_HANDLE;

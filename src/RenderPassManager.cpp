@@ -91,8 +91,60 @@ void RenderPassManager::createGBufferRenderPass(VkDevice device,
 }
 
 // ---------------------------------------------------------------------------
+// Lit render pass (1 attachment: litBuffer)
+// Single subpass: PBR + IBL + SSAO + bloom + FXAA + fog → litBuffer.
+// finalLayout = SHADER_READ_ONLY_OPTIMAL so the composition pass can sample.
+// ---------------------------------------------------------------------------
+void RenderPassManager::createLitRenderPass(VkDevice device,
+                                            VkFormat litFormat) {
+  VkAttachmentDescription att = {};
+  att.format         = litFormat;
+  att.samples        = VK_SAMPLE_COUNT_1_BIT;
+  att.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+  att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentReference colorRef = {};
+  colorRef.attachment = 0;
+  colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription subpass = {};
+  subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 1;
+  subpass.pColorAttachments    = &colorRef;
+
+  std::array<VkSubpassDependency, 2> deps = {};
+  deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[0].dstSubpass    = 0;
+  deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[1].srcSubpass    = 0;
+  deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  VkRenderPassCreateInfo ci = {};
+  ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  ci.attachmentCount = 1;
+  ci.pAttachments    = &att;
+  ci.subpassCount    = 1;
+  ci.pSubpasses      = &subpass;
+  ci.dependencyCount = static_cast<uint32_t>(deps.size());
+  ci.pDependencies   = deps.data();
+  if (vkCreateRenderPass(device, &ci, nullptr, &litRenderPass) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create lit render pass");
+}
+
+// ---------------------------------------------------------------------------
 // Composition render pass (2 attachments: swapchain + colorBuffer)
-// Subpass 0: deferred PBR → colorBuffer
+// Subpass 0: SSR composite (samples litBuffer + G-buffer) → colorBuffer
 // Subpass 1: ACES+gamma (colorBuffer as input attachment) → swapchain
 // ---------------------------------------------------------------------------
 void RenderPassManager::createRenderPass(VkDevice device,
@@ -285,6 +337,8 @@ void RenderPassManager::createImGuiRenderPass(VkDevice device,
 void RenderPassManager::cleanup(VkDevice device) {
   if (imguiRenderPass != VK_NULL_HANDLE)
     vkDestroyRenderPass(device, imguiRenderPass, nullptr);
+  if (litRenderPass != VK_NULL_HANDLE)
+    vkDestroyRenderPass(device, litRenderPass, nullptr);
   vkDestroyRenderPass(device, gBufferRenderPass, nullptr);
   vkDestroyRenderPass(device, renderPass, nullptr);
   vkDestroyRenderPass(device, shadowRenderPass, nullptr);

@@ -75,6 +75,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         spdlog::spdlog
 )
 
+# Vulkan-style depth [0,1] for all glm projection matrices
+target_compile_definitions(${PROJECT_NAME} PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE)
+
 if(TARGET assimp::assimp)
         target_link_libraries(${PROJECT_NAME} PRIVATE assimp::assimp)
 else()

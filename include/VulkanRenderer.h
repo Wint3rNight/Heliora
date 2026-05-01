@@ -13,21 +13,25 @@
 #include <vector>
 
 #include "DescriptorManager.h"
-#include "PerformanceMetrics.h"
 #include "Model.h"
 #include "ModelManager.h"
+#include "PerformanceMetrics.h"
+#include "RenderPassManager.h"
 #include "SceneNode.h"
 #include "TextureManager.h"
-#include "RenderPassManager.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
 #include "VulkanSwapchain.h"
 
 struct InstancedDrawable {
-  int                    modelId;
+  int modelId;
   std::vector<InstanceData> instances;
-  AllocatedBuffer        instanceBuffer;
+  AllocatedBuffer instanceBuffer;
+  // World-space bounding sphere covering all instances. Used for whole-batch
+  // frustum culling and LOD selection.
+  glm::vec3 groupCenter = glm::vec3(0.0f);
+  float groupRadius = 0.0f;
 };
 
 class VulkanRenderer {
@@ -38,7 +42,8 @@ public:
   void draw();
   int createMeshModel(const std::string &modelFile);
   SceneNode &getRootNode();
-  void updateCameraView(const glm::mat4 &viewMatrix, const glm::vec3 &cameraPosition);
+  void updateCameraView(const glm::mat4 &viewMatrix,
+                        const glm::vec3 &cameraPosition);
   void addInstancedModel(int modelId, const std::vector<glm::mat4> &transforms);
   void cleanup();
   void notifyResize();
@@ -53,70 +58,85 @@ public:
 
 private:
   GLFWwindow *window = nullptr;
-  int currentFrame   = 0;
+  int currentFrame = 0;
 
-  SceneNode           rootNode;
-  SceneUniformBuffer  sceneUbo = {};
-  VkFormat            shadowDepthFormat = VK_FORMAT_UNDEFINED;
+  SceneNode rootNode;
+  SceneUniformBuffer sceneUbo = {};
+  VkFormat shadowDepthFormat = VK_FORMAT_UNDEFINED;
 
   // --- Directional shadow (Cascaded Shadow Maps) ---
-  AllocatedImage               csmDepthImage;
-  ImageViewHandle              csmArrayView;
+  AllocatedImage csmDepthImage;
+  ImageViewHandle csmArrayView;
   std::vector<ImageViewHandle> csmLayerViews;
-  std::vector<VkFramebuffer>   csmFramebuffers;
-  VkSampler                    shadowSampler = VK_NULL_HANDLE;
+  std::vector<VkFramebuffer> csmFramebuffers;
+  VkSampler shadowSampler = VK_NULL_HANDLE;
 
   // --- Omnidirectional point shadow ---
-  AllocatedImage             pointShadowDepthImage;
-  ImageViewHandle            pointShadowCubeView;
+  AllocatedImage pointShadowDepthImage;
+  ImageViewHandle pointShadowCubeView;
   std::vector<ImageViewHandle> pointShadowFaceViews;
-  std::vector<VkFramebuffer>   pointShadowFramebuffers;
-  std::vector<glm::mat4>       pointShadowMatrices;
+  std::vector<VkFramebuffer> pointShadowFramebuffers;
+  std::vector<glm::mat4> pointShadowMatrices;
 
   // --- G-buffer (per swapchain image) ---
   VkFormat gBufferDepthFormat = VK_FORMAT_UNDEFINED;
-  std::vector<AllocatedImage>  gBuffer0Images,  gBuffer1Images,  gBuffer2Images,  gBufferDepthImages;
-  std::vector<ImageViewHandle> gBuffer0Views,   gBuffer1Views,   gBuffer2Views,   gBufferDepthViews;
-  std::vector<VkFramebuffer>   gBufferFramebuffers;
+  std::vector<AllocatedImage> gBuffer0Images, gBuffer1Images, gBuffer2Images,
+      gBufferDepthImages;
+  std::vector<ImageViewHandle> gBuffer0Views, gBuffer1Views, gBuffer2Views,
+      gBufferDepthViews;
+  std::vector<VkFramebuffer> gBufferFramebuffers;
+
+  // --- Lit buffer (post-PBR HDR, sampled by SSR composite pass) ---
+  VkFormat litFormat = VK_FORMAT_UNDEFINED;
+  std::vector<AllocatedImage> litImages;
+  std::vector<ImageViewHandle> litViews;
+  std::vector<VkFramebuffer> litFramebuffers;
+  VkSampler litSampler = VK_NULL_HANDLE;
 
   // --- IBL resources ---
-  int iblSkyboxImageIndex     = -1; // index into TextureManager::textureImages
-  int irradianceImageIndex    = -1;
+  int iblSkyboxImageIndex = -1; // index into TextureManager::textureImages
+  int irradianceImageIndex = -1;
   int prefilteredEnvImageIndex = -1;
-  int brdfLutImageIndex       = -1;
-  int ssaoNoiseImageIndex     = -1;
-  VkSampler iblSampler       = VK_NULL_HANDLE;
+  int brdfLutImageIndex = -1;
+  int ssaoNoiseImageIndex = -1;
+  VkSampler iblSampler = VK_NULL_HANDLE;
   VkSampler ssaoNoiseSampler = VK_NULL_HANDLE;
 
   // --- Instanced drawables ---
   std::vector<InstancedDrawable> instancedDrawables;
 
   // --- Subsystems ---
-  VulkanDevice      device;
-  VulkanSwapchain   swapchain;
+  VulkanDevice device;
+  VulkanSwapchain swapchain;
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;
-  VulkanPipeline    pipeline;
-  TextureManager    textureManager;
-  ModelManager      modelManager;
+  VulkanPipeline pipeline;
+  TextureManager textureManager;
+  ModelManager modelManager;
   PerformanceMetrics metrics;
 
   // --- Synchronization ---
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
-  std::vector<VkFence>     drawFences;
-  std::vector<VkFence>     imagesInFlight;
+  std::vector<VkFence> drawFences;
+  std::vector<VkFence> imagesInFlight;
   bool framebufferResized = false;
 
   // --- ImGui ---
   std::vector<VkFramebuffer> imguiFramebuffers;
-  glm::vec3                  imguiCameraPos       = {};
-  float                      imguiCameraSpeed     = 15.0f;
-  float                      imguiCameraFov       = 45.0f;
-  float                      imguiDrawDistance    = 2000.0f;
-  int                        imguiDebugMode       = 0;
-  float                      frameTimeGraphData[128] = {};
-  int                        frameTimeGraphOffset    = 0;
+  glm::vec3 imguiCameraPos = {};
+  float imguiCameraSpeed = 15.0f;
+  float imguiCameraFov = 45.0f;
+  float imguiDrawDistance = 2000.0f;
+  float imguiLodNear = 15.0f;
+  float imguiLodFar = 45.0f;
+  float imguiPointShadowFar = 40.0f;
+  // Fog tunables (mirrored into sceneUbo.fogParams so the shader can read).
+  float imguiFogDensity = 0.002f;
+  float imguiFogClamp = 0.4f;
+  int imguiDebugMode = 0;
+  float frameTimeGraphData[128] = {};
+  int frameTimeGraphOffset = 0;
 
   // --- Init helpers ---
   void createSynchronization();
@@ -124,6 +144,8 @@ private:
   void cleanupShadowResources();
   void createGBuffer();
   void cleanupGBuffer();
+  void createLitResources();
+  void cleanupLitResources();
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();

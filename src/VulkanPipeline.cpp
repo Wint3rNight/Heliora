@@ -7,9 +7,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
-// ---------------------------------------------------------------------------
 // Helper: load pipeline cache from disk
-// ---------------------------------------------------------------------------
 static VkPipelineCache createPipelineCache(VkDevice device) {
   VkPipelineCacheCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -109,9 +107,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
   blendOff.blendEnable = VK_FALSE;
 
-  // =========================================================================
   // 1. GEOMETRY / G-BUFFER PIPELINE  (shader.vert + shader.frag → 3 MRTs)
-  // =========================================================================
   auto vertCode = readFile("../Shaders/shader.vert.spv");
   auto fragCode = readFile("../Shaders/shader.frag.spv");
   VkShaderModule vertMod = createShaderModule(device, vertCode);
@@ -177,11 +173,9 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   vkDestroyShaderModule(device, fragMod, nullptr);
   vkDestroyShaderModule(device, vertMod, nullptr);
 
-  // =========================================================================
   // 1b. INSTANCED G-BUFFER PIPELINE  (shader_instanced.vert + shader.frag)
   //     Model matrix comes from per-instance vertex buffer (binding 1),
   //     so no push constants needed.
-  // =========================================================================
   {
     auto iVertCode = readFile("../Shaders/shader_instanced.vert.spv");
     auto iFrag = readFile("../Shaders/shader.frag.spv");
@@ -254,9 +248,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
     vkDestroyShaderModule(device, iVertMod, nullptr);
   }
 
-  // =========================================================================
   // 2. SHADOW PIPELINE  (shadow.vert only, depth-only pass)
-  // =========================================================================
   auto shadowVertCode = readFile("../Shaders/shadow.vert.spv");
   VkShaderModule shadowVertMod = createShaderModule(device, shadowVertCode);
 
@@ -313,11 +305,9 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
   vkDestroyShaderModule(device, shadowVertMod, nullptr);
 
-  // =========================================================================
   // 3a. LIT PBR PIPELINE  (second.vert + lit.frag → litBuffer, lit pass)
   // Same shape as the SSR composite pipeline below; differs only in shader
   // and render pass.
-  // =========================================================================
   auto fullscreenVertCode = readFile("../Shaders/second.vert.spv");
   auto litFragCode        = readFile("../Shaders/lit.frag.spv");
   VkShaderModule fullscreenVertMod = createShaderModule(device, fullscreenVertCode);
@@ -367,11 +357,9 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
   vkDestroyShaderModule(device, litFragMod, nullptr);
 
-  // =========================================================================
   // 3b. SSR COMPOSITE PIPELINE  (second.vert + ssr_composite.frag → colorBuffer,
   // composition subpass 0). Shares fullscreen vert shader and most state
   // with the lit pipeline.
-  // =========================================================================
   auto compositeFragCode = readFile("../Shaders/ssr_composite.frag.spv");
   VkShaderModule compositeFragMod = createShaderModule(device, compositeFragCode);
 
@@ -409,10 +397,8 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   vkDestroyShaderModule(device, compositeFragMod, nullptr);
   vkDestroyShaderModule(device, fullscreenVertMod, nullptr);
 
-  // =========================================================================
   // 4. TONE-MAPPING / POST PIPELINE  (second.vert + second.frag → swapchain,
   // subpass 1)
-  // =========================================================================
   auto secondVertCode = readFile("../Shaders/second.vert.spv");
   auto secondFragCode = readFile("../Shaders/second.frag.spv");
   VkShaderModule secondVertMod = createShaderModule(device, secondVertCode);

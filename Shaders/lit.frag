@@ -218,8 +218,8 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     mat3 TBN        = mat3(tangent, bitangent, viewNormal);
 
     float occlusion = 0.0;
-    const float radius = 0.5;
-    const float bias   = 0.025;
+    const float radius = 1.0;
+    const float bias   = 0.03;
 
     for (int i = 0; i < 16; ++i) {
         vec3 samplePos = viewPos + TBN * ssaoKernel[i] * radius;
@@ -244,20 +244,30 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     return 1.0 - (occlusion / 16.0);
 }
 
-// ---- Bloom (brightness contribution from bright G-buffer albedo neighbors) ----
+// ---- Bloom (bright-pass on estimated lit neighbors, not raw albedo) ----
+// Samples albedo * NdotL * sunColor to approximate which neighbors are
+// actually sunlit rather than just brightly-coloured in the texture.
 vec3 computeBloom(vec2 uv) {
     vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
-    vec3  bloom      = vec3(0.0);
-    float totalW     = 0.0;
-    const float threshold = 0.85;
+    vec3 bloom  = vec3(0.0);
+    float totalW = 0.0;
+    const float threshold = 2.0;   // threshold on estimated lit luminance
+    vec3 sunDir   = normalize(-scene.directionalLight.direction.xyz);
+    vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
+                    scene.directionalLight.colorIntensity.a;
     for (int x = -2; x <= 2; ++x) {
         for (int y = -2; y <= 2; ++y) {
-            vec3  s   = texture(gBuffer0Sampler, uv + vec2(x, y) * texelSize * 2.0).rgb;
-            float lum = dot(s, vec3(0.2126, 0.7152, 0.0722));
-            if (lum > threshold) { bloom += s; totalW += 1.0; }
+            vec2 sUV    = uv + vec2(x, y) * texelSize * 3.0;
+            vec3 albedo = texture(gBuffer0Sampler, sUV).rgb;
+            vec3 N      = texture(gBuffer1Sampler, sUV).xyz;
+            if (dot(N, N) < 0.1) continue;   // skip sky/empty pixels
+            float NdotL = max(dot(normalize(N), sunDir), 0.0);
+            vec3  litEst = albedo * sunColor * NdotL;
+            float lum    = dot(litEst, vec3(0.2126, 0.7152, 0.0722));
+            if (lum > threshold) { bloom += litEst; totalW += 1.0; }
         }
     }
-    return totalW > 0.0 ? bloom / totalW * 0.12 : vec3(0.0);
+    return totalW > 0.0 ? bloom / totalW * 0.05 : vec3(0.0);
 }
 
 // ---- FXAA (edge anti-aliasing using G-buffer depth + albedo) ----

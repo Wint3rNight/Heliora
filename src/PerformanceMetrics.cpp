@@ -193,7 +193,7 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║  Avg FPS:             {:>17.1f}     ║", getAverageFps());
   spdlog::info("║  Draw Calls/Frame:    {:>20}  ║", lastDrawCalls);
   spdlog::info("║  Triangles/Frame:     {:>20}  ║", lastTriangles);
-  spdlog::info("╠══════════════════════════════════════════════╣");
+  spdlog::info("╠══════════════════════════════════════════════╣"); 
   if (gpuTimingAvailable) {
     spdlog::info("║  GPU Pass Timing (last frame):               ║");
     spdlog::info("║    Shadow:          {:>17.3f} ms  ║", lastPassGpuMs[0]);

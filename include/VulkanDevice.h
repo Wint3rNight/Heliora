@@ -54,6 +54,7 @@ private:
   void createInstance();
   void createSurface();
   void createLogicalDevice();
+  void loadDebugFunctions();
   void createCommandPool();
   void selectPhysicalDevice();
   void createVmaAllocator();

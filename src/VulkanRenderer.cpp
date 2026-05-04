@@ -1,6 +1,7 @@
 #include "VulkanRenderer.h"
 #include "Model.h"
 #include "Utilities.h"
+#include "VulkanDebug.h"
 #include <spdlog/spdlog.h>
 
 #include <imgui.h>
@@ -90,12 +91,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     createGBuffer();
 
     // 10. Pipeline (needs all 4 render passes + descriptor layouts)
-    pipeline.createPipelines(device.getLogicalDevice(),
-                             renderPassManager.getGBufferRenderPass(),
-                             renderPassManager.getLitRenderPass(),
-                             renderPassManager.getRenderPass(),
-                             renderPassManager.getShadowRenderPass(),
-                             swapchain.getExtent(), descriptorManager);
+    pipeline.createPipelines(
+        device.getLogicalDevice(), renderPassManager.getGBufferRenderPass(),
+        renderPassManager.getLitRenderPass(), renderPassManager.getRenderPass(),
+        renderPassManager.getShadowRenderPass(), swapchain.getExtent(),
+        descriptorManager);
 
     // 10. IBL + SSAO resources (requires textureManager and descriptorManager)
     initIBL();
@@ -119,30 +119,32 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     sceneUbo.cameraPosition = glm::vec4(10.0f, 0.0f, 20.0f, 1.0f);
 
+    // Warm midday sun coming through the atrium roof openings
     sceneUbo.directionalLight.direction =
-        glm::vec4(glm::normalize(glm::vec3(-0.35f, -1.0f, -0.25f)), 0.0f);
+        glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
     sceneUbo.directionalLight.colorIntensity =
-        glm::vec4(1.0f, 0.96f, 0.88f, 3.0f);
+        glm::vec4(1.0f, 0.93f, 0.78f, 5.5f);
 
-    sceneUbo.pointLights[0].position = glm::vec4(2.0f, 3.0f, 5.0f, 1.0f);
+    // Warm amber torchlight on the arcade pillars (arch height ~4.5m, x=±8.5m)
+    sceneUbo.pointLights[0].position = glm::vec4(8.5f, 4.5f, 2.0f, 1.0f);
     sceneUbo.pointLights[0].colorIntensity =
-        glm::vec4(0.55f, 0.75f, 1.0f, 8.0f);
-    sceneUbo.pointLights[1].position = glm::vec4(-4.0f, 2.0f, 1.0f, 1.0f);
+        glm::vec4(1.0f, 0.70f, 0.35f, 6.0f);
+    sceneUbo.pointLights[1].position = glm::vec4(-8.5f, 4.5f, -2.0f, 1.0f);
     sceneUbo.pointLights[1].colorIntensity =
-        glm::vec4(1.0f, 0.55f, 0.42f, 5.0f);
+        glm::vec4(1.0f, 0.68f, 0.32f, 6.0f);
 
     sceneUbo.spotLights[0].position = glm::vec4(0.0f, 5.0f, 6.0f, 1.0f);
     sceneUbo.spotLights[0].direction =
         glm::vec4(glm::normalize(glm::vec3(0.0f, -0.75f, -1.0f)), 0.0f);
-    sceneUbo.spotLights[0].colorIntensity = glm::vec4(1.0f, 0.92f, 0.75f, 2.0f);
+    sceneUbo.spotLights[0].colorIntensity = glm::vec4(1.0f, 0.88f, 0.65f, 1.5f);
     sceneUbo.spotLights[0].cutoffAngles =
         glm::vec4(glm::cos(glm::radians(12.5f)), glm::cos(glm::radians(20.0f)),
                   0.0f, 0.0f);
 
     sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, 0.0f, 0.0f, 0.0f);
-    sceneUbo.fogParams =
-        glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp, 0.0f);
-    sceneUbo.lightCounts = glm::ivec4(2, 1, 0, 0);
+    sceneUbo.fogParams = glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp, 0.0f);
+    sceneUbo.lightCounts =
+        glm::ivec4(2, 0, 0, 0); // spot lights off; sun+IBL+torches only
 
     updateLightSpaceMatrices();
     updatePointShadowMatrices();
@@ -178,12 +180,12 @@ void VulkanRenderer::updateCameraView(const glm::mat4 &viewMatrix,
 
 void VulkanRenderer::notifyResize() { framebufferResized = true; }
 
-// ---------------------------------------------------------------------------
 // Draw
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::draw() {
   VkDevice logicalDevice = device.getLogicalDevice();
+
+  metrics.beginFrame();
 
   vkWaitForFences(logicalDevice, 1, &drawFences[currentFrame], VK_TRUE,
                   std::numeric_limits<uint64_t>::max());
@@ -196,8 +198,6 @@ void VulkanRenderer::draw() {
     recreateSwapChain();
     return;
   }
-
-  metrics.beginFrame();
 
   uint32_t imageIndex;
   VkResult acquireResult = vkAcquireNextImageKHR(
@@ -268,9 +268,7 @@ void VulkanRenderer::draw() {
   metrics.endFrame(logicalDevice);
 }
 
-// ---------------------------------------------------------------------------
 // Swapchain recreation
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::recreateSwapChain() {
   swapchain.recreate(device, renderPassManager.getRenderPass(), window);
@@ -290,9 +288,7 @@ void VulkanRenderer::recreateSwapChain() {
   rebuildProjection();
 }
 
-// ---------------------------------------------------------------------------
 // G-buffer resource management
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::createGBuffer() {
   size_t count = swapchain.getImageCount();
@@ -434,9 +430,7 @@ void VulkanRenderer::cleanupGBuffer() {
   gBuffer0Images.clear();
 }
 
-// ---------------------------------------------------------------------------
 // Lit-buffer resource management (post-PBR HDR, sampled by SSR composite)
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::createLitResources() {
   VkDevice dev = device.getLogicalDevice();
@@ -453,18 +447,16 @@ void VulkanRenderer::createLitResources() {
 
   for (size_t i = 0; i < count; ++i) {
     VkImageCreateInfo ci = {};
-    ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ci.imageType     = VK_IMAGE_TYPE_2D;
-    ci.extent        = {swapchain.getExtent().width,
-                        swapchain.getExtent().height, 1};
-    ci.mipLevels     = 1;
-    ci.arrayLayers   = 1;
-    ci.format        = litFormat;
-    ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_SAMPLED_BIT;
-    ci.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ci.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.format = litFormat;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
@@ -473,10 +465,10 @@ void VulkanRenderer::createLitResources() {
     litImages.emplace_back(device.getAllocator(), rawImg, alloc);
 
     VkImageViewCreateInfo vci = {};
-    vci.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image    = litImages.back().get();
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = litImages.back().get();
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format   = litFormat;
+    vci.format = litFormat;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageView v = VK_NULL_HANDLE;
     if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
@@ -485,13 +477,13 @@ void VulkanRenderer::createLitResources() {
 
     VkImageView attachment = v;
     VkFramebufferCreateInfo fbci = {};
-    fbci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbci.renderPass      = renderPassManager.getLitRenderPass();
+    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass = renderPassManager.getLitRenderPass();
     fbci.attachmentCount = 1;
-    fbci.pAttachments    = &attachment;
-    fbci.width           = swapchain.getExtent().width;
-    fbci.height          = swapchain.getExtent().height;
-    fbci.layers          = 1;
+    fbci.pAttachments = &attachment;
+    fbci.width = swapchain.getExtent().width;
+    fbci.height = swapchain.getExtent().height;
+    fbci.layers = 1;
     if (vkCreateFramebuffer(dev, &fbci, nullptr, &litFramebuffers[i]) !=
         VK_SUCCESS)
       throw std::runtime_error("Failed to create lit framebuffer");
@@ -500,10 +492,10 @@ void VulkanRenderer::createLitResources() {
   // One sampler shared across all swapchain images (linear, clamp).
   if (litSampler == VK_NULL_HANDLE) {
     VkSamplerCreateInfo sci = {};
-    sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter    = VK_FILTER_LINEAR;
-    sci.minFilter    = VK_FILTER_LINEAR;
-    sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -527,9 +519,7 @@ void VulkanRenderer::cleanupLitResources() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // IBL resource management
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::initIBL() {
   VkPhysicalDeviceProperties props;
@@ -598,9 +588,7 @@ void VulkanRenderer::cleanupIBL() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Cleanup
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::addInstancedModel(
     int modelId, const std::vector<glm::mat4> &transforms) {
@@ -689,9 +677,7 @@ void VulkanRenderer::cleanup() {
 
 VulkanRenderer::~VulkanRenderer() {}
 
-// ---------------------------------------------------------------------------
 // Command recording
-// ---------------------------------------------------------------------------
 
 static void extractFrustumPlanes(const glm::mat4 &vp, glm::vec4 planes[6]) {
   // Gribb-Hartmann: GLM is column-major, so transpose to access rows as columns
@@ -725,13 +711,17 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   metrics.resetGpuQueries(cmd);
 
+  vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   recordShadowPass(cmd);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
+  vkdbgEndLabel(cmd);
 
+  vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   recordPointShadowPass(cmd);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
+  vkdbgEndLabel(cmd);
 
   VkViewport viewport = {};
   viewport.width = static_cast<float>(swapchain.getExtent().width);
@@ -752,6 +742,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
     rpbi.pClearValues = clears.data();
 
+    vkdbgBeginLabel(cmd, "G-Buffer Pass", 0.1f, 0.4f, 1.0f);
     metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -785,7 +776,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
             // Pick LOD from camera distance to bounding sphere center
             float camDist =
                 glm::length(wCenter - glm::vec3(sceneUbo.cameraPosition));
-            int lod = (camDist < imguiLodNear) ? 0
+            int lod = (camDist < imguiLodNear)  ? 0
                       : (camDist < imguiLodFar) ? 1
                                                 : 2;
 
@@ -799,7 +790,8 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
             for (size_t k = 0; k < mdl->getMeshCount(); k++) {
               const Mesh *mesh = mdl->getMesh(k);
 
-              // Per-mesh frustum cull (Sponza has ~100 submeshes; many off-screen)
+              // Per-mesh frustum cull (Sponza has ~100 submeshes; many
+              // off-screen)
               glm::vec3 meshWCenter =
                   glm::vec3(m * glm::vec4(mesh->boundingCenter, 1.0f));
               if (!sphereInFrustum(frustumPlanes, meshWCenter,
@@ -851,9 +843,9 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
         float groupDist = glm::length(drawable.groupCenter -
                                       glm::vec3(sceneUbo.cameraPosition));
-        int instLod = (groupDist < imguiLodNear) ? 0
-                       : (groupDist < imguiLodFar) ? 1
-                                                    : 2;
+        int instLod = (groupDist < imguiLodNear)  ? 0
+                      : (groupDist < imguiLodFar) ? 1
+                                                  : 2;
 
         VkBuffer instanceBuf = drawable.instanceBuffer.get();
         VkDeviceSize instanceOff = 0;
@@ -886,6 +878,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
     vkCmdEndRenderPass(cmd);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+    vkdbgEndLabel(cmd);
   }
 
   // --- Lit pass (PBR + IBL + SSAO + bloom + FXAA + fog → litBuffer) ---
@@ -894,13 +887,15 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
 
     VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass      = renderPassManager.getLitRenderPass();
-    rpbi.framebuffer     = litFramebuffers[currentImage];
-    rpbi.renderArea      = {{0, 0}, swapchain.getExtent()};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = renderPassManager.getLitRenderPass();
+    rpbi.framebuffer = litFramebuffers[currentImage];
+    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
     rpbi.clearValueCount = 1;
-    rpbi.pClearValues    = &clear;
+    rpbi.pClearValues = &clear;
 
+    vkdbgBeginLabel(cmd, "Deferred Lighting (PBR+IBL+SSAO+Bloom)", 0.1f, 0.8f,
+                    0.3f);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -914,6 +909,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    vkdbgEndLabel(cmd);
   }
 
   // --- Composition pass (SSR composite + ACES tone-mapping) ---
@@ -930,6 +926,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
     rpbi.pClearValues = clears.data();
 
+    vkdbgBeginLabel(cmd, "Composition (SSR + ACES Tonemap)", 0.6f, 0.2f, 0.8f);
     metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Deferred);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -958,17 +955,18 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
     vkCmdEndRenderPass(cmd);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Deferred);
+    vkdbgEndLabel(cmd);
   }
 
+  vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
   recordImGuiCommands(cmd, currentImage);
+  vkdbgEndLabel(cmd);
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to stop recording command buffer");
 }
 
-// ---------------------------------------------------------------------------
 // Shadow passes (unchanged)
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
   VkViewport vp = {0,
@@ -982,13 +980,14 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
   // Per-cascade LOD: near cascades full detail, far cascades simplified.
   // Shadow silhouettes are forgiving so this is a free win.
   auto cascadeLod = [](int cascade) {
-    if (cascade == 0) return 0;
-    if (cascade == 1) return 1;
+    if (cascade == 0)
+      return 0;
+    if (cascade == 1)
+      return 1;
     return 2; // cascades 2 and 3
   };
 
-  auto renderNodeShadow = [&](auto &self, SceneNode *node,
-                              const glm::mat4 &lsm,
+  auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
                               int lodIndex) -> void {
     if (node->getModelId() >= 0) {
       MeshModel *mdl = modelManager.getModel(node->getModelId());
@@ -1007,8 +1006,7 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
           vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
           vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(useLod), 0,
                                VK_INDEX_TYPE_UINT32);
-          vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(useLod), 1, 0, 0,
-                           0);
+          vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(useLod), 1, 0, 0, 0);
         }
       }
     }
@@ -1028,15 +1026,18 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clearValue;
 
+    char cascadeLabel[32];
+    snprintf(cascadeLabel, sizeof(cascadeLabel), "Cascade %d", cascade);
+    vkdbgBeginLabel(cmdBuffer, cascadeLabel, 1.0f, 0.55f + cascade * 0.1f, 0.1f);
     vkCmdBeginRenderPass(cmdBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
     vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
     renderNodeShadow(renderNodeShadow, &rootNode,
-                     sceneUbo.lightSpaceMatrices[cascade],
-                     cascadeLod(cascade));
+                     sceneUbo.lightSpaceMatrices[cascade], cascadeLod(cascade));
     vkCmdEndRenderPass(cmdBuffer);
+    vkdbgEndLabel(cmdBuffer);
   }
 }
 
@@ -1045,6 +1046,9 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
   clearValue.depthStencil.depth = 1.0f;
 
   for (uint32_t face = 0; face < 6; ++face) {
+    char faceLabel[32];
+    snprintf(faceLabel, sizeof(faceLabel), "Point Shadow Face %u", face);
+    vkdbgBeginLabel(cmdBuffer, faceLabel, 1.0f, 0.65f, 0.2f);
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getShadowRenderPass();
@@ -1095,19 +1099,18 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
     };
     renderNodeShadow(renderNodeShadow, &rootNode);
     vkCmdEndRenderPass(cmdBuffer);
+    vkdbgEndLabel(cmdBuffer);
   }
 }
 
-// ---------------------------------------------------------------------------
 // Light helpers (unchanged)
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::updateLightSpaceMatrices() {
   const float nearPlane = 0.1f;
   // CSM only covers the near range; geometry past csmFar is unshadowed but
   // still rendered. This keeps shadow texels small enough to be useful.
-  const float csmFar    = 500.0f;
-  const float farPlane  = std::min(csmFar, imguiDrawDistance);
+  const float csmFar = 500.0f;
+  const float farPlane = std::min(csmFar, imguiDrawDistance);
   const float lambda = 0.75f; // blend between log and uniform splits
 
   // Practical split scheme (Engel 2006)
@@ -1153,8 +1156,7 @@ void VulkanRenderer::updateLightSpaceMatrices() {
     // shadow map XY coverage stays constant as the camera rotates. The old
     // circumcenter (average of corners) shifts with yaw at wide FOV, causing
     // objects to fall off the edge of the shadow map on rotation.
-    glm::vec3 frustumCenter =
-        glm::vec3(glm::inverse(sceneUbo.view)[3]);
+    glm::vec3 frustumCenter = glm::vec3(glm::inverse(sceneUbo.view)[3]);
 
     float sphereRadius = 0.0f;
     for (auto &c : corners)
@@ -1162,8 +1164,7 @@ void VulkanRenderer::updateLightSpaceMatrices() {
 
     // Convert center to light space and snap to texel grid so the shadow map
     // does not shimmer as the camera translates.
-    glm::vec3 lsCenter =
-        glm::vec3(lightView * glm::vec4(frustumCenter, 1.0f));
+    glm::vec3 lsCenter = glm::vec3(lightView * glm::vec4(frustumCenter, 1.0f));
     float texelSz = 2.0f * sphereRadius / float(SHADOW_MAP_SIZE);
     if (texelSz > 0.0f) {
       lsCenter.x = std::floor(lsCenter.x / texelSz) * texelSz;
@@ -1207,9 +1208,7 @@ void VulkanRenderer::updatePointShadowMatrices() {
     sceneUbo.pointShadowMatrices[i] = pointShadowMatrices[i];
 }
 
-// ---------------------------------------------------------------------------
 // Shadow resource creation (unchanged)
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::createShadowResources() {
   VkDevice dev = device.getLogicalDevice();
@@ -1365,9 +1364,7 @@ void VulkanRenderer::cleanupShadowResources() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // ImGui integration
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::initImGui() {
   IMGUI_CHECKVERSION();
@@ -1379,16 +1376,16 @@ void VulkanRenderer::initImGui() {
 
   QueueFamilyIndices qi = device.getQueueFamilies();
   ImGui_ImplVulkan_InitInfo info = {};
-  info.ApiVersion                   = VK_API_VERSION_1_3;
-  info.Instance                     = device.getInstance();
-  info.PhysicalDevice               = device.getPhysicalDevice();
-  info.Device                       = device.getLogicalDevice();
-  info.QueueFamily                  = static_cast<uint32_t>(qi.graphicsFamily);
-  info.Queue                        = device.getGraphicsQueue();
-  info.DescriptorPoolSize           = 16; // let ImGui manage its own pool
-  info.MinImageCount                = 2;
-  info.ImageCount                   = static_cast<uint32_t>(swapchain.getImageCount());
-  info.PipelineInfoMain.RenderPass  = renderPassManager.getImGuiRenderPass();
+  info.ApiVersion = VK_API_VERSION_1_3;
+  info.Instance = device.getInstance();
+  info.PhysicalDevice = device.getPhysicalDevice();
+  info.Device = device.getLogicalDevice();
+  info.QueueFamily = static_cast<uint32_t>(qi.graphicsFamily);
+  info.Queue = device.getGraphicsQueue();
+  info.DescriptorPoolSize = 16; // let ImGui manage its own pool
+  info.MinImageCount = 2;
+  info.ImageCount = static_cast<uint32_t>(swapchain.getImageCount());
+  info.PipelineInfoMain.RenderPass = renderPassManager.getImGuiRenderPass();
   info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   ImGui_ImplVulkan_Init(&info);
 }
@@ -1405,13 +1402,13 @@ void VulkanRenderer::createImGuiFramebuffers() {
   for (size_t i = 0; i < images.size(); i++) {
     VkImageView view = images[i].imageView.get();
     VkFramebufferCreateInfo fbci = {};
-    fbci.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbci.renderPass      = renderPassManager.getImGuiRenderPass();
+    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass = renderPassManager.getImGuiRenderPass();
     fbci.attachmentCount = 1;
-    fbci.pAttachments    = &view;
-    fbci.width           = swapchain.getExtent().width;
-    fbci.height          = swapchain.getExtent().height;
-    fbci.layers          = 1;
+    fbci.pAttachments = &view;
+    fbci.width = swapchain.getExtent().width;
+    fbci.height = swapchain.getExtent().height;
+    fbci.layers = 1;
     if (vkCreateFramebuffer(device.getLogicalDevice(), &fbci, nullptr,
                             &imguiFramebuffers[i]) != VK_SUCCESS)
       throw std::runtime_error("Failed to create ImGui framebuffer");
@@ -1426,16 +1423,15 @@ void VulkanRenderer::cleanupImGuiFramebuffers() {
 }
 
 void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
-  imguiCameraPos   = pos;
+  imguiCameraPos = pos;
   imguiCameraSpeed = speed;
 }
 
 void VulkanRenderer::rebuildProjection() {
   float aspect = static_cast<float>(swapchain.getExtent().width) /
                  static_cast<float>(swapchain.getExtent().height);
-  sceneUbo.projection =
-      glm::perspective(glm::radians(imguiCameraFov), aspect, 0.1f,
-                       imguiDrawDistance);
+  sceneUbo.projection = glm::perspective(glm::radians(imguiCameraFov), aspect,
+                                         0.1f, imguiDrawDistance);
   sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
 }
@@ -1466,8 +1462,9 @@ void VulkanRenderer::buildImGuiUI() {
                    "Frame time (ms)", 0.0f, 50.0f, ImVec2(322, 60));
   ImGui::Text("Shadow:   %.2f ms",
               metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow));
-  ImGui::Text("PtShadow: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
+  ImGui::Text(
+      "PtShadow: %.2f ms",
+      metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
   ImGui::Text("GBuffer:  %.2f ms",
               metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::GBuffer));
   ImGui::Text("Deferred: %.2f ms",
@@ -1545,7 +1542,7 @@ void VulkanRenderer::buildImGuiUI() {
     if (ImGui::SliderFloat("Fog clamp", &imguiFogClamp, 0.0f, 1.0f))
       sceneUbo.fogParams.z = imguiFogClamp;
     ImGui::SliderFloat("LOD near", &imguiLodNear, 1.0f, 60.0f);
-    ImGui::SliderFloat("LOD far",  &imguiLodFar,  imguiLodNear + 1.0f, 200.0f);
+    ImGui::SliderFloat("LOD far", &imguiLodFar, imguiLodNear + 1.0f, 200.0f);
     if (ImGui::SliderFloat("Pt shadow far", &imguiPointShadowFar, 5.0f,
                            100.0f)) {
       sceneUbo.shadowParams.x = imguiPointShadowFar;
@@ -1579,20 +1576,18 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd,
 
   VkClearValue clear = {};
   VkRenderPassBeginInfo rpbi = {};
-  rpbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  rpbi.renderPass      = renderPassManager.getImGuiRenderPass();
-  rpbi.framebuffer     = imguiFramebuffers[imageIndex];
-  rpbi.renderArea      = {{0, 0}, swapchain.getExtent()};
+  rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rpbi.renderPass = renderPassManager.getImGuiRenderPass();
+  rpbi.framebuffer = imguiFramebuffers[imageIndex];
+  rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
   rpbi.clearValueCount = 1;
-  rpbi.pClearValues    = &clear;
+  rpbi.pClearValues = &clear;
   vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
   vkCmdEndRenderPass(cmd);
 }
 
-// ---------------------------------------------------------------------------
 // Synchronization (unchanged)
-// ---------------------------------------------------------------------------
 
 void VulkanRenderer::createSynchronization() {
   imageAvailable.resize(MAX_FRAMES_DRAWS);

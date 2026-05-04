@@ -3,11 +3,9 @@
 #include <array>
 #include <stdexcept>
 
-// ---------------------------------------------------------------------------
 // G-buffer render pass
 // 4 attachments: GB0 (color+metallic), GB1 (normal+roughness), GB2 (AO), depth
 // Single subpass; all color outputs transition to SHADER_READ_ONLY_OPTIMAL.
-// ---------------------------------------------------------------------------
 void RenderPassManager::createGBufferRenderPass(VkDevice device,
                                                 VkFormat gb0Format,
                                                 VkFormat gb1Format,
@@ -90,11 +88,10 @@ void RenderPassManager::createGBufferRenderPass(VkDevice device,
     throw std::runtime_error("Failed to create G-buffer render pass");
 }
 
-// ---------------------------------------------------------------------------
 // Lit render pass (1 attachment: litBuffer)
 // Single subpass: PBR + IBL + SSAO + bloom + FXAA + fog → litBuffer.
 // finalLayout = SHADER_READ_ONLY_OPTIMAL so the composition pass can sample.
-// ---------------------------------------------------------------------------
+
 void RenderPassManager::createLitRenderPass(VkDevice device,
                                             VkFormat litFormat) {
   VkAttachmentDescription att = {};
@@ -242,9 +239,7 @@ void RenderPassManager::createRenderPass(VkDevice device,
     throw std::runtime_error("Failed to create composition render pass");
 }
 
-// ---------------------------------------------------------------------------
 // Shadow render pass (depth-only, unchanged)
-// ---------------------------------------------------------------------------
 void RenderPassManager::createShadowRenderPass(VkDevice device,
                                                VkFormat depthFormat) {
   VkAttachmentDescription depthAtt = {};

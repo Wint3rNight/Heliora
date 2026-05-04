@@ -132,8 +132,8 @@ private:
   float imguiLodFar = 45.0f;
   float imguiPointShadowFar = 40.0f;
   // Fog tunables (mirrored into sceneUbo.fogParams so the shader can read).
-  float imguiFogDensity = 0.002f;
-  float imguiFogClamp = 0.4f;
+  float imguiFogDensity = 0.0f;
+  float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;

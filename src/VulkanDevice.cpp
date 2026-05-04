@@ -1,7 +1,14 @@
 #include "VulkanDevice.h"
+#include "VulkanDebug.h"
 #include <cstring>
 #include <iostream>
 #include <spdlog/spdlog.h>
+
+// --- Phase 7.1: debug-utils function pointer definitions ---
+PFN_vkCmdBeginDebugUtilsLabelEXT  g_vkCmdBeginDebugUtilsLabel  = nullptr;
+PFN_vkCmdEndDebugUtilsLabelEXT    g_vkCmdEndDebugUtilsLabel    = nullptr;
+PFN_vkCmdInsertDebugUtilsLabelEXT g_vkCmdInsertDebugUtilsLabel = nullptr;
+PFN_vkSetDebugUtilsObjectNameEXT  g_vkSetDebugUtilsObjectName  = nullptr;
 
 namespace {
 // wanted vulkan validation layer
@@ -97,6 +104,7 @@ void VulkanDevice::init(GLFWwindow *newWindow) {
   createSurface();
   selectPhysicalDevice();
   createLogicalDevice();
+  loadDebugFunctions();
   createVmaAllocator();
   createCommandPool();
 }
@@ -147,11 +155,9 @@ void VulkanDevice::createInstance() {
   std::vector<const char *> instanceExtensions(
       glfwExtensions, glfwExtensions + glfwExtensionCount);
 
-  // Add the Debug Utils extension if validation is enabled
-  //  This allows our custom callback to actually receive messages
-  if (enableValidationLayers) {
-    instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-  }
+  // Always request debug_utils: validation messenger uses it in debug builds,
+  // and RenderDoc / GPU profilers need it for pass labels in all builds.
+  instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
   // Verify all requested extensions are supported by the GPU
   if (!checkInstanceExtensionSupport(&instanceExtensions)) {
@@ -264,6 +270,24 @@ void VulkanDevice::createLogicalDevice() {
                    &graphicsQueue);
   vkGetDeviceQueue(mainDevice.logicalDevice, indices.presentationFamily, 0,
                    &presentationQueue);
+}
+
+// --- Phase 7.1: debug-utils function pointer loader ---
+
+void VulkanDevice::loadDebugFunctions() {
+  VkDevice dev = mainDevice.logicalDevice;
+#define LOAD(name, type) \
+  g_##name = reinterpret_cast<type>( \
+      vkGetDeviceProcAddr(dev, #name "EXT"));
+  LOAD(vkCmdBeginDebugUtilsLabel,  PFN_vkCmdBeginDebugUtilsLabelEXT)
+  LOAD(vkCmdEndDebugUtilsLabel,    PFN_vkCmdEndDebugUtilsLabelEXT)
+  LOAD(vkCmdInsertDebugUtilsLabel, PFN_vkCmdInsertDebugUtilsLabelEXT)
+  LOAD(vkSetDebugUtilsObjectName,  PFN_vkSetDebugUtilsObjectNameEXT)
+#undef LOAD
+  if (g_vkCmdBeginDebugUtilsLabel)
+    spdlog::info("VK_EXT_debug_utils loaded — RenderDoc labels active");
+  else
+    spdlog::warn("VK_EXT_debug_utils not available — labels disabled");
 }
 
 // --- Command pool creation ---

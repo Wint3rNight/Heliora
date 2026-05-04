@@ -7,9 +7,8 @@
 #include <stdexcept>
 #include <vector>
 
-// ---------------------------------------------------------------------------
 // Public interface
-// ---------------------------------------------------------------------------
+
 
 void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
                              size_t swapchainImageCount) {
@@ -194,9 +193,7 @@ void DescriptorManager::recreateInputSets(VkDevice device,
   createInputDescriptorSets(device, swapchain);
 }
 
-// ---------------------------------------------------------------------------
 // Layout creation
-// ---------------------------------------------------------------------------
 
 void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
   // --- VP / scene layout (set 0): 8 bindings ---
@@ -278,9 +275,7 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
         "Failed to create input attachment descriptor set layout");
 }
 
-// ---------------------------------------------------------------------------
 // Push constant range
-// ---------------------------------------------------------------------------
 
 void DescriptorManager::createPushConstantRange() {
   pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -288,9 +283,7 @@ void DescriptorManager::createPushConstantRange() {
   pushConstantRange.size = sizeof(ModelPushConstants);
 }
 
-// ---------------------------------------------------------------------------
 // Uniform buffer creation
-// ---------------------------------------------------------------------------
 
 void DescriptorManager::createUniformBuffers(VmaAllocator allocator,
                                              size_t count) {
@@ -304,9 +297,7 @@ void DescriptorManager::createUniformBuffers(VmaAllocator allocator,
   }
 }
 
-// ---------------------------------------------------------------------------
 // Descriptor pool creation
-// ---------------------------------------------------------------------------
 
 void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
   // VP pool: 1 UBO + 7 samplers per frame
@@ -370,9 +361,7 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
         "Failed to create input attachment descriptor pool");
 }
 
-// ---------------------------------------------------------------------------
 // Descriptor set creation
-// ---------------------------------------------------------------------------
 
 void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
   descriptorSets.resize(count);

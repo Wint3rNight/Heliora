@@ -1,12 +1,6 @@
 # Vulkan Renderer
 
-A modular Vulkan renderer built as a way to get closer to how real-time graphics actually work.
-
-This started from a slightly stubborn feeling: I was interested in game development, but using a full engine made the system feel too far away. Everything was convenient, but also hidden. I wanted to understand what was underneath the editor windows, material panels, draw calls, memory budgets, swapchains, shader stages, and all the other machinery that makes a frame appear.
-
-The first plan was to build a small monolithic game engine in OpenGL, make an FPS in it, and slowly pull the engine apart as the project grew. Then I got curious about Vulkan. That changed the project completely. Vulkan is not shy about how much work a renderer really does, and it became obvious very quickly that "just the renderer" was already a serious project. So this repository became that: a focused, modular renderer where the rendering architecture is the main subject.
-
-It is not trying to be a finished engine yet. It is a renderer-first learning project with real systems: deferred shading, PBR, image-based lighting, shadowing, post-processing, runtime UI, profiling, culling, LODs, instancing, resource lifetime management, and a demo scene large enough to make those decisions matter.
+A modular Vulkan renderer focused on the rendering architecture itself: deferred shading, PBR, image-based lighting, cascaded shadows, post-processing, runtime profiling, frustum culling, LODs, instancing, and VMA-backed resource management. Not a game engine — a renderer-first project with a demo scene large enough to make those decisions matter.
 
 ## What It Renders
 
@@ -16,21 +10,61 @@ At a high level, one frame looks like this:
 
 ```mermaid
 flowchart TD
-    A[Assimp glTF/OBJ loading] --> B[ModelManager + TextureManager]
-    B --> C[Scene graph]
-    C --> D[CSM shadow pass]
-    C --> E[Point shadow cubemap pass]
-    C --> F[G-buffer pass]
-    H[HDRI skybox] --> I[Compute IBL precomputation]
-    I --> G[Deferred lighting pass]
-    D --> G
-    E --> G
-    F --> G
-    G --> J[Lit HDR buffer]
-    J --> K[SSR composite]
-    K --> L[ACES tone map + gamma]
-    L --> M[ImGui overlay]
-    M --> N[Swapchain present]
+    subgraph STARTUP ["Startup (once)"]
+        A["Assimp glTF / OBJ loading"] --> B["ModelManager\n(vertex/index buffers,\nbounding spheres,\nLOD generation via meshoptimizer)"]
+        A --> C["TextureManager\n(PBR texture sets,\nfallback textures,\npath-based deduplication)"]
+        H["HDRI .hdr file"] --> SKY["Equirect → cubemap\n(TextureManager)"]
+        SKY --> IRR["Compute shader:\nirradiance convolution"]
+        SKY --> PRE["Compute shader:\nprefiltered env map\n(5 mip levels)"]
+        LUT["BRDF LUT\n(precomputed 2D texture)"]
+        NOISE["SSAO noise\n(4×4 random vectors)"]
+    end
+
+    subgraph SCENE ["Scene Setup"]
+        B --> SG["SceneNode tree\n(parent/child transforms)"]
+        C --> MAT["Per-mesh material\ndescriptor sets\n(albedo, normal, metallic,\nroughness, AO samplers)"]
+    end
+
+    subgraph FRAME ["Per-Frame Render Passes"]
+        SG --> CULL["CPU frustum culling\n(Gribb-Hartmann planes,\nbounding-sphere test)"]
+        CULL --> LOD["LOD selection\n(camera distance →\nLOD 0 / 1 / 2)"]
+
+        LOD --> CSM["Pass 1 · CSM Shadow\n(4 cascades × depth-only render pass)\n→ 2D array depth texture"]
+        LOD --> PT["Pass 2 · Point Shadow\n(6 faces × depth-only render pass)\n→ cubemap depth texture"]
+        LOD --> GB["Pass 3 · G-Buffer\n(scene geometry + instanced draws)"]
+
+        GB --> GB0["GB0: R16G16B16A16_SFLOAT\nalbedo RGB + metallic"]
+        GB --> GB1["GB1: R16G16B16A16_SFLOAT\nworld normal RGB + roughness"]
+        GB --> GB2["GB2: R8G8B8A8_UNORM\nambient occlusion"]
+        GB --> DEP["Depth: D32_SFLOAT\n(sampled for position\nreconstruction)"]
+
+        GB0 --> LIT["Pass 4 · Deferred Lit\n(fullscreen triangle)"]
+        GB1 --> LIT
+        GB2 --> LIT
+        DEP --> LIT
+        CSM --> LIT
+        PT --> LIT
+        IRR --> LIT
+        PRE --> LIT
+        LUT --> LIT
+        NOISE --> LIT
+        SKY --> LIT
+
+        LIT --> |"Cook-Torrance PBR\n+ CSM/point shadows\n+ IBL ambient\n+ SSAO\n+ bloom bright-pass\n+ FXAA edge smoothing\n+ height fog\n+ skybox background"| LITBUF["Lit HDR buffer\n(R16G16B16A16_SFLOAT)"]
+
+        subgraph COMP ["Pass 5 · Composition (2 subpasses)"]
+            LITBUF --> SSR["Subpass 0: SSR composite\n(ray-march lit buffer +\nG-buffer depth/normals,\nbinary-search refinement,\nFresnel-weighted blend)"]
+            SSR --> COLBUF["Intermediate color buffer"]
+            COLBUF --> TONE["Subpass 1: ACES tonemap\n+ gamma correction\n(input attachment read)"]
+        end
+
+        TONE --> SWAP["Swapchain image"]
+
+        SWAP --> IMGUI["Pass 6 · ImGui overlay\n(loads swapchain image,\ndraws debug UI on top)"]
+        IMGUI --> PRESENT["vkQueuePresent"]
+    end
+
+    MAT --> GB
 ```
 
 ## Feature Set
@@ -277,6 +311,8 @@ This repository includes third-party assets and libraries for testing the render
 The assets are here to make the renderer exercise real material, lighting, and scale problems. The renderer code is the main project.
 
 ## Why This Project Matters To Me
+
+This started from a stubborn feeling: I was interested in game development, but using a full engine made the system feel too far away. Everything was convenient, but also hidden. The first plan was a small monolithic engine in OpenGL, but then I got curious about Vulkan, and it became obvious very quickly that "just the renderer" was already a serious project.
 
 The point of this repository is not just "I can use Vulkan." It is proof that I wanted to understand the uncomfortable parts: why a frame needs multiple passes, why descriptor layouts shape an engine, why memory ownership matters, why a shadow map shimmers, why PBR needs precomputed environment data, why a profiler is part of the renderer and not an afterthought.
 

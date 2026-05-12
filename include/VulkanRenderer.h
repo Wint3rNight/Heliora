@@ -127,7 +127,7 @@ private:
   glm::vec3 imguiCameraPos = {};
   float imguiCameraSpeed = 15.0f;
   float imguiCameraFov = 45.0f;
-  float imguiDrawDistance = 2000.0f;
+  float imguiDrawDistance = 8000.0f;
   float imguiLodNear = 15.0f;
   float imguiLodFar = 45.0f;
   float imguiPointShadowFar = 40.0f;
@@ -135,6 +135,13 @@ private:
   float imguiFogDensity = 0.0f;
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
+  bool imguiSrgbAlbedoDecode = true;       // P1 fix toggle
+  bool imguiSpecAAEnable = true;           // P2 fix toggle
+  float imguiSpecAAVariance = 0.25f;       // P2 tunable
+  float imguiSpecAAThreshold = 0.18f;      // P2 tunable
+  bool imguiMipmapsEnable = true;          // P7 fix toggle
+  bool imguiShadowFrontFaceCull = true;    // P5 fix toggle
+  float imguiCsmFar = 2000.0f;             // P5 cascade far plane
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;
 

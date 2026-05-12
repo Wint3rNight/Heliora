@@ -385,6 +385,10 @@ void TextureManager::createTextureSampler(VkDevice device,
   ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   ci.anisotropyEnable = VK_TRUE;
   ci.maxAnisotropy = props.limits.maxSamplerAnisotropy;
+  // Default maxLod is 0 -> only mip 0 sampled. Open the LOD range so the
+  // generated mip chain is actually selectable.
+  ci.minLod = 0.0f;
+  ci.maxLod = VK_LOD_CLAMP_NONE;
   if (vkCreateSampler(device, &ci, nullptr, &textureSampler) != VK_SUCCESS)
     throw std::runtime_error("Failed to create texture sampler");
 }
@@ -815,16 +819,26 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   memcpy(mapped, pixels, static_cast<size_t>(imageSize));
   vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
 
+  // Mipmap chain: floor(log2(max(w,h))) + 1 levels. 1x1 textures (the flat
+  // fallback colors) collapse to a single mip and skip the blit loop.
+  const uint32_t mipLevels =
+      static_cast<uint32_t>(
+          std::floor(std::log2(static_cast<float>(std::max(width, height))))) +
+      1u;
+
   VkImageCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   ci.imageType = VK_IMAGE_TYPE_2D;
   ci.extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
-  ci.mipLevels = 1;
+  ci.mipLevels = mipLevels;
   ci.arrayLayers = 1;
   ci.format = VK_FORMAT_R8G8B8A8_UNORM;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  // TRANSFER_SRC needed so vkCmdBlitImage can read previous mip during chain
+  // generation.
+  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+             VK_IMAGE_USAGE_SAMPLED_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -845,10 +859,19 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
                   device.getGraphicsCommandPool(), staging.get(), texImg.get(),
                   static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-  transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), texImg.get(),
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+  if (mipLevels > 1) {
+    // Generates mips 1..N from mip 0 and leaves the whole chain in
+    // SHADER_READ_ONLY_OPTIMAL.
+    generateMipmaps(device.getLogicalDevice(), device.getGraphicsQueue(),
+                    device.getGraphicsCommandPool(), texImg.get(), width,
+                    height, mipLevels);
+  } else {
+    transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
+                          device.getGraphicsCommandPool(), texImg.get(),
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  }
 
   textureImages.push_back(std::move(texImg));
   int loc = static_cast<int>(textureImages.size() - 1);
@@ -861,7 +884,7 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   vci.components = {
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
 
   VkImageView view;
   if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) !=
@@ -870,6 +893,98 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   textureImageViews.emplace_back(device.getLogicalDevice(), view);
   textureMap[cacheKey] = loc;
   return loc;
+}
+
+// In-place mipmap generation via vkCmdBlitImage with VK_FILTER_LINEAR. Walks
+// the chain mip(i-1) -> mip(i), transitioning each source mip to TRANSFER_SRC
+// then to SHADER_READ_ONLY as it goes. Pre: mip 0 in TRANSFER_DST_OPTIMAL,
+// mips 1..N in UNDEFINED. Post: all mips in SHADER_READ_ONLY_OPTIMAL.
+// Assumes R8G8B8A8_UNORM (supports BLIT_SRC + BLIT_DST + linear filter on
+// every desktop GPU; not validated here for brevity).
+void TextureManager::generateMipmaps(VkDevice device, VkQueue queue,
+                                     VkCommandPool pool, VkImage image,
+                                     int width, int height,
+                                     uint32_t mipLevels) {
+  VkCommandBuffer cmd = beginCommandBuffer(device, pool);
+
+  VkImageMemoryBarrier b = {};
+  b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  b.image = image;
+  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  b.subresourceRange.baseArrayLayer = 0;
+  b.subresourceRange.layerCount = 1;
+  b.subresourceRange.levelCount = 1;
+
+  int32_t mw = width;
+  int32_t mh = height;
+
+  for (uint32_t i = 1; i < mipLevels; ++i) {
+    // Source mip (i-1): TRANSFER_DST -> TRANSFER_SRC
+    b.subresourceRange.baseMipLevel = i - 1;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+
+    // Destination mip (i): UNDEFINED -> TRANSFER_DST
+    b.subresourceRange.baseMipLevel = i;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcAccessMask = 0;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+
+    VkImageBlit blit = {};
+    blit.srcOffsets[0] = {0, 0, 0};
+    blit.srcOffsets[1] = {mw, mh, 1};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = i - 1;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    int32_t nw = mw > 1 ? mw / 2 : 1;
+    int32_t nh = mh > 1 ? mh / 2 : 1;
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {nw, nh, 1};
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = i;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+    vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+
+    // Source mip (i-1): TRANSFER_SRC -> SHADER_READ_ONLY
+    b.subresourceRange.baseMipLevel = i - 1;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &b);
+
+    mw = nw;
+    mh = nh;
+  }
+
+  // Last mip is still TRANSFER_DST; promote it to SHADER_READ_ONLY.
+  b.subresourceRange.baseMipLevel = mipLevels - 1;
+  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &b);
+
+  endAndSubmitCommandBuffer(device, pool, queue, cmd);
 }
 
 unsigned char *TextureManager::loadTextureFile(const std::string &filename,

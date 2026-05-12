@@ -1032,6 +1032,12 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     vkCmdBeginRenderPass(cmdBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
     vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
+    // Front-face culling avoids self-shadow acne and (more importantly here)
+    // captures occluders whose only face points away from the sun — the
+    // single-sided thin geometry that Sponza uses for ceilings and arch caps.
+    vkCmdSetCullMode(cmdBuffer,
+                     imguiShadowFrontFaceCull ? VK_CULL_MODE_FRONT_BIT
+                                              : VK_CULL_MODE_BACK_BIT);
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
     renderNodeShadow(renderNodeShadow, &rootNode,
@@ -1068,6 +1074,9 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
     VkRect2D sc = {{0, 0}, {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE}};
     vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
     vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
+    vkCmdSetCullMode(cmdBuffer,
+                     imguiShadowFrontFaceCull ? VK_CULL_MODE_FRONT_BIT
+                                              : VK_CULL_MODE_BACK_BIT);
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
 
@@ -1107,10 +1116,12 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
 
 void VulkanRenderer::updateLightSpaceMatrices() {
   const float nearPlane = 0.1f;
-  // CSM only covers the near range; geometry past csmFar is unshadowed but
-  // still rendered. This keeps shadow texels small enough to be useful.
-  const float csmFar = 500.0f;
-  const float farPlane = std::min(csmFar, imguiDrawDistance);
+  // CSM covers up to imguiCsmFar (clamped to draw distance). Fragments past
+  // this fall through every cascade and the shader's fallback treats them as
+  // lit, so on Crytek-Sponza-scale models this needs to track the actual hall
+  // length, not a tiny default.
+  const float csmFar = std::min(imguiCsmFar, imguiDrawDistance);
+  const float farPlane = csmFar;
   const float lambda = 0.75f; // blend between log and uniform splits
 
   // Practical split scheme (Engel 2006)
@@ -1430,8 +1441,12 @@ void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
 void VulkanRenderer::rebuildProjection() {
   float aspect = static_cast<float>(swapchain.getExtent().width) /
                  static_cast<float>(swapchain.getExtent().height);
+  // Near=1.0 (not 0.1) because the scene is Crytek-scale (~3km long); a 0.1m
+  // near plane burns most of the D32F depth range on the first metre and
+  // leaves the rest of the hall z-fighting. 1m is below any meaningful
+  // first-person clip distance at this scale.
   sceneUbo.projection = glm::perspective(glm::radians(imguiCameraFov), aspect,
-                                         0.1f, imguiDrawDistance);
+                                         1.0f, imguiDrawDistance);
   sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
 }
@@ -1488,7 +1503,7 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::SliderFloat("Speed", &imguiCameraSpeed, 0.5f, 50.0f);
   if (ImGui::SliderFloat("FOV", &imguiCameraFov, 30.0f, 120.0f))
     setFov(imguiCameraFov);
-  if (ImGui::SliderFloat("Draw Dist", &imguiDrawDistance, 100.0f, 5000.0f))
+  if (ImGui::SliderFloat("Draw Dist", &imguiDrawDistance, 100.0f, 20000.0f))
     setDrawDistance(imguiDrawDistance);
   ImGui::End();
 
@@ -1561,6 +1576,28 @@ void VulkanRenderer::buildImGuiUI() {
                               "Metallic", "Roughness", "Depth"};
   if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 6))
     sceneUbo.debugMode = imguiDebugMode;
+  ImGui::End();
+
+  // Visual-quality fix toggles (Phase 2 A/B controls)
+  ImGui::SetNextWindowPos(ImVec2(10, 700), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 250), ImGuiCond_Always);
+  ImGui::Begin("Visual Fixes", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoCollapse);
+  if (ImGui::Checkbox("P1: sRGB albedo decode", &imguiSrgbAlbedoDecode))
+    sceneUbo.qualityToggles.x = imguiSrgbAlbedoDecode ? 1.0f : 0.0f;
+  if (ImGui::Checkbox("P2: Specular AA", &imguiSpecAAEnable))
+    sceneUbo.qualityToggles.y = imguiSpecAAEnable ? 1.0f : 0.0f;
+  if (ImGui::SliderFloat("AA variance", &imguiSpecAAVariance, 0.0f, 1.0f,
+                         "%.3f"))
+    sceneUbo.qualityToggles.z = imguiSpecAAVariance;
+  if (ImGui::SliderFloat("AA threshold", &imguiSpecAAThreshold, 0.0f, 0.5f,
+                         "%.3f"))
+    sceneUbo.qualityToggles.w = imguiSpecAAThreshold;
+  if (ImGui::Checkbox("P7: Mipmaps + aniso", &imguiMipmapsEnable))
+    sceneUbo.qualityToggles2.x = imguiMipmapsEnable ? 1.0f : 0.0f;
+  ImGui::Checkbox("P5: Shadow front-face cull", &imguiShadowFrontFaceCull);
+  ImGui::SliderFloat("CSM far", &imguiCsmFar, 100.0f, 5000.0f, "%.0f");
   ImGui::End();
 }
 

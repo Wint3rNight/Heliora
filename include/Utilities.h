@@ -202,6 +202,12 @@ struct SceneUniformBuffer {
   // (density, falloff, clampMax, _) — exposed via ImGui at runtime.
   alignas(16) glm::vec4 fogParams = glm::vec4(0.002f, 0.25f, 0.4f, 0.0f);
   int debugMode = 0;
+  // Per-fix runtime A/B toggles for the visual-quality pass.
+  // x = sRGB albedo decode (P1)
+  // y = specular AA enable (P2), z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(1.0f, 1.0f, 0.25f, 0.18f);
+  // x = mipmap sampling enable (P7), y/z/w reserved.
+  alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
 };
 
 const int IBL_PREFILTER_MIPS = 5;

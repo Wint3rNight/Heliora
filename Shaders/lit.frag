@@ -32,6 +32,10 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 invView;
     vec4 fogParams; // x=density, y=falloff, z=clampMax
     int debugMode;
+    // x = sRGB albedo decode
+    // y = specular AA enable, z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
+    vec4 qualityToggles;
+    vec4 qualityToggles2; // x = mipmap sampling enable
 } scene;
 
 layout(set = 0, binding = 1) uniform sampler2DArray shadowMap;
@@ -361,6 +365,22 @@ void main() {
     vec3 viewN    = normalize(mat3(scene.view) * worldN);
     vec3 V        = normalize(scene.cameraPosition.xyz - worldPos);
     vec3 F0       = mix(vec3(0.04), albedo, metallic);
+
+    // Geometric specular AA (Kaplanyan & Hill 2016, "Stable Geometric
+    // Specular Antialiasing with Projected-Space NDF Filtering"; Filament
+    // §4.7.1). Pixel-scale normal variation is folded into the NDF roughness,
+    // killing the sub-pixel highlights that show up as 'sequin' aliasing.
+    // Our NDF takes perceptual r and uses r^4 = α², so we feed the AA result
+    // back through (α'²)^(1/4).
+    if (scene.qualityToggles.y > 0.5) {
+        vec3  dndu     = dFdx(worldN);
+        vec3  dndv     = dFdy(worldN);
+        float variance = scene.qualityToggles.z *
+                         (dot(dndu, dndu) + dot(dndv, dndv));
+        float kernel   = min(2.0 * variance, scene.qualityToggles.w);
+        float alpha    = roughness * roughness;
+        roughness      = sqrt(sqrt(alpha * alpha + kernel));
+    }
 
     // SSAO
     float ssaoFactor = computeSSAO(uv, viewPos, viewN);

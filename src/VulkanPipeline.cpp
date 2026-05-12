@@ -281,6 +281,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   shadowRast.depthBiasEnable = VK_TRUE;
   shadowRast.depthBiasConstantFactor = 1.25f;
   shadowRast.depthBiasSlopeFactor = 1.75f;
+  // cullMode will be overridden each draw via vkCmdSetCullMode.
 
   VkPipelineDepthStencilStateCreateInfo shadowDS = depthStencil;
   shadowDS.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
@@ -289,6 +290,17 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   shadowBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
   shadowBlend.attachmentCount = 0;
 
+  // Shadow pipeline allows runtime cull-mode flips so the user can A/B
+  // back-face vs front-face culling without rebuilding.
+  std::array<VkDynamicState, 3> shadowDynStates = {VK_DYNAMIC_STATE_VIEWPORT,
+                                                   VK_DYNAMIC_STATE_SCISSOR,
+                                                   VK_DYNAMIC_STATE_CULL_MODE};
+  VkPipelineDynamicStateCreateInfo shadowDynState = {};
+  shadowDynState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  shadowDynState.dynamicStateCount =
+      static_cast<uint32_t>(shadowDynStates.size());
+  shadowDynState.pDynamicStates = shadowDynStates.data();
+
   VkGraphicsPipelineCreateInfo shadowPCI = geoPCI;
   shadowPCI.stageCount = 1;
   shadowPCI.pStages = &shadowStage;
@@ -296,6 +308,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   shadowPCI.pRasterizationState = &shadowRast;
   shadowPCI.pDepthStencilState = &shadowDS;
   shadowPCI.pColorBlendState = &shadowBlend;
+  shadowPCI.pDynamicState = &shadowDynState;
   shadowPCI.layout = shadowPipelineLayout;
   shadowPCI.renderPass = shadowPassRP;
   shadowPCI.subpass = 0;

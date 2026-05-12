@@ -68,6 +68,9 @@ private:
   int  createTextureImageFromPixels(const std::string &cacheKey,
                                     const unsigned char *pixels, int width,
                                     int height, const VulkanDevice &device);
+  void generateMipmaps(VkDevice device, VkQueue queue, VkCommandPool pool,
+                       VkImage image, int width, int height,
+                       uint32_t mipLevels);
   unsigned char *loadTextureFile(const std::string &filename, int *width,
                                  int *height, VkDeviceSize *imageSize);
   std::string resolveTexturePath(const std::string &filename) const;

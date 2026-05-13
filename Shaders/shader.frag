@@ -42,35 +42,20 @@ layout(location = 0) out vec4 gBuffer0;  // albedo.rgb + metallic
 layout(location = 1) out vec4 gBuffer1;  // world-space normal.xyz + roughness
 layout(location = 2) out vec4 gBuffer2;  // AO
 
-// Material-texture fetch: implicit LOD (with aniso + trilinear) when mipmaps
-// are enabled, force-mip-0 otherwise. Lets the user A/B the no-mip bug state
-// against the fixed pipeline. Note: the ternary still evaluates both reads;
-// uniform-branching via `if` would let one elide, but the texture cache
-// makes the duplicate fetch essentially free here.
-vec4 sampleTex(sampler2D s, vec2 uv) {
-    return scene.qualityToggles2.x > 0.5
-        ? texture(s, uv)
-        : textureLod(s, uv, 0.0);
-}
-
 void main() {
-    vec4 albedoSample = sampleTex(albedoSampler, fragTex);
+    vec4 albedoSample = texture(albedoSampler, fragTex);
     if (albedoSample.a < 0.1) discard;
 
-    // sRGB → linear. Albedo textures are stored as UNORM, so the bytes
+    // sRGB → linear. Albedo textures are uploaded as UNORM, so the bytes
     // arrive already in sRGB-encoded space; PBR math requires linear.
     // Pow(2.2) is the conventional shading approximation of the sRGB EOTF
-    // (RTR4 §5.6.1). Gated by a toggle so the bug behavior can be A/B'd.
-    vec3 albedoRgb = albedoSample.rgb;
-    if (scene.qualityToggles.x > 0.5)
-        albedoRgb = pow(albedoRgb, vec3(2.2));
+    // (RTR4 §5.6.1).
+    vec3 albedo = pow(albedoSample.rgb, vec3(2.2)) * fragCol;
+    float metallic = texture(metallicSampler, fragTex).b;
+    float roughness = clamp(texture(roughnessSampler, fragTex).g, 0.04, 1.0);
+    float ao = texture(aoSampler, fragTex).r;
 
-    vec3 albedo = albedoRgb * fragCol;
-    float metallic = sampleTex(metallicSampler, fragTex).b;
-    float roughness = clamp(sampleTex(roughnessSampler, fragTex).g, 0.04, 1.0);
-    float ao = sampleTex(aoSampler, fragTex).r;
-
-    vec3 normalSample = sampleTex(normalSampler, fragTex).rgb * 2.0 - 1.0;
+    vec3 normalSample = texture(normalSampler, fragTex).rgb * 2.0 - 1.0;
     vec3 worldNormal = normalize(fragTBN * normalSample);
 
     gBuffer0 = vec4(albedo, metallic);

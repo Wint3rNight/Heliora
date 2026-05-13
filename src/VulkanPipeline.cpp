@@ -82,6 +82,18 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   dynState.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
   dynState.pDynamicStates = dynStates.data();
 
+  // Geometry pipelines additionally allow dynamic cull-mode flips, so the
+  // G-Buffer pass can disable culling per-draw for materials marked
+  // doubleSided (foliage in Sponza). Fullscreen-quad pipelines stay on the
+  // viewport+scissor-only dynState above.
+  std::array<VkDynamicState, 3> geoDynStates = {VK_DYNAMIC_STATE_VIEWPORT,
+                                                VK_DYNAMIC_STATE_SCISSOR,
+                                                VK_DYNAMIC_STATE_CULL_MODE};
+  VkPipelineDynamicStateCreateInfo geoDynState = {};
+  geoDynState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  geoDynState.dynamicStateCount = static_cast<uint32_t>(geoDynStates.size());
+  geoDynState.pDynamicStates = geoDynStates.data();
+
   VkPipelineRasterizationStateCreateInfo rasterizer = {};
   rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
@@ -158,7 +170,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   geoPCI.pVertexInputState = &vertexInput;
   geoPCI.pInputAssemblyState = &inputAssembly;
   geoPCI.pViewportState = &vpState;
-  geoPCI.pDynamicState = &dynState;
+  geoPCI.pDynamicState = &geoDynState;
   geoPCI.pRasterizationState = &rasterizer;
   geoPCI.pMultisampleState = &msaa;
   geoPCI.pDepthStencilState = &depthStencil;
@@ -361,6 +373,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   litPCI.pVertexInputState = &emptyVI;
   litPCI.pDepthStencilState = &noDepth;
   litPCI.pColorBlendState = &singleColorBlend;
+  litPCI.pDynamicState = &dynState; // no cull-mode dynamic state on fullscreen
   litPCI.layout = litPipelineLayout;
   litPCI.renderPass = litPass;
   litPCI.subpass = 0;
@@ -400,6 +413,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   deferredPCI.pVertexInputState = &emptyVI;
   deferredPCI.pDepthStencilState = &noDepth;
   deferredPCI.pColorBlendState = &singleColorBlend;
+  deferredPCI.pDynamicState = &dynState; // fullscreen — no dynamic cull mode
   deferredPCI.layout = deferredPipelineLayout;
   deferredPCI.renderPass = compositionPass;
   deferredPCI.subpass = 0;

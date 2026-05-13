@@ -17,6 +17,72 @@
 
 namespace {
 constexpr float PI = 3.14159265358979323846f;
+constexpr float ALPHA_TEST_THRESHOLD = 0.1f; // matches shader.frag discard cutoff
+
+// 2x2 box downsample of RGBA8 to half size. Source can be non-square; odd
+// dimensions clamp to edge.
+std::vector<uint8_t> boxDownsampleRGBA8(const std::vector<uint8_t> &src,
+                                        int sw, int sh, int &dw, int &dh) {
+  dw = std::max(1, sw / 2);
+  dh = std::max(1, sh / 2);
+  std::vector<uint8_t> dst(static_cast<size_t>(dw) * dh * 4);
+  for (int y = 0; y < dh; ++y) {
+    int sy0 = std::min(y * 2,     sh - 1);
+    int sy1 = std::min(y * 2 + 1, sh - 1);
+    for (int x = 0; x < dw; ++x) {
+      int sx0 = std::min(x * 2,     sw - 1);
+      int sx1 = std::min(x * 2 + 1, sw - 1);
+      const uint8_t *p00 = &src[(static_cast<size_t>(sy0) * sw + sx0) * 4];
+      const uint8_t *p10 = &src[(static_cast<size_t>(sy0) * sw + sx1) * 4];
+      const uint8_t *p01 = &src[(static_cast<size_t>(sy1) * sw + sx0) * 4];
+      const uint8_t *p11 = &src[(static_cast<size_t>(sy1) * sw + sx1) * 4];
+      uint8_t *d = &dst[(static_cast<size_t>(y) * dw + x) * 4];
+      for (int c = 0; c < 4; ++c)
+        d[c] = static_cast<uint8_t>(
+            (static_cast<int>(p00[c]) + p10[c] + p01[c] + p11[c] + 2) / 4);
+    }
+  }
+  return dst;
+}
+
+// Fraction of pixels with (alpha * scale) >= threshold.
+float computeAlphaCoverage(const std::vector<uint8_t> &px, float scale,
+                           float threshold) {
+  const size_t n = px.size() / 4;
+  if (n == 0) return 0.0f;
+  size_t covered = 0;
+  const float t = threshold * 255.0f;
+  for (size_t i = 0; i < n; ++i)
+    if (static_cast<float>(px[i * 4 + 3]) * scale >= t) ++covered;
+  return static_cast<float>(covered) / static_cast<float>(n);
+}
+
+// Castano 2010 — binary-search an alpha scale that makes this mip's alpha
+// coverage match mip 0's at the engine's alpha-test threshold. Without this,
+// linearly filtered alpha shrinks toward the cutout center at higher mips
+// and foliage silhouettes shimmer at distance.
+float findAlphaScaleForCoverage(const std::vector<uint8_t> &px,
+                                float targetCoverage, float threshold) {
+  float lo = 0.0f, hi = 4.0f;
+  // 12 iterations gives ~1/4096 precision on the scale — well past JND.
+  for (int i = 0; i < 12; ++i) {
+    float mid = 0.5f * (lo + hi);
+    float cov = computeAlphaCoverage(px, mid, threshold);
+    if (cov > targetCoverage) hi = mid;
+    else lo = mid;
+  }
+  return 0.5f * (lo + hi);
+}
+
+void rescaleAlpha(std::vector<uint8_t> &px, float scale) {
+  const size_t n = px.size() / 4;
+  for (size_t i = 0; i < n; ++i) {
+    float a = static_cast<float>(px[i * 4 + 3]) * scale;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 255.0f) a = 255.0f;
+    px[i * 4 + 3] = static_cast<uint8_t>(a + 0.5f);
+  }
+}
 
 glm::vec3 faceDirection(uint32_t face, float u, float v) {
   switch (face) {
@@ -807,24 +873,70 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
                                                  const unsigned char *pixels,
                                                  int width, int height,
                                                  const VulkanDevice &device) {
-  VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
+  // Mipmap chain: floor(log2(max(w,h))) + 1 levels. 1x1 textures (the flat
+  // fallback colors) collapse to a single mip.
+  const uint32_t mipLevels =
+      static_cast<uint32_t>(
+          std::floor(std::log2(static_cast<float>(std::max(width, height))))) +
+      1u;
+
+  // Build mip chain on the CPU. Box-filter every channel including alpha,
+  // then rescale alpha per-mip with Castano coverage preservation so
+  // alpha-tested cutouts (foliage) don't shrink and shimmer at distance.
+  // Reference coverage is mip 0's at the engine's alpha-test threshold.
+  std::vector<std::vector<uint8_t>> mipPixels(mipLevels);
+  std::vector<std::pair<int, int>>   mipDims(mipLevels);
+
+  size_t mip0Size = static_cast<size_t>(width) * height * 4;
+  mipPixels[0].assign(pixels, pixels + mip0Size);
+  mipDims[0] = {width, height};
+
+  // Only run coverage preservation if mip 0 actually has alpha variation —
+  // skips the work for opaque material textures (normals, roughness, etc.).
+  bool hasAlpha = false;
+  for (size_t i = 0; i < mip0Size && !hasAlpha; i += 4)
+    if (mipPixels[0][i + 3] != 255) hasAlpha = true;
+
+  float refCoverage = 0.0f;
+  if (hasAlpha)
+    refCoverage = computeAlphaCoverage(mipPixels[0], 1.0f, ALPHA_TEST_THRESHOLD);
+
+  for (uint32_t m = 1; m < mipLevels; ++m) {
+    int dw, dh;
+    mipPixels[m] = boxDownsampleRGBA8(mipPixels[m - 1], mipDims[m - 1].first,
+                                      mipDims[m - 1].second, dw, dh);
+    mipDims[m] = {dw, dh};
+    if (hasAlpha) {
+      float scale = findAlphaScaleForCoverage(mipPixels[m], refCoverage,
+                                              ALPHA_TEST_THRESHOLD);
+      rescaleAlpha(mipPixels[m], scale);
+    }
+  }
+
+  // Pack every mip into a single staging buffer at 4-byte-aligned offsets,
+  // then issue one vkCmdCopyBufferToImage with mipLevels regions.
+  std::vector<VkBufferImageCopy> regions(mipLevels);
+  size_t stagingSize = 0;
+  for (uint32_t m = 0; m < mipLevels; ++m) {
+    regions[m] = {};
+    regions[m].bufferOffset      = stagingSize;
+    regions[m].imageSubresource  = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+    regions[m].imageExtent       = {static_cast<uint32_t>(mipDims[m].first),
+                                    static_cast<uint32_t>(mipDims[m].second), 1};
+    stagingSize += mipPixels[m].size();
+  }
 
   AllocatedBuffer staging;
-  createBuffer(device.getAllocator(), imageSize,
+  createBuffer(device.getAllocator(), stagingSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &staging);
   void *mapped;
   vmaMapMemory(device.getAllocator(), staging.getAllocation(), &mapped);
-  memcpy(mapped, pixels, static_cast<size_t>(imageSize));
+  for (uint32_t m = 0; m < mipLevels; ++m)
+    std::memcpy(static_cast<char *>(mapped) + regions[m].bufferOffset,
+                mipPixels[m].data(), mipPixels[m].size());
   vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
-
-  // Mipmap chain: floor(log2(max(w,h))) + 1 levels. 1x1 textures (the flat
-  // fallback colors) collapse to a single mip and skip the blit loop.
-  const uint32_t mipLevels =
-      static_cast<uint32_t>(
-          std::floor(std::log2(static_cast<float>(std::max(width, height))))) +
-      1u;
 
   VkImageCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -835,10 +947,7 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   ci.format = VK_FORMAT_R8G8B8A8_UNORM;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  // TRANSFER_SRC needed so vkCmdBlitImage can read previous mip during chain
-  // generation.
-  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-             VK_IMAGE_USAGE_SAMPLED_BIT;
+  ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -852,25 +961,37 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
     throw std::runtime_error("Failed to create texture image");
   AllocatedImage texImg(device.getAllocator(), img, alloc);
 
-  transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), texImg.get(),
-                        VK_IMAGE_LAYOUT_UNDEFINED,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-  copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
-                  device.getGraphicsCommandPool(), staging.get(), texImg.get(),
-                  static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-
-  if (mipLevels > 1) {
-    // Generates mips 1..N from mip 0 and leaves the whole chain in
-    // SHADER_READ_ONLY_OPTIMAL.
-    generateMipmaps(device.getLogicalDevice(), device.getGraphicsQueue(),
-                    device.getGraphicsCommandPool(), texImg.get(), width,
-                    height, mipLevels);
-  } else {
-    transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                          device.getGraphicsCommandPool(), texImg.get(),
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  // Transition every mip level UNDEFINED → TRANSFER_DST.
+  {
+    VkCommandBuffer cmd = beginCommandBuffer(device.getLogicalDevice(),
+                                             device.getGraphicsCommandPool());
+    VkImageMemoryBarrier b = {};
+    b.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.image         = texImg.get();
+    b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcAccessMask = 0;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+    vkCmdCopyBufferToImage(cmd, staging.get(), texImg.get(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(regions.size()),
+                           regions.data());
+    b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &b);
+    endAndSubmitCommandBuffer(device.getLogicalDevice(),
+                              device.getGraphicsCommandPool(),
+                              device.getGraphicsQueue(), cmd);
   }
 
   textureImages.push_back(std::move(texImg));
@@ -893,98 +1014,6 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   textureImageViews.emplace_back(device.getLogicalDevice(), view);
   textureMap[cacheKey] = loc;
   return loc;
-}
-
-// In-place mipmap generation via vkCmdBlitImage with VK_FILTER_LINEAR. Walks
-// the chain mip(i-1) -> mip(i), transitioning each source mip to TRANSFER_SRC
-// then to SHADER_READ_ONLY as it goes. Pre: mip 0 in TRANSFER_DST_OPTIMAL,
-// mips 1..N in UNDEFINED. Post: all mips in SHADER_READ_ONLY_OPTIMAL.
-// Assumes R8G8B8A8_UNORM (supports BLIT_SRC + BLIT_DST + linear filter on
-// every desktop GPU; not validated here for brevity).
-void TextureManager::generateMipmaps(VkDevice device, VkQueue queue,
-                                     VkCommandPool pool, VkImage image,
-                                     int width, int height,
-                                     uint32_t mipLevels) {
-  VkCommandBuffer cmd = beginCommandBuffer(device, pool);
-
-  VkImageMemoryBarrier b = {};
-  b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  b.image = image;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  b.subresourceRange.baseArrayLayer = 0;
-  b.subresourceRange.layerCount = 1;
-  b.subresourceRange.levelCount = 1;
-
-  int32_t mw = width;
-  int32_t mh = height;
-
-  for (uint32_t i = 1; i < mipLevels; ++i) {
-    // Source mip (i-1): TRANSFER_DST -> TRANSFER_SRC
-    b.subresourceRange.baseMipLevel = i - 1;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
-
-    // Destination mip (i): UNDEFINED -> TRANSFER_DST
-    b.subresourceRange.baseMipLevel = i;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.srcAccessMask = 0;
-    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
-
-    VkImageBlit blit = {};
-    blit.srcOffsets[0] = {0, 0, 0};
-    blit.srcOffsets[1] = {mw, mh, 1};
-    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blit.srcSubresource.mipLevel = i - 1;
-    blit.srcSubresource.baseArrayLayer = 0;
-    blit.srcSubresource.layerCount = 1;
-    int32_t nw = mw > 1 ? mw / 2 : 1;
-    int32_t nh = mh > 1 ? mh / 2 : 1;
-    blit.dstOffsets[0] = {0, 0, 0};
-    blit.dstOffsets[1] = {nw, nh, 1};
-    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blit.dstSubresource.mipLevel = i;
-    blit.dstSubresource.baseArrayLayer = 0;
-    blit.dstSubresource.layerCount = 1;
-    vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
-                   VK_FILTER_LINEAR);
-
-    // Source mip (i-1): TRANSFER_SRC -> SHADER_READ_ONLY
-    b.subresourceRange.baseMipLevel = i - 1;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
-
-    mw = nw;
-    mh = nh;
-  }
-
-  // Last mip is still TRANSFER_DST; promote it to SHADER_READ_ONLY.
-  b.subresourceRange.baseMipLevel = mipLevels - 1;
-  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &b);
-
-  endAndSubmitCommandBuffer(device, pool, queue, cmd);
 }
 
 unsigned char *TextureManager::loadTextureFile(const std::string &filename,

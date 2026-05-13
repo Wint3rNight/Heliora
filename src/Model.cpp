@@ -250,6 +250,11 @@ MeshModel::LoadMaterials(const aiScene *scene) {
     aiMaterial *mat = scene->mMaterials[i];
     aiString path;
 
+    // Two-sided flag — glTF doubleSided lands here via Assimp.
+    int twoSided = 0;
+    if (mat->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS && twoSided)
+      textureList[i].doubleSided = true;
+
     // Albedo
     if (mat->GetTextureCount(aiTextureType_DIFFUSE) &&
         mat->GetTexture(aiTextureType_DIFFUSE, 0, &path) == AI_SUCCESS) {

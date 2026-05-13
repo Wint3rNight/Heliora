@@ -69,7 +69,8 @@ private:
   ImageViewHandle csmArrayView;
   std::vector<ImageViewHandle> csmLayerViews;
   std::vector<VkFramebuffer> csmFramebuffers;
-  VkSampler shadowSampler = VK_NULL_HANDLE;
+  VkSampler shadowSampler = VK_NULL_HANDLE;       // plain — point shadow cube
+  VkSampler csmShadowSampler = VK_NULL_HANDLE;    // compare-enabled — CSM HW PCF
 
   // --- Omnidirectional point shadow ---
   AllocatedImage pointShadowDepthImage;
@@ -135,13 +136,15 @@ private:
   float imguiFogDensity = 0.0f;
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
-  bool imguiSrgbAlbedoDecode = true;       // P1 fix toggle
-  bool imguiSpecAAEnable = true;           // P2 fix toggle
-  float imguiSpecAAVariance = 0.25f;       // P2 tunable
-  float imguiSpecAAThreshold = 0.18f;      // P2 tunable
-  bool imguiMipmapsEnable = true;          // P7 fix toggle
-  bool imguiShadowFrontFaceCull = true;    // P5 fix toggle
-  float imguiCsmFar = 2000.0f;             // P5 cascade far plane
+  float imguiSpecAAVariance = 0.25f;       // tunable
+  float imguiSpecAAThreshold = 0.18f;      // tunable
+  float imguiIblRoughnessFloor = 0.15f;    // tunable — min roughness for IBL specular
+  bool imguiShadowFrontFaceCull = true;    // dynamic cull-mode
+  float imguiCsmFar = 2000.0f;             // cascade far plane
+  float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
+  bool imguiDayNightEnable = false;        // day/night animation
+  float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
+  float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;
 

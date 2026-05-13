@@ -35,10 +35,13 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     // x = sRGB albedo decode
     // y = specular AA enable, z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
     vec4 qualityToggles;
-    vec4 qualityToggles2; // x = mipmap sampling enable
+    // x = mipmap sampling enable (P7)
+    // y = correlated Smith G enable (P3)
+    // z = Vogel-disk PCF enable (P5b)
+    vec4 qualityToggles2;
 } scene;
 
-layout(set = 0, binding = 1) uniform sampler2DArray shadowMap;
+layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;
 layout(set = 0, binding = 2) uniform samplerCube pointShadowMap;
 layout(set = 0, binding = 3) uniform samplerCube irradianceMap;
 layout(set = 0, binding = 4) uniform samplerCube prefilteredEnvMap;
@@ -83,26 +86,81 @@ vec3 reconstructWorldPos(vec2 uv, float depth) {
 }
 
 // ---- Cascaded Shadow Maps ----
-// 3×3 PCF on a single cascade. Returns 1.0 = fully shadowed, 0.0 = lit,
+// Vogel-disk PCF kernel (Filament §5.4.2). Samples distributed via the
+// golden angle to give near-uniform spatial coverage with arbitrary count;
+// per-pixel rotation by interleaved gradient noise (Jimenez 2014) breaks
+// the regular shadow-texel aliasing into high-freq noise.
+vec2 vogelDisk(int i, int n, float phi) {
+    const float GOLDEN = 2.39996323; // π * (3 - sqrt(5))
+    float r     = sqrt((float(i) + 0.5) / float(n));
+    float theta = float(i) * GOLDEN + phi;
+    return vec2(r * cos(theta), r * sin(theta));
+}
+
+float interleavedGradientNoise(vec2 pixel) {
+    return fract(52.9829189 *
+                 fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// PCF on a single cascade. Returns 1.0 = fully shadowed, 0.0 = lit,
 // -1.0 = fragment is outside this cascade's shadow map (caller must fall back).
 float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     vec4 lsPos = scene.lightSpaceMatrices[cascade] * vec4(worldPos, 1.0);
     vec3 proj  = lsPos.xyz / lsPos.w;
     proj.xy    = proj.xy * 0.5 + 0.5;
 
+    // Receiver-plane depth gradient (Isidoro 2006, MJP "Shadow Sample Update").
+    // Compute the slope of shadow-space depth w.r.t. shadow-space UV so each
+    // off-center PCF tap can compare against the depth at *its* surface
+    // position, not the center pixel's. Removes the Swiss-cheese pattern that
+    // a single-depth Vogel kernel produces on grazing floors.
+    //
+    // Derivatives MUST be sampled before any flow-divergent return so all
+    // four quad lanes contribute. At cascade boundaries this may give one
+    // bogus pixel-wide band, hidden by the 15% cascade blend.
+    vec2  duvdx   = dFdx(proj.xy);
+    vec2  duvdy   = dFdy(proj.xy);
+    float ddepdx  = dFdx(proj.z);
+    float ddepdy  = dFdy(proj.z);
+
     if (proj.z > 1.0 || proj.z < 0.0 || proj.x < 0.0 || proj.x > 1.0 ||
         proj.y < 0.0 || proj.y > 1.0) return -1.0;
 
-    float bias = max(0.0008 * float(cascade + 1) * (1.0 - dot(N, L)), 0.0005);
+    // Solve [duvdx; duvdy]^T * grad = [ddepdx; ddepdy] for grad = d(depth)/d(uv).
+    // Inverse of the screen→shadow-UV Jacobian. Clamp on near-singular det
+    // (silhouettes and near-degenerate triangles) to avoid grad blowing up.
+    //
+    // Clamp at ±2: real grazing-angle gradients sit well under 1 even at
+    // sunrise/sunset, but silhouette quads can spike grad arbitrarily large.
+    // The earlier ±0.05 cap neutralized the fix on exactly the surfaces it
+    // was meant to help.
+    float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
+    vec2  grad;
+    if (abs(det) > 1e-8) {
+        grad = vec2( duvdy.y * ddepdx - duvdx.y * ddepdy,
+                    -duvdy.x * ddepdx + duvdx.x * ddepdy) / det;
+        grad = clamp(grad, vec2(-2.0), vec2(2.0));
+    } else {
+        grad = vec2(0.0);
+    }
 
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; ++x)
-        for (int y = -1; y <= 1; ++y) {
-            float d = texture(shadowMap, vec3(proj.xy + vec2(x, y) * texelSize, float(cascade))).r;
-            shadow += proj.z - bias > d ? 1.0 : 0.0;
-        }
-    return shadow / 9.0;
+    float bias = max(0.0008 * float(cascade + 1) * (1.0 - dot(N, L)), 0.0005);
+    vec2  texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+
+    // 12-tap Vogel-disk PCF over a hardware compare sampler. Each tap's
+    // reference depth is shifted along the receiver plane to match the
+    // local surface slope.
+    const int SAMPLES = 12;
+    float radius = (1.5 + float(cascade) * 0.5);
+    float phi    = interleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
+    float lit    = 0.0;
+    for (int i = 0; i < SAMPLES; ++i) {
+        vec2  off       = vogelDisk(i, SAMPLES, phi) * radius * texelSize;
+        float tapDepth  = proj.z - bias + dot(grad, off);
+        lit += texture(shadowMap,
+                       vec4(proj.xy + off, float(cascade), tapDepth));
+    }
+    return 1.0 - lit / float(SAMPLES);
 }
 
 float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
@@ -190,6 +248,17 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
            GeometrySchlickGGX(max(dot(N, L), 0.0), roughness);
 }
 
+// Heitz 2014 / Filament §4.4.2 — height-correlated Smith GGX visibility,
+// already divided by 4*NoV*NoL, so the BRDF denominator collapses to D*V*F.
+// Compared to the separable Schlick-GGX form this removes the energy excess
+// at grazing angles that makes non-metals look 'wet' under sunlight.
+float V_SmithGGXCorrelated(float NoV, float NoL, float roughness) {
+    float a2     = roughness * roughness * roughness * roughness;
+    float ggxV = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+    float ggxL = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+    return 0.5 / max(ggxV + ggxL, 1e-5);
+}
+
 vec3 FresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
@@ -202,15 +271,24 @@ vec3 FresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
 vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
                   float metallic, float roughness,
                   vec3 lightColor, float intensity) {
-    float NdotL = max(dot(N, L), 0.0);
-    if (NdotL <= 0.0) return vec3(0.0);
+    // Clamp the dot products to a small positive epsilon. NoL <= 0 means the
+    // light is below the horizon; bail. The 1e-4 floor on NoV/NoH stops the
+    // denominator from blowing up at perfectly grazing views.
+    float NoL = dot(N, L);
+    if (NoL <= 0.0) return vec3(0.0);
+    NoL = clamp(NoL, 1e-4, 1.0);
     vec3 H = normalize(V + L);
+    float NoV = clamp(dot(N, V), 1e-4, 1.0);
+    float NoH = clamp(dot(N, H), 0.0, 1.0);
+    float VoH = clamp(dot(V, H), 0.0, 1.0);
+
     float NDF = DistributionGGX(N, H, roughness);
-    float G   = GeometrySmith(N, V, L, roughness);
-    vec3  F   = FresnelSchlick(max(dot(H, V), 0.0), F0);
+    vec3  F   = FresnelSchlick(VoH, F0);
     vec3 kD = (1.0 - F) * (1.0 - metallic);
-    vec3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001);
-    return (kD * albedo / PI + specular) * lightColor * intensity * NdotL;
+    // Correlated Smith visibility absorbs the 4*NoV*NoL denominator.
+    float Vis = V_SmithGGXCorrelated(NoV, NoL, roughness);
+    vec3 specular = NDF * Vis * F;
+    return (kD * albedo / PI + specular) * lightColor * intensity * NoL;
 }
 
 // ---- SSAO ----
@@ -335,12 +413,16 @@ void main() {
 
     float depth = texture(gBufferDepthSampler, uv).r;
 
-    // Background: sample skybox using reconstructed view direction
+    // Background: sample skybox using reconstructed view direction.
+    // Multiplied by the ambient intensity so the night sky goes dark instead
+    // of staying frozen at baked daylight.
     if (depth >= 0.9999) {
         vec3 vPos   = reconstructViewPos(uv, depth);
         vec4 wPosCl = scene.invView * vec4(vPos, 1.0);
         vec3 viewDir = normalize(wPosCl.xyz / wPosCl.w - scene.cameraPosition.xyz);
-        outColor = vec4(texture(skyboxCubemap, viewDir).rgb, 1.0);
+        outColor = vec4(texture(skyboxCubemap, viewDir).rgb *
+                        scene.qualityToggles2.w,
+                        1.0);
         return;
     }
 
@@ -366,41 +448,56 @@ void main() {
     vec3 V        = normalize(scene.cameraPosition.xyz - worldPos);
     vec3 F0       = mix(vec3(0.04), albedo, metallic);
 
-    // Geometric specular AA (Kaplanyan & Hill 2016, "Stable Geometric
-    // Specular Antialiasing with Projected-Space NDF Filtering"; Filament
-    // §4.7.1). Pixel-scale normal variation is folded into the NDF roughness,
-    // killing the sub-pixel highlights that show up as 'sequin' aliasing.
-    // Our NDF takes perceptual r and uses r^4 = α², so we feed the AA result
-    // back through (α'²)^(1/4).
-    if (scene.qualityToggles.y > 0.5) {
+    // Geometric specular AA (Kaplanyan & Hill 2016 / Filament §4.7.1).
+    // Pixel-scale normal variation is folded into the NDF roughness so
+    // sub-pixel highlights stop sparkling. Variance/threshold are tunable
+    // via qualityToggles.z/.w. Result is used for both direct *and* IBL.
+    float perceptualRoughnessAA;
+    {
         vec3  dndu     = dFdx(worldN);
         vec3  dndv     = dFdy(worldN);
         float variance = scene.qualityToggles.z *
                          (dot(dndu, dndu) + dot(dndv, dndv));
         float kernel   = min(2.0 * variance, scene.qualityToggles.w);
         float alpha    = roughness * roughness;
-        roughness      = sqrt(sqrt(alpha * alpha + kernel));
+        perceptualRoughnessAA = sqrt(sqrt(alpha * alpha + kernel));
     }
+    // Shader-wide roughness handle from here on. Both direct cookTorrance
+    // and IBL pick from this value.
+    roughness = perceptualRoughnessAA;
+
+    // IBL-only roughness floor (qualityToggles.x). Screen-space dFdx(N)
+    // under-reports variance when fine normal-map detail compresses into a
+    // few screen pixels at oblique angles — curtains keep sparkling off-sun
+    // even though AA "fired". A flat minimum on IBL mip selection escapes
+    // that case without touching direct-light specular on smooth surfaces.
+    float roughnessForIBL = max(perceptualRoughnessAA, scene.qualityToggles.x);
 
     // SSAO
     float ssaoFactor = computeSSAO(uv, viewPos, viewN);
 
     // IBL ambient (diffuse irradiance + specular prefiltered)
-    vec3 kS_ibl = FresnelSchlickRoughness(max(dot(worldN, V), 0.0), F0, roughness);
+    vec3 kS_ibl = FresnelSchlickRoughness(max(dot(worldN, V), 0.0), F0, roughnessForIBL);
     vec3 kD_ibl = (1.0 - kS_ibl) * (1.0 - metallic);
     vec3 irradiance   = texture(irradianceMap, worldN).rgb;
     vec3 diffuseIBL   = kD_ibl * irradiance * albedo;
 
     vec3  R              = reflect(-V, worldN);
-    float prefilteredLod = roughness * float(IBL_PREFILTER_MIPS - 1);
+    float prefilteredLod = roughnessForIBL * float(IBL_PREFILTER_MIPS - 1);
     vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(10.0));
-    vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughness)).rg;
+    vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
     vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
 
     // Note: SSR is applied in a separate composite pass that samples this lit
     // image; here we keep IBL specular only.
 
-    vec3 ambient = (diffuseIBL + specularIBL) * ao * ssaoFactor;
+    // Ambient (IBL diffuse + specular) is scaled by qualityToggles2.w. The
+    // prefilter + irradiance cubemaps are baked once from the daytime sky,
+    // so without this scale every glossy surface keeps reflecting baked
+    // daylight even when the sun is below the horizon — the "everything
+    // looks silver at night" bug.
+    vec3 ambient = (diffuseIBL + specularIBL) * ao * ssaoFactor *
+                   scene.qualityToggles2.w;
     vec3 lighting = ambient;
 
     // Directional light + PCF shadow

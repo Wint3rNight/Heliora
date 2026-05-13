@@ -4,6 +4,7 @@
 #include "VulkanDebug.h"
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -78,7 +79,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
     descriptorManager.updateShadowMapDescriptor(
         device.getLogicalDevice(), csmArrayView.get(),
-        pointShadowCubeView.get(), shadowSampler);
+        pointShadowCubeView.get(), csmShadowSampler, shadowSampler);
 
     // 7. Texture manager (samplers only at this point)
     textureManager.init(device);
@@ -220,6 +221,49 @@ void VulkanRenderer::draw() {
 
   imagesInFlight[imageIndex] = drawFences[currentFrame];
   vkResetFences(logicalDevice, 1, &drawFences[currentFrame]);
+
+  // Day/night cycle: advance sim-hour at imguiDayNightSpeed sim-hours per
+  // real-second, then place the sun on a great-circle arc through the
+  // zenith. Sunrise at hour 6 (east horizon), zenith at hour 12, sunset at
+  // hour 18 (west horizon); below the horizon outside [6, 18].
+  if (imguiDayNightEnable) {
+    static auto lastTime = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    float dt = std::chrono::duration<float>(now - lastTime).count();
+    lastTime = now;
+    imguiDayNightHour += dt * imguiDayNightSpeed;
+    imguiDayNightHour = std::fmod(imguiDayNightHour, 24.0f);
+    if (imguiDayNightHour < 0.0f) imguiDayNightHour += 24.0f;
+
+    float t     = (imguiDayNightHour - 6.0f) / 12.0f; // 0 at dawn, 1 at dusk
+    float angle = t * 3.1415927f;                     // 0..π over daylight
+    // Slight tilt off the X axis so shadows aren't perfectly E-W parallel.
+    glm::vec3 east = glm::normalize(glm::vec3(1.0f, 0.0f, 0.2f));
+    glm::vec3 up   = glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 sunPos = east * std::cos(angle) + up * std::sin(angle);
+    sceneUbo.directionalLight.direction = glm::vec4(-sunPos, 0.0f);
+
+    // Intensity follows elevation: max at zenith, ambient floor at night.
+    // Warm tint kicks in only near the horizon, not while underground.
+    float elevation = sunPos.y;
+    float dayFactor = glm::smoothstep(-0.05f, 0.35f, elevation);
+    float horizon   = glm::clamp(1.0f - std::abs(elevation) * 3.0f, 0.0f, 1.0f) *
+                      (elevation > 0.0f ? 1.0f : 0.0f);
+    glm::vec3 dayColor(1.0f, 0.93f, 0.78f);
+    glm::vec3 duskColor(1.0f, 0.55f, 0.30f);
+    glm::vec3 color = glm::mix(dayColor, duskColor, horizon);
+    sceneUbo.directionalLight.colorIntensity =
+        glm::vec4(color, 5.5f * dayFactor + 0.05f);
+
+    // IBL/sky baked from a daytime cubemap — attenuate it with the same
+    // day factor so glossy surfaces don't keep reflecting baked daylight
+    // through the night. User's manual slider still scales on top.
+    sceneUbo.qualityToggles2.w =
+        imguiIblIntensity * (0.08f + 0.92f * dayFactor);
+  } else {
+    // Day/night cycle off: manual slider drives the ambient term directly.
+    sceneUbo.qualityToggles2.w = imguiIblIntensity;
+  }
 
   updateLightSpaceMatrices();
 
@@ -749,6 +793,11 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getGraphicsPipeline());
+    // Cull mode is now dynamic so the per-draw override below can flip to
+    // NONE for materials marked doubleSided (Sponza foliage). Default
+    // matches the original static state.
+    vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
+    VkCullModeFlags lastCullMode = VK_CULL_MODE_BACK_BIT;
 
     glm::vec4 frustumPlanes[6];
     extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
@@ -805,7 +854,15 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
               vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
                                    VK_INDEX_TYPE_UINT32);
 
-              int matId = mesh->getMaterial().descriptorSetId;
+              const Material &mat = mesh->getMaterial();
+              VkCullModeFlags wantCull = mat.doubleSided
+                                             ? VK_CULL_MODE_NONE
+                                             : VK_CULL_MODE_BACK_BIT;
+              if (wantCull != lastCullMode) {
+                vkCmdSetCullMode(cmd, wantCull);
+                lastCullMode = wantCull;
+              }
+              int matId = mat.descriptorSetId;
               if (matId != lastMaterialId) {
                 std::array<VkDescriptorSet, 2> sets = {
                     vpSet, descriptorManager.getSamplerSet(matId)};
@@ -832,6 +889,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     if (!instancedDrawables.empty()) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         pipeline.getInstancedPipeline());
+      // Instanced pipeline shares geoDynState (CULL_MODE dynamic) — set it
+      // explicitly. Instanced models in the scene are opaque, no per-mesh
+      // override needed.
+      vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
       for (const InstancedDrawable &drawable : instancedDrawables) {
         MeshModel *mdl = modelManager.getModel(drawable.modelId);
         if (!mdl)
@@ -987,6 +1048,13 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     return 2; // cascades 2 and 3
   };
 
+  // Default shadow cull mode is set in the per-cascade loop below; track the
+  // current state here so the per-mesh override only flips on transitions.
+  VkCullModeFlags defaultShadowCull = imguiShadowFrontFaceCull
+                                          ? VK_CULL_MODE_FRONT_BIT
+                                          : VK_CULL_MODE_BACK_BIT;
+  VkCullModeFlags shadowLastCull = defaultShadowCull;
+
   auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
                               int lodIndex) -> void {
     if (node->getModelId() >= 0) {
@@ -1000,6 +1068,16 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
                            sizeof(ShadowPushConstants), &push);
         for (size_t k = 0; k < mdl->getMeshCount(); k++) {
           const Mesh *mesh = mdl->getMesh(k);
+          // doubleSided foliage: front-face culling discards the lit side and
+          // the only remaining face faces away from the sun, so the leaf
+          // casts no shadow. Use NONE so both sides write depth.
+          VkCullModeFlags wantCull =
+              mesh->getMaterial().doubleSided ? VK_CULL_MODE_NONE
+                                              : defaultShadowCull;
+          if (wantCull != shadowLastCull) {
+            vkCmdSetCullMode(cmdBuffer, wantCull);
+            shadowLastCull = wantCull;
+          }
           int useLod = std::min(lodIndex, mesh->getLodCount() - 1);
           VkBuffer vb[] = {mesh->getVertexBuffer()};
           VkDeviceSize off[] = {0};
@@ -1035,9 +1113,9 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     // Front-face culling avoids self-shadow acne and (more importantly here)
     // captures occluders whose only face points away from the sun — the
     // single-sided thin geometry that Sponza uses for ceilings and arch caps.
-    vkCmdSetCullMode(cmdBuffer,
-                     imguiShadowFrontFaceCull ? VK_CULL_MODE_FRONT_BIT
-                                              : VK_CULL_MODE_BACK_BIT);
+    // doubleSided meshes get overridden to NONE per-draw inside the lambda.
+    vkCmdSetCullMode(cmdBuffer, defaultShadowCull);
+    shadowLastCull = defaultShadowCull;
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
     renderNodeShadow(renderNodeShadow, &rootNode,
@@ -1074,9 +1152,11 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
     VkRect2D sc = {{0, 0}, {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE}};
     vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
     vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
-    vkCmdSetCullMode(cmdBuffer,
-                     imguiShadowFrontFaceCull ? VK_CULL_MODE_FRONT_BIT
-                                              : VK_CULL_MODE_BACK_BIT);
+    VkCullModeFlags defaultPointCull = imguiShadowFrontFaceCull
+                                           ? VK_CULL_MODE_FRONT_BIT
+                                           : VK_CULL_MODE_BACK_BIT;
+    vkCmdSetCullMode(cmdBuffer, defaultPointCull);
+    VkCullModeFlags pointLastCull = defaultPointCull;
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
 
@@ -1092,6 +1172,13 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
                              sizeof(ShadowPushConstants), &push);
           for (size_t k = 0; k < mdl->getMeshCount(); k++) {
             const Mesh *mesh = mdl->getMesh(k);
+            VkCullModeFlags wantCull =
+                mesh->getMaterial().doubleSided ? VK_CULL_MODE_NONE
+                                                : defaultPointCull;
+            if (wantCull != pointLastCull) {
+              vkCmdSetCullMode(cmdBuffer, wantCull);
+              pointLastCull = wantCull;
+            }
             int useLod = std::min(2, mesh->getLodCount() - 1);
             VkBuffer vb[] = {mesh->getVertexBuffer()};
             VkDeviceSize off[] = {0};
@@ -1301,6 +1388,16 @@ void VulkanRenderer::createShadowResources() {
   if (vkCreateSampler(dev, &samplerInfo, nullptr, &shadowSampler) != VK_SUCCESS)
     throw std::runtime_error("Failed to create shadow sampler");
 
+  // Compare-enabled sibling for the CSM array: turns each tap into a
+  // hardware-bilinear-filtered depth comparison instead of a binary one,
+  // killing the stair-step / dithered PCF pattern.
+  VkSamplerCreateInfo csmSamplerInfo = samplerInfo;
+  csmSamplerInfo.compareEnable = VK_TRUE;
+  csmSamplerInfo.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
+  if (vkCreateSampler(dev, &csmSamplerInfo, nullptr, &csmShadowSampler) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to create CSM compare sampler");
+
   // Point shadow cubemap
   VkImageCreateInfo cubeInfo = imageCreateInfo;
   cubeInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -1372,6 +1469,10 @@ void VulkanRenderer::cleanupShadowResources() {
   if (shadowSampler != VK_NULL_HANDLE) {
     vkDestroySampler(device.getLogicalDevice(), shadowSampler, nullptr);
     shadowSampler = VK_NULL_HANDLE;
+  }
+  if (csmShadowSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(device.getLogicalDevice(), csmShadowSampler, nullptr);
+    csmShadowSampler = VK_NULL_HANDLE;
   }
 }
 
@@ -1578,26 +1679,32 @@ void VulkanRenderer::buildImGuiUI() {
     sceneUbo.debugMode = imguiDebugMode;
   ImGui::End();
 
-  // Visual-quality fix toggles (Phase 2 A/B controls)
+  // Tunables + scene controls. The per-fix A/B checkboxes that lived here
+  // before were retired once each fix was validated — keeping only the
+  // values that actually need runtime tuning.
   ImGui::SetNextWindowPos(ImVec2(10, 700), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 250), ImGuiCond_Always);
-  ImGui::Begin("Visual Fixes", nullptr,
+  ImGui::SetNextWindowSize(ImVec2(340, 260), ImGuiCond_Always);
+  ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
-  if (ImGui::Checkbox("P1: sRGB albedo decode", &imguiSrgbAlbedoDecode))
-    sceneUbo.qualityToggles.x = imguiSrgbAlbedoDecode ? 1.0f : 0.0f;
-  if (ImGui::Checkbox("P2: Specular AA", &imguiSpecAAEnable))
-    sceneUbo.qualityToggles.y = imguiSpecAAEnable ? 1.0f : 0.0f;
   if (ImGui::SliderFloat("AA variance", &imguiSpecAAVariance, 0.0f, 1.0f,
                          "%.3f"))
     sceneUbo.qualityToggles.z = imguiSpecAAVariance;
   if (ImGui::SliderFloat("AA threshold", &imguiSpecAAThreshold, 0.0f, 0.5f,
                          "%.3f"))
     sceneUbo.qualityToggles.w = imguiSpecAAThreshold;
-  if (ImGui::Checkbox("P7: Mipmaps + aniso", &imguiMipmapsEnable))
-    sceneUbo.qualityToggles2.x = imguiMipmapsEnable ? 1.0f : 0.0f;
-  ImGui::Checkbox("P5: Shadow front-face cull", &imguiShadowFrontFaceCull);
+  if (ImGui::SliderFloat("IBL roughness floor", &imguiIblRoughnessFloor, 0.0f,
+                         1.0f, "%.3f"))
+    sceneUbo.qualityToggles.x = imguiIblRoughnessFloor;
   ImGui::SliderFloat("CSM far", &imguiCsmFar, 100.0f, 5000.0f, "%.0f");
+  ImGui::Checkbox("Shadow front-face cull", &imguiShadowFrontFaceCull);
+  ImGui::SliderFloat("IBL / sky intensity", &imguiIblIntensity, 0.0f, 2.0f,
+                     "%.2f");
+  ImGui::Separator();
+  ImGui::Checkbox("Day/night cycle", &imguiDayNightEnable);
+  ImGui::SliderFloat("Sim hour", &imguiDayNightHour, 0.0f, 24.0f, "%.2f h");
+  ImGui::SliderFloat("Speed (sim-h / real-s)", &imguiDayNightSpeed, 0.1f,
+                     600.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
   ImGui::End();
 }
 

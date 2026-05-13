@@ -47,10 +47,13 @@ public:
                               VkImageView roughness, VkImageView ao,
                               VkSampler sampler);
 
-  // Writes shadow maps into every VP descriptor set (binding 1, 2).
+  // Writes shadow maps into every VP descriptor set (binding 1, 2). CSM uses
+  // a compare-enabled sampler (hardware PCF) and the point cube uses a plain
+  // sampler — they cannot share a sampler in GLSL.
   void updateShadowMapDescriptor(VkDevice device, VkImageView shadowView,
                                  VkImageView pointShadowView,
-                                 VkSampler sampler);
+                                 VkSampler csmSampler,
+                                 VkSampler pointSampler);
 
   // Writes IBL + SSAO noise + skybox into every VP descriptor set (bindings
   // 3-7).

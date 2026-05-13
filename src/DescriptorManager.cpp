@@ -81,14 +81,16 @@ int DescriptorManager::createTextureDescriptor(
 void DescriptorManager::updateShadowMapDescriptor(VkDevice device,
                                                   VkImageView shadowView,
                                                   VkImageView pointShadowView,
-                                                  VkSampler sampler) {
+                                                  VkSampler csmSampler,
+                                                  VkSampler pointSampler) {
   VkDescriptorImageInfo shadowInfo = {};
   shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
   shadowInfo.imageView = shadowView;
-  shadowInfo.sampler = sampler;
+  shadowInfo.sampler = csmSampler;
 
   VkDescriptorImageInfo pointInfo = shadowInfo;
   pointInfo.imageView = pointShadowView;
+  pointInfo.sampler = pointSampler;
 
   std::vector<VkWriteDescriptorSet> writes;
   writes.reserve(descriptorSets.size() * 2);

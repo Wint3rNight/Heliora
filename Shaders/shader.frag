@@ -57,6 +57,11 @@ void main() {
 
     vec3 normalSample = texture(normalSampler, fragTex).rgb * 2.0 - 1.0;
     vec3 worldNormal = normalize(fragTBN * normalSample);
+    // P2 diagnostic: when qualityToggles2.y > 0.5, replace normal-map result
+    // with the geometric (interpolated TBN basis Z) normal. Used to isolate
+    // whether floor dither is normal-map driven.
+    if (scene.qualityToggles2.y > 0.5)
+        worldNormal = normalize(fragTBN[2]);
 
     gBuffer0 = vec4(albedo, metallic);
     gBuffer1 = vec4(worldNormal, roughness);

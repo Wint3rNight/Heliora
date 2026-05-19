@@ -502,9 +502,10 @@ void main() {
     // Directional light + PCF shadow
     vec3  sunDir    = normalize(-scene.directionalLight.direction.xyz);
     float sunShadow = shadowFactor(worldPos, viewPos, worldN, sunDir);
-    vec3 directLight = (1.0 - sunShadow) * cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
+    vec3 sunDirectUnshadowed = cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
                     scene.directionalLight.colorIntensity.rgb,
                     scene.directionalLight.colorIntensity.a);
+    vec3 directLight = (1.0 - sunShadow) * sunDirectUnshadowed;
 
     // Point lights + omnidirectional shadow
     int pointCount = clamp(scene.lightCounts.x, 0, 4);
@@ -544,6 +545,9 @@ void main() {
     if (scene.debugMode == 7) { outColor = vec4(vec3(ssaoFactor), 1.0); return; }
     if (scene.debugMode == 8) { outColor = vec4(directLight, 1.0); return; }
     if (scene.debugMode == 9) { outColor = vec4(ambient, 1.0); return; }
+    // mode 10: direct lighting with sunShadow forced to 0 — isolates whether
+    // the floor dither lives in the shadow term or in cookTorrance itself.
+    if (scene.debugMode == 10) { outColor = vec4(sunDirectUnshadowed, 1.0); return; }
 
     vec3 lighting = ambient + directLight;
 

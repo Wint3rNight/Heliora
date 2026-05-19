@@ -145,6 +145,7 @@ private:
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)
+  bool imguiUseGeomNormalOnly = false;     // P2 diag: bypass normal-map sampling
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;
 

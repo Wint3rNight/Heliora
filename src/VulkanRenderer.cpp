@@ -265,6 +265,8 @@ void VulkanRenderer::draw() {
     sceneUbo.qualityToggles2.w = imguiIblIntensity;
   }
 
+  sceneUbo.qualityToggles2.y = imguiUseGeomNormalOnly ? 1.0f : 0.0f;
+
   updateLightSpaceMatrices();
 
   recordCommands(imageIndex);
@@ -1669,16 +1671,17 @@ void VulkanRenderer::buildImGuiUI() {
 
   // Debug views panel
   ImGui::SetNextWindowPos(ImVec2(10, 620), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 70), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 95), ImGuiCond_Always);
   ImGui::Begin("Debug Views", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
-  const char *debugModes[] = {"None",       "Albedo",      "Normals",
-                              "Metallic",   "Roughness",   "Depth",
-                              "Shadow vis", "SSAO factor", "Direct only",
-                              "Indirect only"};
-  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 10))
+  const char *debugModes[] = {"None",          "Albedo",      "Normals",
+                              "Metallic",      "Roughness",   "Depth",
+                              "Shadow vis",    "SSAO factor", "Direct only",
+                              "Indirect only", "Direct (no shadow)"};
+  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 11))
     sceneUbo.debugMode = imguiDebugMode;
+  ImGui::Checkbox("Use geometric normal only", &imguiUseGeomNormalOnly);
   ImGui::End();
 
   // Tunables + scene controls. The per-fix A/B checkboxes that lived here

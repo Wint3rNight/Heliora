@@ -498,12 +498,11 @@ void main() {
     // looks silver at night" bug.
     vec3 ambient = (diffuseIBL + specularIBL) * ao * ssaoFactor *
                    scene.qualityToggles2.w;
-    vec3 lighting = ambient;
 
     // Directional light + PCF shadow
     vec3  sunDir    = normalize(-scene.directionalLight.direction.xyz);
     float sunShadow = shadowFactor(worldPos, viewPos, worldN, sunDir);
-    lighting += (1.0 - sunShadow) * cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
+    vec3 directLight = (1.0 - sunShadow) * cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
                     scene.directionalLight.colorIntensity.rgb,
                     scene.directionalLight.colorIntensity.a);
 
@@ -515,7 +514,7 @@ void main() {
         vec3  L       = toLight / max(dist, 0.0001);
         float att     = 1.0 / (1.0 + 0.1 * dist * dist);
         float shadow  = (i == 0) ? pointShadowFactor(worldPos, scene.pointLights[i].position.xyz) : 0.0;
-        lighting += (1.0 - shadow) * cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
+        directLight += (1.0 - shadow) * cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
                         scene.pointLights[i].colorIntensity.rgb,
                         scene.pointLights[i].colorIntensity.a * att);
     }
@@ -530,10 +529,23 @@ void main() {
         float eps     = scene.spotLights[i].cutoffAngles.x - scene.spotLights[i].cutoffAngles.y;
         float cone    = clamp((theta - scene.spotLights[i].cutoffAngles.y) / max(eps, 0.0001), 0.0, 1.0);
         float att     = 1.0 / (1.0 + 0.1 * dist * dist);
-        lighting += cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
+        directLight += cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
                        scene.spotLights[i].colorIntensity.rgb,
                        scene.spotLights[i].colorIntensity.a * att * cone);
     }
+
+    // Phase-2 diagnostic debug views: short-circuit before bloom/FXAA/fog so
+    // post-effects don't corrupt the signal.
+    //   6 = sun shadow visibility (1.0 = fully lit, 0.0 = fully shadowed)
+    //   7 = SSAO factor (1.0 = no occlusion)
+    //   8 = direct lighting only (no IBL, no ambient)
+    //   9 = indirect lighting only (IBL ambient, with SSAO)
+    if (scene.debugMode == 6) { outColor = vec4(vec3(1.0 - sunShadow), 1.0); return; }
+    if (scene.debugMode == 7) { outColor = vec4(vec3(ssaoFactor), 1.0); return; }
+    if (scene.debugMode == 8) { outColor = vec4(directLight, 1.0); return; }
+    if (scene.debugMode == 9) { outColor = vec4(ambient, 1.0); return; }
+
+    vec3 lighting = ambient + directLight;
 
     // Bloom
     lighting += computeBloom(uv);

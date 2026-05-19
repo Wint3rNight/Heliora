@@ -1673,9 +1673,11 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::Begin("Debug Views", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
-  const char *debugModes[] = {"None",     "Albedo",    "Normals",
-                              "Metallic", "Roughness", "Depth"};
-  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 6))
+  const char *debugModes[] = {"None",       "Albedo",      "Normals",
+                              "Metallic",   "Roughness",   "Depth",
+                              "Shadow vis", "SSAO factor", "Direct only",
+                              "Indirect only"};
+  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 10))
     sceneUbo.debugMode = imguiDebugMode;
   ImGui::End();
 

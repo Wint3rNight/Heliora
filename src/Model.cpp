@@ -291,11 +291,19 @@ MeshModel::LoadMaterials(const aiScene *scene) {
       textureList[i].metallic = filenameFromAssimpPath(path);
     }
 
-    // Roughness
+    // Roughness. glTF 2.0 packs metalness+roughness into one texture; Assimp
+    // may surface it under DIFFUSE_ROUGHNESS, UNKNOWN, or only under METALNESS.
+    // Fall through all three, then mirror the metallic path if nothing else
+    // matched — the packed texture has both channels.
     if (mat->GetTextureCount(aiTextureType_DIFFUSE_ROUGHNESS) &&
         mat->GetTexture(aiTextureType_DIFFUSE_ROUGHNESS, 0, &path) ==
             AI_SUCCESS) {
       textureList[i].roughness = filenameFromAssimpPath(path);
+    } else if (mat->GetTextureCount(aiTextureType_UNKNOWN) &&
+               mat->GetTexture(aiTextureType_UNKNOWN, 0, &path) == AI_SUCCESS) {
+      textureList[i].roughness = filenameFromAssimpPath(path);
+    } else if (!textureList[i].metallic.empty()) {
+      textureList[i].roughness = textureList[i].metallic;
     }
 
     // AO

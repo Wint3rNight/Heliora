@@ -150,7 +150,11 @@ float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     // 12-tap Vogel-disk PCF over a hardware compare sampler. Each tap's
     // reference depth is shifted along the receiver plane to match the
     // local surface slope.
-    const int SAMPLES = 12;
+    // 32-tap Vogel-disk PCF. The bumped sample count reduces the per-pixel
+    // shadow quantization step from 1/12 (8.3%) to 1/32 (3.1%); below the
+    // JND once multiplied by HDR sun intensity. Same radius and rotation as
+    // before, so penumbra width is unchanged.
+    const int SAMPLES = 32;
     float radius = (1.5 + float(cascade) * 0.5);
     float phi    = interleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
     float lit    = 0.0;
@@ -483,7 +487,19 @@ void main() {
     vec3 diffuseIBL   = kD_ibl * irradiance * albedo;
 
     vec3  R              = reflect(-V, worldN);
-    float prefilteredLod = roughnessForIBL * float(IBL_PREFILTER_MIPS - 1);
+    // Karis split-sum LOD based on perceptual roughness.
+    float roughLod       = roughnessForIBL * float(IBL_PREFILTER_MIPS - 1);
+    // Filament-style geometric LOD based on screen-space derivative of R.
+    // At silhouette pixels (where R swings wildly between adjacent fragments)
+    // this drives the fetch to a higher mip, killing per-pixel sparkle on
+    // normal-mapped surfaces that pure roughness-LOD can't reach.
+    vec3  dRdx           = dFdx(R);
+    vec3  dRdy           = dFdy(R);
+    float envSize        = float(textureSize(prefilteredEnvMap, 0).x);
+    float derivMag2      = max(dot(dRdx, dRdx), dot(dRdy, dRdy));
+    float geomLod        = 0.5 * log2(max(derivMag2 * envSize * envSize, 1e-6));
+    float prefilteredLod = clamp(max(roughLod, geomLod), 0.0,
+                                 float(IBL_PREFILTER_MIPS - 1));
     vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(10.0));
     vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
     vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);

@@ -260,29 +260,43 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
     vkDestroyShaderModule(device, iVertMod, nullptr);
   }
 
-  // 2. SHADOW PIPELINE  (shadow.vert only, depth-only pass)
+  // 2. SHADOW PIPELINE  (shadow.vert + shadow.frag, depth-only with alpha
+  // test). The fragment stage discards sub-threshold alpha so Sponza foliage
+  // casts leaf-shaped shadows instead of solid quad blocks. UV is read from
+  // the vertex stream; the material's albedo sampler set (set=1) is bound
+  // before each draw, reusing the existing material descriptor.
   auto shadowVertCode = readFile("../Shaders/shadow.vert.spv");
+  auto shadowFragCode = readFile("../Shaders/shadow.frag.spv");
   VkShaderModule shadowVertMod = createShaderModule(device, shadowVertCode);
+  VkShaderModule shadowFragMod = createShaderModule(device, shadowFragCode);
 
-  VkPipelineShaderStageCreateInfo shadowStage = {};
-  shadowStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  shadowStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-  shadowStage.module = shadowVertMod;
-  shadowStage.pName = "main";
+  VkPipelineShaderStageCreateInfo shadowStages[2] = {};
+  shadowStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  shadowStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  shadowStages[0].module = shadowVertMod;
+  shadowStages[0].pName = "main";
+  shadowStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  shadowStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  shadowStages[1].module = shadowFragMod;
+  shadowStages[1].pName = "main";
 
-  VkVertexInputAttributeDescription posAttr = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
-                                               offsetof(Vertex, pos)};
+  VkVertexInputAttributeDescription shadowAttrs[2] = {
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)},
+      {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, tex)}};
   VkPipelineVertexInputStateCreateInfo shadowVI = {};
   shadowVI.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   shadowVI.vertexBindingDescriptionCount = 1;
   shadowVI.pVertexBindingDescriptions = &binding;
-  shadowVI.vertexAttributeDescriptionCount = 1;
-  shadowVI.pVertexAttributeDescriptions = &posAttr;
+  shadowVI.vertexAttributeDescriptionCount = 2;
+  shadowVI.pVertexAttributeDescriptions = shadowAttrs;
 
   VkPushConstantRange shadowPC = {VK_SHADER_STAGE_VERTEX_BIT, 0,
                                   sizeof(ShadowPushConstants)};
+  VkDescriptorSetLayout shadowSetLayouts[] = {descriptors.getSamplerLayout()};
   VkPipelineLayoutCreateInfo shadowLayoutCI = {};
   shadowLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  shadowLayoutCI.setLayoutCount = 1;
+  shadowLayoutCI.pSetLayouts = shadowSetLayouts;
   shadowLayoutCI.pushConstantRangeCount = 1;
   shadowLayoutCI.pPushConstantRanges = &shadowPC;
   if (vkCreatePipelineLayout(device, &shadowLayoutCI, nullptr,
@@ -314,8 +328,8 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   shadowDynState.pDynamicStates = shadowDynStates.data();
 
   VkGraphicsPipelineCreateInfo shadowPCI = geoPCI;
-  shadowPCI.stageCount = 1;
-  shadowPCI.pStages = &shadowStage;
+  shadowPCI.stageCount = 2;
+  shadowPCI.pStages = shadowStages;
   shadowPCI.pVertexInputState = &shadowVI;
   shadowPCI.pRasterizationState = &shadowRast;
   shadowPCI.pDepthStencilState = &shadowDS;
@@ -329,6 +343,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
     throw std::runtime_error("Failed to create shadow pipeline");
 
   vkDestroyShaderModule(device, shadowVertMod, nullptr);
+  vkDestroyShaderModule(device, shadowFragMod, nullptr);
 
   // 3a. LIT PBR PIPELINE  (second.vert + lit.frag → litBuffer, lit pass)
   // Same shape as the SSR composite pipeline below; differs only in shader

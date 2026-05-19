@@ -1080,6 +1080,13 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
             vkCmdSetCullMode(cmdBuffer, wantCull);
             shadowLastCull = wantCull;
           }
+          // Bind the material's sampler descriptor so the shadow fragment
+          // shader can alpha-test against albedo (Sponza foliage leaves).
+          VkDescriptorSet matSet = descriptorManager.getSamplerSet(
+              mesh->getMaterial().descriptorSetId);
+          vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  pipeline.getShadowLayout(), 0, 1, &matSet,
+                                  0, nullptr);
           int useLod = std::min(lodIndex, mesh->getLodCount() - 1);
           VkBuffer vb[] = {mesh->getVertexBuffer()};
           VkDeviceSize off[] = {0};

@@ -14,12 +14,11 @@ public:
   VulkanSwapchain(const VulkanSwapchain &) = delete;
   VulkanSwapchain &operator=(const VulkanSwapchain &) = delete;
 
-  // compositionRenderPass must have swapchain as attachment 0, colorBuffer as
-  // attachment 1.
-  void init(const VulkanDevice &device, VkRenderPass compositionRenderPass,
-            GLFWwindow *window);
-  void recreate(const VulkanDevice &device, VkRenderPass compositionRenderPass,
-                GLFWwindow *window);
+  // Composite framebuffers (3 attachments including TAA history ping-pong)
+  // are owned by VulkanRenderer, not this class. init/recreate only own the
+  // swapchain images + HDR colorBuffer + per-image command buffers.
+  void init(const VulkanDevice &device, GLFWwindow *window);
+  void recreate(const VulkanDevice &device, GLFWwindow *window);
   void cleanup(VkDevice device, VmaAllocator allocator);
 
   VkSwapchainKHR getSwapchain() const { return swapchain; }
@@ -29,8 +28,8 @@ public:
     return swapChainImages;
   }
   size_t getImageCount() const { return swapChainImages.size(); }
-  VkFramebuffer getFramebuffer(size_t i) const {
-    return swapChainFramebuffers[i];
+  VkImageView getSwapImageView(size_t i) const {
+    return swapChainImages[i].imageView.get();
   }
   VkCommandBuffer getCommandBuffer(size_t i) const { return commandBuffers[i]; }
   VkImageView getColorBufferView(size_t i) const {
@@ -49,7 +48,6 @@ private:
   VkExtent2D swapChainExtent = {};
 
   std::vector<SwapChainImage> swapChainImages;
-  std::vector<VkFramebuffer> swapChainFramebuffers;
   std::vector<VkCommandBuffer> commandBuffers;
 
   // HDR intermediate attachment (written by deferred pass, read as input
@@ -59,7 +57,6 @@ private:
 
   void createSwapChain(const VulkanDevice &device, GLFWwindow *window);
   void createColorBufferImage(const VulkanDevice &device);
-  void createFramebuffers(VkDevice device, VkRenderPass renderPass);
   void createCommandBuffers(VkDevice device, VkCommandPool commandPool);
   void cleanupSwapChain(VkDevice device, VmaAllocator allocator);
 

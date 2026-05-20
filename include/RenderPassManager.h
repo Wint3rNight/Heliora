@@ -21,11 +21,13 @@ public:
   // here — it samples this image in the next pass.
   void createLitRenderPass(VkDevice device, VkFormat litFormat);
 
-  // Creates the composition pass: 2 subpasses.
+  // Creates the composition pass: 2 subpasses, 3 attachments.
   //   Subpass 0 (SSR composite — samples litBuffer + G-buffer) → colorBuffer
-  //   Subpass 1 (ACES+gamma)                                    → swapchain
+  //   Subpass 1 (TAA + ACES+gamma) → swapchain (LDR) + history (HDR)
+  // historyFormat is the HDR format used for the TAA ping-pong history images
+  // (must match VulkanRenderer::litFormat).
   void createRenderPass(VkDevice device, VkFormat swapchainFormat,
-                        VkFormat colorFormat);
+                        VkFormat colorFormat, VkFormat historyFormat);
 
   // Depth-only shadow pass (directional + point, unchanged).
   void createShadowRenderPass(VkDevice device, VkFormat depthFormat);

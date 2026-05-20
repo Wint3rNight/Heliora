@@ -28,19 +28,14 @@ VkFormat VulkanSwapchain::queryImageFormat(const VulkanDevice &device) const {
   return formats[0].format;
 }
 
-void VulkanSwapchain::init(const VulkanDevice &device,
-                           VkRenderPass compositionRenderPass,
-                           GLFWwindow *window) {
+void VulkanSwapchain::init(const VulkanDevice &device, GLFWwindow *window) {
   createSwapChain(device, window);
   createColorBufferImage(device);
-  createFramebuffers(device.getLogicalDevice(), compositionRenderPass);
   createCommandBuffers(device.getLogicalDevice(),
                        device.getGraphicsCommandPool());
 }
 
-void VulkanSwapchain::recreate(const VulkanDevice &device,
-                               VkRenderPass compositionRenderPass,
-                               GLFWwindow *window) {
+void VulkanSwapchain::recreate(const VulkanDevice &device, GLFWwindow *window) {
   int w = 0, h = 0;
   glfwGetFramebufferSize(window, &w, &h);
   while (w == 0 || h == 0) {
@@ -54,7 +49,6 @@ void VulkanSwapchain::recreate(const VulkanDevice &device,
   cleanupSwapChain(device.getLogicalDevice(), device.getAllocator());
   createSwapChain(device, window);
   createColorBufferImage(device);
-  createFramebuffers(device.getLogicalDevice(), compositionRenderPass);
   createCommandBuffers(device.getLogicalDevice(),
                        device.getGraphicsCommandPool());
 }
@@ -150,9 +144,6 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
 
 void VulkanSwapchain::cleanupSwapChain(VkDevice device,
                                        VmaAllocator /*allocator*/) {
-  for (auto fb : swapChainFramebuffers)
-    vkDestroyFramebuffer(device, fb, nullptr);
-  swapChainFramebuffers.clear();
   swapChainImages.clear();
   colorBufferImage.clear();
   colorBufferImageView.clear();
@@ -184,30 +175,9 @@ void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
   }
 }
 
-void VulkanSwapchain::createFramebuffers(VkDevice device,
-                                         VkRenderPass renderPass) {
-  swapChainFramebuffers.resize(swapChainImages.size());
-  for (size_t i = 0; i < swapChainImages.size(); ++i) {
-    // Composition pass: [swapchain image, colorBuffer] — 2 attachments
-    std::array<VkImageView, 2> attachments = {
-        swapChainImages[i].imageView.get(), colorBufferImageView[i].get()};
-    VkFramebufferCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    ci.renderPass = renderPass;
-    ci.attachmentCount = static_cast<uint32_t>(attachments.size());
-    ci.pAttachments = attachments.data();
-    ci.width = swapChainExtent.width;
-    ci.height = swapChainExtent.height;
-    ci.layers = 1;
-    if (vkCreateFramebuffer(device, &ci, nullptr, &swapChainFramebuffers[i]) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create framebuffer");
-  }
-}
-
 void VulkanSwapchain::createCommandBuffers(VkDevice device,
                                            VkCommandPool commandPool) {
-  commandBuffers.resize(swapChainFramebuffers.size());
+  commandBuffers.resize(swapChainImages.size());
   VkCommandBufferAllocateInfo ai = {};
   ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   ai.commandPool = commandPool;

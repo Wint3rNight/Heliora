@@ -462,17 +462,35 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
                      "main",
                      nullptr};
 
-  VkDescriptorSetLayout inputLayout = descriptors.getInputLayout();
+  // Tonemap subpass now has 3 descriptor sets:
+  //   set 0 = VP/scene UBO (for prevViewProj, taaParams, viewportSize, invProj,
+  //           invView).
+  //   set 1 = input attachment (colorBuffer from subpass 0).
+  //   set 2 = TAA samplers (history-prev + depth).
+  std::array<VkDescriptorSetLayout, 3> secondSetLayouts = {
+      descriptors.getVPLayout(), descriptors.getInputLayout(),
+      descriptors.getTaaLayout()};
   VkPipelineLayoutCreateInfo secondLayoutCI = {};
   secondLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  secondLayoutCI.setLayoutCount = 1;
-  secondLayoutCI.pSetLayouts = &inputLayout;
+  secondLayoutCI.setLayoutCount = static_cast<uint32_t>(secondSetLayouts.size());
+  secondLayoutCI.pSetLayouts = secondSetLayouts.data();
   if (vkCreatePipelineLayout(device, &secondLayoutCI, nullptr,
                              &secondPipelineLayout) != VK_SUCCESS)
     throw std::runtime_error("Failed to create tone-mapping pipeline layout");
 
+  // Tonemap subpass writes 2 color attachments (swap LDR + history HDR).
+  std::array<VkPipelineColorBlendAttachmentState, 2> secondBlends = {blendOff,
+                                                                     blendOff};
+  VkPipelineColorBlendStateCreateInfo secondBlendState = {};
+  secondBlendState.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  secondBlendState.attachmentCount =
+      static_cast<uint32_t>(secondBlends.size());
+  secondBlendState.pAttachments = secondBlends.data();
+
   VkGraphicsPipelineCreateInfo secondPCI = deferredPCI;
   secondPCI.pStages = secondStages;
+  secondPCI.pColorBlendState = &secondBlendState;
   secondPCI.layout = secondPipelineLayout;
   secondPCI.subpass = 1;
   if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &secondPCI, nullptr,

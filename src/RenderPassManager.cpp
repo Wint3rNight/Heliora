@@ -140,14 +140,16 @@ void RenderPassManager::createLitRenderPass(VkDevice device,
 }
 
 // ---------------------------------------------------------------------------
-// Composition render pass (2 attachments: swapchain + colorBuffer)
+// Composition render pass (3 attachments: swapchain + colorBuffer + history)
 // Subpass 0: SSR composite (samples litBuffer + G-buffer) → colorBuffer
-// Subpass 1: ACES+gamma (colorBuffer as input attachment) → swapchain
+// Subpass 1: TAA + ACES+gamma (colorBuffer as input attachment, prev-history
+//            sampled, depth sampled) → swapchain (LDR) + history (HDR)
 // ---------------------------------------------------------------------------
 void RenderPassManager::createRenderPass(VkDevice device,
                                          VkFormat swapchainFormat,
-                                         VkFormat colorFormat) {
-  // Attachment 0: swapchain output
+                                         VkFormat colorFormat,
+                                         VkFormat historyFormat) {
+  // Attachment 0: swapchain output (LDR, post-tonemap)
   VkAttachmentDescription swapAtt = {};
   swapAtt.format = swapchainFormat;
   swapAtt.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -169,7 +171,23 @@ void RenderPassManager::createRenderPass(VkDevice device,
   colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   colorAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 2> attachments = {swapAtt, colorAtt};
+  // Attachment 2: HDR history (write-target this frame; sampled next frame).
+  // initialLayout=UNDEFINED — the prev frame finished with SHADER_READ_ONLY,
+  // but we don't need the prev content (we sample the OTHER ping-pong image
+  // via descriptor). finalLayout=SHADER_READ_ONLY so next frame's sampler
+  // bind is well-defined.
+  VkAttachmentDescription histAtt = {};
+  histAtt.format = historyFormat;
+  histAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+  histAtt.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  histAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  histAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  histAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  histAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  histAtt.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  std::array<VkAttachmentDescription, 3> attachments = {swapAtt, colorAtt,
+                                                        histAtt};
 
   // Subpass 0 writes to colorBuffer (attachment 1)
   VkAttachmentReference colorRef = {};
@@ -182,10 +200,12 @@ void RenderPassManager::createRenderPass(VkDevice device,
   subpass0.pColorAttachments = &colorRef;
 
   // Subpass 1 reads colorBuffer as input attachment, writes to swapchain
-  // (attachment 0)
-  VkAttachmentReference swapRef = {};
-  swapRef.attachment = 0;
-  swapRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  // (attachment 0) AND history (attachment 2)
+  std::array<VkAttachmentReference, 2> subpass1ColorRefs = {};
+  subpass1ColorRefs[0].attachment = 0;
+  subpass1ColorRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  subpass1ColorRefs[1].attachment = 2;
+  subpass1ColorRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
   VkAttachmentReference inputRef = {};
   inputRef.attachment = 1;
@@ -193,15 +213,16 @@ void RenderPassManager::createRenderPass(VkDevice device,
 
   VkSubpassDescription subpass1 = {};
   subpass1.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-  subpass1.colorAttachmentCount = 1;
-  subpass1.pColorAttachments = &swapRef;
+  subpass1.colorAttachmentCount =
+      static_cast<uint32_t>(subpass1ColorRefs.size());
+  subpass1.pColorAttachments = subpass1ColorRefs.data();
   subpass1.inputAttachmentCount = 1;
   subpass1.pInputAttachments = &inputRef;
 
   std::array<VkSubpassDescription, 2> subpasses = {subpass0, subpass1};
 
-  std::array<VkSubpassDependency, 3> deps = {};
-  // External → subpass 0
+  std::array<VkSubpassDependency, 4> deps = {};
+  // External → subpass 0 (covers swapchain + colorBuffer transitions in)
   deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
   deps[0].dstSubpass = 0;
   deps[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -218,14 +239,28 @@ void RenderPassManager::createRenderPass(VkDevice device,
   deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
   deps[1].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 
-  // Subpass 1 → external
+  // Subpass 1 → external (covers history → SHADER_READ_ONLY for next frame
+  // and the swapchain → ImGui pass).
   deps[2].srcSubpass = 1;
   deps[2].dstSubpass = VK_SUBPASS_EXTERNAL;
   deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  deps[2].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  deps[2].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
   deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[2].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+  deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+
+  // External → subpass 1: ensure the PREVIOUS frame's TAA fragment-shader
+  // read of the OTHER history image (now being written this frame as the
+  // ping-pong target) completes before we start writing the same image.
+  // Without this dep the layout transition + write could race with the
+  // prev frame's sampler read.
+  deps[3].srcSubpass = VK_SUBPASS_EXTERNAL;
+  deps[3].dstSubpass = 1;
+  deps[3].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[3].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[3].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  deps[3].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
   VkRenderPassCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;

@@ -102,6 +102,16 @@ private:
   //   slot   = parity * swapCount + swapIndex
   std::vector<AllocatedImage> taaHistoryImages;   // size 2
   std::vector<ImageViewHandle> taaHistoryViews;   // size 2
+  // Sampler used by the TAA shader to read history-prev and depth.
+  // CLAMP_TO_EDGE so reprojected UVs that drift just past the edge fall
+  // back gracefully (treated as off-screen by the shader's bounds check).
+  VkSampler taaSampler = VK_NULL_HANDLE;
+  // Composite framebuffers — 3 attachments (swap, colorBuffer, history).
+  // Size: 2 * swapCount. Index: parity * swapCount + swapIdx, where
+  // parity = taaFrameCounter & 1. The history attachment at slot s is
+  // taaHistoryViews[parity], so each parity owns one of the two ping-pong
+  // images as its write target this frame.
+  std::vector<VkFramebuffer> compositeFramebuffers;
 
   // --- IBL resources ---
   int iblSkyboxImageIndex = -1; // index into TextureManager::textureImages
@@ -188,6 +198,8 @@ private:
   void cleanupLitResources();
   void createTaaResources();
   void cleanupTaaResources();
+  void createCompositeFramebuffers();
+  void cleanupCompositeFramebuffers();
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();

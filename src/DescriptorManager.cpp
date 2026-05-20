@@ -21,6 +21,8 @@ void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
 
 void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
                                 size_t /*swapchainImageCount*/) {
+  if (taaDescriptorPool != VK_NULL_HANDLE)
+    vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, gBufferDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
@@ -194,6 +196,74 @@ void DescriptorManager::recreateInputSets(VkDevice device,
                                           const VulkanSwapchain &swapchain) {
   vkResetDescriptorPool(device, inputDescriptorPool, 0);
   createInputDescriptorSets(device, swapchain);
+}
+
+void DescriptorManager::recreateTaaSets(
+    VkDevice device, const std::vector<VkImageView> &historyPrevViews,
+    const std::vector<VkImageView> &gBufferDepthViews, VkSampler sampler) {
+  // historyPrevViews has size 2 (the two ping-pong images).
+  // gBufferDepthViews has size swapCount.
+  // We allocate 2 * swapCount sets, indexed (parity * swapCount + swapIdx).
+  size_t swapCount = gBufferDepthViews.size();
+  size_t totalSets = 2 * swapCount;
+
+  // Lazy-create the pool. Size assumes swapCount ≤ 8 so 4*8 = 32 sampler
+  // descriptors is a safe headroom; we re-allocate the pool on every
+  // recreate to avoid sizing assumptions across resizes.
+  if (taaDescriptorPool != VK_NULL_HANDLE) {
+    vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
+    taaDescriptorPool = VK_NULL_HANDLE;
+  }
+  VkDescriptorPoolSize sz = {};
+  sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  sz.descriptorCount = static_cast<uint32_t>(totalSets * 2);
+  VkDescriptorPoolCreateInfo pci = {};
+  pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pci.maxSets = static_cast<uint32_t>(totalSets);
+  pci.poolSizeCount = 1;
+  pci.pPoolSizes = &sz;
+  if (vkCreateDescriptorPool(device, &pci, nullptr, &taaDescriptorPool) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to create TAA descriptor pool");
+
+  std::vector<VkDescriptorSetLayout> layouts(totalSets, taaSetLayout);
+  taaDescriptorSets.assign(totalSets, VK_NULL_HANDLE);
+
+  VkDescriptorSetAllocateInfo ai = {};
+  ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  ai.descriptorPool = taaDescriptorPool;
+  ai.descriptorSetCount = static_cast<uint32_t>(totalSets);
+  ai.pSetLayouts = layouts.data();
+  if (vkAllocateDescriptorSets(device, &ai, taaDescriptorSets.data()) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate TAA descriptor sets");
+
+  for (size_t parity = 0; parity < 2; ++parity) {
+    // historyPrev = the OTHER ping-pong image (the one written last frame).
+    VkImageView historyPrev = historyPrevViews[(parity + 1) & 1];
+    for (size_t i = 0; i < swapCount; ++i) {
+      VkDescriptorImageInfo histInfo = {
+          sampler, historyPrev, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkDescriptorImageInfo depthInfo = {
+          sampler, gBufferDepthViews[i],
+          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+      VkDescriptorSet set = taaDescriptorSets[parity * swapCount + i];
+      VkWriteDescriptorSet writes[2] = {};
+      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[0].dstSet = set;
+      writes[0].dstBinding = 0;
+      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[0].descriptorCount = 1;
+      writes[0].pImageInfo = &histInfo;
+      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[1].dstSet = set;
+      writes[1].dstBinding = 1;
+      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[1].descriptorCount = 1;
+      writes[1].pImageInfo = &depthInfo;
+      vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    }
+  }
 }
 
 // Layout creation

@@ -41,6 +41,10 @@ public:
     return gBufferDescriptorSets[i];
   }
   VkDescriptorSet getInputSet(size_t i) const { return inputDescriptorSets[i]; }
+  // TAA set indexed by (parity * swapCount + swapIdx). Binding 0 =
+  // historyPrev view (the OTHER ping-pong image, written last frame),
+  // binding 1 = G-buffer depth view for this swap index.
+  VkDescriptorSet getTaaSet(size_t i) const { return taaDescriptorSets[i]; }
 
   // --- Data updates ---
   void updateUniformBuffer(VmaAllocator allocator, size_t imageIndex,
@@ -80,6 +84,16 @@ public:
   // (Re)creates per-swapchain-image input attachment descriptor sets.
   void recreateInputSets(VkDevice device, const VulkanSwapchain &swapchain);
 
+  // (Re)creates TAA descriptor sets — 2 * swapCount entries.
+  // Layout for set s = parity * swapCount + swapIdx:
+  //   binding 0 = historyPrevViews[parity] (the image written last frame)
+  //   binding 1 = gBufferDepthViews[swapIdx]
+  // Both sampled with `sampler` (CLAMP_TO_EDGE recommended).
+  void recreateTaaSets(VkDevice device,
+                       const std::vector<VkImageView> &historyPrevViews,
+                       const std::vector<VkImageView> &gBufferDepthViews,
+                       VkSampler sampler);
+
 private:
   // --- Layouts ---
   VkDescriptorSetLayout descriptorSetLayout =
@@ -99,12 +113,14 @@ private:
   VkDescriptorPool samplerDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool gBufferDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool inputDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool taaDescriptorPool = VK_NULL_HANDLE;
 
   // --- Sets ---
   std::vector<VkDescriptorSet> descriptorSets;        // one per swapchain image
   std::vector<VkDescriptorSet> samplerDescriptorSets; // one per loaded material
   std::vector<VkDescriptorSet> gBufferDescriptorSets; // one per swapchain image
   std::vector<VkDescriptorSet> inputDescriptorSets;   // one per swapchain image
+  std::vector<VkDescriptorSet> taaDescriptorSets;     // 2 * swapCount
 
   // --- Uniform buffers ---
   std::vector<AllocatedBuffer> vpUniformBuffers;

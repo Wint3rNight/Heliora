@@ -61,14 +61,16 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         device.getLogicalDevice(), gb0Fmt, gb1Fmt, gb2Fmt, gBufferDepthFormat);
     renderPassManager.createLitRenderPass(device.getLogicalDevice(), litFormat);
     renderPassManager.createRenderPass(device.getLogicalDevice(),
-                                       swapchainFormat, colorFormat);
+                                       swapchainFormat, colorFormat,
+                                       litFormat);
     renderPassManager.createShadowRenderPass(device.getLogicalDevice(),
                                              shadowDepthFormat);
     renderPassManager.createImGuiRenderPass(device.getLogicalDevice(),
                                             swapchainFormat);
 
-    // 4. Swapchain
-    swapchain.init(device, renderPassManager.getRenderPass(), window);
+    // 4. Swapchain (images + colorBuffer + command buffers — composite
+    //     framebuffers are owned by this class and created below in step 8c)
+    swapchain.init(device, window);
 
     // 5. Shadow resources (directional + point)
     createShadowResources();
@@ -94,8 +96,27 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //     "Session 2" section has the remaining wire-up steps).
     createTaaResources();
 
+    // 8c. Composite framebuffers (3 attachments: swap + colorBuffer + history)
+    //     Must be created after TAA history images exist and after the
+    //     composition render pass is created.
+    createCompositeFramebuffers();
+
     // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
     createGBuffer();
+
+    // 9b. TAA descriptor sets (history-prev + depth). Needs both taaHistory
+    //     views (from createTaaResources) and gBufferDepth views (from
+    //     createGBuffer), so this lands after both.
+    {
+      std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
+                                            taaHistoryViews[1].get()};
+      std::vector<VkImageView> depthViews;
+      depthViews.reserve(gBufferDepthViews.size());
+      for (const auto &v : gBufferDepthViews)
+        depthViews.push_back(v.get());
+      descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
+                                        depthViews, taaSampler);
+    }
 
     // 10. Pipeline (needs all 4 render passes + descriptor layouts)
     pipeline.createPipelines(
@@ -297,10 +318,10 @@ void VulkanRenderer::draw() {
   glm::mat4 currentUnjitteredVP = sceneUbo.projection * sceneUbo.view;
   sceneUbo.prevViewProj = taaPrevViewProj;
   taaPrevViewProj = currentUnjitteredVP;
-  // Bake jitter into the projection matrix. Gated behind taaEnable so we
-  // don't introduce sub-pixel shimmer until the full TAA path (history +
-  // accumulation shader) is wired up to wash it out.
-  const bool taaEnable = false; // flip true when TAA shader lands
+  // Bake jitter into the projection matrix. The TAA shader washes out the
+  // sub-pixel shimmer via temporal accumulation; jitter without the shader
+  // produces a shimmering image, so leave this in lockstep with the shader.
+  const bool taaEnable = true;
   if (taaEnable) {
     // Modify column 2 (the z coupling) so the offset is a constant screen-
     // space delta independent of vertex depth: clip.x_new = clip.x +
@@ -319,7 +340,9 @@ void VulkanRenderer::draw() {
   sceneUbo.viewportSize = glm::vec4(float(ext.width), float(ext.height),
                                     1.0f / float(ext.width),
                                     1.0f / float(ext.height));
-  taaFrameCounter++;
+  // taaHistoryValid is the input to THIS frame's TAA blend (so the first
+  // frame after init/resize must read it as false). Promote it to true for
+  // the NEXT frame now that we're about to render content into the history.
   taaHistoryValid = true;
 
   updateLightSpaceMatrices();
@@ -366,27 +389,43 @@ void VulkanRenderer::draw() {
     throw std::runtime_error("Failed to present swap chain image");
   }
   currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
+  // Advance TAA frame counter AFTER this frame finishes recording so the
+  // Halton jitter index used above (line ~288) matches the parity that
+  // recordCommands picked for the framebuffer / descriptor set.
+  taaFrameCounter++;
   metrics.endFrame(logicalDevice);
 }
 
 // Swapchain recreation
 
 void VulkanRenderer::recreateSwapChain() {
-  swapchain.recreate(device, renderPassManager.getRenderPass(), window);
+  swapchain.recreate(device, window);
 
   cleanupImGuiFramebuffers();
   createImGuiFramebuffers();
 
+  cleanupCompositeFramebuffers();
   cleanupGBuffer();
   cleanupLitResources();
   cleanupTaaResources();
   createLitResources();
   createTaaResources();
+  createCompositeFramebuffers();
   createGBuffer();
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
 
   descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
+  {
+    std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
+                                          taaHistoryViews[1].get()};
+    std::vector<VkImageView> depthViews;
+    depthViews.reserve(gBufferDepthViews.size());
+    for (const auto &v : gBufferDepthViews)
+      depthViews.push_back(v.get());
+    descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
+                                      depthViews, taaSampler);
+  }
 
   rebuildProjection();
 }
@@ -694,6 +733,24 @@ void VulkanRenderer::createTaaResources() {
   endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
                             device.getGraphicsQueue(), cmd);
 
+  // Sampler used by the TAA shader to read history-prev and depth.
+  // CLAMP_TO_EDGE so reprojected UVs that slide just past the screen edge
+  // sample the edge texel rather than wrapping; the shader's explicit
+  // [0,1] bounds check handles true disocclusion.
+  if (taaSampler == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxAnisotropy = 1.0f;
+    if (vkCreateSampler(dev, &sci, nullptr, &taaSampler) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create TAA sampler");
+  }
+
   // Fresh allocation → history is undefined → don't blend the first frame.
   taaHistoryValid = false;
 }
@@ -703,6 +760,49 @@ void VulkanRenderer::cleanupTaaResources() {
   // vmaDestroyImage. We just clear the vectors.
   taaHistoryViews.clear();
   taaHistoryImages.clear();
+  if (taaSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(device.getLogicalDevice(), taaSampler, nullptr);
+    taaSampler = VK_NULL_HANDLE;
+  }
+}
+
+// Composite framebuffers: 2 * swapCount entries, indexed by
+// (parity * swapCount + swapIdx). Each binds:
+//   attachment 0 = swap image view (per swapIdx)
+//   attachment 1 = colorBuffer view (per swapIdx)
+//   attachment 2 = TAA history view (per parity — alternates each frame)
+void VulkanRenderer::createCompositeFramebuffers() {
+  VkDevice dev = device.getLogicalDevice();
+  size_t swapCount = swapchain.getImageCount();
+  compositeFramebuffers.assign(2 * swapCount, VK_NULL_HANDLE);
+
+  for (size_t parity = 0; parity < 2; ++parity) {
+    for (size_t i = 0; i < swapCount; ++i) {
+      std::array<VkImageView, 3> atts = {swapchain.getSwapImageView(i),
+                                         swapchain.getColorBufferView(i),
+                                         taaHistoryViews[parity].get()};
+      VkFramebufferCreateInfo ci = {};
+      ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+      ci.renderPass = renderPassManager.getRenderPass();
+      ci.attachmentCount = static_cast<uint32_t>(atts.size());
+      ci.pAttachments = atts.data();
+      ci.width = swapchain.getExtent().width;
+      ci.height = swapchain.getExtent().height;
+      ci.layers = 1;
+      VkFramebuffer fb = VK_NULL_HANDLE;
+      if (vkCreateFramebuffer(dev, &ci, nullptr, &fb) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create composite framebuffer");
+      compositeFramebuffers[parity * swapCount + i] = fb;
+    }
+  }
+}
+
+void VulkanRenderer::cleanupCompositeFramebuffers() {
+  VkDevice dev = device.getLogicalDevice();
+  for (VkFramebuffer fb : compositeFramebuffers)
+    if (fb != VK_NULL_HANDLE)
+      vkDestroyFramebuffer(dev, fb, nullptr);
+  compositeFramebuffers.clear();
 }
 
 // IBL resource management
@@ -840,6 +940,7 @@ void VulkanRenderer::cleanup() {
   cleanupImGui();
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
+  cleanupCompositeFramebuffers();
   cleanupGBuffer();
   cleanupLitResources();
   cleanupTaaResources();
@@ -1116,16 +1217,26 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkdbgEndLabel(cmd);
   }
 
-  // --- Composition pass (SSR composite + ACES tone-mapping) ---
+  // --- Composition pass (SSR composite + TAA + ACES tone-mapping) ---
   {
-    std::array<VkClearValue, 2> clears{};
+    // 3 attachments: swap (clear), colorBuffer (clear), history (DONT_CARE).
+    // Clear values for DONT_CARE attachments are ignored but the array still
+    // needs the right element count.
+    std::array<VkClearValue, 3> clears{};
     clears[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
     clears[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
+    clears[2].color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    // Parity selects which TAA history image is THIS frame's write target.
+    // taaFrameCounter is incremented at end-of-draw, so its current value is
+    // the index of the frame we're recording.
+    uint32_t parity = taaFrameCounter & 1u;
+    size_t fbIdx = parity * swapchain.getImageCount() + currentImage;
 
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getRenderPass();
-    rpbi.framebuffer = swapchain.getFramebuffer(currentImage);
+    rpbi.framebuffer = compositeFramebuffers[fbIdx];
     rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
     rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
     rpbi.pClearValues = clears.data();
@@ -1147,14 +1258,20 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                             deferredSets.data(), 0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
-    // Subpass 1: ACES + gamma → swapchain
+    // Subpass 1: TAA reprojection + ACES + gamma → swapchain (LDR) + history (HDR)
     vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getSecondPipeline());
-    VkDescriptorSet inputSet = descriptorManager.getInputSet(currentImage);
+    // 3 sets: scene UBO (0), input attachment (1), TAA samplers (2).
+    // TAA set is picked by parity to point at the OTHER ping-pong image.
+    std::array<VkDescriptorSet, 3> secondSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getInputSet(currentImage),
+        descriptorManager.getTaaSet(fbIdx)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSecondLayout(), 0, 1, &inputSet, 0,
-                            nullptr);
+                            pipeline.getSecondLayout(), 0,
+                            static_cast<uint32_t>(secondSets.size()),
+                            secondSets.data(), 0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vkCmdEndRenderPass(cmd);

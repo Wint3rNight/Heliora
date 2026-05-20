@@ -26,6 +26,7 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
   vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
+  vkDestroyDescriptorSetLayout(device, taaSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, inputSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, gBufferSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, samplerSetLayout, nullptr);
@@ -275,6 +276,29 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
       VK_SUCCESS)
     throw std::runtime_error(
         "Failed to create input attachment descriptor set layout");
+
+  // --- TAA layout (set 2, tonemap subpass): 2 sampled-image bindings ---
+  // binding 0 = previous-frame TAA history (HDR R16G16B16A16_SFLOAT)
+  // binding 1 = G-buffer depth (used to reconstruct world pos for
+  //             reprojection through prevViewProj)
+  // No descriptor sets are allocated against this layout yet — the
+  // per-frame ping-pong sets will be added when the TAA shader + render
+  // pass extension land.
+  std::array<VkDescriptorSetLayoutBinding, 2> taaBindings = {};
+  for (uint32_t i = 0; i < 2; ++i) {
+    taaBindings[i].binding = i;
+    taaBindings[i].descriptorType =
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    taaBindings[i].descriptorCount = 1;
+    taaBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo taaCI = {};
+  taaCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  taaCI.bindingCount = static_cast<uint32_t>(taaBindings.size());
+  taaCI.pBindings = taaBindings.data();
+  if (vkCreateDescriptorSetLayout(device, &taaCI, nullptr, &taaSetLayout) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to create TAA descriptor set layout");
 }
 
 // Push constant range

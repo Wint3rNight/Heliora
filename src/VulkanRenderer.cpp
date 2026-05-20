@@ -88,6 +88,12 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //    recreateGBufferSets has the lit views to bind).
     createLitResources();
 
+    // 8b. TAA history images. Format matches litFormat so they live in the
+    //     same HDR-precision domain. Currently allocated but not yet wired
+    //     into the render pass (Phase 6 work-in-progress — plan file
+    //     "Session 2" section has the remaining wire-up steps).
+    createTaaResources();
+
     // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
     createGBuffer();
 
@@ -267,6 +273,55 @@ void VulkanRenderer::draw() {
 
   sceneUbo.qualityToggles2.y = imguiUseGeomNormalOnly ? 1.0f : 0.0f;
 
+  // --- TAA per-frame state ---
+  // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
+  // washing. We sequence over 8 samples and wrap. Convert pixel offsets in
+  // [-0.5, 0.5] to NDC offsets by *2/viewport, since clip.xy is in [-w, w]
+  // and after divide we want a *2/viewport NDC shift to land on the
+  // intended sub-pixel position.
+  auto halton = [](uint32_t i, uint32_t base) {
+    float f = 1.0f;
+    float r = 0.0f;
+    while (i > 0) { f /= float(base); r += f * float(i % base); i /= base; }
+    return r;
+  };
+  uint32_t haltonIdx = (taaFrameCounter % 8) + 1; // skip i=0 → (0,0)
+  glm::vec2 jitterPx = glm::vec2(halton(haltonIdx, 2) - 0.5f,
+                                 halton(haltonIdx, 3) - 0.5f);
+  VkExtent2D ext = swapchain.getExtent();
+  glm::vec2 jitterNDC = glm::vec2(jitterPx.x * 2.0f / float(ext.width),
+                                  jitterPx.y * 2.0f / float(ext.height));
+  // Save the previous frame's un-jittered VP *before* mutating projection
+  // for this frame. The TAA shader will reproject world positions through
+  // this matrix to find the corresponding pixel in the history image.
+  glm::mat4 currentUnjitteredVP = sceneUbo.projection * sceneUbo.view;
+  sceneUbo.prevViewProj = taaPrevViewProj;
+  taaPrevViewProj = currentUnjitteredVP;
+  // Bake jitter into the projection matrix. Gated behind taaEnable so we
+  // don't introduce sub-pixel shimmer until the full TAA path (history +
+  // accumulation shader) is wired up to wash it out.
+  const bool taaEnable = false; // flip true when TAA shader lands
+  if (taaEnable) {
+    // Modify column 2 (the z coupling) so the offset is a constant screen-
+    // space delta independent of vertex depth: clip.x_new = clip.x +
+    // jitterNDC.x * w. After perspective divide this becomes a constant
+    // +jitterNDC NDC offset on every fragment regardless of depth.
+    sceneUbo.projection[2][0] -= jitterNDC.x;
+    sceneUbo.projection[2][1] -= jitterNDC.y;
+    // invProj must invert the jittered projection so reconstructed world
+    // pos matches the rasterized depth.
+    sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+  }
+  sceneUbo.taaParams = glm::vec4(taaEnable ? jitterNDC.x : 0.0f,
+                                 taaEnable ? jitterNDC.y : 0.0f,
+                                 taaEnable ? 1.0f : 0.0f,
+                                 taaHistoryValid ? 1.0f : 0.0f);
+  sceneUbo.viewportSize = glm::vec4(float(ext.width), float(ext.height),
+                                    1.0f / float(ext.width),
+                                    1.0f / float(ext.height));
+  taaFrameCounter++;
+  taaHistoryValid = true;
+
   updateLightSpaceMatrices();
 
   recordCommands(imageIndex);
@@ -324,7 +379,9 @@ void VulkanRenderer::recreateSwapChain() {
 
   cleanupGBuffer();
   cleanupLitResources();
+  cleanupTaaResources();
   createLitResources();
+  createTaaResources();
   createGBuffer();
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
@@ -565,6 +622,89 @@ void VulkanRenderer::cleanupLitResources() {
   }
 }
 
+// TAA history images. Two persistent HDR images that ping-pong each frame:
+// frame N writes taaHistory[N&1], samples taaHistory[(N+1)&1]. Format
+// matches litFormat so reads from history feed straight into the same
+// HDR-precision pipeline. Usage: SAMPLED (read as history-prev) +
+// COLOR_ATTACHMENT (written as history-curr by the composite render pass
+// once it gains the 2nd color attachment in the next session).
+void VulkanRenderer::createTaaResources() {
+  VkDevice dev = device.getLogicalDevice();
+  taaHistoryImages.clear();
+  taaHistoryViews.clear();
+  taaHistoryImages.reserve(2);
+  taaHistoryViews.reserve(2);
+
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+  for (int i = 0; i < 2; ++i) {
+    VkImageCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.format = litFormat;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage rawImg = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
+                       nullptr) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create TAA history image");
+    taaHistoryImages.emplace_back(device.getAllocator(), rawImg, alloc);
+
+    VkImageViewCreateInfo vci = {};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = taaHistoryImages.back().get();
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = litFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageView v = VK_NULL_HANDLE;
+    if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create TAA history view");
+    taaHistoryViews.emplace_back(dev, v);
+  }
+
+  // Transition both to SHADER_READ_ONLY_OPTIMAL so the first frame's
+  // sampler bind doesn't read undefined data. The composite render pass
+  // (when wired up next session) will declare initialLayout=UNDEFINED on
+  // the history attachment with loadOp=DONT_CARE, so the transition back
+  // to COLOR_ATTACHMENT_OPTIMAL is handled by the render pass itself.
+  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+  for (int i = 0; i < 2; ++i) {
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = taaHistoryImages[i].get();
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.srcAccessMask = 0;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &b);
+  }
+  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
+                            device.getGraphicsQueue(), cmd);
+
+  // Fresh allocation → history is undefined → don't blend the first frame.
+  taaHistoryValid = false;
+}
+
+void VulkanRenderer::cleanupTaaResources() {
+  // ImageViewHandle / AllocatedImage destructors handle vkDestroyImageView /
+  // vmaDestroyImage. We just clear the vectors.
+  taaHistoryViews.clear();
+  taaHistoryImages.clear();
+}
+
 // IBL resource management
 
 void VulkanRenderer::initIBL() {
@@ -702,6 +842,7 @@ void VulkanRenderer::cleanup() {
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   cleanupGBuffer();
   cleanupLitResources();
+  cleanupTaaResources();
   cleanupIBL();
   cleanupShadowResources();
 
@@ -1559,6 +1700,9 @@ void VulkanRenderer::rebuildProjection() {
                                          1.0f, imguiDrawDistance);
   sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+  // Any FOV/aspect/draw-distance change invalidates TAA history because the
+  // reprojection math depends on the previous frame's projection.
+  taaHistoryValid = false;
 }
 
 void VulkanRenderer::setFov(float fovDegrees) {

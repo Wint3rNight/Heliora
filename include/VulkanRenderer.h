@@ -94,6 +94,15 @@ private:
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
 
+  // --- TAA history (HDR, ping-pong, persistent across frames) ---
+  // Two physical images that alternate roles each frame:
+  //   frame N writes taaHistory[N&1], samples taaHistory[(N+1)&1]
+  // taaFramebuffers has 2 * swap-image-count entries; index by:
+  //   parity = taaFrameCounter & 1
+  //   slot   = parity * swapCount + swapIndex
+  std::vector<AllocatedImage> taaHistoryImages;   // size 2
+  std::vector<ImageViewHandle> taaHistoryViews;   // size 2
+
   // --- IBL resources ---
   int iblSkyboxImageIndex = -1; // index into TextureManager::textureImages
   int irradianceImageIndex = -1;
@@ -137,8 +146,16 @@ private:
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
   float imguiSpecAAVariance = 0.25f;       // tunable
-  float imguiSpecAAThreshold = 0.18f;      // tunable
-  float imguiIblRoughnessFloor = 0.15f;    // tunable — min roughness for IBL specular
+  // Karis-style spec-AA threshold cap. 0.18 (the plan's KAPPA) leaves
+  // visible per-pixel sparkle on Sponza's dense cloth weave / foliage at
+  // glancing angles. Bumping to 0.5 lets the kernel saturate more, folding
+  // sub-pixel normal variance into much higher effective roughness on
+  // high-frequency surfaces while leaving low-variance surfaces unchanged.
+  float imguiSpecAAThreshold = 0.5f;       // tunable
+  // IBL specular mip floor. 0.3 forces the prefiltered env fetch to use at
+  // least ~mip 1 of 4 — kills the per-pixel sky-reflection sparkle from
+  // normal-mapped cloth at grazing.
+  float imguiIblRoughnessFloor = 0.3f;     // tunable
   bool imguiShadowFrontFaceCull = true;    // dynamic cull-mode
   float imguiCsmFar = 2000.0f;             // cascade far plane
   float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
@@ -146,6 +163,18 @@ private:
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)
   bool imguiUseGeomNormalOnly = false;     // P2 diag: bypass normal-map sampling
+
+  // --- TAA state ---
+  // Frame counter drives the Halton index and the history ping-pong parity.
+  // Wraps every 8 frames for jitter (matches Halton sample count) but the
+  // ping-pong only needs parity, so we can just use frameCounter & 1.
+  uint32_t taaFrameCounter = 0;
+  // Un-jittered VP of the previous frame. Used by the TAA shader to
+  // reproject each pixel's world position to last frame's UV. Kept un-jittered
+  // so the reprojected sample lands on the same geometric surface point
+  // regardless of jitter offset.
+  glm::mat4 taaPrevViewProj = glm::mat4(1.0f);
+  bool taaHistoryValid = false;            // dropped on swapchain recreate / first frame
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;
 
@@ -157,6 +186,8 @@ private:
   void cleanupGBuffer();
   void createLitResources();
   void cleanupLitResources();
+  void createTaaResources();
+  void cleanupTaaResources();
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();

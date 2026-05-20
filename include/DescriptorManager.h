@@ -25,6 +25,11 @@ public:
   VkDescriptorSetLayout getSamplerLayout() const { return samplerSetLayout; }
   VkDescriptorSetLayout getGBufferLayout() const { return gBufferSetLayout; }
   VkDescriptorSetLayout getInputLayout() const { return inputSetLayout; }
+  // TAA history-prev sampler (binding 0) + G-buffer depth sampler (binding 1).
+  // Bound at set 2 of the tonemap pipeline next session. Layout is created
+  // in init() but no sets are allocated against it yet — the per-frame
+  // ping-pong descriptors will be added in the wire-up step.
+  VkDescriptorSetLayout getTaaLayout() const { return taaSetLayout; }
   VkPushConstantRange getPushConstantRange() const { return pushConstantRange; }
 
   // --- Set accessors ---
@@ -85,6 +90,8 @@ private:
       VK_NULL_HANDLE; // 4 G-buffer samplers (set 1, deferred)
   VkDescriptorSetLayout inputSetLayout =
       VK_NULL_HANDLE; // 1 input attachment (set 0, post-process)
+  VkDescriptorSetLayout taaSetLayout =
+      VK_NULL_HANDLE; // TAA history + depth samplers (set 2, post-process)
   VkPushConstantRange pushConstantRange = {};
 
   // --- Pools ---

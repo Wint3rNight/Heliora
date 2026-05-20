@@ -30,6 +30,9 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     int  debugMode;
     vec4 qualityToggles;  // x = sRGB albedo decode
     vec4 qualityToggles2; // x = mipmap sampling enable
+    mat4 prevViewProj;
+    vec4 taaParams;
+    vec4 viewportSize;
 } scene;
 
 layout(set = 1, binding = 0) uniform sampler2D albedoSampler;

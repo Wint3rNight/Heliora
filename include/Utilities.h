@@ -213,6 +213,20 @@ struct SceneUniformBuffer {
   // x/y/z unused, w = ambient intensity (drives IBL + skybox dimming so
   // night doesn't reflect baked daylight off every glossy surface).
   alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+  // TAA state. Populated by VulkanRenderer each frame.
+  //   prevViewProj: previous frame's view*projection (no jitter applied to
+  //     prevProjection so reprojection lands on the un-jittered surface).
+  //   taaParams.xy: current frame's sub-pixel jitter in clip-space NDC units
+  //     (i.e. already divided by viewport*2). Applied directly to clip.xy in
+  //     the vertex shader and subtracted during world-pos reconstruction.
+  //   taaParams.z:  taaEnable (0 = passthrough, 1 = TAA on).
+  //   taaParams.w:  historyValid (0 on first frame / after resize / on debug
+  //     mode change).
+  //   viewportSize: pixel dimensions of the screen — needed because the TAA
+  //     shader can't query a sampler bound as input attachment.
+  alignas(16) glm::mat4 prevViewProj = glm::mat4(1.0f);
+  alignas(16) glm::vec4 taaParams = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+  alignas(16) glm::vec4 viewportSize = glm::vec4(0.0f);
 };
 
 const int IBL_PREFILTER_MIPS = 5;

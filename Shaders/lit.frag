@@ -39,6 +39,11 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     // y = correlated Smith G enable (P3)
     // z = Vogel-disk PCF enable (P5b)
     vec4 qualityToggles2;
+    // TAA state (consumed by second.frag — present here only to keep std140
+    // offsets identical across all shaders that bind set=0,binding=0).
+    mat4 prevViewProj;
+    vec4 taaParams;
+    vec4 viewportSize;
 } scene;
 
 layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;

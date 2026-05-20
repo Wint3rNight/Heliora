@@ -163,11 +163,18 @@ void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
       VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
 
   for (size_t i = 0; i < swapChainImages.size(); ++i) {
+    // SAMPLED is needed for TAA's 3×3 neighborhood clamp: the tonemap subpass
+    // reads the center pixel via subpassInput (zero-overhead, tile-local) and
+    // simultaneously samples 8 neighbors via a normal sampler binding. Within
+    // a single subpass it is legal to bind the same view as both input
+    // attachment AND combined-image-sampler — both read at SHADER_READ_ONLY,
+    // no writes are happening in this subpass, so there is no feedback loop.
     colorBufferImage[i] =
         createImage(device.getAllocator(), swapChainExtent.width,
                     swapChainExtent.height, fmt, VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                        VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+                        VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT);
     colorBufferImageView[i] = ImageViewHandle(
         device.getLogicalDevice(),
         createImageView(device.getLogicalDevice(), colorBufferImage[i].get(),

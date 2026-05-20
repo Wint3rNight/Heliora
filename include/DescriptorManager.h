@@ -86,12 +86,14 @@ public:
 
   // (Re)creates TAA descriptor sets — 2 * swapCount entries.
   // Layout for set s = parity * swapCount + swapIdx:
-  //   binding 0 = historyPrevViews[parity] (the image written last frame)
+  //   binding 0 = historyPrevViews[parity] (image written last frame)
   //   binding 1 = gBufferDepthViews[swapIdx]
-  // Both sampled with `sampler` (CLAMP_TO_EDGE recommended).
+  //   binding 2 = colorBufferViews[swapIdx]  (HDR pre-tonemap, this frame)
+  // All sampled with `sampler` (CLAMP_TO_EDGE recommended).
   void recreateTaaSets(VkDevice device,
                        const std::vector<VkImageView> &historyPrevViews,
                        const std::vector<VkImageView> &gBufferDepthViews,
+                       const std::vector<VkImageView> &colorBufferViews,
                        VkSampler sampler);
 
 private:

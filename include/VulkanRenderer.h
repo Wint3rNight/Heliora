@@ -136,6 +136,13 @@ private:
   PerformanceMetrics metrics;
 
   // --- Synchronization ---
+  // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
+  // flight). renderFinished is sized by swapchain image count and indexed
+  // by the acquired imageIndex — the presentation engine binds its wait
+  // to the swap image, not to our frame-in-flight slot. Indexing this by
+  // currentFrame caused a validation hit when the swap engine had not
+  // finished presenting the image whose semaphore we tried to reuse.
+  // See https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
   std::vector<VkFence> drawFences;
@@ -179,10 +186,14 @@ private:
   // Wraps every 8 frames for jitter (matches Halton sample count) but the
   // ping-pong only needs parity, so we can just use frameCounter & 1.
   uint32_t taaFrameCounter = 0;
-  // Un-jittered VP of the previous frame. Used by the TAA shader to
-  // reproject each pixel's world position to last frame's UV. Kept un-jittered
-  // so the reprojected sample lands on the same geometric surface point
-  // regardless of jitter offset.
+  // Un-jittered baseline projection. Updated only by rebuildProjection().
+  // Each draw() starts by copying this into sceneUbo.projection BEFORE
+  // applying the per-frame Halton jitter, so the jitter doesn't accumulate
+  // across frames into a random-walk drift of the projection matrix.
+  glm::mat4 taaBaseProjection = glm::mat4(1.0f);
+  // Jittered VP of the previous frame. Used by the TAA shader to
+  // reproject each pixel's world position to where it landed in last
+  // frame's image (which was rendered with last frame's jitter).
   glm::mat4 taaPrevViewProj = glm::mat4(1.0f);
   bool taaHistoryValid = false;            // dropped on swapchain recreate / first frame
   float frameTimeGraphData[128] = {};

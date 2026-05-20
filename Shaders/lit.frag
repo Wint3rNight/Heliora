@@ -161,7 +161,17 @@ float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     // before, so penumbra width is unchanged.
     const int SAMPLES = 32;
     float radius = (1.5 + float(cascade) * 0.5);
-    float phi    = interleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
+    // Per-frame temporal rotation of the Vogel disk so the PCF noise
+    // pattern is no longer screen-space-stable. Without this, the dithered
+    // shadow penumbra is the same pixel-for-pixel each frame and TAA
+    // accumulation can't average it out — that was why the floor dither
+    // persisted under bright sun even with TAA enabled.
+    // scene.taaParams.xy cycles through 8 Halton values per second so the
+    // hash below produces 8 distinct phi offsets across the cycle.
+    float temporalSeed = fract(scene.taaParams.x * 9311.0 +
+                               scene.taaParams.y * 7919.0);
+    float phi    = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
+                   * 6.2831853;
     float lit    = 0.0;
     for (int i = 0; i < SAMPLES; ++i) {
         vec2  off       = vogelDisk(i, SAMPLES, phi) * radius * texelSize;
@@ -191,7 +201,17 @@ float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
         shadow = sampleCascade(c, worldPos, N, L);
         if (shadow >= 0.0) { cascade = c; break; }
     }
-    if (shadow < 0.0) return 0.0;  // outside all cascades — assume lit
+    // Past all cascades: we have no info about whether this fragment is
+    // occluded from the sun. The old default (return 0 = lit) was wrong
+    // for indoor scenes — a corridor whose far end falls past CSM far
+    // would suddenly go fully lit, producing a brilliant unshaded patch
+    // where the cascade ran out. Returning 1.0 (assumed shadowed) is the
+    // safe interior choice: the fragment loses sun direct contribution
+    // entirely, and the IBL skyOcclusion proxy further dims its ambient.
+    // Real fix for outdoor scenes would be a distance-based fade or a
+    // bigger CSM far; for Sponza-scale interiors, conservative shadow is
+    // the right call.
+    if (shadow < 0.0) return 1.0;  // outside all cascades — assume shadowed
 
     // Blend with the next cascade in the last 15% of this cascade's range
     // to hide hard popping at boundaries.
@@ -303,7 +323,15 @@ vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
 // ---- SSAO ----
 float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     vec2 noiseScale = vec2(textureSize(gBuffer0Sampler, 0)) / 4.0;
-    vec3 randomVec  = normalize(texture(ssaoNoise, uv * noiseScale).rgb * 2.0 - 1.0);
+    // Per-frame shift of the 4×4 SSAO noise tile so the rotation pattern
+    // becomes screen-space-UNSTABLE across frames. TAA's history blend
+    // then averages out the noise pattern that was previously a fixed
+    // 4×4 tile baked into every frame. Without this, the noise pattern
+    // is the same every frame and TAA accumulates the same dither.
+    vec2 temporalOffset = vec2(fract(scene.taaParams.x * 7919.0),
+                               fract(scene.taaParams.y * 9311.0));
+    vec3 randomVec  = normalize(
+        texture(ssaoNoise, uv * noiseScale + temporalOffset).rgb * 2.0 - 1.0);
     vec3 tangent    = normalize(randomVec - viewNormal * dot(randomVec, viewNormal));
     vec3 bitangent  = cross(viewNormal, tangent);
     mat3 TBN        = mat3(tangent, bitangent, viewNormal);
@@ -395,7 +423,11 @@ vec3 applyFXAA(vec2 uv, vec3 litColor) {
     float lumB = dot(albedoB, lumCoeff);
     vec3 blended = litColor * ((lumA + lumB) * 0.5) / lumC;
 
-    return mix(litColor, clamp(blended, vec3(0.0), vec3(50.0)), 0.25);
+    // Blend factor bumped 0.25 → 0.6 so single-frame edges are noticeably
+    // softer even before TAA has had time to accumulate. TAA still does
+    // the main supersampling smoothing across frames; FXAA covers the
+    // pre-convergence frame so a fresh viewpoint never looks raw-aliased.
+    return mix(litColor, clamp(blended, vec3(0.0), vec3(50.0)), 0.6);
 }
 
 // ---- Exponential height fog ----
@@ -505,28 +537,55 @@ void main() {
     float geomLod        = 0.5 * log2(max(derivMag2 * envSize * envSize, 1e-6));
     float prefilteredLod = clamp(max(roughLod, geomLod), 0.0,
                                  float(IBL_PREFILTER_MIPS - 1));
-    vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(10.0));
+    // Firefly clamp on the prefiltered env. 10.0 was too loose — sun-edge
+    // texels in the HDR skybox produce single-pixel highlights at low
+    // roughness that survive every downstream filter. 4.0 keeps the
+    // bright-sky look but caps the spec sparkle.
+    vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(4.0));
     vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
     vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
 
     // Note: SSR is applied in a separate composite pass that samples this lit
     // image; here we keep IBL specular only.
 
-    // Ambient (IBL diffuse + specular) is scaled by qualityToggles2.w. The
-    // prefilter + irradiance cubemaps are baked once from the daytime sky,
-    // so without this scale every glossy surface keeps reflecting baked
-    // daylight even when the sun is below the horizon — the "everything
-    // looks silver at night" bug.
-    vec3 ambient = (diffuseIBL + specularIBL) * ao * ssaoFactor *
-                   scene.qualityToggles2.w;
-
-    // Directional light + PCF shadow
+    // Directional light + PCF shadow — computed BEFORE ambient because we
+    // re-use sunShadow as a sky-occlusion proxy for the IBL ambient term.
     vec3  sunDir    = normalize(-scene.directionalLight.direction.xyz);
     float sunShadow = shadowFactor(worldPos, viewPos, worldN, sunDir);
     vec3 sunDirectUnshadowed = cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
                     scene.directionalLight.colorIntensity.rgb,
                     scene.directionalLight.colorIntensity.a);
     vec3 directLight = (1.0 - sunShadow) * sunDirectUnshadowed;
+
+    // Ambient (IBL diffuse + specular) is scaled by qualityToggles2.w.
+    // The prefilter + irradiance cubemaps are baked once from the daytime
+    // sky, so without this scale every glossy surface keeps reflecting
+    // baked daylight even when the sun is below the horizon.
+    //
+    // Sky-occlusion proxy: surfaces that are in CSM shadow from the sun
+    // are usually also occluded from most of the sky (the sun and the
+    // bright sky dome come from similar directions in daylight). Scale
+    // IBL by a factor derived from shadow visibility — fully shadowed
+    // pixels get 30 % IBL (keeps deep interiors from going pitch-black),
+    // fully lit pixels get 100 %. This is what kills the "bright light
+    // bleeding through walls" symptom: an indoor floor that the wall
+    // shadows from the sun also gets dimmed sky ambient, so it no
+    // longer reads as a bright sunlit patch. It also cuts the specular
+    // glitter on textured indoor surfaces by the same factor.
+    //
+    // NOT physically correct GI — a real fix is light probes or a longer
+    // -radius AO pass (GTAO). This is a free, content-friendly proxy.
+    //
+    // Specular IBL is reduced more aggressively (skyOcclusion squared)
+    // because it's the dominant source of "glitter on indoor textures":
+    // glossy surfaces in shadow reflect the bright skybox cubemap and
+    // the high-frequency sky detail (clouds, sun edges) reads as
+    // sparkle. Diffuse IBL stays at the linear scaling — fully killing
+    // diffuse skylight indoors would make interiors read as black.
+    float skyOcclusion = mix(0.30, 1.0, 1.0 - sunShadow);
+    float skyOccSpec   = skyOcclusion * skyOcclusion;
+    vec3 ambient = (diffuseIBL * skyOcclusion + specularIBL * skyOccSpec) *
+                   ao * ssaoFactor * scene.qualityToggles2.w;
 
     // Point lights + omnidirectional shadow
     int pointCount = clamp(scene.lightCounts.x, 0, 4);

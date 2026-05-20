@@ -200,23 +200,21 @@ void DescriptorManager::recreateInputSets(VkDevice device,
 
 void DescriptorManager::recreateTaaSets(
     VkDevice device, const std::vector<VkImageView> &historyPrevViews,
-    const std::vector<VkImageView> &gBufferDepthViews, VkSampler sampler) {
+    const std::vector<VkImageView> &gBufferDepthViews,
+    const std::vector<VkImageView> &colorBufferViews, VkSampler sampler) {
   // historyPrevViews has size 2 (the two ping-pong images).
-  // gBufferDepthViews has size swapCount.
-  // We allocate 2 * swapCount sets, indexed (parity * swapCount + swapIdx).
+  // gBufferDepthViews and colorBufferViews have size swapCount.
+  // 2 * swapCount sets, indexed (parity * swapCount + swapIdx).
   size_t swapCount = gBufferDepthViews.size();
   size_t totalSets = 2 * swapCount;
 
-  // Lazy-create the pool. Size assumes swapCount ≤ 8 so 4*8 = 32 sampler
-  // descriptors is a safe headroom; we re-allocate the pool on every
-  // recreate to avoid sizing assumptions across resizes.
   if (taaDescriptorPool != VK_NULL_HANDLE) {
     vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
     taaDescriptorPool = VK_NULL_HANDLE;
   }
   VkDescriptorPoolSize sz = {};
   sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sz.descriptorCount = static_cast<uint32_t>(totalSets * 2);
+  sz.descriptorCount = static_cast<uint32_t>(totalSets * 3);
   VkDescriptorPoolCreateInfo pci = {};
   pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pci.maxSets = static_cast<uint32_t>(totalSets);
@@ -239,7 +237,6 @@ void DescriptorManager::recreateTaaSets(
     throw std::runtime_error("Failed to allocate TAA descriptor sets");
 
   for (size_t parity = 0; parity < 2; ++parity) {
-    // historyPrev = the OTHER ping-pong image (the one written last frame).
     VkImageView historyPrev = historyPrevViews[(parity + 1) & 1];
     for (size_t i = 0; i < swapCount; ++i) {
       VkDescriptorImageInfo histInfo = {
@@ -247,8 +244,11 @@ void DescriptorManager::recreateTaaSets(
       VkDescriptorImageInfo depthInfo = {
           sampler, gBufferDepthViews[i],
           VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+      VkDescriptorImageInfo colorInfo = {
+          sampler, colorBufferViews[i],
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
       VkDescriptorSet set = taaDescriptorSets[parity * swapCount + i];
-      VkWriteDescriptorSet writes[2] = {};
+      VkWriteDescriptorSet writes[3] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = set;
       writes[0].dstBinding = 0;
@@ -261,7 +261,13 @@ void DescriptorManager::recreateTaaSets(
       writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       writes[1].descriptorCount = 1;
       writes[1].pImageInfo = &depthInfo;
-      vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+      writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[2].dstSet = set;
+      writes[2].dstBinding = 2;
+      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[2].descriptorCount = 1;
+      writes[2].pImageInfo = &colorInfo;
+      vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
     }
   }
 }
@@ -347,15 +353,16 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
     throw std::runtime_error(
         "Failed to create input attachment descriptor set layout");
 
-  // --- TAA layout (set 2, tonemap subpass): 2 sampled-image bindings ---
+  // --- TAA layout (set 2, tonemap subpass): 3 sampled-image bindings ---
   // binding 0 = previous-frame TAA history (HDR R16G16B16A16_SFLOAT)
   // binding 1 = G-buffer depth (used to reconstruct world pos for
   //             reprojection through prevViewProj)
-  // No descriptor sets are allocated against this layout yet — the
-  // per-frame ping-pong sets will be added when the TAA shader + render
-  // pass extension land.
-  std::array<VkDescriptorSetLayoutBinding, 2> taaBindings = {};
-  for (uint32_t i = 0; i < 2; ++i) {
+  // binding 2 = current-frame colorBuffer (HDR pre-tonemap) for the 3×3
+  //             YCoCg neighborhood clamp. Same image as the input
+  //             attachment at set=1,binding=0 — kept as a separate
+  //             descriptor because subpassLoad does not accept offsets.
+  std::array<VkDescriptorSetLayoutBinding, 3> taaBindings = {};
+  for (uint32_t i = 0; i < 3; ++i) {
     taaBindings[i].binding = i;
     taaBindings[i].descriptorType =
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

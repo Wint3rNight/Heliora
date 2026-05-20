@@ -104,18 +104,23 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
     createGBuffer();
 
-    // 9b. TAA descriptor sets (history-prev + depth). Needs both taaHistory
-    //     views (from createTaaResources) and gBufferDepth views (from
-    //     createGBuffer), so this lands after both.
+    // 9b. TAA descriptor sets (history-prev + depth + colorBuffer-current).
+    //     Needs taaHistory views (from createTaaResources), gBufferDepth
+    //     views (from createGBuffer), and colorBuffer views (from swapchain
+    //     init). Order: must follow all three.
     {
       std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
                                             taaHistoryViews[1].get()};
       std::vector<VkImageView> depthViews;
+      std::vector<VkImageView> colorViews;
       depthViews.reserve(gBufferDepthViews.size());
+      colorViews.reserve(swapchain.getImageCount());
       for (const auto &v : gBufferDepthViews)
         depthViews.push_back(v.get());
+      for (size_t i = 0; i < swapchain.getImageCount(); ++i)
+        colorViews.push_back(swapchain.getColorBufferView(i));
       descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
-                                        depthViews, taaSampler);
+                                        depthViews, colorViews, taaSampler);
     }
 
     // 10. Pipeline (needs all 4 render passes + descriptor layouts)
@@ -312,15 +317,22 @@ void VulkanRenderer::draw() {
   VkExtent2D ext = swapchain.getExtent();
   glm::vec2 jitterNDC = glm::vec2(jitterPx.x * 2.0f / float(ext.width),
                                   jitterPx.y * 2.0f / float(ext.height));
-  // Save the previous frame's un-jittered VP *before* mutating projection
-  // for this frame. The TAA shader will reproject world positions through
-  // this matrix to find the corresponding pixel in the history image.
-  glm::mat4 currentUnjitteredVP = sceneUbo.projection * sceneUbo.view;
+  // prevViewProj must hold the *jittered* VP of the prev frame so that
+  // multiplying a world position by it yields the prev frame's *jittered*
+  // NDC — the location at which that surface point was actually rasterized
+  // in the history image. Sampling history at the un-jittered prev NDC was
+  // off by half a pixel each frame, which bilinear-blurred the image over
+  // many frames (a textbook TAA blur bug).
   sceneUbo.prevViewProj = taaPrevViewProj;
-  taaPrevViewProj = currentUnjitteredVP;
-  // Bake jitter into the projection matrix. The TAA shader washes out the
-  // sub-pixel shimmer via temporal accumulation; jitter without the shader
-  // produces a shimmering image, so leave this in lockstep with the shader.
+  // Reset projection to the un-jittered baseline BEFORE applying this
+  // frame's Halton offset. The previous implementation mutated
+  // sceneUbo.projection in-place every frame, which accumulated the
+  // per-frame offsets into a random-walk drift over time — the relation
+  // between Halton index and actual sub-pixel position broke, so TAA
+  // could never converge to clean supersampled edges (the symptom the
+  // user reported: "textures slightly move all the time", and severely
+  // jagged edges even on a static camera).
+  sceneUbo.projection = taaBaseProjection;
   const bool taaEnable = true;
   if (taaEnable) {
     // Modify column 2 (the z coupling) so the offset is a constant screen-
@@ -329,10 +341,12 @@ void VulkanRenderer::draw() {
     // +jitterNDC NDC offset on every fragment regardless of depth.
     sceneUbo.projection[2][0] -= jitterNDC.x;
     sceneUbo.projection[2][1] -= jitterNDC.y;
-    // invProj must invert the jittered projection so reconstructed world
-    // pos matches the rasterized depth.
-    sceneUbo.invProj = glm::inverse(sceneUbo.projection);
   }
+  // invProj must invert whichever projection was just installed.
+  sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+  // Save THIS frame's jittered VP for next frame's reprojection. Must come
+  // AFTER the jitter mutation above.
+  taaPrevViewProj = sceneUbo.projection * sceneUbo.view;
   sceneUbo.taaParams = glm::vec4(taaEnable ? jitterNDC.x : 0.0f,
                                  taaEnable ? jitterNDC.y : 0.0f,
                                  taaEnable ? 1.0f : 0.0f,
@@ -363,7 +377,9 @@ void VulkanRenderer::draw() {
   VkCommandBuffer cmdBuffer = swapchain.getCommandBuffer(imageIndex);
   submitInfo.pCommandBuffers = &cmdBuffer;
   submitInfo.signalSemaphoreCount = 1;
-  submitInfo.pSignalSemaphores = &renderFinished[currentFrame];
+  // renderFinished is indexed by acquired swap-image, not by frame-in-flight,
+  // so the presentation engine's wait binds to the right semaphore.
+  submitInfo.pSignalSemaphores = &renderFinished[imageIndex];
 
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo,
                     drawFences[currentFrame]) != VK_SUCCESS)
@@ -372,7 +388,7 @@ void VulkanRenderer::draw() {
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
   presentInfo.waitSemaphoreCount = 1;
-  presentInfo.pWaitSemaphores = &renderFinished[currentFrame];
+  presentInfo.pWaitSemaphores = &renderFinished[imageIndex];
   presentInfo.swapchainCount = 1;
   VkSwapchainKHR sc = swapchain.getSwapchain();
   presentInfo.pSwapchains = &sc;
@@ -415,16 +431,38 @@ void VulkanRenderer::recreateSwapChain() {
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
 
+  // renderFinished is sized by swap-image count; if the new swapchain has
+  // a different count, resize and (re)create the missing semaphores.
+  // Destroying and re-creating all of them is cheap and avoids stale
+  // signaled state from before the resize.
+  {
+    VkDevice dev = device.getLogicalDevice();
+    for (VkSemaphore s : renderFinished)
+      vkDestroySemaphore(dev, s, nullptr);
+    renderFinished.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semInfo = {};
+    semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (size_t i = 0; i < renderFinished.size(); ++i) {
+      if (vkCreateSemaphore(dev, &semInfo, nullptr, &renderFinished[i]) !=
+          VK_SUCCESS)
+        throw std::runtime_error("Failed to recreate renderFinished semaphore");
+    }
+  }
+
   descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
   {
     std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
                                           taaHistoryViews[1].get()};
     std::vector<VkImageView> depthViews;
+    std::vector<VkImageView> colorViews;
     depthViews.reserve(gBufferDepthViews.size());
+    colorViews.reserve(swapchain.getImageCount());
     for (const auto &v : gBufferDepthViews)
       depthViews.push_back(v.get());
+    for (size_t i = 0; i < swapchain.getImageCount(); ++i)
+      colorViews.push_back(swapchain.getColorBufferView(i));
     descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
-                                      depthViews, taaSampler);
+                                      depthViews, colorViews, taaSampler);
   }
 
   rebuildProjection();
@@ -952,10 +990,12 @@ void VulkanRenderer::cleanup() {
   swapchain.cleanup(device.getLogicalDevice(), device.getAllocator());
 
   for (size_t i = 0; i < MAX_FRAMES_DRAWS; i++) {
-    vkDestroySemaphore(device.getLogicalDevice(), renderFinished[i], nullptr);
     vkDestroySemaphore(device.getLogicalDevice(), imageAvailable[i], nullptr);
     vkDestroyFence(device.getLogicalDevice(), drawFences[i], nullptr);
   }
+  for (VkSemaphore s : renderFinished)
+    vkDestroySemaphore(device.getLogicalDevice(), s, nullptr);
+  renderFinished.clear();
 
   pipeline.cleanup(device.getLogicalDevice());
   renderPassManager.cleanup(device.getLogicalDevice());
@@ -1817,6 +1857,11 @@ void VulkanRenderer::rebuildProjection() {
                                          1.0f, imguiDrawDistance);
   sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
+  // Capture the un-jittered baseline — draw() will copy this into
+  // sceneUbo.projection at the start of every frame before applying the
+  // per-frame Halton offset, so the jitter does not accumulate across
+  // frames as a random-walk drift.
+  taaBaseProjection = sceneUbo.projection;
   // Any FOV/aspect/draw-distance change invalidates TAA history because the
   // reprojection math depends on the previous frame's projection.
   taaHistoryValid = false;
@@ -2007,10 +2052,13 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd,
 // Synchronization (unchanged)
 
 void VulkanRenderer::createSynchronization() {
+  size_t swapCount = swapchain.getImageCount();
   imageAvailable.resize(MAX_FRAMES_DRAWS);
-  renderFinished.resize(MAX_FRAMES_DRAWS);
   drawFences.resize(MAX_FRAMES_DRAWS);
-  imagesInFlight.resize(swapchain.getImageCount(), VK_NULL_HANDLE);
+  // renderFinished is per-swap-image, not per-frame-in-flight (see header
+  // comment for the validation rationale).
+  renderFinished.resize(swapCount);
+  imagesInFlight.resize(swapCount, VK_NULL_HANDLE);
 
   VkSemaphoreCreateInfo semInfo = {};
   semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -2022,9 +2070,12 @@ void VulkanRenderer::createSynchronization() {
   for (size_t i = 0; i < MAX_FRAMES_DRAWS; i++) {
     if (vkCreateSemaphore(dev, &semInfo, nullptr, &imageAvailable[i]) !=
             VK_SUCCESS ||
-        vkCreateSemaphore(dev, &semInfo, nullptr, &renderFinished[i]) !=
-            VK_SUCCESS ||
         vkCreateFence(dev, &fenceInfo, nullptr, &drawFences[i]) != VK_SUCCESS)
       throw std::runtime_error("Failed to create synchronization primitives");
+  }
+  for (size_t i = 0; i < swapCount; i++) {
+    if (vkCreateSemaphore(dev, &semInfo, nullptr, &renderFinished[i]) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to create renderFinished semaphore");
   }
 }

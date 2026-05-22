@@ -156,7 +156,16 @@ const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
 constexpr int NUM_CSM_CASCADES = 4;
 
 const std::vector<const char *> deviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    // Phase 7.2 — bindless: single global texture array, indexed in shader,
+    // populated as textures load. Replaces the per-material descriptor sets
+    // that we used to allocate one-per-Material.
+    VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME};
+
+// Bindless texture array size. 4096 slots is plenty for Sponza (~75 unique
+// textures) + DamagedHelmet + headroom. The shader declares a `[]` array
+// and `VARIABLE_DESCRIPTOR_COUNT` lets us bind only as many as we allocate.
+constexpr uint32_t MAX_BINDLESS_TEXTURES = 4096;
 
 // vertex data representation
 struct Vertex {
@@ -247,9 +256,19 @@ struct SceneUniformBuffer {
 
 const int IBL_PREFILTER_MIPS = 5;
 
+// Push constants for the G-buffer pass. Used by both shader.vert and
+// shader.frag — vertex needs the matrices, fragment needs the bindless
+// texture indices (5 maps × uint32 = 20 bytes packed into one ivec4 + uint).
+// Total = 128 (matrices) + 32 (indices) = 160 bytes, well under the 256-byte
+// guaranteed maxPushConstantsSize.
 struct ModelPushConstants {
   alignas(16) glm::mat4 model;
   alignas(16) glm::mat4 normal;
+  // (albedo, normal, metallic, roughness, ao) bindless indices into the
+  // global texture array. 0xFFFFFFFF reserved as "no texture" sentinel —
+  // shader path-checks against that and falls back to a literal value.
+  alignas(16) glm::uvec4 texIdx0; // (albedo, normal, metallic, roughness)
+  alignas(16) glm::uvec4 texIdx1; // (ao, _, _, _)
 };
 
 struct InstanceData {
@@ -260,6 +279,8 @@ struct InstanceData {
 struct ShadowPushConstants {
   alignas(16) glm::mat4 model;
   alignas(16) glm::mat4 lightSpaceMatrix;
+  // Phase 7.2: bindless albedo index for alpha-test discard on foliage.
+  uint32_t albedoIdx;
 };
 
 // Keep only the general utility structures here

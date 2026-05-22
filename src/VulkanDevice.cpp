@@ -249,13 +249,39 @@ void VulkanDevice::createLogicalDevice() {
   deviceCreateInfo.ppEnabledExtensionNames =
       deviceExtensions.data(); // list of enabled device extensions
 
-  // physical device features
-  VkPhysicalDeviceFeatures deviceFeatures = {};
-  deviceFeatures.samplerAnisotropy =
-      VK_TRUE; // enable anisotropic filtering for tex
+  // Physical-device features. Switched from the legacy `pEnabledFeatures`
+  // single-struct form to `VkPhysicalDeviceFeatures2` + a pNext chain so we
+  // can enable VK_EXT_descriptor_indexing's bindless capabilities (Phase
+  // 7.2). The base struct still carries samplerAnisotropy; the chained
+  // descriptor-indexing struct adds:
+  //   - shaderSampledImageArrayNonUniformIndexing: lets the shader index
+  //     the bindless array with a value that diverges across the warp
+  //     (per-mesh material index from a push constant).
+  //   - descriptorBindingPartiallyBound: most of the 4096 slots stay empty
+  //     until a material registers; partial-bound lets that work without
+  //     binding to every slot.
+  //   - descriptorBindingSampledImageUpdateAfterBind: lets us write new
+  //     image descriptors into the set after it has been bound for use in
+  //     a command buffer (texture streaming, lazy loads).
+  //   - descriptorBindingVariableDescriptorCount: the last binding in the
+  //     set is the variable-size texture array; this allows it.
+  //   - runtimeDescriptorArray: GLSL `texture2D textures[]` (no fixed size).
+  VkPhysicalDeviceDescriptorIndexingFeatures diFeatures = {};
+  diFeatures.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  diFeatures.shaderSampledImageArrayNonUniformIndexing       = VK_TRUE;
+  diFeatures.descriptorBindingPartiallyBound                 = VK_TRUE;
+  diFeatures.descriptorBindingSampledImageUpdateAfterBind    = VK_TRUE;
+  diFeatures.descriptorBindingVariableDescriptorCount        = VK_TRUE;
+  diFeatures.runtimeDescriptorArray                          = VK_TRUE;
 
-  deviceCreateInfo.pEnabledFeatures =
-      &deviceFeatures; // physical device features to use
+  VkPhysicalDeviceFeatures2 features2 = {};
+  features2.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext        = &diFeatures;
+  features2.features.samplerAnisotropy = VK_TRUE;
+
+  deviceCreateInfo.pEnabledFeatures = nullptr; // mutually exclusive w/ pNext
+  deviceCreateInfo.pNext            = &features2;
 
   // create the logical device
   VkResult result = vkCreateDevice(mainDevice.physicalDevice, &deviceCreateInfo,

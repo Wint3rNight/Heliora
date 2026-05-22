@@ -149,8 +149,11 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   gbBlendState.attachmentCount = 3;
   gbBlendState.pAttachments = gbBlend.data();
 
+  // Phase 7.2: G-buffer pipeline uses the bindless texture array at set 1.
+  // Material indices are passed via push constants, and the fragment shader
+  // indexes into the array with nonuniformEXT.
   VkDescriptorSetLayout geoLayouts[] = {descriptors.getVPLayout(),
-                                        descriptors.getSamplerLayout()};
+                                        descriptors.getBindlessLayout()};
   VkPushConstantRange pcRange = descriptors.getPushConstantRange();
 
   VkPipelineLayoutCreateInfo geoLayoutCI = {};
@@ -239,11 +242,15 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
     iVI.vertexAttributeDescriptionCount = static_cast<uint32_t>(iAttrs.size());
     iVI.pVertexAttributeDescriptions = iAttrs.data();
 
-    // Layout: same descriptor sets as geometry pipeline, no push constants
+    // Layout: same descriptor sets + push constants as geometry pipeline.
+    // Phase 7.2: shader.frag now uses push constants for bindless indices,
+    // so the instanced pipeline must declare the same range.
     VkPipelineLayoutCreateInfo iLayoutCI = {};
     iLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     iLayoutCI.setLayoutCount = 2;
     iLayoutCI.pSetLayouts = geoLayouts;
+    iLayoutCI.pushConstantRangeCount = 1;
+    iLayoutCI.pPushConstantRanges = &pcRange;
     if (vkCreatePipelineLayout(device, &iLayoutCI, nullptr,
                                &instancedPipelineLayout) != VK_SUCCESS)
       throw std::runtime_error("Failed to create instanced pipeline layout");
@@ -290,9 +297,12 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
   shadowVI.vertexAttributeDescriptionCount = 2;
   shadowVI.pVertexAttributeDescriptions = shadowAttrs;
 
-  VkPushConstantRange shadowPC = {VK_SHADER_STAGE_VERTEX_BIT, 0,
-                                  sizeof(ShadowPushConstants)};
-  VkDescriptorSetLayout shadowSetLayouts[] = {descriptors.getSamplerLayout()};
+  VkPushConstantRange shadowPC = {
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+      sizeof(ShadowPushConstants)};
+  // Phase 7.2: shadow pipeline uses the bindless layout. The fragment shader
+  // indexes into it with the albedoIdx from push constants for alpha test.
+  VkDescriptorSetLayout shadowSetLayouts[] = {descriptors.getBindlessLayout()};
   VkPipelineLayoutCreateInfo shadowLayoutCI = {};
   shadowLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   shadowLayoutCI.setLayoutCount = 1;

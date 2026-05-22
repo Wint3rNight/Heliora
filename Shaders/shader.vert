@@ -37,10 +37,15 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
   vec4 shadowParams;
 } scene;
 
-layout(push_constant)uniform PushModel{
+// Phase 7.2: push constant block matches ModelPushConstants on the C++ side.
+// The vertex stage only uses model and normal; texIdx0/texIdx1 are consumed
+// by the fragment stage.
+layout(push_constant) uniform PushModel {
   mat4 model;
   mat4 normal;
-}pushModel;
+  uvec4 texIdx0;  // (albedo, normal, metallic, roughness)
+  uvec4 texIdx1;  // (ao, _, _, _)
+} pushModel;
 
 layout(location = 0) out vec3 fragCol;
 layout(location = 1) out vec2 fragTex;

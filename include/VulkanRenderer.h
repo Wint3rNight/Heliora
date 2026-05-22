@@ -207,6 +207,12 @@ private:
   // artifacts at silhouettes. Plumbed through shadowParams.y so we don't
   // have to extend the SceneUBO struct (which lives in 8 shaders).
   float imguiSsgiIntensity = 1.0f;
+  // CAS-style sharpening strength applied after AgX in second.frag. AgX +
+  // bloom + TAA blend collectively soften the image; this hands a knob
+  // back. 0 = identity, 0.4 = light edge restoration, 0.8+ = aggressive.
+  // Plumbed through shadowParams.z (previously reserved for SSGI radius
+  // but unused).
+  float imguiSharpness = 0.4f;
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)

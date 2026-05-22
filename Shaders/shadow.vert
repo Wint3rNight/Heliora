@@ -8,6 +8,7 @@ layout(location = 0) out vec2 fragUV;
 layout(push_constant) uniform ShadowPush {
   mat4 model;
   mat4 lightSpaceMatrix;
+  uint albedoIdx;      // Phase 7.2: bindless index for alpha-test discard
 } pushShadow;
 
 void main() {

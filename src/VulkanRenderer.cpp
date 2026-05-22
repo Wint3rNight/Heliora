@@ -306,8 +306,10 @@ void VulkanRenderer::draw() {
   sceneUbo.qualityToggles2.x = std::exp2(imguiExposureEV);
   sceneUbo.qualityToggles2.z = imguiMinSurfaceRoughness;
   sceneUbo.qualityToggles.y  = imguiSkyOcclusionFloor;
-  // shadowParams.y = SSGI intensity (z/w left at 0 → shader uses defaults).
+  // shadowParams.y = SSGI intensity, .z = sharpening strength
+  // (.w left at 0 → shader uses default for SSGI depth tolerance).
   sceneUbo.shadowParams.y    = imguiSsgiIntensity;
+  sceneUbo.shadowParams.z    = imguiSharpness;
 
   // --- TAA per-frame state ---
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
@@ -1096,11 +1098,15 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     glm::vec4 frustumPlanes[6];
     extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
 
-    // Bind the VP descriptor set once per frame; only rebind the per-material
-    // set when the material id changes between adjacent meshes (Sponza has
-    // many runs of meshes sharing the same descriptor set).
-    int lastMaterialId = -1;
+    // Phase 7.2: bind VP + bindless texture array once per frame.
+    // Individual materials no longer have their own descriptor sets;
+    // texture indices are passed via push constants per-draw.
     VkDescriptorSet vpSet = descriptorManager.getVPSet(currentImage);
+    std::array<VkDescriptorSet, 2> gbSets = {
+        vpSet, descriptorManager.getBindlessSet()};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getGraphicsLayout(), 0, 2,
+                            gbSets.data(), 0, nullptr);
 
     auto renderNode = [&](auto &self, SceneNode *node) -> void {
       if (node->getModelId() >= 0) {
@@ -1126,9 +1132,6 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
             ModelPushConstants push{};
             push.model = m;
             push.normal = node->getNormalMatrix();
-            vkCmdPushConstants(cmd, pipeline.getGraphicsLayout(),
-                               VK_SHADER_STAGE_VERTEX_BIT, 0,
-                               sizeof(ModelPushConstants), &push);
 
             for (size_t k = 0; k < mdl->getMeshCount(); k++) {
               const Mesh *mesh = mdl->getMesh(k);
@@ -1156,15 +1159,18 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                 vkCmdSetCullMode(cmd, wantCull);
                 lastCullMode = wantCull;
               }
-              int matId = mat.descriptorSetId;
-              if (matId != lastMaterialId) {
-                std::array<VkDescriptorSet, 2> sets = {
-                    vpSet, descriptorManager.getSamplerSet(matId)};
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipeline.getGraphicsLayout(), 0, 2,
-                                        sets.data(), 0, nullptr);
-                lastMaterialId = matId;
-              }
+              // Phase 7.2: fill bindless texture indices from material.
+              push.texIdx0 = glm::uvec4(
+                  static_cast<uint32_t>(mat.albedoTextureId),
+                  static_cast<uint32_t>(mat.normalTextureId),
+                  static_cast<uint32_t>(mat.metallicTextureId),
+                  static_cast<uint32_t>(mat.roughnessTextureId));
+              push.texIdx1 = glm::uvec4(
+                  static_cast<uint32_t>(mat.aoTextureId), 0u, 0u, 0u);
+              vkCmdPushConstants(cmd, pipeline.getGraphicsLayout(),
+                                 VK_SHADER_STAGE_VERTEX_BIT |
+                                     VK_SHADER_STAGE_FRAGMENT_BIT,
+                                 0, sizeof(ModelPushConstants), &push);
               int idxCount = mesh->getIndexCount(useLod);
               vkCmdDrawIndexed(cmd, idxCount, 1, 0, 0, 0);
               metrics.recordDrawCall(idxCount);
@@ -1187,6 +1193,13 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
       // explicitly. Instanced models in the scene are opaque, no per-mesh
       // override needed.
       vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
+      // Phase 7.2: bind VP + bindless for instanced pipeline too.
+      std::array<VkDescriptorSet, 2> instSets = {
+          descriptorManager.getVPSet(currentImage),
+          descriptorManager.getBindlessSet()};
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              pipeline.getInstancedLayout(), 0, 2,
+                              instSets.data(), 0, nullptr);
       for (const InstancedDrawable &drawable : instancedDrawables) {
         MeshModel *mdl = modelManager.getModel(drawable.modelId);
         if (!mdl)
@@ -1214,14 +1227,22 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
           vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &instanceOff);
           vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
                                VK_INDEX_TYPE_UINT32);
-
-          std::array<VkDescriptorSet, 2> sets = {
-              descriptorManager.getVPSet(currentImage),
-              descriptorManager.getSamplerSet(
-                  mesh->getMaterial().descriptorSetId)};
-          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  pipeline.getInstancedLayout(), 0, 2,
-                                  sets.data(), 0, nullptr);
+          // Phase 7.2: push bindless texture indices for this mesh.
+          // model/normal are unused by the instanced vertex shader (it reads
+          // them from the instance buffer), but the struct must match.
+          const Material &iMat = mesh->getMaterial();
+          ModelPushConstants iPush{};
+          iPush.texIdx0 = glm::uvec4(
+              static_cast<uint32_t>(iMat.albedoTextureId),
+              static_cast<uint32_t>(iMat.normalTextureId),
+              static_cast<uint32_t>(iMat.metallicTextureId),
+              static_cast<uint32_t>(iMat.roughnessTextureId));
+          iPush.texIdx1 = glm::uvec4(
+              static_cast<uint32_t>(iMat.aoTextureId), 0u, 0u, 0u);
+          vkCmdPushConstants(cmd, pipeline.getInstancedLayout(),
+                             VK_SHADER_STAGE_VERTEX_BIT |
+                                 VK_SHADER_STAGE_FRAGMENT_BIT,
+                             0, sizeof(ModelPushConstants), &iPush);
           uint32_t instanceCount =
               static_cast<uint32_t>(drawable.instances.size());
           int idxCount = mesh->getIndexCount(useLod);
@@ -1375,12 +1396,6 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     if (node->getModelId() >= 0) {
       MeshModel *mdl = modelManager.getModel(node->getModelId());
       if (mdl) {
-        ShadowPushConstants push{};
-        push.model = node->getGlobalTransform();
-        push.lightSpaceMatrix = lsm;
-        vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0,
-                           sizeof(ShadowPushConstants), &push);
         for (size_t k = 0; k < mdl->getMeshCount(); k++) {
           const Mesh *mesh = mdl->getMesh(k);
           // doubleSided foliage: front-face culling discards the lit side and
@@ -1393,13 +1408,16 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
             vkCmdSetCullMode(cmdBuffer, wantCull);
             shadowLastCull = wantCull;
           }
-          // Bind the material's sampler descriptor so the shadow fragment
-          // shader can alpha-test against albedo (Sponza foliage leaves).
-          VkDescriptorSet matSet = descriptorManager.getSamplerSet(
-              mesh->getMaterial().descriptorSetId);
-          vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  pipeline.getShadowLayout(), 0, 1, &matSet,
-                                  0, nullptr);
+          // Phase 7.2: push model + LSM + albedo bindless index per mesh.
+          ShadowPushConstants push{};
+          push.model = node->getGlobalTransform();
+          push.lightSpaceMatrix = lsm;
+          push.albedoIdx =
+              static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
+          vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
+                             VK_SHADER_STAGE_VERTEX_BIT |
+                                 VK_SHADER_STAGE_FRAGMENT_BIT,
+                             0, sizeof(ShadowPushConstants), &push);
           int useLod = std::min(lodIndex, mesh->getLodCount() - 1);
           VkBuffer vb[] = {mesh->getVertexBuffer()};
           VkDeviceSize off[] = {0};
@@ -1440,6 +1458,11 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     shadowLastCull = defaultShadowCull;
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
+    // Phase 7.2: bind bindless set once per cascade.
+    VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getShadowLayout(), 0, 1, &bindlessSet,
+                            0, nullptr);
     renderNodeShadow(renderNodeShadow, &rootNode,
                      sceneUbo.lightSpaceMatrices[cascade], cascadeLod(cascade));
     vkCmdEndRenderPass(cmdBuffer);
@@ -1481,17 +1504,16 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
     VkCullModeFlags pointLastCull = defaultPointCull;
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
+    // Phase 7.2: bind bindless set once per face.
+    VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getShadowLayout(), 0, 1, &bindlessSet,
+                            0, nullptr);
 
     auto renderNodeShadow = [&](auto &self, SceneNode *node) -> void {
       if (node->getModelId() >= 0) {
         MeshModel *mdl = modelManager.getModel(node->getModelId());
         if (mdl) {
-          ShadowPushConstants push{};
-          push.model = node->getGlobalTransform();
-          push.lightSpaceMatrix = pointShadowMatrices[face];
-          vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
-                             VK_SHADER_STAGE_VERTEX_BIT, 0,
-                             sizeof(ShadowPushConstants), &push);
           for (size_t k = 0; k < mdl->getMeshCount(); k++) {
             const Mesh *mesh = mdl->getMesh(k);
             VkCullModeFlags wantCull =
@@ -1501,6 +1523,16 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
               vkCmdSetCullMode(cmdBuffer, wantCull);
               pointLastCull = wantCull;
             }
+            // Phase 7.2: push per-mesh with albedo index.
+            ShadowPushConstants push{};
+            push.model = node->getGlobalTransform();
+            push.lightSpaceMatrix = pointShadowMatrices[face];
+            push.albedoIdx =
+                static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
+            vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(ShadowPushConstants), &push);
             int useLod = std::min(2, mesh->getLodCount() - 1);
             VkBuffer vb[] = {mesh->getVertexBuffer()};
             VkDeviceSize off[] = {0};
@@ -2047,6 +2079,9 @@ void VulkanRenderer::buildImGuiUI() {
   // 2 = strong (visible artifacts at silhouettes).
   ImGui::SliderFloat("SSGI intensity", &imguiSsgiIntensity, 0.0f, 2.0f,
                      "%.2f");
+  // Sharpening strength after AgX. 0 = off, 0.4 = default light, 1.0 =
+  // strong / starts ringing.
+  ImGui::SliderFloat("Sharpness", &imguiSharpness, 0.0f, 1.0f, "%.2f");
   ImGui::Separator();
   ImGui::Checkbox("Day/night cycle", &imguiDayNightEnable);
   ImGui::SliderFloat("Sim hour", &imguiDayNightHour, 0.0f, 24.0f, "%.2f h");

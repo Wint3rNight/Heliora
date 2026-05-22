@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 // Alpha-tested shadow caster. Without this, Sponza's foliage casts solid
 // quad-shaped block shadows on the floor (one quad per leaf) producing the
@@ -7,13 +8,18 @@
 
 layout(location = 0) in vec2 fragUV;
 
-// Material descriptor set layout matches the geometry pass (5 samplers),
-// but the shadow pipeline layout only carries this single set, so it lives
-// at set=0 here (vs set=1 in the lit pass). Only binding 0 (albedo) is
-// sampled; the rest are silent.
-layout(set = 0, binding = 0) uniform sampler2D albedoSampler;
+// Phase 7.2: bindless texture array. The shadow pipeline layout carries this
+// single set at set=0. Only the albedo texture is sampled (indexed by
+// push constant); the rest of the 4096-slot array is untouched.
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+
+layout(push_constant) uniform ShadowPush {
+  mat4 model;
+  mat4 lightSpaceMatrix;
+  uint albedoIdx;
+} pushShadow;
 
 void main() {
-  float a = texture(albedoSampler, fragUV).a;
+  float a = texture(textures[nonuniformEXT(pushShadow.albedoIdx)], fragUV).a;
   if (a < 0.5) discard;
 }

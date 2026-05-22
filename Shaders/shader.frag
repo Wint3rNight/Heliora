@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) in vec3 fragCol;
 layout(location = 1) in vec2 fragTex;
@@ -35,18 +36,28 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 viewportSize;
 } scene;
 
-layout(set = 1, binding = 0) uniform sampler2D albedoSampler;
-layout(set = 1, binding = 1) uniform sampler2D normalSampler;
-layout(set = 1, binding = 2) uniform sampler2D metallicSampler;
-layout(set = 1, binding = 3) uniform sampler2D roughnessSampler;
-layout(set = 1, binding = 4) uniform sampler2D aoSampler;
+// Phase 7.2: Bindless texture array. All PBR textures live in a single
+// global descriptor set (set 1, binding 0). Each texture slot is identified
+// by an integer index passed via push constants. The nonuniformEXT qualifier
+// tells the driver that different invocations in the same subgroup may index
+// different textures (non-uniform control flow).
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+
+// Push constants carry the model/normal matrices (for the vertex stage)
+// and the bindless texture indices (for this fragment stage).
+layout(push_constant) uniform PushModel {
+    mat4  model;
+    mat4  normal;
+    uvec4 texIdx0;  // x=albedo, y=normal, z=metallic, w=roughness
+    uvec4 texIdx1;  // x=ao
+} push;
 
 layout(location = 0) out vec4 gBuffer0;  // albedo.rgb + metallic
 layout(location = 1) out vec4 gBuffer1;  // world-space normal.xyz + roughness
 layout(location = 2) out vec4 gBuffer2;  // AO
 
 void main() {
-    vec4 albedoSample = texture(albedoSampler, fragTex);
+    vec4 albedoSample = texture(textures[nonuniformEXT(push.texIdx0.x)], fragTex);
     if (albedoSample.a < 0.1) discard;
 
     // sRGB → linear. Albedo textures are uploaded as UNORM, so the bytes
@@ -54,8 +65,8 @@ void main() {
     // Pow(2.2) is the conventional shading approximation of the sRGB EOTF
     // (RTR4 §5.6.1).
     vec3 albedo = pow(albedoSample.rgb, vec3(2.2)) * fragCol;
-    float metallic = texture(metallicSampler, fragTex).b;
-    float roughness = clamp(texture(roughnessSampler, fragTex).g, 0.04, 1.0);
+    float metallic = texture(textures[nonuniformEXT(push.texIdx0.z)], fragTex).b;
+    float roughness = clamp(texture(textures[nonuniformEXT(push.texIdx0.w)], fragTex).g, 0.04, 1.0);
     // Per-material minimum-roughness floor (qualityToggles2.z). Sponza's
     // authored metalRoughness textures bottom out around 0.1 on the floor
     // and column surfaces, which makes stone act like polished marble and
@@ -66,9 +77,9 @@ void main() {
     // reads as polished.
     float nonMetalFloor = scene.qualityToggles2.z * (1.0 - step(0.5, metallic));
     roughness = max(roughness, nonMetalFloor);
-    float ao = texture(aoSampler, fragTex).r;
+    float ao = texture(textures[nonuniformEXT(push.texIdx1.x)], fragTex).r;
 
-    vec3 normalSample = texture(normalSampler, fragTex).rgb * 2.0 - 1.0;
+    vec3 normalSample = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
     vec3 worldNormal = normalize(fragTBN * normalSample);
     // P2 diagnostic: when qualityToggles2.y > 0.5, replace normal-map result
     // with the geometric (interpolated TBN basis Z) normal. Used to isolate

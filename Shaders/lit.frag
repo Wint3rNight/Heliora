@@ -439,8 +439,12 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
                     scene.directionalLight.colorIntensity.a;
 
-    const int   SSGI_SAMPLES = 16;
-    float radiusPx = scene.shadowParams.z > 0.5 ? scene.shadowParams.z : 32.0;
+    // Doubled sample count from 16 → 32. With 16 samples the per-pixel
+    // variance was visible as floor "grain" past mid-range; doubling cuts
+    // stddev by sqrt(2), and combined with the Halton-8 temporal rotation
+    // gets TAA close enough to converge before the noise becomes obvious.
+    const int   SSGI_SAMPLES = 32;
+    float radiusPx = scene.shadowParams.z > 0.5 ? scene.shadowParams.z : 28.0;
     float depthTol = scene.shadowParams.w > 1e-4 ? scene.shadowParams.w : 0.15;
 
     // Per-frame Vogel rotation. Reuse the same temporal-seed idiom as the
@@ -532,7 +536,12 @@ vec3 computeBloom(vec2 uv) {
             if (lum > threshold) { bloom += litEst; totalW += 1.0; }
         }
     }
-    return totalW > 0.0 ? bloom / totalW * 0.12 : vec3(0.0);
+    // Contribution dialed back 0.12 → 0.07 — combined with AgX's softer
+    // tonemap rolloff, the previous 0.12 was bleeding too much glow into
+    // the midtones and reading as "blurry" rather than "warm". 0.07 keeps
+    // the halo visible on sunlit surfaces without softening adjacent
+    // detail.
+    return totalW > 0.0 ? bloom / totalW * 0.07 : vec3(0.0);
 }
 
 // ---- FXAA (edge anti-aliasing using G-buffer depth + albedo) ----

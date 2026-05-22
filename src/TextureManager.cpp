@@ -320,6 +320,24 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
   mat.roughnessTextureId = resolveTex(roughnessKey, 255, 255, 255, 255);
   mat.aoTextureId = resolveTex(aoKey, 255, 255, 255, 255);
 
+  // Phase 7.2: register each texture into the global bindless array.
+  // The bindless index == the raw texture image index in textureImages[].
+  // This is called once per unique material; duplicate registrations
+  // (same texture appearing in multiple materials) are idempotent writes
+  // to the same descriptor slot.
+  auto regBindless = [&](int texId) {
+    descriptorManager.registerBindlessTexture(
+        device.getLogicalDevice(), static_cast<uint32_t>(texId),
+        textureImageViews[texId].get(), textureSampler);
+  };
+  regBindless(mat.albedoTextureId);
+  regBindless(mat.normalTextureId);
+  regBindless(mat.metallicTextureId);
+  regBindless(mat.roughnessTextureId);
+  regBindless(mat.aoTextureId);
+
+  // Legacy: still allocate a per-material descriptor set for any code paths
+  // that haven't been converted yet.
   mat.descriptorSetId = descriptorManager.createTextureDescriptor(
       device.getLogicalDevice(), textureImageViews[mat.albedoTextureId].get(),
       textureImageViews[mat.normalTextureId].get(),

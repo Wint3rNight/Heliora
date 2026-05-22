@@ -25,12 +25,16 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
     vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, gBufferDescriptorPool, nullptr);
+  if (bindlessDescriptorPool != VK_NULL_HANDLE)
+    vkDestroyDescriptorPool(device, bindlessDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
   vkDestroyDescriptorSetLayout(device, taaSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, inputSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, gBufferSetLayout, nullptr);
+  if (bindlessSetLayout != VK_NULL_HANDLE)
+    vkDestroyDescriptorSetLayout(device, bindlessSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, samplerSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
@@ -302,6 +306,8 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
     throw std::runtime_error("Failed to create VP descriptor set layout");
 
   // --- PBR material sampler layout (set 1, geometry pass): 5 bindings ---
+  // Legacy: kept for the shadow pipeline which still uses per-material
+  // descriptor sets. The G-buffer pass now uses the bindless layout below.
   VkDescriptorSetLayoutBinding samplerBindings[5] = {};
   for (int i = 0; i < 5; ++i) {
     samplerBindings[i].binding = static_cast<uint32_t>(i);
@@ -318,6 +324,39 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
                                   &samplerSetLayout) != VK_SUCCESS)
     throw std::runtime_error(
         "Failed to create PBR sampler descriptor set layout");
+
+  // --- Phase 7.2: Bindless texture array layout (set 1, geometry pass) ---
+  // Single binding 0 with MAX_BINDLESS_TEXTURES combined-image-samplers.
+  // Flags enable:
+  //   PARTIALLY_BOUND: not all 4096 slots need to be populated
+  //   UPDATE_AFTER_BIND: textures can be written after binding the set
+  //   VARIABLE_DESCRIPTOR_COUNT: actual count can be less than max
+  VkDescriptorSetLayoutBinding bindlessBinding = {};
+  bindlessBinding.binding = 0;
+  bindlessBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  bindlessBinding.descriptorCount = MAX_BINDLESS_TEXTURES;
+  bindlessBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  VkDescriptorBindingFlags bindlessFlags =
+      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+      VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+      VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+  VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsCI = {};
+  bindingFlagsCI.sType =
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+  bindingFlagsCI.bindingCount = 1;
+  bindingFlagsCI.pBindingFlags = &bindlessFlags;
+
+  VkDescriptorSetLayoutCreateInfo bindlessCI = {};
+  bindlessCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  bindlessCI.pNext = &bindingFlagsCI;
+  bindlessCI.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+  bindlessCI.bindingCount = 1;
+  bindlessCI.pBindings = &bindlessBinding;
+  if (vkCreateDescriptorSetLayout(device, &bindlessCI, nullptr,
+                                  &bindlessSetLayout) != VK_SUCCESS)
+    throw std::runtime_error(
+        "Failed to create bindless descriptor set layout");
 
   // --- G-buffer sampler layout (set 1, deferred/composite passes): 5 bindings
   // bindings 0-3: gb0/gb1/gb2/depth, binding 4: lit (sampled in SSR composite)
@@ -381,7 +420,8 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
 // Push constant range
 
 void DescriptorManager::createPushConstantRange() {
-  pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  pushConstantRange.stageFlags =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   pushConstantRange.offset = 0;
   pushConstantRange.size = sizeof(ModelPushConstants);
 }
@@ -462,6 +502,23 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
       VK_SUCCESS)
     throw std::runtime_error(
         "Failed to create input attachment descriptor pool");
+
+  // Phase 7.2: Bindless texture array pool. A single set with up to
+  // MAX_BINDLESS_TEXTURES combined-image-sampler descriptors. The
+  // UPDATE_AFTER_BIND flag is required because the set layout uses it.
+  VkDescriptorPoolSize bindlessSize = {};
+  bindlessSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  bindlessSize.descriptorCount = MAX_BINDLESS_TEXTURES;
+
+  VkDescriptorPoolCreateInfo bindlessPoolCI = {};
+  bindlessPoolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  bindlessPoolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+  bindlessPoolCI.maxSets = 1;
+  bindlessPoolCI.poolSizeCount = 1;
+  bindlessPoolCI.pPoolSizes = &bindlessSize;
+  if (vkCreateDescriptorPool(device, &bindlessPoolCI, nullptr,
+                             &bindlessDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create bindless descriptor pool");
 }
 
 // Descriptor set creation
@@ -494,6 +551,27 @@ void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
     write.pBufferInfo = &bufInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
+
+  // Phase 7.2: Allocate the single global bindless descriptor set.
+  // VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT lets us specify
+  // the actual number of descriptors we intend to use (MAX_BINDLESS_TEXTURES)
+  // rather than a fixed compile-time constant in the layout.
+  uint32_t variableCount = MAX_BINDLESS_TEXTURES;
+  VkDescriptorSetVariableDescriptorCountAllocateInfo varCountInfo = {};
+  varCountInfo.sType =
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+  varCountInfo.descriptorSetCount = 1;
+  varCountInfo.pDescriptorCounts = &variableCount;
+
+  VkDescriptorSetAllocateInfo bindlessAllocInfo = {};
+  bindlessAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  bindlessAllocInfo.pNext = &varCountInfo;
+  bindlessAllocInfo.descriptorPool = bindlessDescriptorPool;
+  bindlessAllocInfo.descriptorSetCount = 1;
+  bindlessAllocInfo.pSetLayouts = &bindlessSetLayout;
+  if (vkAllocateDescriptorSets(device, &bindlessAllocInfo,
+                               &bindlessDescriptorSet) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate bindless descriptor set");
 }
 
 void DescriptorManager::createInputDescriptorSets(
@@ -527,4 +605,23 @@ void DescriptorManager::createInputDescriptorSets(
     w.pImageInfo = &colorInfo;
     vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
   }
+}
+
+void DescriptorManager::registerBindlessTexture(VkDevice device, uint32_t index,
+                                                VkImageView view,
+                                                VkSampler sampler) {
+  VkDescriptorImageInfo imgInfo = {};
+  imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  imgInfo.imageView = view;
+  imgInfo.sampler = sampler;
+
+  VkWriteDescriptorSet write = {};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.dstSet = bindlessDescriptorSet;
+  write.dstBinding = 0;
+  write.dstArrayElement = index;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  write.descriptorCount = 1;
+  write.pImageInfo = &imgInfo;
+  vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }

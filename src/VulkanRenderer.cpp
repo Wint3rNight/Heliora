@@ -298,6 +298,11 @@ void VulkanRenderer::draw() {
   }
 
   sceneUbo.qualityToggles2.y = imguiUseGeomNormalOnly ? 1.0f : 0.0f;
+  // Exposure → linear multiplier on the CPU side so the shader doesn't
+  // need an exp2. EV 0 = 1.0 (neutral, matches pre-fix output).
+  sceneUbo.qualityToggles2.x = std::exp2(imguiExposureEV);
+  sceneUbo.qualityToggles2.z = imguiMinSurfaceRoughness;
+  sceneUbo.qualityToggles.y  = imguiSkyOcclusionFloor;
 
   // --- TAA per-frame state ---
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
@@ -1339,20 +1344,25 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
   VkRect2D sc = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
 
   // Per-cascade LOD: near cascades full detail, far cascades simplified.
-  // Shadow silhouettes are forgiving so this is a free win.
+  // Cascade 2 covers the mid-range where walls/columns are still big enough
+  // for missing geometry to leak sun onto interior floors — keep it at LOD 1.
+  // Only cascade 3 (farthest) drops to LOD 2.
   auto cascadeLod = [](int cascade) {
     if (cascade == 0)
       return 0;
-    if (cascade == 1)
+    if (cascade <= 2)
       return 1;
-    return 2; // cascades 2 and 3
+    return 2; // cascade 3 only
   };
 
   // Default shadow cull mode is set in the per-cascade loop below; track the
   // current state here so the per-mesh override only flips on transitions.
+  // OFF state is CULL_NONE rather than BACK_BIT: glTF wall winding is not
+  // guaranteed to face the sun, and a back-cull setup would miss the same
+  // single-sided walls that front-cull does — just on the opposite side.
   VkCullModeFlags defaultShadowCull = imguiShadowFrontFaceCull
                                           ? VK_CULL_MODE_FRONT_BIT
-                                          : VK_CULL_MODE_BACK_BIT;
+                                          : VK_CULL_MODE_NONE;
   VkCullModeFlags shadowLastCull = defaultShadowCull;
 
   auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
@@ -2001,7 +2011,7 @@ void VulkanRenderer::buildImGuiUI() {
   // before were retired once each fix was validated — keeping only the
   // values that actually need runtime tuning.
   ImGui::SetNextWindowPos(ImVec2(10, 700), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 260), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 340), ImGuiCond_Always);
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
@@ -2014,10 +2024,19 @@ void VulkanRenderer::buildImGuiUI() {
   if (ImGui::SliderFloat("IBL roughness floor", &imguiIblRoughnessFloor, 0.0f,
                          1.0f, "%.3f"))
     sceneUbo.qualityToggles.x = imguiIblRoughnessFloor;
+  // Min-roughness floor for non-metals at the g-buffer write.
+  ImGui::SliderFloat("Min surface roughness", &imguiMinSurfaceRoughness, 0.0f,
+                     1.0f, "%.2f");
+  // Sky-occlusion proxy floor — bottom of IBL multiplier in shadow.
+  ImGui::SliderFloat("Sky occlusion floor", &imguiSkyOcclusionFloor, 0.0f,
+                     1.0f, "%.2f");
   ImGui::SliderFloat("CSM far", &imguiCsmFar, 100.0f, 5000.0f, "%.0f");
   ImGui::Checkbox("Shadow front-face cull", &imguiShadowFrontFaceCull);
   ImGui::SliderFloat("IBL / sky intensity", &imguiIblIntensity, 0.0f, 2.0f,
                      "%.2f");
+  // Pre-tonemap exposure (EV stops). Lifts midtones into ACES's linear
+  // range — fixes the "shadowed interior crushes to black" symptom.
+  ImGui::SliderFloat("Exposure (EV)", &imguiExposureEV, -3.0f, 3.0f, "%+.2f");
   ImGui::Separator();
   ImGui::Checkbox("Day/night cycle", &imguiDayNightEnable);
   ImGui::SliderFloat("Sim hour", &imguiDayNightHour, 0.0f, 24.0f, "%.2f h");

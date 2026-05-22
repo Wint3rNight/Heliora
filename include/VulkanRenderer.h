@@ -173,9 +173,34 @@ private:
   // least ~mip 1 of 4 — kills the per-pixel sky-reflection sparkle from
   // normal-mapped cloth at grazing.
   float imguiIblRoughnessFloor = 0.3f;     // tunable
-  bool imguiShadowFrontFaceCull = true;    // dynamic cull-mode
+  bool imguiShadowFrontFaceCull = false;   // off → CULL_NONE in shadow pass.
+                                           // Front-face cull silently drops
+                                           // any single-sided wall whose only
+                                           // triangle faces the sun, so the
+                                           // floor's shadow lookup misses the
+                                           // wall as an occluder and reads as
+                                           // lit. NONE captures both winding
+                                           // orientations; slope-scaled bias
+                                           // + receiver-plane gradient
+                                           // already handle the acne that
+                                           // front-cull was protecting.
   float imguiCsmFar = 2000.0f;             // cascade far plane
   float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
+  // Exposure stops applied BEFORE the ACES tonemap in second.frag. ACES has
+  // a steep toe — without a pre-scale, midtones get crushed to black on
+  // shadowed Sponza interiors. +1 to +2 stops typically matches the warm
+  // reference look once the sky-occlusion proxy is also lifted.
+  float imguiExposureEV = 0.0f;            // exposure stops, -3..+3
+  // Min-roughness floor applied at the G-buffer write for non-metallic
+  // surfaces only. Sponza glTF's roughness maps bottom out too low — that
+  // produces the wet-floor banner reflection and stone-pillar glitter.
+  // 0 = disabled (use authored roughness); ~0.35–0.5 is the Sponza sweet
+  // spot. Metals (metallic > 0.5) are untouched so trim still reads glossy.
+  float imguiMinSurfaceRoughness = 0.35f;
+  // Sky-occlusion proxy floor — bottom of the IBL multiplier in shadowed
+  // pixels. 0.30 = old conservative ("dead-black interior"), 0.55 = new
+  // default ("warm interior"), 1.0 = unbounded (full sky everywhere).
+  float imguiSkyOcclusionFloor = 0.55f;
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)

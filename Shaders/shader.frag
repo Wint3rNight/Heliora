@@ -56,6 +56,16 @@ void main() {
     vec3 albedo = pow(albedoSample.rgb, vec3(2.2)) * fragCol;
     float metallic = texture(metallicSampler, fragTex).b;
     float roughness = clamp(texture(roughnessSampler, fragTex).g, 0.04, 1.0);
+    // Per-material minimum-roughness floor (qualityToggles2.z). Sponza's
+    // authored metalRoughness textures bottom out around 0.1 on the floor
+    // and column surfaces, which makes stone act like polished marble and
+    // produces (a) clean banner reflections in the floor via SSR / IBL
+    // specular and (b) sub-pixel sparkle on normal-mapped pillars under
+    // bright HDR sun. Floor stays out of metals' way — `step(0.5, metallic)`
+    // zeros the floor on metallic surfaces so real gold/silver trim still
+    // reads as polished.
+    float nonMetalFloor = scene.qualityToggles2.z * (1.0 - step(0.5, metallic));
+    roughness = max(roughness, nonMetalFloor);
     float ao = texture(aoSampler, fragTex).r;
 
     vec3 normalSample = texture(normalSampler, fragTex).rgb * 2.0 - 1.0;

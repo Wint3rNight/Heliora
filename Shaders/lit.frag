@@ -566,15 +566,18 @@ void main() {
     // are usually also occluded from most of the sky (the sun and the
     // bright sky dome come from similar directions in daylight). Scale
     // IBL by a factor derived from shadow visibility — fully shadowed
-    // pixels get 30 % IBL (keeps deep interiors from going pitch-black),
-    // fully lit pixels get 100 %. This is what kills the "bright light
-    // bleeding through walls" symptom: an indoor floor that the wall
-    // shadows from the sun also gets dimmed sky ambient, so it no
-    // longer reads as a bright sunlit patch. It also cuts the specular
-    // glitter on textured indoor surfaces by the same factor.
+    // pixels get `floor` % IBL, fully lit pixels get 100 %. This is what
+    // kills the "bright light bleeding through walls" symptom: an indoor
+    // floor that the wall shadows from the sun also gets dimmed sky
+    // ambient. It also cuts the specular glitter on textured indoor
+    // surfaces by the same factor.
     //
-    // NOT physically correct GI — a real fix is light probes or a longer
-    // -radius AO pass (GTAO). This is a free, content-friendly proxy.
+    // The floor was 0.30 originally (very conservative — interiors went
+    // near-black, far from reference-grade GI look). qualityToggles.y
+    // exposes it as a tunable; 0.55 is the new default that better
+    // approximates "warm bounce" without re-introducing through-wall
+    // leak. NOT physically correct GI — a real fix is light probes or
+    // a long-radius AO pass (GTAO). This is a free proxy.
     //
     // Specular IBL is reduced more aggressively (skyOcclusion squared)
     // because it's the dominant source of "glitter on indoor textures":
@@ -582,7 +585,7 @@ void main() {
     // the high-frequency sky detail (clouds, sun edges) reads as
     // sparkle. Diffuse IBL stays at the linear scaling — fully killing
     // diffuse skylight indoors would make interiors read as black.
-    float skyOcclusion = mix(0.30, 1.0, 1.0 - sunShadow);
+    float skyOcclusion = mix(scene.qualityToggles.y, 1.0, 1.0 - sunShadow);
     float skyOccSpec   = skyOcclusion * skyOcclusion;
     vec3 ambient = (diffuseIBL * skyOcclusion + specularIBL * skyOccSpec) *
                    ao * ssaoFactor * scene.qualityToggles2.w;

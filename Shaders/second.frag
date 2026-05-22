@@ -58,6 +58,11 @@ vec3 acesFilm(vec3 x) {
 }
 
 vec3 tonemapAndEncode(vec3 hdr) {
+    // Pre-tonemap exposure multiplier. Lifts (or crushes) the HDR signal
+    // before ACES — the steep ACES toe was eating shadow detail without a
+    // pre-scale, leaving interior surfaces near-black. EV-stops authored
+    // on the CPU side: qualityToggles2.x = exp2(EV).
+    hdr *= scene.qualityToggles2.x;
     return pow(acesFilm(hdr), vec3(1.0 / 2.2));
 }
 

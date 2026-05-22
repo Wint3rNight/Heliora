@@ -206,13 +206,23 @@ struct SceneUniformBuffer {
   // permanent now).
   // x = IBL roughness floor (suppresses off-light sparkle on textured
   //     surfaces without affecting direct-light specular)
-  // y = unused
+  // y = sky-occlusion floor (mix(y, 1.0, 1-sunShadow) — bottom of the
+  //     IBL ambient scale in shadowed regions; trades "wall light leak"
+  //     vs. "dead-black interior". 0.30 = original conservative, 0.55 =
+  //     reference-matching warmth.)
   // z = SPEC_AA_VARIANCE
   // w = SPEC_AA_THRESHOLD
-  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 1.0f, 0.25f, 0.18f);
-  // x/y/z unused, w = ambient intensity (drives IBL + skybox dimming so
-  // night doesn't reflect baked daylight off every glossy surface).
-  alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 0.25f, 0.18f);
+  // x = exposure linear multiplier (= exp2(EV stops); applied in second.frag
+  //     before ACES tonemap; 1.0 = neutral).
+  // y = "use geometric normal only" diagnostic (1 = bypass normal-map).
+  // z = minimum surface roughness floor — applied in shader.frag (g-buffer
+  //     write) for NON-METALLIC surfaces. Kills wet-floor banner reflections
+  //     and stone-column sparkle by raising the authored roughness floor.
+  //     0 = disabled. Typical: 0.35–0.5 for Sponza floors.
+  // w = ambient intensity (drives IBL + skybox dimming so night doesn't
+  //     reflect baked daylight off every glossy surface).
+  alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
   // TAA state. Populated by VulkanRenderer each frame.
   //   prevViewProj: previous frame's view*projection (no jitter applied to
   //     prevProjection so reprojection lands on the un-jittered surface).

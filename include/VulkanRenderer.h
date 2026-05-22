@@ -201,6 +201,12 @@ private:
   // pixels. 0.30 = old conservative ("dead-black interior"), 0.55 = new
   // default ("warm interior"), 1.0 = unbounded (full sky everywhere).
   float imguiSkyOcclusionFloor = 0.55f;
+  // SSGI (screen-space one-bounce diffuse) intensity. 0 = disabled. ~1.0 is
+  // a tasteful default for Sponza — pushes warm bounce into shadowed
+  // interiors. Higher values approach "neon" and pick up screen-space
+  // artifacts at silhouettes. Plumbed through shadowParams.y so we don't
+  // have to extend the SceneUBO struct (which lives in 8 shaders).
+  float imguiSsgiIntensity = 1.0f;
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)

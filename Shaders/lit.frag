@@ -237,25 +237,45 @@ int pointShadowFace(vec3 dir) {
     return dir.z > 0.0 ? 4 : 5;
 }
 
+// Point-light shadow PCF — Vogel-disk in a tangent plane perpendicular to
+// the light-to-fragment direction. The previous implementation used a
+// fixed 20-sample 3D neighborhood with a hard `> 0.004` threshold; that
+// produced dithered, hard-edged shadows. Vogel disk + temporal rotation
+// gives the same smooth penumbra as the directional-light path.
 float pointShadowFactor(vec3 worldPos, vec3 lightPos) {
-    vec3 offsets[20] = vec3[](
-        vec3(1,1,1), vec3(1,-1,1), vec3(-1,-1,1), vec3(-1,1,1),
-        vec3(1,1,-1), vec3(1,-1,-1), vec3(-1,-1,-1), vec3(-1,1,-1),
-        vec3(1,1,0), vec3(1,-1,0), vec3(-1,-1,0), vec3(-1,1,0),
-        vec3(1,0,1), vec3(-1,0,1), vec3(1,0,-1), vec3(-1,0,-1),
-        vec3(0,1,1), vec3(0,-1,1), vec3(0,1,-1), vec3(0,-1,-1)
-    );
     vec3 frag2Light = worldPos - lightPos;
     int face = pointShadowFace(frag2Light);
     vec4 lsPos = scene.pointShadowMatrices[face] * vec4(worldPos, 1.0);
     float depth = lsPos.z / lsPos.w;
     if (depth > 1.0) return 0.0;
+
+    // Build a tangent frame around the light direction so the Vogel disk
+    // taps lie on a plane through that direction. We sample the cubemap
+    // by perturbing the fetch direction `frag2Light` by these tangent
+    // offsets — equivalent to sampling neighbors at the same depth in
+    // world space.
+    vec3 L = normalize(frag2Light);
+    vec3 up = abs(L.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T  = normalize(cross(up, L));
+    vec3 B  = cross(L, T);
+
+    const int   SAMPLES = 16;
+    const float RADIUS  = 0.06;  // world-space-ish; cubemap depth is in
+                                 // world units so this stays scale-stable
+    float temporalSeed = fract(scene.taaParams.x * 9311.0 +
+                               scene.taaParams.y * 7919.0);
+    float phi = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
+                * 6.2831853;
+
     float shadow = 0.0;
-    for (int i = 0; i < 20; ++i) {
-        float d = texture(pointShadowMap, frag2Light + offsets[i] * 0.04).r;
-        shadow += depth - 0.004 > d ? 1.0 : 0.0;
+    const float bias = 0.004;
+    for (int i = 0; i < SAMPLES; ++i) {
+        vec2 v = vogelDisk(i, SAMPLES, phi) * RADIUS;
+        vec3 sampleDir = frag2Light + T * v.x + B * v.y;
+        float d = texture(pointShadowMap, sampleDir).r;
+        shadow += depth - bias > d ? 1.0 : 0.0;
     }
-    return shadow / 20.0;
+    return shadow / float(SAMPLES);
 }
 
 // ---- Cook-Torrance BRDF ----
@@ -297,8 +317,24 @@ vec3 FresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
            pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Charlie sheen distribution (Estevez & Kulla 2017 / Filament §4.12).
+// Inverted-Beckmann–like lobe that peaks at grazing — characteristic of
+// fabric / cloth. Independent of GGX so we add it as a separate term on
+// top of the dielectric Cook-Torrance.
+float D_Charlie(float NoH, float roughness) {
+    float invR  = 1.0 / max(roughness, 0.07);
+    float sin2h = max(1.0 - NoH * NoH, 1e-4);
+    return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * PI);
+}
+
+// Ashikhmin visibility for sheen (Filament §4.12.2). Constant-ish — gives
+// a smooth grazing falloff without the GGX masking-shadowing.
+float V_Ashikhmin(float NoV, float NoL) {
+    return 1.0 / max(4.0 * (NoL + NoV - NoL * NoV), 1e-4);
+}
+
 vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
-                  float metallic, float roughness,
+                  float metallic, float roughness, float clothFactor,
                   vec3 lightColor, float intensity) {
     // Clamp the dot products to a small positive epsilon. NoL <= 0 means the
     // light is below the horizon; bail. The 1e-4 floor on NoV/NoH stops the
@@ -317,6 +353,22 @@ vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
     // Correlated Smith visibility absorbs the 4*NoV*NoL denominator.
     float Vis = V_SmithGGXCorrelated(NoV, NoL, roughness);
     vec3 specular = NDF * Vis * F;
+
+    // Cloth path: the GGX dielectric specular gives banners a "satin"
+    // look they shouldn't have. Attenuate it and add a Charlie sheen
+    // lobe that peaks at grazing — characteristic fabric appearance.
+    // clothFactor in [0..1] from a G-buffer heuristic (computed in main).
+    if (clothFactor > 0.001) {
+        specular *= mix(1.0, 0.35, clothFactor);
+        float Dc   = D_Charlie(NoH, roughness);
+        float Vc   = V_Ashikhmin(NoV, NoL);
+        // Sheen color = albedo * 0.5 (rough Filament-ish energy heuristic).
+        // Real Filament uses an LUT for energy compensation; this is the
+        // cheap one-liner that's good enough at our quality bar.
+        vec3 sheen = albedo * 0.5 * Dc * Vc * clothFactor;
+        specular  += sheen;
+    }
+
     return (kD * albedo / PI + specular) * lightColor * intensity * NoL;
 }
 
@@ -361,6 +413,93 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
         occlusion += (sLinearZ >= samplePos.z + bias ? 1.0 : 0.0) * rangeCheck;
     }
     return 1.0 - (occlusion / 16.0);
+}
+
+// ---- Screen-Space Global Illumination (one-bounce diffuse) ---------------
+// Cheap single-frame SSGI: at each pixel, sample N neighbors in a screen-
+// space disc, estimate each neighbor's sun-direct contribution from its
+// own (albedo, normal), and weight by receiver cosine. The result is the
+// incoming bounced irradiance from nearby sunlit surfaces — the missing
+// term that made our shadowed interiors read as flat sky-irradiance only.
+//
+// Not full GI: single-bounce, sun-direct emitter estimate only (skips
+// indirect-from-indirect), screen-space (misses off-screen contributions).
+// But for indoor Sponza shots it adds the warm "stone bouncing into floor"
+// look that no amount of IBL tuning can reproduce.
+//
+// Tunables ride on the previously-empty `shadowParams.yzw`:
+//   .y = intensity multiplier (0 disables)
+//   .z = sample radius in pixels (0 = use default 32)
+//   .w = view-Z depth tolerance fraction (0 = use default 0.15)
+vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
+    if (scene.shadowParams.y < 0.001) return vec3(0.0);
+
+    vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
+    vec3 sunDir   = normalize(-scene.directionalLight.direction.xyz);
+    vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
+                    scene.directionalLight.colorIntensity.a;
+
+    const int   SSGI_SAMPLES = 16;
+    float radiusPx = scene.shadowParams.z > 0.5 ? scene.shadowParams.z : 32.0;
+    float depthTol = scene.shadowParams.w > 1e-4 ? scene.shadowParams.w : 0.15;
+
+    // Per-frame Vogel rotation. Reuse the same temporal-seed idiom as the
+    // PCF and SSAO so all three noise sources rotate together and TAA can
+    // average them out as one signal.
+    float temporalSeed = fract(scene.taaParams.x * 9311.0 +
+                               scene.taaParams.y * 7919.0);
+    float phi          = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
+                         * 6.2831853;
+
+    vec3  bounce = vec3(0.0);
+    float totalW = 0.0;
+
+    for (int i = 0; i < SSGI_SAMPLES; ++i) {
+        vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * radiusPx * texelSize;
+        vec2 sUV = uv + off;
+        if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) continue;
+
+        float sDepth = texture(gBufferDepthSampler, sUV).r;
+        if (sDepth >= 0.9999) continue;            // sky
+
+        vec3 sN = texture(gBuffer1Sampler, sUV).xyz;
+        if (dot(sN, sN) < 0.1) continue;           // empty / unwritten
+        sN = normalize(sN);
+
+        vec3 sViewPos = reconstructViewPos(sUV, sDepth);
+        float sViewZ  = -sViewPos.z;
+        // Depth-continuity reject — same surface only, no walls-through-air.
+        if (abs(sViewZ - viewZ) > depthTol * viewZ) continue;
+
+        vec3 sWorldPos = (scene.invView * vec4(sViewPos, 1.0)).xyz;
+        vec3 dir       = sWorldPos - worldPos;
+        float dist2    = dot(dir, dir);
+        if (dist2 < 1e-4) continue;
+        dir *= inversesqrt(dist2);
+
+        // Receiver cosine: how much the center surface "sees" this neighbor.
+        float cosRecv  = max(dot(worldN, dir), 0.0);
+        if (cosRecv < 0.01) continue;
+
+        // Emitter estimate: neighbor's sun-direct contribution. Skip the
+        // shadow lookup per-sample — accepting that shadowed neighbors are
+        // also counted as emitters is the price of single-frame SSGI.
+        // In practice the emitter cosine `max(sNoL, 0)` zeros out the
+        // back-side-of-wall case, which is the most visually objectionable.
+        vec3  sAlbedo = texture(gBuffer0Sampler, sUV).rgb;
+        float sNoL    = max(dot(sN, sunDir), 0.0);
+        vec3  sLit    = sAlbedo * sunColor * sNoL;
+
+        bounce += sLit * cosRecv;
+        totalW += cosRecv;
+    }
+
+    // Normalize to "average emitted radiance × hemispherical cosine sum".
+    // Could divide by π to be physically correct as an irradiance estimate;
+    // skip it here and let the intensity slider absorb the constant — feel
+    // beats correctness for a screen-space proxy.
+    if (totalW < 1e-4) return vec3(0.0);
+    return bounce / totalW * scene.shadowParams.y;
 }
 
 // ---- Bloom (bright-pass on estimated lit neighbors, not raw albedo) ----
@@ -521,6 +660,16 @@ void main() {
     // that case without touching direct-light specular on smooth surfaces.
     float roughnessForIBL = max(perceptualRoughnessAA, scene.qualityToggles.x);
 
+    // Heuristic cloth detection. No per-material flag plumbed in yet, but
+    // Sponza's banner/fabric materials consistently have metallic ~ 0 and
+    // authored roughness >~ 0.6, distinct from polished stone or metallic
+    // trim. Stone walls can fall in the same band at high authored rough;
+    // accepting that overlap is the cost of asset-free classification.
+    // The lobe added below is small enough at non-grazing angles to be
+    // benign on a mis-flagged stone surface.
+    float clothFactor = (1.0 - smoothstep(0.10, 0.20, metallic)) *
+                        smoothstep(0.55, 0.75, roughness);
+
     // SSAO
     float ssaoFactor = computeSSAO(uv, viewPos, viewN);
 
@@ -551,6 +700,10 @@ void main() {
     vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(4.0));
     vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
     vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
+    // Cloth attenuation on IBL specular too — fabric shouldn't reflect the
+    // sky as sharply as polished surfaces. Mirrors the direct-light cloth
+    // attenuation in cookTorrance.
+    specularIBL *= mix(1.0, 0.35, clothFactor);
 
     // Note: SSR is applied in a separate composite pass that samples this lit
     // image; here we keep IBL specular only.
@@ -560,6 +713,7 @@ void main() {
     vec3  sunDir    = normalize(-scene.directionalLight.direction.xyz);
     float sunShadow = shadowFactor(worldPos, viewPos, worldN, sunDir);
     vec3 sunDirectUnshadowed = cookTorrance(albedo, worldN, V, sunDir, F0, metallic, roughness,
+                    clothFactor,
                     scene.directionalLight.colorIntensity.rgb,
                     scene.directionalLight.colorIntensity.a);
     vec3 directLight = (1.0 - sunShadow) * sunDirectUnshadowed;
@@ -597,6 +751,16 @@ void main() {
     vec3 ambient = (diffuseIBL * skyOcclusion + specularIBL * skyOccSpec) *
                    ao * ssaoFactor * scene.qualityToggles2.w;
 
+    // One-bounce diffuse SSGI. Adds the "warm light bouncing off sunlit
+    // walls into shadowed interior" term that no IBL tuning can reproduce.
+    // Treated as additional incoming irradiance on the receiver Lambert
+    // diffuse — multiplied by receiver albedo, kD, and ao. Not modulated
+    // by skyOcclusion (the bounce light by definition comes from local
+    // surfaces, not the distant sky that skyOcclusion approximates).
+    vec3 ssgiIrradiance = computeSSGI(uv, worldPos, worldN, -viewPos.z);
+    vec3 ssgiBounce     = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor;
+    ambient += ssgiBounce;
+
     // Point lights + omnidirectional shadow
     int pointCount = clamp(scene.lightCounts.x, 0, 4);
     for (int i = 0; i < pointCount; ++i) {
@@ -606,6 +770,7 @@ void main() {
         float att     = 1.0 / (1.0 + 0.1 * dist * dist);
         float shadow  = (i == 0) ? pointShadowFactor(worldPos, scene.pointLights[i].position.xyz) : 0.0;
         directLight += (1.0 - shadow) * cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
+                        clothFactor,
                         scene.pointLights[i].colorIntensity.rgb,
                         scene.pointLights[i].colorIntensity.a * att);
     }
@@ -621,6 +786,7 @@ void main() {
         float cone    = clamp((theta - scene.spotLights[i].cutoffAngles.y) / max(eps, 0.0001), 0.0, 1.0);
         float att     = 1.0 / (1.0 + 0.1 * dist * dist);
         directLight += cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
+                       clothFactor,
                        scene.spotLights[i].colorIntensity.rgb,
                        scene.spotLights[i].colorIntensity.a * att * cone);
     }
@@ -638,6 +804,10 @@ void main() {
     // mode 10: direct lighting with sunShadow forced to 0 — isolates whether
     // the floor dither lives in the shadow term or in cookTorrance itself.
     if (scene.debugMode == 10) { outColor = vec4(sunDirectUnshadowed, 1.0); return; }
+    // mode 11: SSGI bounce term only (post-receiver-albedo). Useful for
+    // tuning the intensity slider — flat surfaces should read mostly black,
+    // shadowed-but-near-sunlit-wall surfaces should show warm bounce.
+    if (scene.debugMode == 11) { outColor = vec4(ssgiBounce, 1.0); return; }
 
     vec3 lighting = ambient + directLight;
 

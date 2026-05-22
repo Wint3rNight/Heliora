@@ -174,7 +174,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         glm::vec4(glm::cos(glm::radians(12.5f)), glm::cos(glm::radians(20.0f)),
                   0.0f, 0.0f);
 
-    sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, 0.0f, 0.0f, 0.0f);
+    // shadowParams.y/.z/.w piggyback SSGI tunables since they were unused.
+    // .x stays as the point-shadow far plane.
+    sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, imguiSsgiIntensity,
+                                      0.0f, 0.0f);
     sceneUbo.fogParams = glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp, 0.0f);
     sceneUbo.lightCounts =
         glm::ivec4(2, 0, 0, 0); // spot lights off; sun+IBL+torches only
@@ -303,6 +306,8 @@ void VulkanRenderer::draw() {
   sceneUbo.qualityToggles2.x = std::exp2(imguiExposureEV);
   sceneUbo.qualityToggles2.z = imguiMinSurfaceRoughness;
   sceneUbo.qualityToggles.y  = imguiSkyOcclusionFloor;
+  // shadowParams.y = SSGI intensity (z/w left at 0 → shader uses defaults).
+  sceneUbo.shadowParams.y    = imguiSsgiIntensity;
 
   // --- TAA per-frame state ---
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
@@ -2001,8 +2006,9 @@ void VulkanRenderer::buildImGuiUI() {
   const char *debugModes[] = {"None",          "Albedo",      "Normals",
                               "Metallic",      "Roughness",   "Depth",
                               "Shadow vis",    "SSAO factor", "Direct only",
-                              "Indirect only", "Direct (no shadow)"};
-  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 11))
+                              "Indirect only", "Direct (no shadow)",
+                              "SSGI bounce"};
+  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 12))
     sceneUbo.debugMode = imguiDebugMode;
   ImGui::Checkbox("Use geometric normal only", &imguiUseGeomNormalOnly);
   ImGui::End();
@@ -2037,6 +2043,10 @@ void VulkanRenderer::buildImGuiUI() {
   // Pre-tonemap exposure (EV stops). Lifts midtones into ACES's linear
   // range — fixes the "shadowed interior crushes to black" symptom.
   ImGui::SliderFloat("Exposure (EV)", &imguiExposureEV, -3.0f, 3.0f, "%+.2f");
+  // SSGI intensity — one-bounce diffuse gather. 0 = off, 1 = default,
+  // 2 = strong (visible artifacts at silhouettes).
+  ImGui::SliderFloat("SSGI intensity", &imguiSsgiIntensity, 0.0f, 2.0f,
+                     "%.2f");
   ImGui::Separator();
   ImGui::Checkbox("Day/night cycle", &imguiDayNightEnable);
   ImGui::SliderFloat("Sim hour", &imguiDayNightHour, 0.0f, 24.0f, "%.2f h");

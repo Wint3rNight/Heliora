@@ -52,18 +52,46 @@ layout(set = 2, binding = 2) uniform sampler2D currentTex;
 layout(location = 0) out vec4 outSwap;
 layout(location = 1) out vec4 outHistory;
 
-vec3 acesFilm(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+// AgX tonemap (Troy Sobotka, popularized by Blender 4.0+ / MrLixm's port).
+// Replaces the ACES filmic curve. ACES has an aggressive toe that crushed
+// midtone detail in Sponza interiors to black — AgX preserves the toe and
+// gives a much more "natural daylight" look on indirect-lit surfaces.
+// Output is already perceptually-encoded for an sRGB UNORM display, so
+// no final pow(1/2.2) needed — that would double-encode and look washed
+// out.
+vec3 agxDefaultContrastApprox(vec3 x) {
+    vec3 x2 = x * x;
+    vec3 x4 = x2 * x2;
+    return  15.5     * x4 * x2
+         - 40.14    * x4 * x
+         + 31.96    * x4
+         -  6.868   * x2 * x
+         +  0.4298  * x2
+         +  0.1191  * x
+         -  0.00232;
+}
+
+vec3 agx(vec3 col) {
+    // Input transform (inset) — narrows the gamut before the log/sigmoid so
+    // out-of-gamut bright pixels (sky disc, light filaments) don't blow into
+    // pure white / pure primary. Matrix from Sobotka / Eary canonical AgX.
+    const mat3 agxInsetMatrix = mat3(
+        0.842479062253094,  0.0784335999999992, 0.0792237451477643,
+        0.0423282422610123, 0.878468636469772,  0.0791661274605434,
+        0.0423756549057051, 0.0784336,          0.879142973793104
+    );
+    const float minEV = -12.47393;
+    const float maxEV =   4.026069;
+    col = agxInsetMatrix * col;
+    col = clamp(log2(max(col, vec3(1e-6))), minEV, maxEV);
+    col = (col - minEV) / (maxEV - minEV);
+    return agxDefaultContrastApprox(col);
 }
 
 vec3 tonemapAndEncode(vec3 hdr) {
-    // Pre-tonemap exposure multiplier. Lifts (or crushes) the HDR signal
-    // before ACES — the steep ACES toe was eating shadow detail without a
-    // pre-scale, leaving interior surfaces near-black. EV-stops authored
-    // on the CPU side: qualityToggles2.x = exp2(EV).
+    // Pre-tonemap exposure multiplier. qualityToggles2.x = exp2(EV stops).
     hdr *= scene.qualityToggles2.x;
-    return pow(acesFilm(hdr), vec3(1.0 / 2.2));
+    return agx(hdr);
 }
 
 // YCoCg conversion (Karis 2014). Better for AABB clamping than RGB because

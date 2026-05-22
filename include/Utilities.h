@@ -212,7 +212,13 @@ struct SceneUniformBuffer {
   //     reference-matching warmth.)
   // z = SPEC_AA_VARIANCE
   // w = SPEC_AA_THRESHOLD
-  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 0.25f, 0.18f);
+  // SPEC_AA_VARIANCE bumped 0.25 → 0.75 — the multi-pixel normal-map sparkle
+  // on Sponza stone wasn't sub-pixel (where AA was already firing) but
+  // multi-pixel; raising the variance multiplier makes the AA kernel reach
+  // its threshold cap at smaller normal-map gradients, widening the
+  // effective spec lobe on textured surfaces. SPEC_AA_THRESHOLD synced to
+  // 0.5 to match the imgui slider's actual default value.
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 0.75f, 0.5f);
   // x = exposure linear multiplier (= exp2(EV stops); applied in second.frag
   //     before ACES tonemap; 1.0 = neutral).
   // y = "use geometric normal only" diagnostic (1 = bypass normal-map).

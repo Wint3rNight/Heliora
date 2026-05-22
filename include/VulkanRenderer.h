@@ -162,7 +162,7 @@ private:
   float imguiFogDensity = 0.0f;
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
-  float imguiSpecAAVariance = 0.25f;       // tunable
+  float imguiSpecAAVariance = 0.75f;       // tunable
   // Karis-style spec-AA threshold cap. 0.18 (the plan's KAPPA) leaves
   // visible per-pixel sparkle on Sponza's dense cloth weave / foliage at
   // glancing angles. Bumping to 0.5 lets the kernel saturate more, folding

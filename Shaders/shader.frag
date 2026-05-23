@@ -87,7 +87,13 @@ void main() {
     if (scene.qualityToggles2.y > 0.5)
         worldNormal = normalize(fragTBN[2]);
 
+    // texIdx1.y is a packed material-flag bitfield (bit 0 = isCloth).
+    // Bake the cloth bit into gBuffer2.g so the deferred lit pass can drive
+    // its Charlie sheen lobe without an extra UBO lookup or shader variant.
+    // R8 UNORM → exact 0.0 / 1.0 readback after bilinear at material edges.
+    float clothBit = float((push.texIdx1.y & 1u));
+
     gBuffer0 = vec4(albedo, metallic);
     gBuffer1 = vec4(worldNormal, roughness);
-    gBuffer2 = vec4(ao, 0.0, 0.0, 1.0);
+    gBuffer2 = vec4(ao, clothBit, 0.0, 1.0);
 }

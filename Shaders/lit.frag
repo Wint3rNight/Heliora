@@ -427,10 +427,9 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
 // But for indoor Sponza shots it adds the warm "stone bouncing into floor"
 // look that no amount of IBL tuning can reproduce.
 //
-// Tunables ride on the previously-empty `shadowParams.yzw`:
-//   .y = intensity multiplier (0 disables)
-//   .z = sample radius in pixels (0 = use default 32)
-//   .w = view-Z depth tolerance fraction (0 = use default 0.15)
+// Tunables ride on `shadowParams.y` (intensity). Radius/tolerance live as
+// compile-time constants — the previous shadowParams.z/.w plumbing
+// collided with the sharpening slider already mapped to .z.
 vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     if (scene.shadowParams.y < 0.001) return vec3(0.0);
 
@@ -439,17 +438,17 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
                     scene.directionalLight.colorIntensity.a;
 
-    // Doubled sample count from 16 → 32. With 16 samples the per-pixel
-    // variance was visible as floor "grain" past mid-range; doubling cuts
-    // stddev by sqrt(2), and combined with the Halton-8 temporal rotation
-    // gets TAA close enough to converge before the noise becomes obvious.
+    // 32 samples × 8-frame Halton TAA accumulation = effectively 256-tap.
+    // Radius dropped 28 → 18 px: at 28 px on a 1080p frame, a floor pixel
+    // gathers samples spanning several meters of world space; near-coplanar
+    // floor samples dominate the disc and the few that hit walls/columns
+    // arrive with high variance, producing the "floor stipple" symptom.
+    // Tightening to 18 px keeps the contributor set local enough that the
+    // form-factor weighting actually washes out the variance.
     const int   SSGI_SAMPLES = 32;
-    float radiusPx = scene.shadowParams.z > 0.5 ? scene.shadowParams.z : 28.0;
-    float depthTol = scene.shadowParams.w > 1e-4 ? scene.shadowParams.w : 0.15;
+    const float SSGI_RADIUS_PX = 18.0;
+    const float SSGI_DEPTH_TOL = 0.12;
 
-    // Per-frame Vogel rotation. Reuse the same temporal-seed idiom as the
-    // PCF and SSAO so all three noise sources rotate together and TAA can
-    // average them out as one signal.
     float temporalSeed = fract(scene.taaParams.x * 9311.0 +
                                scene.taaParams.y * 7919.0);
     float phi          = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
@@ -459,7 +458,7 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     float totalW = 0.0;
 
     for (int i = 0; i < SSGI_SAMPLES; ++i) {
-        vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * radiusPx * texelSize;
+        vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * SSGI_RADIUS_PX * texelSize;
         vec2 sUV = uv + off;
         if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) continue;
 
@@ -472,8 +471,7 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
 
         vec3 sViewPos = reconstructViewPos(sUV, sDepth);
         float sViewZ  = -sViewPos.z;
-        // Depth-continuity reject — same surface only, no walls-through-air.
-        if (abs(sViewZ - viewZ) > depthTol * viewZ) continue;
+        if (abs(sViewZ - viewZ) > SSGI_DEPTH_TOL * viewZ) continue;
 
         vec3 sWorldPos = (scene.invView * vec4(sViewPos, 1.0)).xyz;
         vec3 dir       = sWorldPos - worldPos;
@@ -481,27 +479,42 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         if (dist2 < 1e-4) continue;
         dir *= inversesqrt(dist2);
 
-        // Receiver cosine: how much the center surface "sees" this neighbor.
-        float cosRecv  = max(dot(worldN, dir), 0.0);
-        if (cosRecv < 0.01) continue;
+        // Receiver cosine: how the center patch "sees" the neighbor patch.
+        // Threshold raised 0.01 → 0.08 — near-coplanar samples (floor
+        // sampling itself at grazing) carry vanishing geometric weight but
+        // were previously slipping through and dominating the sum when one
+        // such sample happened to be sun-lit. Killing the bottom of the
+        // hemisphere is what stops the floor-stipple O2 symptom.
+        float cosRecv = max(dot(worldN, dir), 0.0);
+        if (cosRecv < 0.08) continue;
 
-        // Emitter estimate: neighbor's sun-direct contribution. Skip the
-        // shadow lookup per-sample — accepting that shadowed neighbors are
-        // also counted as emitters is the price of single-frame SSGI.
-        // In practice the emitter cosine `max(sNoL, 0)` zeros out the
-        // back-side-of-wall case, which is the most visually objectionable.
+        // Emitter cosine: a sample only radiates back along directions in
+        // *its* front hemisphere — a wall edge-on to the receiver radiates
+        // tangentially, not toward us. Was missing entirely; without it, a
+        // bright back-face hit on a thin wall (one-pixel grazing sample)
+        // contributes full irradiance.
+        float cosEmit = max(-dot(sN, dir), 0.0);
+        if (cosEmit < 0.05) continue;
+
+        // Inverse-square distance falloff. Bias by 0.25 m² so that
+        // sub-meter neighbors don't singularly dominate (1/dist² blows up
+        // at dist→0, which is exactly the high-variance close-neighbor
+        // case). Beyond ~1.5 m the bias is negligible.
+        float falloff = 1.0 / (dist2 + 0.25);
+
         vec3  sAlbedo = texture(gBuffer0Sampler, sUV).rgb;
         float sNoL    = max(dot(sN, sunDir), 0.0);
         vec3  sLit    = sAlbedo * sunColor * sNoL;
 
-        bounce += sLit * cosRecv;
-        totalW += cosRecv;
+        float w = cosRecv * cosEmit * falloff;
+        bounce += sLit * w;
+        totalW += w;
     }
 
-    // Normalize to "average emitted radiance × hemispherical cosine sum".
-    // Could divide by π to be physically correct as an irradiance estimate;
-    // skip it here and let the intensity slider absorb the constant — feel
-    // beats correctness for a screen-space proxy.
+    // Weighted-average emitter radiance × intensity slider. The form-factor
+    // terms (cosRecv, cosEmit, 1/r²) cancel out in numerator/denominator,
+    // leaving an "average sun-lit color of valid neighbors weighted by
+    // geometric importance" — which is what the eye reads as bounce.
     if (totalW < 1e-4) return vec3(0.0);
     return bounce / totalW * scene.shadowParams.y;
 }
@@ -624,7 +637,8 @@ void main() {
 
     vec4 g0 = texture(gBuffer0Sampler, uv);
     vec4 g1 = texture(gBuffer1Sampler, uv);
-    float ao = texture(gBuffer2Sampler, uv).r;
+    vec4 g2 = texture(gBuffer2Sampler, uv);
+    float ao = g2.r;
 
     vec3  albedo   = g0.rgb;
     float metallic = g0.a;
@@ -669,15 +683,26 @@ void main() {
     // that case without touching direct-light specular on smooth surfaces.
     float roughnessForIBL = max(perceptualRoughnessAA, scene.qualityToggles.x);
 
-    // Heuristic cloth detection. No per-material flag plumbed in yet, but
-    // Sponza's banner/fabric materials consistently have metallic ~ 0 and
-    // authored roughness >~ 0.6, distinct from polished stone or metallic
-    // trim. Stone walls can fall in the same band at high authored rough;
-    // accepting that overlap is the cost of asset-free classification.
-    // The lobe added below is small enough at non-grazing angles to be
-    // benign on a mis-flagged stone surface.
-    float clothFactor = (1.0 - smoothstep(0.10, 0.20, metallic)) *
-                        smoothstep(0.55, 0.75, roughness);
+    // Cloth factor: (1) per-material flag baked into gBuffer2.g by the
+    // G-buffer pass (1.0 = flagged cloth, 0.0 = anything else), (2) a
+    // chroma-aware fallback heuristic for models with no usable name signal
+    // (Sponza's glTF has unnamed materials and GUID texture filenames, so
+    // the C++ classifier hits nothing). The two combine via max().
+    //
+    // Heuristic: saturated (= dyed) + non-metal + moderate-or-higher
+    // roughness. Stone in Sponza is desaturated gray/tan, so it stays out
+    // of the cloth path even at the same roughness as the banners; the
+    // red/blue/green curtains land in [0.6..1.0] cloth factor.
+    float materialCloth = clamp(g2.g, 0.0, 1.0);
+
+    float saturation   = max(max(albedo.r, albedo.g), albedo.b) -
+                         min(min(albedo.r, albedo.g), albedo.b);
+    float nonMetal     = 1.0 - smoothstep(0.10, 0.20, metallic);
+    float roughBand    = smoothstep(0.30, 0.55, roughness);
+    float chromaFactor = smoothstep(0.15, 0.40, saturation);
+    float heuristic    = nonMetal * roughBand * chromaFactor;
+
+    float clothFactor  = max(materialCloth, heuristic);
 
     // SSAO
     float ssaoFactor = computeSSAO(uv, viewPos, viewN);

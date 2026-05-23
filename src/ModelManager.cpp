@@ -70,6 +70,7 @@ int ModelManager::loadModel(const std::string &modelFile,
         textureNames[i].metallic, textureNames[i].roughness, textureNames[i].ao,
         device, descriptorManager);
     materials[i].doubleSided = textureNames[i].doubleSided;
+    materials[i].isCloth     = textureNames[i].isCloth;
   }
 
   std::vector<Mesh> modelMeshes = MeshModel::LoadNode(

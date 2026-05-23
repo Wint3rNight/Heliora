@@ -1160,13 +1160,16 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                 lastCullMode = wantCull;
               }
               // Phase 7.2: fill bindless texture indices from material.
+              // texIdx1.y is a packed bitfield of per-material flags
+              // (bit 0 = isCloth). Read by shader.frag → gBuffer2.g.
+              uint32_t materialFlags = mat.isCloth ? 1u : 0u;
               push.texIdx0 = glm::uvec4(
                   static_cast<uint32_t>(mat.albedoTextureId),
                   static_cast<uint32_t>(mat.normalTextureId),
                   static_cast<uint32_t>(mat.metallicTextureId),
                   static_cast<uint32_t>(mat.roughnessTextureId));
               push.texIdx1 = glm::uvec4(
-                  static_cast<uint32_t>(mat.aoTextureId), 0u, 0u, 0u);
+                  static_cast<uint32_t>(mat.aoTextureId), materialFlags, 0u, 0u);
               vkCmdPushConstants(cmd, pipeline.getGraphicsLayout(),
                                  VK_SHADER_STAGE_VERTEX_BIT |
                                      VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1231,6 +1234,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
           // model/normal are unused by the instanced vertex shader (it reads
           // them from the instance buffer), but the struct must match.
           const Material &iMat = mesh->getMaterial();
+          uint32_t iMaterialFlags = iMat.isCloth ? 1u : 0u;
           ModelPushConstants iPush{};
           iPush.texIdx0 = glm::uvec4(
               static_cast<uint32_t>(iMat.albedoTextureId),
@@ -1238,7 +1242,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
               static_cast<uint32_t>(iMat.metallicTextureId),
               static_cast<uint32_t>(iMat.roughnessTextureId));
           iPush.texIdx1 = glm::uvec4(
-              static_cast<uint32_t>(iMat.aoTextureId), 0u, 0u, 0u);
+              static_cast<uint32_t>(iMat.aoTextureId), iMaterialFlags, 0u, 0u);
           vkCmdPushConstants(cmd, pipeline.getInstancedLayout(),
                              VK_SHADER_STAGE_VERTEX_BIT |
                                  VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1578,8 +1582,16 @@ void VulkanRenderer::updateLightSpaceMatrices() {
 
   glm::vec3 lightDir =
       glm::normalize(glm::vec3(sceneUbo.directionalLight.direction));
-  glm::mat4 lightView = glm::lookAt(-lightDir * 100.0f, glm::vec3(0.0f),
-                                    glm::vec3(0.0f, 1.0f, 0.0f));
+  // When lightDir is near-parallel to world-up, glm::lookAt's basis
+  // degenerates (right = cross(up, -lightDir) → 0 → divide-by-zero NaN that
+  // propagates through every cascade matrix and reads back as fractured
+  // geometry at high noon / midnight). Swap to a horizontal "up" when the
+  // sun is within ~8° of zenith so the orthonormal basis stays defined.
+  glm::vec3 lightUp = (std::abs(lightDir.y) > 0.99f)
+                          ? glm::vec3(0.0f, 0.0f, 1.0f)
+                          : glm::vec3(0.0f, 1.0f, 0.0f);
+  glm::mat4 lightView =
+      glm::lookAt(-lightDir * 100.0f, glm::vec3(0.0f), lightUp);
   glm::mat4 invCam = glm::inverse(sceneUbo.projection * sceneUbo.view);
 
   // Helper: convert view-space distance to NDC z

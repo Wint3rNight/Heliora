@@ -10,4 +10,9 @@ struct Material {
   // glTF authoring flags. Foliage in Sponza is doubleSided + alphaMode=MASK;
   // honoring these stops leaves popping in/out and using the wrong cutoff.
   bool doubleSided = false;
+  // Permanent per-material cloth flag. Drives the Charlie sheen lobe in
+  // lit.frag so banners/curtains stop reading as polished satin. Detected
+  // at glTF import time from material name / texture filename keywords;
+  // unrecognized models fall back to the shader's chroma heuristic.
+  bool isCloth = false;
 };

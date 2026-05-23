@@ -219,6 +219,24 @@ bool looksLikeNormalMap(const std::string &filename) {
          lower.find("_nrm") != std::string::npos;
 }
 
+// True if `name` contains any cloth/fabric keyword. Matches material names
+// AND texture filenames so any of (named material, named texture) is
+// enough to flag the material. Sponza glTF leaves materials unnamed and
+// uses GUID texture filenames, so this fires for nothing on that scene —
+// the shader-side chroma heuristic still catches its banners.
+bool looksLikeCloth(const std::string &name) {
+  static const char *kKeywords[] = {
+      "fabric", "cloth", "curtain", "banner", "drape", "linen",
+      "velvet", "silk",  "wool",    "carpet", "rug",   "tapestry",
+  };
+  std::string lower = toLower(name);
+  for (const char *kw : kKeywords) {
+    if (lower.find(kw) != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
 void replaceAll(std::string &value, const std::string &from,
                 const std::string &to) {
   size_t pos = 0;
@@ -254,6 +272,15 @@ MeshModel::LoadMaterials(const aiScene *scene) {
     int twoSided = 0;
     if (mat->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS && twoSided)
       textureList[i].doubleSided = true;
+
+    // Cloth flag — check the material's own name first, since glTF v2
+    // exporters often write descriptive names ("RedCurtain", "Banner.001")
+    // even when Assimp doesn't surface them as the mesh material slot.
+    aiString matName;
+    if (mat->Get(AI_MATKEY_NAME, matName) == AI_SUCCESS &&
+        looksLikeCloth(matName.C_Str())) {
+      textureList[i].isCloth = true;
+    }
 
     // Albedo
     if (mat->GetTextureCount(aiTextureType_DIFFUSE) &&
@@ -315,6 +342,17 @@ MeshModel::LoadMaterials(const aiScene *scene) {
                mat->GetTexture(aiTextureType_LIGHTMAP, 0, &path) ==
                    AI_SUCCESS) {
       textureList[i].ao = filenameFromAssimpPath(path);
+    }
+
+    // Final cloth pass: any of the resolved texture filenames carrying a
+    // cloth keyword is enough. Covers asset packs that name only their
+    // textures (e.g. "red_fabric_BaseColor.png") but not the materials.
+    if (!textureList[i].isCloth) {
+      textureList[i].isCloth =
+          looksLikeCloth(textureList[i].albedo) ||
+          looksLikeCloth(textureList[i].normal) ||
+          looksLikeCloth(textureList[i].roughness) ||
+          looksLikeCloth(textureList[i].metallic);
     }
   }
   return textureList;

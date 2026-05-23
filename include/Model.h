@@ -20,6 +20,7 @@ struct MaterialTextureNames {
   std::string roughness;
   std::string ao;
   bool doubleSided = false;
+  bool isCloth = false;
 };
 
 class Mesh {

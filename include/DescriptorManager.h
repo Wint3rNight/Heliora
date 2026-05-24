@@ -42,9 +42,6 @@ public:
   // MAX_BINDLESS_TEXTURES combined-image-samplers at binding 0. Flagged
   // UPDATE_AFTER_BIND so textures can be registered after the set is bound.
   VkDescriptorSet getBindlessSet() const { return bindlessDescriptorSet; }
-  VkDescriptorSet getGBufferSet(size_t i) const {
-    return gBufferDescriptorSets[i]; // parity 0; Task 5 removes this overload
-  }
   VkDescriptorSet getGBufferSet(size_t parity, size_t i) const {
     return gBufferDescriptorSets[parity * gBufferSwapCount + i];
   }

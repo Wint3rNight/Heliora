@@ -1683,6 +1683,11 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   viewport.maxDepth = 1.0f;
   VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
 
+  // SSGI ping-pong parity. Synced to taaFrameCounter so both temporal
+  // accumulators stay phase-aligned (helps when debugging via the GPU
+  // capture — both histories advance together).
+  uint32_t ssgiParity = taaFrameCounter & 1u;
+
   // --- G-buffer pass ---
   {
     std::array<VkClearValue, 4> clears{};
@@ -1882,12 +1887,11 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkdbgEndLabel(cmd);
   }
 
-  // --- SSGI pass (one-bounce diffuse, single-frame) ---
+  // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
   // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
-  // pass's finalLayout) + scene UBO; writes raw bounce to
-  // ssgiHistoryImages[parity]. lit.frag samples this output with
-  // cross-bilateral (set 1, binding 5). Task 1 transitional: parity is
-  // pinned to 0 until Task 5 wires real parity from taaFrameCounter.
+  // pass's finalLayout) + scene UBO + prev-frame SSGI history (set 2);
+  // writes the blended result to ssgiHistoryImages[ssgiParity]. lit.frag
+  // samples this same-parity output with cross-bilateral (set 1, binding 5).
   {
     VkClearValue clear = {};
     clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1895,23 +1899,24 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getSsgiRenderPass();
-    rpbi.framebuffer = ssgiFramebuffers[0];
+    rpbi.framebuffer = ssgiFramebuffers[ssgiParity];
     rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clear;
 
-    vkdbgBeginLabel(cmd, "SSGI (raw bounce)", 0.95f, 0.55f, 0.20f);
+    vkdbgBeginLabel(cmd, "SSGI (reproject + blend)", 0.95f, 0.55f, 0.20f);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getSsgiPipeline());
-    std::array<VkDescriptorSet, 2> ssgiSets = {
+    std::array<VkDescriptorSet, 3> ssgiSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(currentImage)};
+        descriptorManager.getGBufferSet(ssgiParity, currentImage),
+        descriptorManager.getSsgiPrevSet(ssgiParity)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSsgiLayout(), 0, 2, ssgiSets.data(), 0,
-                            nullptr);
+                            pipeline.getSsgiLayout(), 0, 3, ssgiSets.data(),
+                            0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
     vkdbgEndLabel(cmd);
@@ -1939,7 +1944,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                       pipeline.getLitPipeline());
     std::array<VkDescriptorSet, 2> litSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(currentImage)};
+        descriptorManager.getGBufferSet(ssgiParity, currentImage)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
                             nullptr);
@@ -1990,7 +1995,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                       pipeline.getDeferredPipeline());
     std::array<VkDescriptorSet, 2> deferredSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(currentImage)};
+        descriptorManager.getGBufferSet(ssgiParity, currentImage)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getDeferredLayout(), 0, 2,
                             deferredSets.data(), 0, nullptr);

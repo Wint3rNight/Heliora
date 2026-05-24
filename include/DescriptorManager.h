@@ -43,7 +43,10 @@ public:
   // UPDATE_AFTER_BIND so textures can be registered after the set is bound.
   VkDescriptorSet getBindlessSet() const { return bindlessDescriptorSet; }
   VkDescriptorSet getGBufferSet(size_t i) const {
-    return gBufferDescriptorSets[i];
+    return gBufferDescriptorSets[i]; // parity 0; Task 5 removes this overload
+  }
+  VkDescriptorSet getGBufferSet(size_t parity, size_t i) const {
+    return gBufferDescriptorSets[parity * gBufferSwapCount + i];
   }
   VkDescriptorSet getInputSet(size_t i) const { return inputDescriptorSets[i]; }
   // TAA set indexed by (parity * swapCount + swapIdx). Binding 0 =
@@ -83,9 +86,12 @@ public:
                             VkImageView brdfLutView, VkImageView ssaoNoiseView,
                             VkSampler noiseSampler, VkImageView skyboxView);
 
-  // (Re)creates per-swapchain-image G-buffer descriptor sets.
-  // Binds gb0/gb1/gb2/depth + the lit-pass output (for SSR composite) +
-  // the raw SSGI bounce image (for lit.frag's cross-bilateral filter).
+  // (Re)creates G-buffer descriptor sets. Binds gb0/gb1/gb2/depth +
+  // the lit-pass output (for SSR composite) + the SSGI bounce image
+  // (for lit.frag's cross-bilateral filter).
+  // ssgiViews must have exactly 2 entries (ping-pong). Produces
+  // 2 * swapCount G-buffer sets indexed (parity * swapCount + i).
+  // Per parity P, binding 5 = ssgiViews[P].
   void recreateGBufferSets(VkDevice device,
                            const std::vector<VkImageView> &gb0Views,
                            const std::vector<VkImageView> &gb1Views,
@@ -138,7 +144,9 @@ private:
   std::vector<VkDescriptorSet> descriptorSets;        // one per swapchain image
   std::vector<VkDescriptorSet> samplerDescriptorSets; // one per loaded material (legacy)
   VkDescriptorSet bindlessDescriptorSet = VK_NULL_HANDLE; // Phase 7.2: single global set
-  std::vector<VkDescriptorSet> gBufferDescriptorSets; // one per swapchain image
+  std::vector<VkDescriptorSet> gBufferDescriptorSets; // 2 * swapCount (parity*swapCount + i)
+  // Set by recreateGBufferSets so getGBufferSet(parity, i) can index correctly.
+  size_t gBufferSwapCount = 0;
   std::vector<VkDescriptorSet> inputDescriptorSets;   // one per swapchain image
   std::vector<VkDescriptorSet> taaDescriptorSets;     // 2 * swapCount
 

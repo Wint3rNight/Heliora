@@ -661,11 +661,11 @@ void VulkanRenderer::createGBuffer() {
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
   }
-  // Task 1 transitional: existing recreateGBufferSets signature still
-  // expects a per-swap ssgi-view vector. Replicate parity-0 history view
-  // `count` times so the call satisfies the current signature without
-  // touching DescriptorManager (Task 2 widens the signature to 2 entries).
-  std::vector<VkImageView> ssgv(count, ssgiHistoryViews[0].get());
+  // ssgi views are size-2 (ping-pong). DescriptorManager produces
+  // 2 * swapCount G-buffer sets indexed (parity * swapCount + i); per
+  // parity P, binding 5 = ssgiHistoryViews[P].
+  std::vector<VkImageView> ssgv = {ssgiHistoryViews[0].get(),
+                                   ssgiHistoryViews[1].get()};
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
                                         textureManager.getTextureSampler());

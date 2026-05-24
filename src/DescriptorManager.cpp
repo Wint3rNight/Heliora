@@ -161,40 +161,47 @@ void DescriptorManager::recreateGBufferSets(
     const std::vector<VkImageView> &gbDepth,
     const std::vector<VkImageView> &lit,
     const std::vector<VkImageView> &ssgi, VkSampler sampler) {
+  // ssgi must have exactly 2 entries (ping-pong).
+  // Produces 2 * swapCount sets indexed (parity * swapCount + i).
   vkResetDescriptorPool(device, gBufferDescriptorPool, 0);
 
-  size_t count = gb0.size();
-  gBufferDescriptorSets.resize(count);
-  std::vector<VkDescriptorSetLayout> layouts(count, gBufferSetLayout);
+  size_t swapCount = gb0.size();
+  gBufferSwapCount = swapCount;
+  size_t totalSets = 2 * swapCount;
+  gBufferDescriptorSets.assign(totalSets, VK_NULL_HANDLE);
+  std::vector<VkDescriptorSetLayout> layouts(totalSets, gBufferSetLayout);
 
   VkDescriptorSetAllocateInfo allocInfo = {};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = gBufferDescriptorPool;
-  allocInfo.descriptorSetCount = static_cast<uint32_t>(count);
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(totalSets);
   allocInfo.pSetLayouts = layouts.data();
   if (vkAllocateDescriptorSets(device, &allocInfo,
                                gBufferDescriptorSets.data()) != VK_SUCCESS)
     throw std::runtime_error("Failed to allocate G-buffer descriptor sets");
 
-  for (size_t i = 0; i < count; ++i) {
-    VkDescriptorImageInfo imgs[6] = {
-        {sampler, gb0[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler, gb1[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler, gb2[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler, gbDepth[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-        {sampler, lit[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler, ssgi[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-    };
-    VkWriteDescriptorSet writes[6] = {};
-    for (int b = 0; b < 6; ++b) {
-      writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[b].dstSet = gBufferDescriptorSets[i];
-      writes[b].dstBinding = static_cast<uint32_t>(b);
-      writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      writes[b].descriptorCount = 1;
-      writes[b].pImageInfo = &imgs[b];
+  for (size_t parity = 0; parity < 2; ++parity) {
+    for (size_t i = 0; i < swapCount; ++i) {
+      VkDescriptorImageInfo imgs[6] = {
+          {sampler, gb0[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {sampler, gb1[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {sampler, gb2[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {sampler, gbDepth[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+          {sampler, lit[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {sampler, ssgi[parity], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      };
+      VkDescriptorSet set = gBufferDescriptorSets[parity * swapCount + i];
+      VkWriteDescriptorSet writes[6] = {};
+      for (int b = 0; b < 6; ++b) {
+        writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[b].dstSet = set;
+        writes[b].dstBinding = static_cast<uint32_t>(b);
+        writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[b].descriptorCount = 1;
+        writes[b].pImageInfo = &imgs[b];
+      }
+      vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
     }
-    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
   }
 }
 
@@ -480,15 +487,16 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
     throw std::runtime_error(
         "Failed to create material sampler descriptor pool");
 
-  // G-buffer sampler pool: 6 samplers per frame
+  // G-buffer sampler pool: 6 samplers per frame, doubled for SSGI parity.
   //   gb0 / gb1 / gb2 / depth / lit (SSR comp) / ssgi (lit bilateral)
+  // 2 * count sets total (one per swap image, per parity).
   VkDescriptorPoolSize gbSize = {};
   gbSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  gbSize.descriptorCount = static_cast<uint32_t>(count * 6);
+  gbSize.descriptorCount = static_cast<uint32_t>(count * 12);
 
   VkDescriptorPoolCreateInfo gbCI = {};
   gbCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  gbCI.maxSets = static_cast<uint32_t>(count);
+  gbCI.maxSets = static_cast<uint32_t>(count * 2);
   gbCI.poolSizeCount = 1;
   gbCI.pPoolSizes = &gbSize;
   if (vkCreateDescriptorPool(device, &gbCI, nullptr, &gBufferDescriptorPool) !=

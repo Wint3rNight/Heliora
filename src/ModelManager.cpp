@@ -71,6 +71,8 @@ int ModelManager::loadModel(const std::string &modelFile,
         device, descriptorManager);
     materials[i].doubleSided = textureNames[i].doubleSided;
     materials[i].isCloth     = textureNames[i].isCloth;
+    materials[i].alphaMasked = textureNames[i].alphaMasked;
+    materials[i].alphaCutoff = textureNames[i].alphaCutoff;
   }
 
   std::vector<Mesh> modelMeshes = MeshModel::LoadNode(

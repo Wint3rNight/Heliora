@@ -17,9 +17,15 @@ layout(push_constant) uniform ShadowPush {
   mat4 model;
   mat4 lightSpaceMatrix;
   uint albedoIdx;
+  uint materialFlags;
+  uint alphaCutoff255;
 } pushShadow;
 
 void main() {
-  float a = texture(textures[nonuniformEXT(pushShadow.albedoIdx)], fragUV).a;
-  if (a < 0.5) discard;
+  bool alphaMasked = (pushShadow.materialFlags & 2u) != 0u;
+  if (alphaMasked) {
+    float a = texture(textures[nonuniformEXT(pushShadow.albedoIdx)], fragUV).a;
+    float cutoff = float(pushShadow.alphaCutoff255) / 255.0;
+    if (a < cutoff) discard;
+  }
 }

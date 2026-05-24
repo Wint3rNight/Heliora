@@ -846,40 +846,40 @@ void main() {
     {
         vec2 ssgiTexSize = vec2(textureSize(ssgiSampler, 0));
         vec2 ssgiTexel   = 1.0 / ssgiTexSize;
-        float centerDepth = depth;
         vec3  centerN     = worldN;
-        // 9-tap cross with SPARSE 4-pixel-spaced offsets. The 1-pixel
-        // 3×3 kernel previously here could not smooth the 8–16 pixel
-        // SSGI noise blocks (kernel was smaller than the noise). With
-        // 4-px spacing the 9 taps cover a 9×9 pixel footprint, so the
-        // bilateral actually averages across the block size. Edge-aware
-        // weights (depth + normal) still reject across silhouettes and
-        // shadow boundaries; sparse taps don't increase the risk of
-        // edge bleed because the rejection is geometric, not spatial.
-        const ivec2 OFFSETS[9] = ivec2[9](
+        // Mixed-radius cross. The old sparse 4-pixel 9-tap filter hit
+        // the same phase of the 8-12 px SSGI block noise, so it preserved
+        // bright clusters instead of averaging them. Mixing 1/2/4/8 px
+        // offsets samples different phases while the bilateral weights
+        // still reject across geometric edges.
+        const ivec2 OFFSETS[17] = ivec2[17](
             ivec2( 0,  0),
+            ivec2( 1,  0), ivec2(-1,  0), ivec2( 0,  1), ivec2( 0, -1),
+            ivec2( 2,  0), ivec2(-2,  0), ivec2( 0,  2), ivec2( 0, -2),
             ivec2( 4,  0), ivec2(-4,  0), ivec2( 0,  4), ivec2( 0, -4),
-            ivec2( 4,  4), ivec2(-4, -4), ivec2( 4, -4), ivec2(-4,  4)
+            ivec2( 8,  0), ivec2(-8,  0), ivec2( 0,  8), ivec2( 0, -8)
         );
         vec3  bilSum  = vec3(0.0);
         float bilWSum = 0.0;
-        for (int k = 0; k < 9; ++k) {
+        float centerViewZ = -viewPos.z;
+        for (int k = 0; k < 17; ++k) {
             vec2  sUV  = uv + vec2(OFFSETS[k]) * ssgiTexel;
+            if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0)
+                continue;
             vec3  sSSGI = texture(ssgiSampler, sUV).rgb;
             float sD   = texture(gBufferDepthSampler, sUV).r;
+            if (sD >= 0.9999) continue;
             vec3  sN   = texture(gBuffer1Sampler, sUV).xyz;
             if (dot(sN, sN) < 0.1) continue;
             sN = normalize(sN);
-            // Depth weight: exponential falloff on relative-Z distance.
-            float dz = abs(sD - centerDepth) /
-                       max(centerDepth + 1e-5, 1e-5);
-            float wD = exp(-dz * 32.0);
+            float sViewZ = -reconstructViewPos(sUV, sD).z;
+            // Depth weight: use reconstructed view-Z, not non-linear depth.
+            float dz = abs(sViewZ - centerViewZ) / max(centerViewZ, 1e-3);
+            float wD = exp(-dz * 24.0);
             // Normal weight: dot product raised so it rolls off at ~25°.
             float wN = pow(max(dot(sN, centerN), 0.0), 8.0);
-            // Spatial weight: 1 for center, 0.7 for cardinal, 0.5 for diag.
-            float wS = (k == 0) ? 1.0
-                     : (k < 5)  ? 0.7
-                                : 0.5;
+            float r  = length(vec2(OFFSETS[k]));
+            float wS = exp(-(r * r) / 32.0);
             float w  = wD * wN * wS;
             bilSum  += sSSGI * w;
             bilWSum += w;

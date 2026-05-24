@@ -21,6 +21,8 @@ struct MaterialTextureNames {
   std::string ao;
   bool doubleSided = false;
   bool isCloth = false;
+  bool alphaMasked = false;
+  float alphaCutoff = 0.5f;
 };
 
 class Mesh {

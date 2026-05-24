@@ -1,4 +1,5 @@
 #include "Model.h"
+#include <assimp/GltfMaterial.h>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -272,6 +273,15 @@ MeshModel::LoadMaterials(const aiScene *scene) {
     int twoSided = 0;
     if (mat->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS && twoSided)
       textureList[i].doubleSided = true;
+
+    aiString alphaMode;
+    if (mat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS &&
+        toLower(alphaMode.C_Str()) == "mask") {
+      textureList[i].alphaMasked = true;
+      float cutoff = 0.5f;
+      if (mat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff) == AI_SUCCESS)
+        textureList[i].alphaCutoff = std::clamp(cutoff, 0.0f, 1.0f);
+    }
 
     // Cloth flag — check the material's own name first, since glTF v2
     // exporters often write descriptive names ("RedCurtain", "Banner.001")

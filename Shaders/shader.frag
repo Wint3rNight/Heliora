@@ -49,7 +49,7 @@ layout(push_constant) uniform PushModel {
     mat4  model;
     mat4  normal;
     uvec4 texIdx0;  // x=albedo, y=normal, z=metallic, w=roughness
-    uvec4 texIdx1;  // x=ao
+    uvec4 texIdx1;  // x=ao, y=materialFlags, z=alphaCutoff255
 } push;
 
 layout(location = 0) out vec4 gBuffer0;  // albedo.rgb + metallic
@@ -58,7 +58,9 @@ layout(location = 2) out vec4 gBuffer2;  // AO
 
 void main() {
     vec4 albedoSample = texture(textures[nonuniformEXT(push.texIdx0.x)], fragTex);
-    if (albedoSample.a < 0.1) discard;
+    bool alphaMasked = (push.texIdx1.y & 2u) != 0u;
+    float alphaCutoff = float(push.texIdx1.z) / 255.0;
+    if (alphaMasked && albedoSample.a < alphaCutoff) discard;
 
     // sRGB → linear. Albedo textures are uploaded as UNORM, so the bytes
     // arrive already in sRGB-encoded space; PBR math requires linear.

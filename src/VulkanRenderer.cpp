@@ -1724,16 +1724,19 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                 lastCullMode = wantCull;
               }
               // Phase 7.2: fill bindless texture indices from material.
-              // texIdx1.y is a packed bitfield of per-material flags
-              // (bit 0 = isCloth). Read by shader.frag → gBuffer2.g.
-              uint32_t materialFlags = mat.isCloth ? 1u : 0u;
+              // texIdx1.y is a packed bitfield of per-material flags.
+              uint32_t materialFlags = (mat.isCloth ? 1u : 0u) |
+                                       (mat.alphaMasked ? 2u : 0u);
+              uint32_t alphaCutoff255 = static_cast<uint32_t>(
+                  glm::clamp(mat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
               push.texIdx0 = glm::uvec4(
                   static_cast<uint32_t>(mat.albedoTextureId),
                   static_cast<uint32_t>(mat.normalTextureId),
                   static_cast<uint32_t>(mat.metallicTextureId),
                   static_cast<uint32_t>(mat.roughnessTextureId));
               push.texIdx1 = glm::uvec4(
-                  static_cast<uint32_t>(mat.aoTextureId), materialFlags, 0u, 0u);
+                  static_cast<uint32_t>(mat.aoTextureId), materialFlags,
+                  alphaCutoff255, 0u);
               vkCmdPushConstants(cmd, pipeline.getGraphicsLayout(),
                                  VK_SHADER_STAGE_VERTEX_BIT |
                                      VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1798,7 +1801,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
           // model/normal are unused by the instanced vertex shader (it reads
           // them from the instance buffer), but the struct must match.
           const Material &iMat = mesh->getMaterial();
-          uint32_t iMaterialFlags = iMat.isCloth ? 1u : 0u;
+          uint32_t iMaterialFlags = (iMat.isCloth ? 1u : 0u) |
+                                    (iMat.alphaMasked ? 2u : 0u);
+          uint32_t iAlphaCutoff255 = static_cast<uint32_t>(
+              glm::clamp(iMat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
           ModelPushConstants iPush{};
           iPush.texIdx0 = glm::uvec4(
               static_cast<uint32_t>(iMat.albedoTextureId),
@@ -1806,7 +1812,8 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
               static_cast<uint32_t>(iMat.metallicTextureId),
               static_cast<uint32_t>(iMat.roughnessTextureId));
           iPush.texIdx1 = glm::uvec4(
-              static_cast<uint32_t>(iMat.aoTextureId), iMaterialFlags, 0u, 0u);
+              static_cast<uint32_t>(iMat.aoTextureId), iMaterialFlags,
+              iAlphaCutoff255, 0u);
           vkCmdPushConstants(cmd, pipeline.getInstancedLayout(),
                              VK_SHADER_STAGE_VERTEX_BIT |
                                  VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1979,16 +1986,16 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
                    1};
   VkRect2D sc = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
 
-  // Per-cascade LOD: near cascades full detail, far cascades simplified.
-  // Cascade 2 covers the mid-range where walls/columns are still big enough
-  // for missing geometry to leak sun onto interior floors — keep it at LOD 1.
-  // Only cascade 3 (farthest) drops to LOD 2.
+  // CSM shadow casters must use the authored mesh. Sponza's walls, roof
+  // caps, and arch inserts are thin occluders; meshoptimizer's reduced LODs
+  // can remove or move exactly the triangles that should block the sun. That
+  // makes the visible G-buffer mesh look intact while the shadow map has
+  // holes, which shows up as hard rectangular "sun through wall" patches on
+  // interior floors/walls. Keep all cascades at LOD0 and spend the shadow
+  // pass cost on correctness.
   auto cascadeLod = [](int cascade) {
-    if (cascade == 0)
-      return 0;
-    if (cascade <= 2)
-      return 1;
-    return 2; // cascade 3 only
+    (void)cascade;
+    return 0;
   };
 
   // Default shadow cull mode is set in the per-cascade loop below; track the
@@ -2024,6 +2031,14 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
           push.lightSpaceMatrix = lsm;
           push.albedoIdx =
               static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
+          uint32_t materialFlags =
+              (mesh->getMaterial().isCloth ? 1u : 0u) |
+              (mesh->getMaterial().alphaMasked ? 2u : 0u);
+          push.materialFlags = materialFlags;
+          push.alphaCutoff255 = static_cast<uint32_t>(
+              glm::clamp(mesh->getMaterial().alphaCutoff, 0.0f, 1.0f) *
+                  255.0f +
+              0.5f);
           vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
                              VK_SHADER_STAGE_VERTEX_BIT |
                                  VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2139,6 +2154,14 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
             push.lightSpaceMatrix = pointShadowMatrices[face];
             push.albedoIdx =
                 static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
+            uint32_t materialFlags =
+                (mesh->getMaterial().isCloth ? 1u : 0u) |
+                (mesh->getMaterial().alphaMasked ? 2u : 0u);
+            push.materialFlags = materialFlags;
+            push.alphaCutoff255 = static_cast<uint32_t>(
+                glm::clamp(mesh->getMaterial().alphaCutoff, 0.0f, 1.0f) *
+                    255.0f +
+                0.5f);
             vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,

@@ -275,7 +275,9 @@ struct ModelPushConstants {
   // global texture array. 0xFFFFFFFF reserved as "no texture" sentinel —
   // shader path-checks against that and falls back to a literal value.
   alignas(16) glm::uvec4 texIdx0; // (albedo, normal, metallic, roughness)
-  alignas(16) glm::uvec4 texIdx1; // (ao, _, _, _)
+  // texIdx1 = (ao, materialFlags, alphaCutoff255, _)
+  // materialFlags bit 0 = cloth, bit 1 = glTF alphaMode MASK.
+  alignas(16) glm::uvec4 texIdx1;
 };
 
 struct InstanceData {
@@ -288,6 +290,8 @@ struct ShadowPushConstants {
   alignas(16) glm::mat4 lightSpaceMatrix;
   // Phase 7.2: bindless albedo index for alpha-test discard on foliage.
   uint32_t albedoIdx;
+  uint32_t materialFlags;
+  uint32_t alphaCutoff255;
 };
 
 // Keep only the general utility structures here

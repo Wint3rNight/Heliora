@@ -9,6 +9,8 @@ layout(push_constant) uniform ShadowPush {
   mat4 model;
   mat4 lightSpaceMatrix;
   uint albedoIdx;      // Phase 7.2: bindless index for alpha-test discard
+  uint materialFlags;
+  uint alphaCutoff255;
 } pushShadow;
 
 void main() {

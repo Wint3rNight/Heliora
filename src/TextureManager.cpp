@@ -17,7 +17,7 @@
 
 namespace {
 constexpr float PI = 3.14159265358979323846f;
-constexpr float ALPHA_TEST_THRESHOLD = 0.1f; // matches shader.frag discard cutoff
+constexpr float ALPHA_TEST_THRESHOLD = 0.5f; // glTF MASK default cutoff
 
 // 2x2 box downsample of RGBA8 to half size. Source can be non-square; odd
 // dimensions clamp to edge.

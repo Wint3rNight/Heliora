@@ -15,4 +15,9 @@ struct Material {
   // at glTF import time from material name / texture filename keywords;
   // unrecognized models fall back to the shader's chroma heuristic.
   bool isCloth = false;
+  // glTF alphaMode=MASK. Opaque materials must not alpha-discard in either
+  // the G-buffer or shadow pass, even if their source image has a non-opaque
+  // alpha channel for authoring/packing reasons.
+  bool alphaMasked = false;
+  float alphaCutoff = 0.5f;
 };

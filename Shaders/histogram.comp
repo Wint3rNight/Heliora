@@ -1,0 +1,62 @@
+#version 450
+
+// Histogram-based auto-exposure, pass 1: build a 256-bin log-luminance
+// histogram from the post-deferred HDR composite ("litBuffer").
+//
+// Reference: Bruop https://bruop.github.io/exposure/
+//   (originally Pettineo / Lagarde 2014 / Karis "Auto Exposure Re-imagined")
+//
+// Layout: one workgroup per 16×16 pixel tile. Each thread reads ONE pixel,
+// computes a log-luminance bin index, and atomic-adds into a shared
+// 256-entry tile histogram. After a barrier, the first 256 threads of the
+// workgroup atomic-add their shared bin into the global histogram SSBO.
+// This pattern keeps inter-workgroup contention low: 256 global atomics
+// per tile, not one per pixel.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcImage;
+layout(set = 0, binding = 1, std430) buffer Histogram {
+    uint bins[256];
+} hist;
+
+layout(push_constant) uniform Params {
+    float minLogLum;        // lower bound of mapped log-luminance range
+    float invLogLumRange;   // 1 / (maxLogLum - minLogLum)
+    uint  width;            // viewport pixels
+    uint  height;
+} pc;
+
+shared uint localBins[256];
+
+// Pixel → bin. Bin 0 is reserved for "essentially black" pixels so they
+// don't drag the weighted average toward zero (matches Bruop's bin
+// reservation pattern). Returns 1..255 for above-epsilon luminance.
+uint hdrToBin(vec3 c) {
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    if (lum < 0.005) return 0u;
+    float logLum  = clamp((log2(lum) - pc.minLogLum) * pc.invLogLumRange,
+                          0.0, 1.0);
+    return uint(logLum * 254.0 + 1.0);
+}
+
+void main() {
+    uint linearIdx = gl_LocalInvocationIndex;
+
+    // Zero the tile-local histogram (256 threads × 256 bins → 1 per thread).
+    localBins[linearIdx] = 0u;
+    barrier();
+
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x < pc.width && px.y < pc.height) {
+        vec2 uv = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+        vec3 c  = textureLod(srcImage, uv, 0.0).rgb;
+        uint bin = hdrToBin(c);
+        atomicAdd(localBins[bin], 1u);
+    }
+    barrier();
+
+    // Merge tile histogram into global histogram. Every workgroup
+    // contributes; bin 0 stays clean because we excluded it above.
+    atomicAdd(hist.bins[linearIdx], localBins[linearIdx]);
+}

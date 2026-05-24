@@ -133,6 +133,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 10. IBL + SSAO resources (requires textureManager and descriptorManager)
     initIBL();
 
+    // 10b. Auto-exposure compute resources. Must come after createLitResources()
+    //      (binds litViews) and after swapchain init (knows image count).
+    createAutoExposureResources();
+
     // 11. Synchronization
     createSynchronization();
 
@@ -155,8 +159,15 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // Warm midday sun coming through the atrium roof openings
     sceneUbo.directionalLight.direction =
         glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
+    // Intensity 2.5 (was 5.5) — at 5.5 the floor pixels under direct sun
+    // overshoot AgX's mid-tone band and the tile pattern crushes into a
+    // uniform bright wash. 2.5 lands the lit floor in AgX's preserved-
+    // detail range so authored albedo+normal variation actually survives
+    // the tonemap. This is a stopgap until the histogram auto-exposure
+    // (N1 in mds/sponza_visual_diagnosis.md) can drive exposure
+    // automatically; once that lands, sun intensity becomes a free knob.
     sceneUbo.directionalLight.colorIntensity =
-        glm::vec4(1.0f, 0.93f, 0.78f, 5.5f);
+        glm::vec4(1.0f, 0.93f, 0.78f, 2.5f);
 
     // Warm amber torchlight on the arcade pillars (arch height ~4.5m, x=±8.5m)
     sceneUbo.pointLights[0].position = glm::vec4(8.5f, 4.5f, 2.0f, 1.0f);
@@ -287,8 +298,10 @@ void VulkanRenderer::draw() {
     glm::vec3 dayColor(1.0f, 0.93f, 0.78f);
     glm::vec3 duskColor(1.0f, 0.55f, 0.30f);
     glm::vec3 color = glm::mix(dayColor, duskColor, horizon);
+    // Peak 2.5 (was 5.5) — see comment in createSceneUBO. Stopgap until
+    // histogram auto-exposure replaces the manual EV slider.
     sceneUbo.directionalLight.colorIntensity =
-        glm::vec4(color, 5.5f * dayFactor + 0.05f);
+        glm::vec4(color, 2.5f * dayFactor + 0.05f);
 
     // IBL/sky baked from a daytime cubemap — attenuate it with the same
     // day factor so glossy surfaces don't keep reflecting baked daylight
@@ -301,9 +314,39 @@ void VulkanRenderer::draw() {
   }
 
   sceneUbo.qualityToggles2.y = imguiUseGeomNormalOnly ? 1.0f : 0.0f;
-  // Exposure → linear multiplier on the CPU side so the shader doesn't
-  // need an exp2. EV 0 = 1.0 (neutral, matches pre-fix output).
-  sceneUbo.qualityToggles2.x = std::exp2(imguiExposureEV);
+  // Exposure path. Two contributors:
+  //   1. Histogram auto-exposure (recordAutoExposurePass) wrote a target
+  //      exposure scalar into autoExpResultMapped[currentFrame] one or two
+  //      frames ago. We lerp the running adapted value toward it with the
+  //      eye-adaptation time constant. drawFence ensures the GPU has
+  //      finished writing this slot before we read.
+  //   2. The manual EV slider stays as a bias offset (exp2 stops).
+  // Auto-exposure off → adapted value pinned to 1.0; slider acts as before.
+  {
+    static auto exposureLastTime = std::chrono::steady_clock::now();
+    auto exposureNow = std::chrono::steady_clock::now();
+    float exposureDt = std::chrono::duration<float>(
+                           exposureNow - exposureLastTime).count();
+    exposureLastTime = exposureNow;
+    // Clamp dt to keep first-frame / debugger-paused jumps sane.
+    exposureDt = glm::clamp(exposureDt, 0.0f, 0.25f);
+
+    if (autoExpEnabled && !autoExpResultMapped.empty()) {
+      float target =
+          *reinterpret_cast<const float *>(autoExpResultMapped[currentFrame]);
+      if (!std::isfinite(target) || target <= 0.0f) target = 1.0f;
+      // Clamp the target into a sane EV range so a flash-bright frame
+      // doesn't blind the adaptation past recovery; ±~6 stops from 1.0.
+      target = glm::clamp(target, 1.0f / 64.0f, 64.0f);
+      float alpha = 1.0f - std::exp(-exposureDt / kAutoExpTauSeconds);
+      autoExpAdaptedValue =
+          autoExpAdaptedValue + alpha * (target - autoExpAdaptedValue);
+    } else {
+      autoExpAdaptedValue = 1.0f;
+    }
+  }
+  sceneUbo.qualityToggles2.x =
+      autoExpAdaptedValue * std::exp2(imguiExposureEV);
   sceneUbo.qualityToggles2.z = imguiMinSurfaceRoughness;
   sceneUbo.qualityToggles.y  = imguiSkyOcclusionFloor;
   // shadowParams.y = SSGI intensity, .z = sharpening strength
@@ -432,6 +475,7 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupImGuiFramebuffers();
   createImGuiFramebuffers();
 
+  cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
   cleanupGBuffer();
   cleanupLitResources();
@@ -440,6 +484,8 @@ void VulkanRenderer::recreateSwapChain() {
   createTaaResources();
   createCompositeFramebuffers();
   createGBuffer();
+  // Recreate auto-exposure AFTER lit (descriptors reference litViews).
+  createAutoExposureResources();
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
 
@@ -855,6 +901,434 @@ void VulkanRenderer::cleanupCompositeFramebuffers() {
   compositeFramebuffers.clear();
 }
 
+// --- Auto-exposure (histogram-based) ---------------------------------------
+// Two-pass compute path. Pass 1 builds a 256-bin log-luminance histogram of
+// the litBuffer (post-deferred HDR). Pass 2 reduces the histogram to a
+// single target exposure scalar, written into a host-visible result buffer
+// per frame-in-flight. The CPU reads the *previous* frame's value next
+// frame (one-frame latency, irrelevant for ~1.5 s eye adaptation) and
+// lerps the running adapted-exposure toward it, then pushes that into
+// sceneUbo.qualityToggles2.x.
+
+namespace {
+VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
+  // Same dual-candidate resolve pattern as TextureManager's loader so the
+  // binary works whether launched from build/ or repo root.
+  std::vector<std::string> candidates = {relPath, "../" + relPath};
+  std::string found;
+  for (const auto &c : candidates)
+    if (std::filesystem::exists(c)) { found = c; break; }
+  if (found.empty())
+    throw std::runtime_error("Compute shader not found: " + relPath);
+
+  auto code = readFile(found);
+  VkShaderModuleCreateInfo ci = {};
+  ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  ci.codeSize = code.size();
+  ci.pCode = reinterpret_cast<const uint32_t *>(code.data());
+  VkShaderModule mod = VK_NULL_HANDLE;
+  if (vkCreateShaderModule(device, &ci, nullptr, &mod) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create shader module: " + found);
+  return mod;
+}
+} // namespace
+
+void VulkanRenderer::createAutoExposureResources() {
+  VkDevice dev = device.getLogicalDevice();
+  VmaAllocator alloc = device.getAllocator();
+  const size_t swapCount = swapchain.getImageCount();
+
+  // Device-local histogram buffer. 256 uints × 4 B = 1 KiB.
+  createBuffer(alloc, sizeof(uint32_t) * 256,
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0,
+               &autoExpHistogramBuffer);
+
+  // Zero the histogram once at creation so frame 0 of exposure.comp doesn't
+  // read garbage. exposure.comp resets bins per-frame after reducing.
+  {
+    VkCommandBuffer cb = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+    vkCmdFillBuffer(cb, autoExpHistogramBuffer.get(), 0, VK_WHOLE_SIZE, 0);
+    endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
+                              device.getGraphicsQueue(), cb);
+  }
+
+  // Host-visible result buffers (one per frame-in-flight). Persistently
+  // mapped; CPU reads each frame, GPU writes via storage-buffer binding.
+  autoExpResultBuffers.clear();
+  autoExpResultMapped.clear();
+  autoExpResultBuffers.reserve(MAX_FRAMES_DRAWS);
+  autoExpResultMapped.reserve(MAX_FRAMES_DRAWS);
+  for (int i = 0; i < MAX_FRAMES_DRAWS; ++i) {
+    AllocatedBuffer buf;
+    // 16 bytes = vec4 alignment for std430. Only the first float is used.
+    VkBufferCreateInfo bci = {};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = 16;
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo aci = {};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    // RANDOM + MAPPED: keep the mapping valid across frames and allow
+    // both writes (CPU init / debug) and reads. HOST_ACCESS implies
+    // HOST_VISIBLE; AUTO picks coherent on platforms that support it.
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer rawBuf = VK_NULL_HANDLE;
+    VmaAllocation rawAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo rawInfo = {};
+    if (vmaCreateBuffer(alloc, &bci, &aci, &rawBuf, &rawAlloc, &rawInfo) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to create auto-exposure result buffer");
+
+    // Seed initial value 1.0 so first few frames render at neutral scale
+    // before the compute path runs.
+    *reinterpret_cast<float *>(rawInfo.pMappedData) = 1.0f;
+
+    autoExpResultBuffers.emplace_back(alloc, rawBuf, rawAlloc);
+    autoExpResultMapped.push_back(rawInfo.pMappedData);
+  }
+
+  // Set layouts.
+  {
+    std::array<VkDescriptorSetLayoutBinding, 2> b{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    ci.bindingCount = 2;
+    ci.pBindings = b.data();
+    if (vkCreateDescriptorSetLayout(dev, &ci, nullptr,
+                                    &autoExpHistogramSetLayout) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create autoExp histogram set layout");
+  }
+  {
+    std::array<VkDescriptorSetLayoutBinding, 2> b{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    ci.bindingCount = 2;
+    ci.pBindings = b.data();
+    if (vkCreateDescriptorSetLayout(dev, &ci, nullptr,
+                                    &autoExpExposureSetLayout) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create autoExp exposure set layout");
+  }
+
+  // Pipeline layouts (push constants carry per-dispatch params).
+  {
+    struct HistPC {
+      float minLogLum;
+      float invLogLumRange;
+      uint32_t width;
+      uint32_t height;
+    };
+    VkPushConstantRange pc = {};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset = 0;
+    pc.size = sizeof(HistPC);
+    VkPipelineLayoutCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    ci.setLayoutCount = 1;
+    ci.pSetLayouts = &autoExpHistogramSetLayout;
+    ci.pushConstantRangeCount = 1;
+    ci.pPushConstantRanges = &pc;
+    if (vkCreatePipelineLayout(dev, &ci, nullptr,
+                               &autoExpHistogramPipelineLayout) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create autoExp histogram pipeline layout");
+  }
+  {
+    struct ExpPC {
+      float minLogLum;
+      float logLumRange;
+      uint32_t numPixels;
+    };
+    VkPushConstantRange pc = {};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset = 0;
+    pc.size = sizeof(ExpPC);
+    VkPipelineLayoutCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    ci.setLayoutCount = 1;
+    ci.pSetLayouts = &autoExpExposureSetLayout;
+    ci.pushConstantRangeCount = 1;
+    ci.pPushConstantRanges = &pc;
+    if (vkCreatePipelineLayout(dev, &ci, nullptr,
+                               &autoExpExposurePipelineLayout) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create autoExp exposure pipeline layout");
+  }
+
+  // Descriptor pool. swapCount histogram sets + MAX_FRAMES_DRAWS exposure
+  // sets; each consumes a few descriptors.
+  {
+    std::array<VkDescriptorPoolSize, 2> ps{};
+    ps[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ps[0].descriptorCount = static_cast<uint32_t>(swapCount);
+    ps[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ps[1].descriptorCount = static_cast<uint32_t>(swapCount + 2 * MAX_FRAMES_DRAWS);
+    VkDescriptorPoolCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    ci.maxSets = static_cast<uint32_t>(swapCount + MAX_FRAMES_DRAWS);
+    ci.poolSizeCount = static_cast<uint32_t>(ps.size());
+    ci.pPoolSizes = ps.data();
+    if (vkCreateDescriptorPool(dev, &ci, nullptr, &autoExpDescriptorPool) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to create autoExp descriptor pool");
+  }
+
+  // Allocate sets.
+  {
+    std::vector<VkDescriptorSetLayout> layouts(swapCount,
+                                               autoExpHistogramSetLayout);
+    VkDescriptorSetAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = autoExpDescriptorPool;
+    ai.descriptorSetCount = static_cast<uint32_t>(swapCount);
+    ai.pSetLayouts = layouts.data();
+    autoExpHistogramSets.resize(swapCount);
+    if (vkAllocateDescriptorSets(dev, &ai, autoExpHistogramSets.data()) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to alloc autoExp histogram sets");
+  }
+  {
+    std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_DRAWS,
+                                               autoExpExposureSetLayout);
+    VkDescriptorSetAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = autoExpDescriptorPool;
+    ai.descriptorSetCount = MAX_FRAMES_DRAWS;
+    ai.pSetLayouts = layouts.data();
+    autoExpExposureSets.resize(MAX_FRAMES_DRAWS);
+    if (vkAllocateDescriptorSets(dev, &ai, autoExpExposureSets.data()) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to alloc autoExp exposure sets");
+  }
+
+  // Write descriptors. Histogram set i ↔ litViews[i] + histogramBuffer.
+  for (size_t i = 0; i < swapCount; ++i) {
+    VkDescriptorImageInfo ii = {};
+    ii.imageView = litViews[i].get();
+    ii.sampler = litSampler;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo bi = {};
+    bi.buffer = autoExpHistogramBuffer.get();
+    bi.offset = 0;
+    bi.range = VK_WHOLE_SIZE;
+    std::array<VkWriteDescriptorSet, 2> w{};
+    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstSet = autoExpHistogramSets[i];
+    w[0].dstBinding = 0;
+    w[0].descriptorCount = 1;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[0].pImageInfo = &ii;
+    w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[1].dstSet = autoExpHistogramSets[i];
+    w[1].dstBinding = 1;
+    w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[1].pBufferInfo = &bi;
+    vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0,
+                           nullptr);
+  }
+  // Exposure set i ↔ histogramBuffer + result buffer i.
+  for (int i = 0; i < MAX_FRAMES_DRAWS; ++i) {
+    VkDescriptorBufferInfo hi = {};
+    hi.buffer = autoExpHistogramBuffer.get();
+    hi.offset = 0;
+    hi.range = VK_WHOLE_SIZE;
+    VkDescriptorBufferInfo ri = {};
+    ri.buffer = autoExpResultBuffers[i].get();
+    ri.offset = 0;
+    ri.range = VK_WHOLE_SIZE;
+    std::array<VkWriteDescriptorSet, 2> w{};
+    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstSet = autoExpExposureSets[i];
+    w[0].dstBinding = 0;
+    w[0].descriptorCount = 1;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[0].pBufferInfo = &hi;
+    w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[1].dstSet = autoExpExposureSets[i];
+    w[1].dstBinding = 1;
+    w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[1].pBufferInfo = &ri;
+    vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0,
+                           nullptr);
+  }
+
+  // Pipelines.
+  {
+    VkShaderModule histMod = loadComputeSpv(dev, "Shaders/histogram.comp.spv");
+    VkShaderModule expMod  = loadComputeSpv(dev, "Shaders/exposure.comp.spv");
+    auto build = [&](VkShaderModule m, VkPipelineLayout pl) {
+      VkPipelineShaderStageCreateInfo s = {};
+      s.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      s.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+      s.module = m;
+      s.pName = "main";
+      VkComputePipelineCreateInfo ci = {};
+      ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+      ci.stage = s;
+      ci.layout = pl;
+      VkPipeline p = VK_NULL_HANDLE;
+      if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &p) !=
+          VK_SUCCESS)
+        throw std::runtime_error("Failed to create autoExp compute pipeline");
+      return p;
+    };
+    autoExpHistogramPipeline = build(histMod, autoExpHistogramPipelineLayout);
+    autoExpExposurePipeline  = build(expMod,  autoExpExposurePipelineLayout);
+    vkDestroyShaderModule(dev, histMod, nullptr);
+    vkDestroyShaderModule(dev, expMod,  nullptr);
+  }
+}
+
+void VulkanRenderer::cleanupAutoExposureResources() {
+  VkDevice dev = device.getLogicalDevice();
+  if (autoExpHistogramPipeline) {
+    vkDestroyPipeline(dev, autoExpHistogramPipeline, nullptr);
+    autoExpHistogramPipeline = VK_NULL_HANDLE;
+  }
+  if (autoExpExposurePipeline) {
+    vkDestroyPipeline(dev, autoExpExposurePipeline, nullptr);
+    autoExpExposurePipeline = VK_NULL_HANDLE;
+  }
+  if (autoExpHistogramPipelineLayout) {
+    vkDestroyPipelineLayout(dev, autoExpHistogramPipelineLayout, nullptr);
+    autoExpHistogramPipelineLayout = VK_NULL_HANDLE;
+  }
+  if (autoExpExposurePipelineLayout) {
+    vkDestroyPipelineLayout(dev, autoExpExposurePipelineLayout, nullptr);
+    autoExpExposurePipelineLayout = VK_NULL_HANDLE;
+  }
+  if (autoExpDescriptorPool) {
+    vkDestroyDescriptorPool(dev, autoExpDescriptorPool, nullptr);
+    autoExpDescriptorPool = VK_NULL_HANDLE;
+  }
+  autoExpHistogramSets.clear();
+  autoExpExposureSets.clear();
+  if (autoExpHistogramSetLayout) {
+    vkDestroyDescriptorSetLayout(dev, autoExpHistogramSetLayout, nullptr);
+    autoExpHistogramSetLayout = VK_NULL_HANDLE;
+  }
+  if (autoExpExposureSetLayout) {
+    vkDestroyDescriptorSetLayout(dev, autoExpExposureSetLayout, nullptr);
+    autoExpExposureSetLayout = VK_NULL_HANDLE;
+  }
+  autoExpResultBuffers.clear();        // AllocatedBuffer RAII unmaps
+  autoExpResultMapped.clear();
+  autoExpHistogramBuffer.reset();
+}
+
+void VulkanRenderer::recordAutoExposurePass(VkCommandBuffer cmd,
+                                            uint32_t currentImage) {
+  if (!autoExpEnabled || autoExpHistogramPipeline == VK_NULL_HANDLE) return;
+
+  VkExtent2D ext = swapchain.getExtent();
+  const float logLumRange  = kAutoExpMaxLogLum - kAutoExpMinLogLum;
+  const float invLogLumRng = 1.0f / logLumRange;
+
+  vkdbgBeginLabel(cmd, "Auto-Exposure (histogram + reduce)", 0.95f, 0.85f, 0.2f);
+
+  // The lit render pass declares finalLayout=SHADER_READ_ONLY_OPTIMAL, but
+  // the implicit subpass dependency stops at BOTTOM_OF_PIPE — we need to
+  // explicitly extend the visibility into COMPUTE_SHADER for the sampler
+  // read below to see committed pixel writes.
+  {
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = litImages[currentImage].get();
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &b);
+  }
+
+  // Pass 1: build histogram.
+  {
+    struct HistPC {
+      float minLogLum;
+      float invLogLumRange;
+      uint32_t width;
+      uint32_t height;
+    } pc{kAutoExpMinLogLum, invLogLumRng, ext.width, ext.height};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      autoExpHistogramPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            autoExpHistogramPipelineLayout, 0, 1,
+                            &autoExpHistogramSets[currentImage], 0, nullptr);
+    vkCmdPushConstants(cmd, autoExpHistogramPipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    uint32_t gx = (ext.width  + 15) / 16;
+    uint32_t gy = (ext.height + 15) / 16;
+    vkCmdDispatch(cmd, gx, gy, 1);
+  }
+
+  // Histogram writes → exposure pass reads. Same buffer; need a memory
+  // dependency between the two compute dispatches.
+  {
+    VkMemoryBarrier mb = {};
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                         nullptr, 0, nullptr);
+  }
+
+  // Pass 2: reduce → exposure result.
+  {
+    struct ExpPC {
+      float minLogLum;
+      float logLumRange;
+      uint32_t numPixels;
+    } pc{kAutoExpMinLogLum, logLumRange, ext.width * ext.height};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      autoExpExposurePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            autoExpExposurePipelineLayout, 0, 1,
+                            &autoExpExposureSets[currentFrame], 0, nullptr);
+    vkCmdPushConstants(cmd, autoExpExposurePipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, 1, 1, 1);
+  }
+
+  // Result buffer is host-coherent, but Vulkan still needs an explicit
+  // memory dependency from device write → host read so the read on the
+  // CPU side after the fence is well-defined.
+  {
+    VkMemoryBarrier mb = {};
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0,
+                         nullptr);
+  }
+
+  vkdbgEndLabel(cmd);
+}
+
 // IBL resource management
 
 void VulkanRenderer::initIBL() {
@@ -990,6 +1464,7 @@ void VulkanRenderer::cleanup() {
   cleanupImGui();
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
+  cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
   cleanupGBuffer();
   cleanupLitResources();
@@ -1291,6 +1766,13 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkCmdEndRenderPass(cmd);
     vkdbgEndLabel(cmd);
   }
+
+  // --- Auto-exposure (compute) ---
+  // Runs between lit and composite: lit is now in SHADER_READ_ONLY_OPTIMAL
+  // (the render pass's finalLayout). Pass 1 histograms it; pass 2 reduces
+  // and writes one float into a host-visible buffer that next frame's CPU
+  // reads to drive eye adaptation.
+  recordAutoExposurePass(cmd, currentImage);
 
   // --- Composition pass (SSR composite + TAA + ACES tone-mapping) ---
   {
@@ -2084,8 +2566,13 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::Checkbox("Shadow front-face cull", &imguiShadowFrontFaceCull);
   ImGui::SliderFloat("IBL / sky intensity", &imguiIblIntensity, 0.0f, 2.0f,
                      "%.2f");
-  // Pre-tonemap exposure (EV stops). Lifts midtones into ACES's linear
-  // range — fixes the "shadowed interior crushes to black" symptom.
+  // Auto-exposure (histogram-based). When on, the manual EV slider acts
+  // as a bias on top of the adapted target.
+  ImGui::Checkbox("Auto-exposure", &autoExpEnabled);
+  ImGui::SameLine();
+  ImGui::Text("(%.2fx)", autoExpAdaptedValue);
+  // Pre-tonemap exposure (EV stops). Lifts midtones into AgX's linear
+  // range. With auto-exposure on this is a bias offset, not absolute.
   ImGui::SliderFloat("Exposure (EV)", &imguiExposureEV, -3.0f, 3.0f, "%+.2f");
   // SSGI intensity — one-bounce diffuse gather. 0 = off, 1 = default,
   // 2 = strong (visible artifacts at silhouettes).

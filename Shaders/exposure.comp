@@ -1,0 +1,70 @@
+#version 450
+
+// Histogram-based auto-exposure, pass 2: reduce the 256-bin histogram to
+// a weighted-average log-luminance, convert to a target exposure scalar
+// (Lagarde 2014: H = 1 / (9.6 × avgLum)), and store it where the CPU can
+// read it back to drive the eye-adaptation lerp.
+//
+// Layout: a single workgroup of 256 threads. Each thread owns one bin.
+// Parallel sum reduction in shared memory yields the weighted sum in
+// O(log2(256)) = 8 barriers. Thread 0 writes the final exposure scalar.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Histogram {
+    uint bins[256];
+} hist;
+
+// Single-float output. Persistently-mapped on the host so the CPU can
+// read it next frame without an explicit copy/readback step.
+layout(set = 0, binding = 1, std430) writeonly buffer Exposure {
+    float value;
+} result;
+
+layout(push_constant) uniform Params {
+    float minLogLum;
+    float logLumRange;
+    uint  numPixels;
+} pc;
+
+shared float weightedBuf[256];
+shared uint  pixelCount;   // running count of contributing (non-bin-0) pixels
+
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    uint count = hist.bins[i];
+
+    // Bin 0 is "essentially black" — exclude from both the weighted sum
+    // and the divisor so a mostly-dark scene doesn't drag exposure toward
+    // infinity. For non-bin-0, weight = count × bin_index.
+    weightedBuf[i] = (i == 0u) ? 0.0 : float(count) * float(i);
+    if (i == 0u) pixelCount = 0u;
+    barrier();
+
+    if (i > 0u) atomicAdd(pixelCount, count);
+    barrier();
+
+    // Parallel sum reduction.
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (i < s) weightedBuf[i] += weightedBuf[i + s];
+        barrier();
+    }
+
+    // Reset bin AFTER reduction so the next-frame histogram pass starts
+    // from zero. Doing it here saves a separate clear dispatch.
+    hist.bins[i] = 0u;
+
+    if (i == 0u) {
+        float weightedSum = weightedBuf[0];
+        float numContrib  = max(float(pixelCount), 1.0);
+        // avgBin in [1..255]; subtract 1 so bin 1 → log-fraction 0.
+        float avgBin    = weightedSum / numContrib;
+        float logFrac   = clamp((avgBin - 1.0) / 254.0, 0.0, 1.0);
+        float avgLogLum = pc.minLogLum + logFrac * pc.logLumRange;
+        float avgLum    = exp2(avgLogLum);
+        // Lagarde 2014 — sensor max luminance ≈ 9.6 × geometric-mean luma;
+        // exposure scalar = 1 / max_lum. CPU then lerps this toward the
+        // running adapted value with an eye-adaptation time constant.
+        result.value = 1.0 / (9.6 * max(avgLum, 1e-6));
+    }
+}

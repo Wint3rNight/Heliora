@@ -505,6 +505,16 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         vec3  sAlbedo = texture(gBuffer0Sampler, sUV).rgb;
         float sNoL    = max(dot(sN, sunDir), 0.0);
         vec3  sLit    = sAlbedo * sunColor * sNoL;
+        // Per-sample firefly clamp. Variance across the 32-sample Vogel
+        // disc scales linearly with peak emitter brightness — at sun
+        // intensity 5× one bright outlier sample dominates the weighted
+        // average and surfaces as per-pixel grain that TAA's 8-frame
+        // history can't fully wash out. Clamping each contribution to
+        // 6.0 (per-channel) bounds the dynamic range any single sample
+        // can introduce without crushing typical sunlit-plaster values
+        // (~1.5–3.0). Tune up if SSGI looks too dim under bright sun,
+        // down if grain returns.
+        sLit = min(sLit, vec3(6.0));
 
         float w = cosRecv * cosEmit * falloff;
         bounce += sLit * w;

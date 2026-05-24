@@ -36,6 +36,14 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 viewportSize;
 } scene;
 
+// CSM shadow map (set 0 binding 1) — declared so per-SSGI-sample shadow
+// tests can suppress samples that geometrically face the sun but are
+// actually occluded by other geometry. Without this, walls in cast
+// shadow (NoL > 0 but light blocked) contribute false "bright bounce"
+// into SSGI, surfacing as the bright square clusters on the shadowed
+// floor (the user's "light coming through the wall" symptom).
+layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;
+
 // ---- G-buffer (set 1) — bindings 0-3 match the deferred-pass layout ----
 layout(set = 1, binding = 0) uniform sampler2D gBuffer0Sampler;  // albedo + metallic
 layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;  // worldN + roughness
@@ -58,6 +66,38 @@ vec2 vogelDisk(int i, int n, float phi) {
     float r  = sqrt((float(i) + 0.5) / float(n));
     float th = float(i) * 2.4 + phi;
     return r * vec2(cos(th), sin(th));
+}
+
+// Cheap 1-tap shadow lookup for SSGI samples. NO PCF, NO Vogel disc —
+// just project + hardware-compare. Returns visibility in [0,1] where
+// 1.0 = fully lit by the sun, 0.0 = fully shadowed. Walks cascades
+// (0..3) and stops at the first one the sample falls inside.
+// 32 of these per receiver pixel adds noticeable cost; keep simple.
+float sampleSunVisibility(vec3 worldPos, float viewZ) {
+    int primaryCascade = 3;
+    if      (viewZ < scene.cascadeSplits.x) primaryCascade = 0;
+    else if (viewZ < scene.cascadeSplits.y) primaryCascade = 1;
+    else if (viewZ < scene.cascadeSplits.z) primaryCascade = 2;
+
+    for (int c = primaryCascade; c <= 3; ++c) {
+        vec4 lsPos = scene.lightSpaceMatrices[c] * vec4(worldPos, 1.0);
+        vec3 proj  = lsPos.xyz / lsPos.w;
+        proj.xy    = proj.xy * 0.5 + 0.5;
+        if (proj.z >= 0.0 && proj.z <= 1.0 &&
+            proj.x >= 0.0 && proj.x <= 1.0 &&
+            proj.y >= 0.0 && proj.y <= 1.0) {
+            // Small constant bias is fine here — SSGI samples don't need
+            // the receiver-plane gradient bias because we only care about
+            // "is this pixel in shadow at all", not penumbra accuracy.
+            float bias    = 0.001 * float(c + 1);
+            float tapDepth = proj.z - bias;
+            return texture(shadowMap,
+                           vec4(proj.xy, float(c), tapDepth));
+        }
+    }
+    // Outside all cascades — conservative: assume shadowed (no SSGI
+    // contribution from samples that fall past CSM far).
+    return 0.0;
 }
 
 // Same body as lit.frag::computeSSGI(). Kept identical so we can A/B
@@ -115,7 +155,16 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
 
         vec3  sAlbedo = texture(gBuffer0Sampler, sUV).rgb;
         float sNoL    = max(dot(sN, sunDir), 0.0);
-        vec3  sLit    = sAlbedo * sunColor * sNoL;
+        // Shadow-test THIS sample so walls/floors that geometrically
+        // face the sun but are actually occluded don't contribute false
+        // bright bounce. This is the fix for the "square lights coming
+        // through the wall" symptom — without it, every sample point's
+        // sNoL > 0 surface gets counted as fully sunlit. 1-tap lookup
+        // (no PCF) — cheap, single-frame Vogel temporal rotation washes
+        // the per-pixel binary visibility into a smooth gradient.
+        float sVisibility = (sNoL > 0.0) ? sampleSunVisibility(sWorldPos, sViewZ)
+                                         : 0.0;
+        vec3  sLit    = sAlbedo * sunColor * sNoL * sVisibility;
         sLit = min(sLit, vec3(2.5));
 
         float w = cosRecv * cosEmit * falloff;

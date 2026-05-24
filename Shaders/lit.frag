@@ -848,16 +848,18 @@ void main() {
         vec2 ssgiTexel   = 1.0 / ssgiTexSize;
         float centerDepth = depth;
         vec3  centerN     = worldN;
-        // 9-tap cross (center + 4 cardinal + 4 diagonal) with edge-aware
-        // weights. Sigma values tuned for typical Sponza scale: depth
-        // weight tolerates ~10 % relative-Z drift on the same surface,
-        // normal weight rejects across silhouettes within ~25°. The
-        // bilateral filter only acts on the noisy SSGI signal; it does
-        // not blur the underlying lit composite.
+        // 9-tap cross with SPARSE 4-pixel-spaced offsets. The 1-pixel
+        // 3×3 kernel previously here could not smooth the 8–16 pixel
+        // SSGI noise blocks (kernel was smaller than the noise). With
+        // 4-px spacing the 9 taps cover a 9×9 pixel footprint, so the
+        // bilateral actually averages across the block size. Edge-aware
+        // weights (depth + normal) still reject across silhouettes and
+        // shadow boundaries; sparse taps don't increase the risk of
+        // edge bleed because the rejection is geometric, not spatial.
         const ivec2 OFFSETS[9] = ivec2[9](
             ivec2( 0,  0),
-            ivec2( 1,  0), ivec2(-1,  0), ivec2( 0,  1), ivec2( 0, -1),
-            ivec2( 1,  1), ivec2(-1, -1), ivec2( 1, -1), ivec2(-1,  1)
+            ivec2( 4,  0), ivec2(-4,  0), ivec2( 0,  4), ivec2( 0, -4),
+            ivec2( 4,  4), ivec2(-4, -4), ivec2( 4, -4), ivec2(-4,  4)
         );
         vec3  bilSum  = vec3(0.0);
         float bilWSum = 0.0;

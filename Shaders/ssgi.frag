@@ -49,6 +49,12 @@ layout(set = 1, binding = 0) uniform sampler2D gBuffer0Sampler;  // albedo + met
 layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;  // worldN + roughness
 layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
 
+// Set 2: prev-frame SSGI history (the OTHER ping-pong image, written
+// last frame). Sampled with bilinear + CLAMP_TO_EDGE; CPU rotates the
+// binding each frame so this is always last-frame data, never this
+// frame's in-flight output.
+layout(set = 2, binding = 0) uniform sampler2D ssgiHistoryPrev;
+
 layout(location = 0) out vec4 outSSGI;
 
 vec3 reconstructViewPos(vec2 uv, float depth) {
@@ -176,14 +182,34 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     return bounce / totalW * scene.shadowParams.y;
 }
 
+// Reconstruct world position from a depth-buffer sample. Same as
+// second.frag's helper — scene.invProj is the JITTERED inverse, but
+// SSGI runs OUTSIDE the TAA jitter loop (no jitter applied here), so
+// for SSGI we want the un-jittered projection. Since we're reading the
+// G-buffer depth (which was rendered with the same jittered projection
+// as TAA), the reconstructed pos matches what TAA already uses for
+// reprojection — same convention, no off-by-jitter bug.
+vec3 reconstructWorldPos(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 vp = scene.invProj * clip;
+    vp /= vp.w;
+    vec4 wp = scene.invView * vp;
+    return wp.xyz;
+}
+
+float reconstructLinearViewZ(vec2 uv, float depth) {
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 vp = scene.invProj * clip;
+    return vp.z / vp.w;
+}
+
 void main() {
     vec2 texSize = vec2(textureSize(gBuffer0Sampler, 0));
     vec2 uv      = gl_FragCoord.xy / texSize;
 
     float depth = texture(gBufferDepthSampler, uv).r;
     if (depth >= 0.9999) {
-        // Sky — no bounce contribution; write zero so lit.frag's
-        // bilateral filter doesn't pull SSGI onto sky pixels at edges.
+        // Sky — no bounce contribution.
         outSSGI = vec4(0.0);
         return;
     }
@@ -195,9 +221,51 @@ void main() {
     vec3 viewPos  = reconstructViewPos(uv, depth);
     vec3 worldPos = (scene.invView * vec4(viewPos, 1.0)).xyz;
 
-    vec3 ssgi = computeSSGI(uv, worldPos, worldN, -viewPos.z);
-    // Per-pass firefly clamp on the gathered result — second line of
-    // defence on top of the per-sample clamp inside computeSSGI.
-    ssgi = min(ssgi, vec3(2.5));
-    outSSGI = vec4(ssgi, 1.0);
+    // 1. Current-frame raw bounce (single-pass 32-Vogel sample set,
+    //    same code that was producing the visible 8-12 px clusters).
+    vec3 ssgiCurr = computeSSGI(uv, worldPos, worldN, -viewPos.z);
+    ssgiCurr = min(ssgiCurr, vec3(2.5)); // per-pass firefly clamp
+
+    // 2. Reproject last frame's SSGI to find where this pixel was on
+    //    screen one frame ago. Same math as second.frag's TAA.
+    bool historyValid = scene.taaParams.w > 0.5;
+    vec3 ssgiBlended  = ssgiCurr;
+
+    if (historyValid) {
+        vec4 prevClip = scene.prevViewProj * vec4(worldPos, 1.0);
+        if (abs(prevClip.w) > 1e-6) {
+            vec2 prevNDC = prevClip.xy / prevClip.w;
+            vec2 prevUV  = prevNDC * 0.5 + 0.5;
+
+            // Off-screen reject.
+            bool onScreen = all(greaterThanEqual(prevUV, vec2(0.0))) &&
+                            all(lessThanEqual   (prevUV, vec2(1.0)));
+            if (onScreen) {
+                // Depth-disocclusion reject (same proxy as second.frag:
+                // compare view-Z of current pixel vs current-frame depth
+                // sampled at prevUV).
+                float depthAtPrev = texture(gBufferDepthSampler, prevUV).r;
+                float viewZCur  = abs(reconstructLinearViewZ(uv,     depth));
+                float viewZPrev = abs(reconstructLinearViewZ(prevUV, depthAtPrev));
+                bool depthOK = (depthAtPrev >= 0.9999) ||
+                               (abs(viewZCur - viewZPrev) <=
+                                max(0.1 * viewZCur, 0.05));
+
+                if (depthOK) {
+                    vec3 ssgiHist = texture(ssgiHistoryPrev, prevUV).rgb;
+                    // Sanitize history — NaN/Inf can creep in from
+                    // float-edge cases in the bilinear tap.
+                    if (any(isnan(ssgiHist)) || any(isinf(ssgiHist))) {
+                        ssgiHist = ssgiCurr;
+                    }
+                    // 0.95 history weight is the doc spec for N6 Option C.
+                    // Effective convergence over ~20 frames; visible noise
+                    // drops ~4.5x on a static camera.
+                    ssgiBlended = mix(ssgiCurr, ssgiHist, 0.95);
+                }
+            }
+        }
+    }
+
+    outSSGI = vec4(ssgiBlended, 1.0);
 }

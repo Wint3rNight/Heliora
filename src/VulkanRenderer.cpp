@@ -648,21 +648,24 @@ void VulkanRenderer::createGBuffer() {
       throw std::runtime_error("Failed to create G-buffer framebuffer");
   }
 
-  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv, ssgv;
+  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv;
   gb0v.reserve(count);
   gb1v.reserve(count);
   gb2v.reserve(count);
   depv.reserve(count);
   litv.reserve(count);
-  ssgv.reserve(count);
   for (size_t i = 0; i < count; i++) {
     gb0v.push_back(gBuffer0Views[i].get());
     gb1v.push_back(gBuffer1Views[i].get());
     gb2v.push_back(gBuffer2Views[i].get());
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
-    ssgv.push_back(ssgiViews[i].get());
   }
+  // Task 1 transitional: existing recreateGBufferSets signature still
+  // expects a per-swap ssgi-view vector. Replicate parity-0 history view
+  // `count` times so the call satisfies the current signature without
+  // touching DescriptorManager (Task 2 widens the signature to 2 entries).
+  std::vector<VkImageView> ssgv(count, ssgiHistoryViews[0].get());
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
                                         textureManager.getTextureSampler());
@@ -779,18 +782,17 @@ void VulkanRenderer::cleanupLitResources() {
 // filter to suppress the per-pixel SSGI noise.
 void VulkanRenderer::createSsgiResources() {
   VkDevice dev = device.getLogicalDevice();
-  const size_t count = swapchain.getImageCount();
 
-  ssgiImages.clear();
-  ssgiViews.clear();
-  ssgiFramebuffers.assign(count, VK_NULL_HANDLE);
-  ssgiImages.reserve(count);
-  ssgiViews.reserve(count);
+  ssgiHistoryImages.clear();
+  ssgiHistoryViews.clear();
+  ssgiFramebuffers.assign(2, VK_NULL_HANDLE);
+  ssgiHistoryImages.reserve(2);
+  ssgiHistoryViews.reserve(2);
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-  for (size_t i = 0; i < count; ++i) {
+  for (int i = 0; i < 2; ++i) {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -802,23 +804,24 @@ void VulkanRenderer::createSsgiResources() {
     ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
                        nullptr) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI image");
-    ssgiImages.emplace_back(device.getAllocator(), rawImg, alloc);
+      throw std::runtime_error("Failed to create SSGI history image");
+    ssgiHistoryImages.emplace_back(device.getAllocator(), rawImg, alloc);
 
     VkImageViewCreateInfo vci = {};
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image = ssgiImages.back().get();
+    vci.image = ssgiHistoryImages.back().get();
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = litFormat;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageView v = VK_NULL_HANDLE;
     if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI image view");
-    ssgiViews.emplace_back(dev, v);
+      throw std::runtime_error("Failed to create SSGI history view");
+    ssgiHistoryViews.emplace_back(dev, v);
 
     VkImageView attachment = v;
     VkFramebufferCreateInfo fbci = {};
@@ -833,6 +836,43 @@ void VulkanRenderer::createSsgiResources() {
         VK_SUCCESS)
       throw std::runtime_error("Failed to create SSGI framebuffer");
   }
+
+  // Transition both history images to SHADER_READ_ONLY_OPTIMAL so the
+  // FIRST frame's set-2 sampler read doesn't hit UNDEFINED. The render
+  // pass declares initialLayout=UNDEFINED + loadOp=CLEAR for the SSGI
+  // attachment, so the write side handles its own transition each frame.
+  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+  for (int i = 0; i < 2; ++i) {
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = ssgiHistoryImages[i].get();
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.srcAccessMask = 0;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &b);
+  }
+  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
+                            device.getGraphicsQueue(), cmd);
+
+  if (ssgiSampler == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxLod = 0.0f;
+    if (vkCreateSampler(dev, &sci, nullptr, &ssgiSampler) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSGI sampler");
+  }
 }
 
 void VulkanRenderer::cleanupSsgiResources() {
@@ -841,8 +881,12 @@ void VulkanRenderer::cleanupSsgiResources() {
     if (fb != VK_NULL_HANDLE)
       vkDestroyFramebuffer(dev, fb, nullptr);
   ssgiFramebuffers.clear();
-  ssgiViews.clear();
-  ssgiImages.clear();
+  ssgiHistoryViews.clear();
+  ssgiHistoryImages.clear();
+  if (ssgiSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(dev, ssgiSampler, nullptr);
+    ssgiSampler = VK_NULL_HANDLE;
+  }
 }
 
 // TAA history images. Two persistent HDR images that ping-pong each frame:
@@ -1834,10 +1878,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   // --- SSGI pass (one-bounce diffuse, single-frame) ---
   // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
-  // pass's finalLayout) + scene UBO; writes raw bounce to ssgiImages[
-  // currentImage]. lit.frag samples this output with cross-bilateral
-  // (set 1, binding 5). Keeping it as a separate pass lets us put a
-  // proper denoiser between SSGI and lit later (next-session item).
+  // pass's finalLayout) + scene UBO; writes raw bounce to
+  // ssgiHistoryImages[parity]. lit.frag samples this output with
+  // cross-bilateral (set 1, binding 5). Task 1 transitional: parity is
+  // pinned to 0 until Task 5 wires real parity from taaFrameCounter.
   {
     VkClearValue clear = {};
     clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1845,7 +1889,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getSsgiRenderPass();
-    rpbi.framebuffer = ssgiFramebuffers[currentImage];
+    rpbi.framebuffer = ssgiFramebuffers[0];
     rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clear;

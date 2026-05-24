@@ -94,13 +94,20 @@ private:
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
 
-  // --- SSGI bounce buffer (HDR, sampled by lit pass with bilateral) ---
-  // Same format as litBuffer so a single sampler covers both. Written by
-  // ssgi.frag between G-buffer and lit; read by lit.frag with a 9-tap
-  // cross-bilateral filter that uses depth + normal as edge weights.
-  std::vector<AllocatedImage>  ssgiImages;
-  std::vector<ImageViewHandle> ssgiViews;
-  std::vector<VkFramebuffer>   ssgiFramebuffers;
+  // --- SSGI bounce history (HDR, ping-pong, persistent across frames) ---
+  // Two images written-then-sampled the same way TAA history works:
+  //   frame N writes ssgiHistory[N&1], reads ssgiHistory[(N+1)&1]
+  // The current frame's *output* is what lit.frag samples (set 1 binding 5),
+  // so binding 5 must rotate with parity — see DescriptorManager changes.
+  // See mds/plans/2026-05-24-ssgi-temporal-reproject.md and
+  // mds/sponza_visual_diagnosis.md N6.
+  std::vector<AllocatedImage>  ssgiHistoryImages;   // size 2
+  std::vector<ImageViewHandle> ssgiHistoryViews;    // size 2
+  std::vector<VkFramebuffer>   ssgiFramebuffers;    // size 2, one per parity
+  // Sampler used to read ssgiHistoryPrev in ssgi.frag (set 2 binding 0).
+  // CLAMP_TO_EDGE + LINEAR so reprojected UVs near the screen edge sample
+  // the edge texel; the shader bounds-checks for true off-screen reject.
+  VkSampler ssgiSampler = VK_NULL_HANDLE;
 
   // --- TAA history (HDR, ping-pong, persistent across frames) ---
   // Two physical images that alternate roles each frame:

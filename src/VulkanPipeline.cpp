@@ -424,10 +424,11 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
                    VK_SHADER_STAGE_FRAGMENT_BIT, ssgiFragMod, "main", nullptr};
 
   VkDescriptorSetLayout ssgiLayoutsArr[] = {descriptors.getVPLayout(),
-                                            descriptors.getGBufferLayout()};
+                                            descriptors.getGBufferLayout(),
+                                            descriptors.getSsgiPrevLayout()};
   VkPipelineLayoutCreateInfo ssgiLayoutCI = {};
   ssgiLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  ssgiLayoutCI.setLayoutCount = 2;
+  ssgiLayoutCI.setLayoutCount = 3;
   ssgiLayoutCI.pSetLayouts = ssgiLayoutsArr;
   if (vkCreatePipelineLayout(device, &ssgiLayoutCI, nullptr,
                              &ssgiPipelineLayout) != VK_SUCCESS)

@@ -116,6 +116,17 @@ public:
                        const std::vector<VkImageView> &colorBufferViews,
                        VkSampler sampler);
 
+  // --- SSGI prev-history set 2 accessors ---
+  VkDescriptorSetLayout getSsgiPrevLayout() const { return ssgiPrevSetLayout; }
+  VkDescriptorSet getSsgiPrevSet(size_t parity) const {
+    return ssgiPrevDescriptorSets[parity];
+  }
+  // ssgiHistoryViews has size 2 (ping-pong). For parity P, the set
+  // at index P binds historyViews[(P+1)&1] — last frame's SSGI.
+  void recreateSsgiPrevSets(VkDevice device,
+                            const std::vector<VkImageView> &ssgiHistoryViews,
+                            VkSampler sampler);
+
 private:
   // --- Layouts ---
   VkDescriptorSetLayout descriptorSetLayout =
@@ -130,6 +141,8 @@ private:
       VK_NULL_HANDLE; // 1 input attachment (set 0, post-process)
   VkDescriptorSetLayout taaSetLayout =
       VK_NULL_HANDLE; // TAA history + depth samplers (set 2, post-process)
+  VkDescriptorSetLayout ssgiPrevSetLayout =
+      VK_NULL_HANDLE; // set 2 on SSGI pipeline
   VkPushConstantRange pushConstantRange = {};
 
   // --- Pools ---
@@ -139,6 +152,7 @@ private:
   VkDescriptorPool gBufferDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool inputDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool taaDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool ssgiPrevDescriptorPool = VK_NULL_HANDLE;
 
   // --- Sets ---
   std::vector<VkDescriptorSet> descriptorSets;        // one per swapchain image
@@ -149,6 +163,7 @@ private:
   size_t gBufferSwapCount = 0;
   std::vector<VkDescriptorSet> inputDescriptorSets;   // one per swapchain image
   std::vector<VkDescriptorSet> taaDescriptorSets;     // 2 * swapCount
+  std::vector<VkDescriptorSet> ssgiPrevDescriptorSets; // size 2, indexed by parity
 
   // --- Uniform buffers ---
   std::vector<AllocatedBuffer> vpUniformBuffers;

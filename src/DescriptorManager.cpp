@@ -21,6 +21,8 @@ void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
 
 void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
                                 size_t /*swapchainImageCount*/) {
+  if (ssgiPrevDescriptorPool != VK_NULL_HANDLE)
+    vkDestroyDescriptorPool(device, ssgiPrevDescriptorPool, nullptr);
   if (taaDescriptorPool != VK_NULL_HANDLE)
     vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
@@ -30,6 +32,8 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
   vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
+  if (ssgiPrevSetLayout != VK_NULL_HANDLE)
+    vkDestroyDescriptorSetLayout(device, ssgiPrevSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, taaSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, inputSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, gBufferSetLayout, nullptr);
@@ -285,6 +289,52 @@ void DescriptorManager::recreateTaaSets(
   }
 }
 
+void DescriptorManager::recreateSsgiPrevSets(
+    VkDevice device, const std::vector<VkImageView> &ssgiHistoryViews,
+    VkSampler sampler) {
+  if (ssgiPrevDescriptorPool != VK_NULL_HANDLE) {
+    vkDestroyDescriptorPool(device, ssgiPrevDescriptorPool, nullptr);
+    ssgiPrevDescriptorPool = VK_NULL_HANDLE;
+  }
+  VkDescriptorPoolSize sz = {};
+  sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  sz.descriptorCount = 2;
+  VkDescriptorPoolCreateInfo pci = {};
+  pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pci.maxSets = 2;
+  pci.poolSizeCount = 1;
+  pci.pPoolSizes = &sz;
+  if (vkCreateDescriptorPool(device, &pci, nullptr,
+                             &ssgiPrevDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create SSGI prev descriptor pool");
+
+  std::vector<VkDescriptorSetLayout> layouts(2, ssgiPrevSetLayout);
+  ssgiPrevDescriptorSets.assign(2, VK_NULL_HANDLE);
+
+  VkDescriptorSetAllocateInfo ai = {};
+  ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  ai.descriptorPool = ssgiPrevDescriptorPool;
+  ai.descriptorSetCount = 2;
+  ai.pSetLayouts = layouts.data();
+  if (vkAllocateDescriptorSets(device, &ai,
+                               ssgiPrevDescriptorSets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate SSGI prev descriptor sets");
+
+  for (size_t parity = 0; parity < 2; ++parity) {
+    VkDescriptorImageInfo info = {
+        sampler, ssgiHistoryViews[(parity + 1) & 1],
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w = {};
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = ssgiPrevDescriptorSets[parity];
+    w.dstBinding = 0;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.descriptorCount = 1;
+    w.pImageInfo = &info;
+    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+  }
+}
+
 // Layout creation
 
 void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
@@ -428,6 +478,22 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
   if (vkCreateDescriptorSetLayout(device, &taaCI, nullptr, &taaSetLayout) !=
       VK_SUCCESS)
     throw std::runtime_error("Failed to create TAA descriptor set layout");
+
+  // --- SSGI prev-history layout (set 2 on the SSGI pipeline) ---
+  // Single binding 0 = previous-frame SSGI bounce image. Read by
+  // ssgi.frag for temporal reprojection + blend.
+  VkDescriptorSetLayoutBinding ssgiPrevBinding = {};
+  ssgiPrevBinding.binding = 0;
+  ssgiPrevBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  ssgiPrevBinding.descriptorCount = 1;
+  ssgiPrevBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  VkDescriptorSetLayoutCreateInfo ssgiPrevCI = {};
+  ssgiPrevCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  ssgiPrevCI.bindingCount = 1;
+  ssgiPrevCI.pBindings = &ssgiPrevBinding;
+  if (vkCreateDescriptorSetLayout(device, &ssgiPrevCI, nullptr,
+                                  &ssgiPrevSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create SSGI prev-history layout");
 }
 
 // Push constant range

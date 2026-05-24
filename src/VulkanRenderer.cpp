@@ -669,6 +669,12 @@ void VulkanRenderer::createGBuffer() {
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
                                         textureManager.getTextureSampler());
+  {
+    std::vector<VkImageView> ssgiHv = {ssgiHistoryViews[0].get(),
+                                       ssgiHistoryViews[1].get()};
+    descriptorManager.recreateSsgiPrevSets(device.getLogicalDevice(), ssgiHv,
+                                           ssgiSampler);
+  }
 }
 
 void VulkanRenderer::cleanupGBuffer() {

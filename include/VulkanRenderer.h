@@ -94,6 +94,14 @@ private:
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
 
+  // --- SSGI bounce buffer (HDR, sampled by lit pass with bilateral) ---
+  // Same format as litBuffer so a single sampler covers both. Written by
+  // ssgi.frag between G-buffer and lit; read by lit.frag with a 9-tap
+  // cross-bilateral filter that uses depth + normal as edge weights.
+  std::vector<AllocatedImage>  ssgiImages;
+  std::vector<ImageViewHandle> ssgiViews;
+  std::vector<VkFramebuffer>   ssgiFramebuffers;
+
   // --- TAA history (HDR, ping-pong, persistent across frames) ---
   // Two physical images that alternate roles each frame:
   //   frame N writes taaHistory[N&1], samples taaHistory[(N+1)&1]
@@ -287,6 +295,8 @@ private:
   void cleanupGBuffer();
   void createLitResources();
   void cleanupLitResources();
+  void createSsgiResources();
+  void cleanupSsgiResources();
   void createTaaResources();
   void cleanupTaaResources();
   void createCompositeFramebuffers();

@@ -21,6 +21,11 @@ public:
   // here — it samples this image in the next pass.
   void createLitRenderPass(VkDevice device, VkFormat litFormat);
 
+  // Creates the dedicated SSGI pass: single subpass, single color
+  // attachment. Runs between G-buffer and lit so lit.frag can sample the
+  // resulting screen-space-bounce image with a cross-bilateral filter.
+  void createSsgiRenderPass(VkDevice device, VkFormat ssgiFormat);
+
   // Creates the composition pass: 2 subpasses, 3 attachments.
   //   Subpass 0 (SSR composite — samples litBuffer + G-buffer) → colorBuffer
   //   Subpass 1 (TAA + ACES+gamma) → swapchain (LDR) + history (HDR)
@@ -40,6 +45,7 @@ public:
 
   VkRenderPass getGBufferRenderPass() const { return gBufferRenderPass; }
   VkRenderPass getLitRenderPass()     const { return litRenderPass; }
+  VkRenderPass getSsgiRenderPass()    const { return ssgiRenderPass; }
   VkRenderPass getRenderPass()        const { return renderPass; }
   VkRenderPass getShadowRenderPass()  const { return shadowRenderPass; }
   VkRenderPass getImGuiRenderPass()   const { return imguiRenderPass; }
@@ -47,6 +53,7 @@ public:
 private:
   VkRenderPass gBufferRenderPass = VK_NULL_HANDLE;
   VkRenderPass litRenderPass     = VK_NULL_HANDLE;
+  VkRenderPass ssgiRenderPass    = VK_NULL_HANDLE;
   VkRenderPass renderPass        = VK_NULL_HANDLE;
   VkRenderPass shadowRenderPass  = VK_NULL_HANDLE;
   VkRenderPass imguiRenderPass   = VK_NULL_HANDLE;

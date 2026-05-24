@@ -60,6 +60,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     renderPassManager.createGBufferRenderPass(
         device.getLogicalDevice(), gb0Fmt, gb1Fmt, gb2Fmt, gBufferDepthFormat);
     renderPassManager.createLitRenderPass(device.getLogicalDevice(), litFormat);
+    renderPassManager.createSsgiRenderPass(device.getLogicalDevice(), litFormat);
     renderPassManager.createRenderPass(device.getLogicalDevice(),
                                        swapchainFormat, colorFormat,
                                        litFormat);
@@ -89,6 +90,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 8. Lit-buffer resources (created BEFORE G-buffer set update so that
     //    recreateGBufferSets has the lit views to bind).
     createLitResources();
+
+    // 8a. SSGI bounce-buffer images + framebuffers. Sampled by lit.frag,
+    //     so the G-buffer descriptor set (set 1) gets a 6th binding
+    //     pointing at these views.
+    createSsgiResources();
 
     // 8b. TAA history images. Format matches litFormat so they live in the
     //     same HDR-precision domain. Currently allocated but not yet wired
@@ -123,11 +129,12 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                                         depthViews, colorViews, taaSampler);
     }
 
-    // 10. Pipeline (needs all 4 render passes + descriptor layouts)
+    // 10. Pipeline (needs all 5 render passes + descriptor layouts)
     pipeline.createPipelines(
         device.getLogicalDevice(), renderPassManager.getGBufferRenderPass(),
         renderPassManager.getLitRenderPass(), renderPassManager.getRenderPass(),
-        renderPassManager.getShadowRenderPass(), swapchain.getExtent(),
+        renderPassManager.getShadowRenderPass(),
+        renderPassManager.getSsgiRenderPass(), swapchain.getExtent(),
         descriptorManager);
 
     // 10. IBL + SSAO resources (requires textureManager and descriptorManager)
@@ -483,9 +490,11 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
   cleanupGBuffer();
+  cleanupSsgiResources();
   cleanupLitResources();
   cleanupTaaResources();
   createLitResources();
+  createSsgiResources();
   createTaaResources();
   createCompositeFramebuffers();
   createGBuffer();
@@ -639,21 +648,23 @@ void VulkanRenderer::createGBuffer() {
       throw std::runtime_error("Failed to create G-buffer framebuffer");
   }
 
-  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv;
+  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv, ssgv;
   gb0v.reserve(count);
   gb1v.reserve(count);
   gb2v.reserve(count);
   depv.reserve(count);
   litv.reserve(count);
+  ssgv.reserve(count);
   for (size_t i = 0; i < count; i++) {
     gb0v.push_back(gBuffer0Views[i].get());
     gb1v.push_back(gBuffer1Views[i].get());
     gb2v.push_back(gBuffer2Views[i].get());
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
+    ssgv.push_back(ssgiViews[i].get());
   }
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
-                                        gb2v, depv, litv,
+                                        gb2v, depv, litv, ssgv,
                                         textureManager.getTextureSampler());
 }
 
@@ -760,6 +771,78 @@ void VulkanRenderer::cleanupLitResources() {
     vkDestroySampler(dev, litSampler, nullptr);
     litSampler = VK_NULL_HANDLE;
   }
+}
+
+// SSGI bounce-buffer resources. Same shape as the lit buffer (single
+// HDR R16 attachment per swap image) but rendered to by a dedicated
+// pre-lit pass — output gets sampled by lit.frag with a cross-bilateral
+// filter to suppress the per-pixel SSGI noise.
+void VulkanRenderer::createSsgiResources() {
+  VkDevice dev = device.getLogicalDevice();
+  const size_t count = swapchain.getImageCount();
+
+  ssgiImages.clear();
+  ssgiViews.clear();
+  ssgiFramebuffers.assign(count, VK_NULL_HANDLE);
+  ssgiImages.reserve(count);
+  ssgiViews.reserve(count);
+
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+  for (size_t i = 0; i < count; ++i) {
+    VkImageCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.format = litFormat;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkImage rawImg = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
+                       nullptr) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSGI image");
+    ssgiImages.emplace_back(device.getAllocator(), rawImg, alloc);
+
+    VkImageViewCreateInfo vci = {};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = ssgiImages.back().get();
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = litFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageView v = VK_NULL_HANDLE;
+    if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSGI image view");
+    ssgiViews.emplace_back(dev, v);
+
+    VkImageView attachment = v;
+    VkFramebufferCreateInfo fbci = {};
+    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass = renderPassManager.getSsgiRenderPass();
+    fbci.attachmentCount = 1;
+    fbci.pAttachments = &attachment;
+    fbci.width = swapchain.getExtent().width;
+    fbci.height = swapchain.getExtent().height;
+    fbci.layers = 1;
+    if (vkCreateFramebuffer(dev, &fbci, nullptr, &ssgiFramebuffers[i]) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSGI framebuffer");
+  }
+}
+
+void VulkanRenderer::cleanupSsgiResources() {
+  VkDevice dev = device.getLogicalDevice();
+  for (VkFramebuffer fb : ssgiFramebuffers)
+    if (fb != VK_NULL_HANDLE)
+      vkDestroyFramebuffer(dev, fb, nullptr);
+  ssgiFramebuffers.clear();
+  ssgiViews.clear();
+  ssgiImages.clear();
 }
 
 // TAA history images. Two persistent HDR images that ping-pong each frame:
@@ -1472,6 +1555,7 @@ void VulkanRenderer::cleanup() {
   cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
   cleanupGBuffer();
+  cleanupSsgiResources();
   cleanupLitResources();
   cleanupTaaResources();
   cleanupIBL();
@@ -1738,6 +1822,41 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
     vkCmdEndRenderPass(cmd);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+    vkdbgEndLabel(cmd);
+  }
+
+  // --- SSGI pass (one-bounce diffuse, single-frame) ---
+  // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
+  // pass's finalLayout) + scene UBO; writes raw bounce to ssgiImages[
+  // currentImage]. lit.frag samples this output with cross-bilateral
+  // (set 1, binding 5). Keeping it as a separate pass lets us put a
+  // proper denoiser between SSGI and lit later (next-session item).
+  {
+    VkClearValue clear = {};
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = renderPassManager.getSsgiRenderPass();
+    rpbi.framebuffer = ssgiFramebuffers[currentImage];
+    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear;
+
+    vkdbgBeginLabel(cmd, "SSGI (raw bounce)", 0.95f, 0.55f, 0.20f);
+    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline.getSsgiPipeline());
+    std::array<VkDescriptorSet, 2> ssgiSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getGBufferSet(currentImage)};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getSsgiLayout(), 0, 2, ssgiSets.data(), 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
     vkdbgEndLabel(cmd);
   }
 

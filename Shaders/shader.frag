@@ -81,11 +81,12 @@ void main() {
 
     vec3 normalSample = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
     vec3 worldNormal = normalize(fragTBN * normalSample);
+    vec3 geomNormal  = normalize(fragTBN[2]);   // interpolated vertex normal
     // P2 diagnostic: when qualityToggles2.y > 0.5, replace normal-map result
     // with the geometric (interpolated TBN basis Z) normal. Used to isolate
     // whether floor dither is normal-map driven.
     if (scene.qualityToggles2.y > 0.5)
-        worldNormal = normalize(fragTBN[2]);
+        worldNormal = geomNormal;
 
     // texIdx1.y is a packed material-flag bitfield (bit 0 = isCloth).
     // Bake the cloth bit into gBuffer2.g so the deferred lit pass can drive
@@ -93,7 +94,27 @@ void main() {
     // R8 UNORM → exact 0.0 / 1.0 readback after bilinear at material edges.
     float clothBit = float((push.texIdx1.y & 1u));
 
+    // Octahedral encode the GEOMETRIC normal into gBuffer2.ba (2×8-bit).
+    // lit.frag uses this for IBL reflection-direction stability: the
+    // perturbed (normal-mapped) worldNormal dances across cubemap mip
+    // texels at every pixel, producing visible blocks; the geometric
+    // normal stays smooth across a surface, so R = reflect(-V, geomN)
+    // gives a coherent mip selection. Direct light still uses the
+    // perturbed normal so bumpiness reads correctly in sun-lit specular.
+    vec2 octN;
+    {
+        vec3 n = geomNormal;
+        n /= (abs(n.x) + abs(n.y) + abs(n.z));
+        if (n.z < 0.0) {
+            // Wrap into the octahedron's "lower" hemisphere.
+            vec2 nxy = n.xy;
+            n.x = (1.0 - abs(nxy.y)) * (nxy.x >= 0.0 ? 1.0 : -1.0);
+            n.y = (1.0 - abs(nxy.x)) * (nxy.y >= 0.0 ? 1.0 : -1.0);
+        }
+        octN = n.xy * 0.5 + 0.5;            // -> [0,1]
+    }
+
     gBuffer0 = vec4(albedo, metallic);
     gBuffer1 = vec4(worldNormal, roughness);
-    gBuffer2 = vec4(ao, clothBit, 0.0, 1.0);
+    gBuffer2 = vec4(ao, clothBit, octN.x, octN.y);
 }

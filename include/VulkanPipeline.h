@@ -18,7 +18,8 @@ public:
   // shadowPass     : depth-only (unchanged)
   void createPipelines(VkDevice device, VkRenderPass gBufferPass,
                        VkRenderPass litPass, VkRenderPass compositionPass,
-                       VkRenderPass shadowPass, VkExtent2D extent,
+                       VkRenderPass shadowPass, VkRenderPass ssgiPass,
+                       VkExtent2D extent,
                        const DescriptorManager &descriptors);
   void cleanup(VkDevice device);
 
@@ -30,6 +31,8 @@ public:
   }
   VkPipeline getLitPipeline() const { return litPipeline; }
   VkPipelineLayout getLitLayout() const { return litPipelineLayout; }
+  VkPipeline getSsgiPipeline() const { return ssgiPipeline; }
+  VkPipelineLayout getSsgiLayout() const { return ssgiPipelineLayout; }
   // "Deferred" handle now drives the SSR composite stage (composition subpass 0).
   VkPipeline getDeferredPipeline() const { return deferredPipeline; }
   VkPipelineLayout getDeferredLayout() const { return deferredPipelineLayout; }
@@ -45,6 +48,8 @@ private:
   VkPipelineLayout instancedPipelineLayout = VK_NULL_HANDLE;
   VkPipeline litPipeline = VK_NULL_HANDLE;
   VkPipelineLayout litPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline ssgiPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout ssgiPipelineLayout = VK_NULL_HANDLE;
   VkPipeline deferredPipeline = VK_NULL_HANDLE;
   VkPipelineLayout deferredPipelineLayout = VK_NULL_HANDLE;
   VkPipeline secondPipeline = VK_NULL_HANDLE;

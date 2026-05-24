@@ -34,6 +34,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
                                      VkRenderPass litPass,
                                      VkRenderPass compositionPass,
                                      VkRenderPass shadowPassRP,
+                                     VkRenderPass ssgiPass,
                                      VkExtent2D extent,
                                      const DescriptorManager &descriptors) {
   pipelineCache = createPipelineCache(device);
@@ -408,6 +409,46 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
   vkDestroyShaderModule(device, litFragMod, nullptr);
 
+  // 3a'. SSGI PIPELINE  (second.vert + ssgi.frag → ssgiBuffer, ssgi pass).
+  // Same fullscreen-quad shape as lit; sees the same descriptor sets
+  // (VP + G-buffer) so it can sample G-buffer + scene UBO directly.
+  // Output is a single R16 HDR color attachment; lit.frag samples it
+  // (via gbuffer set binding 5) and applies the cross-bilateral filter.
+  auto ssgiFragCode = readFile("../Shaders/ssgi.frag.spv");
+  VkShaderModule ssgiFragMod = createShaderModule(device, ssgiFragCode);
+
+  VkPipelineShaderStageCreateInfo ssgiStages[2] = {};
+  ssgiStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                   VK_SHADER_STAGE_VERTEX_BIT, fullscreenVertMod, "main", nullptr};
+  ssgiStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, ssgiFragMod, "main", nullptr};
+
+  VkDescriptorSetLayout ssgiLayoutsArr[] = {descriptors.getVPLayout(),
+                                            descriptors.getGBufferLayout()};
+  VkPipelineLayoutCreateInfo ssgiLayoutCI = {};
+  ssgiLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  ssgiLayoutCI.setLayoutCount = 2;
+  ssgiLayoutCI.pSetLayouts = ssgiLayoutsArr;
+  if (vkCreatePipelineLayout(device, &ssgiLayoutCI, nullptr,
+                             &ssgiPipelineLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create SSGI pipeline layout");
+
+  VkGraphicsPipelineCreateInfo ssgiPCI = geoPCI;
+  ssgiPCI.stageCount = 2;
+  ssgiPCI.pStages = ssgiStages;
+  ssgiPCI.pVertexInputState = &emptyVI;
+  ssgiPCI.pDepthStencilState = &noDepth;
+  ssgiPCI.pColorBlendState = &singleColorBlend;
+  ssgiPCI.pDynamicState = &dynState;
+  ssgiPCI.layout = ssgiPipelineLayout;
+  ssgiPCI.renderPass = ssgiPass;
+  ssgiPCI.subpass = 0;
+  if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &ssgiPCI, nullptr,
+                                &ssgiPipeline) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create SSGI pipeline");
+
+  vkDestroyShaderModule(device, ssgiFragMod, nullptr);
+
   // 3b. SSR COMPOSITE PIPELINE  (second.vert + ssr_composite.frag → colorBuffer,
   // composition subpass 0). Shares fullscreen vert shader and most state
   // with the lit pipeline.
@@ -535,6 +576,8 @@ void VulkanPipeline::cleanup(VkDevice device) {
   vkDestroyPipelineLayout(device, secondPipelineLayout, nullptr);
   vkDestroyPipeline(device, deferredPipeline, nullptr);
   vkDestroyPipelineLayout(device, deferredPipelineLayout, nullptr);
+  vkDestroyPipeline(device, ssgiPipeline, nullptr);
+  vkDestroyPipelineLayout(device, ssgiPipelineLayout, nullptr);
   vkDestroyPipeline(device, litPipeline, nullptr);
   vkDestroyPipelineLayout(device, litPipelineLayout, nullptr);
   vkDestroyPipeline(device, shadowPipeline, nullptr);

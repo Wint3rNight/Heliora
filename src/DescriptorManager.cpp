@@ -159,7 +159,8 @@ void DescriptorManager::recreateGBufferSets(
     VkDevice device, const std::vector<VkImageView> &gb0,
     const std::vector<VkImageView> &gb1, const std::vector<VkImageView> &gb2,
     const std::vector<VkImageView> &gbDepth,
-    const std::vector<VkImageView> &lit, VkSampler sampler) {
+    const std::vector<VkImageView> &lit,
+    const std::vector<VkImageView> &ssgi, VkSampler sampler) {
   vkResetDescriptorPool(device, gBufferDescriptorPool, 0);
 
   size_t count = gb0.size();
@@ -176,15 +177,16 @@ void DescriptorManager::recreateGBufferSets(
     throw std::runtime_error("Failed to allocate G-buffer descriptor sets");
 
   for (size_t i = 0; i < count; ++i) {
-    VkDescriptorImageInfo imgs[5] = {
+    VkDescriptorImageInfo imgs[6] = {
         {sampler, gb0[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {sampler, gb1[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {sampler, gb2[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {sampler, gbDepth[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
         {sampler, lit[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {sampler, ssgi[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
-    VkWriteDescriptorSet writes[5] = {};
-    for (int b = 0; b < 5; ++b) {
+    VkWriteDescriptorSet writes[6] = {};
+    for (int b = 0; b < 6; ++b) {
       writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[b].dstSet = gBufferDescriptorSets[i];
       writes[b].dstBinding = static_cast<uint32_t>(b);
@@ -192,7 +194,7 @@ void DescriptorManager::recreateGBufferSets(
       writes[b].descriptorCount = 1;
       writes[b].pImageInfo = &imgs[b];
     }
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
   }
 }
 
@@ -358,10 +360,14 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
     throw std::runtime_error(
         "Failed to create bindless descriptor set layout");
 
-  // --- G-buffer sampler layout (set 1, deferred/composite passes): 5 bindings
-  // bindings 0-3: gb0/gb1/gb2/depth, binding 4: lit (sampled in SSR composite)
-  VkDescriptorSetLayoutBinding gbBindings[5] = {};
-  for (int i = 0; i < 5; ++i) {
+  // --- G-buffer sampler layout (set 1, deferred/composite/SSGI passes): 6
+  // bindings 0-3: gb0/gb1/gb2/depth
+  // binding 4: lit (sampled by SSR composite)
+  // binding 5: ssgi raw bounce (sampled by lit.frag with cross-bilateral)
+  // ssgi.frag declares only bindings 0/1/3; unused bindings (4, 5) stay
+  // bound but unread, which is legal in Vulkan.
+  VkDescriptorSetLayoutBinding gbBindings[6] = {};
+  for (int i = 0; i < 6; ++i) {
     gbBindings[i].binding = static_cast<uint32_t>(i);
     gbBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     gbBindings[i].descriptorCount = 1;
@@ -369,7 +375,7 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
   }
   VkDescriptorSetLayoutCreateInfo gbCI = {};
   gbCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  gbCI.bindingCount = 5;
+  gbCI.bindingCount = 6;
   gbCI.pBindings = gbBindings;
   if (vkCreateDescriptorSetLayout(device, &gbCI, nullptr, &gBufferSetLayout) !=
       VK_SUCCESS)
@@ -474,10 +480,11 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
     throw std::runtime_error(
         "Failed to create material sampler descriptor pool");
 
-  // G-buffer sampler pool: 5 samplers per frame (gb0/gb1/gb2/depth + lit)
+  // G-buffer sampler pool: 6 samplers per frame
+  //   gb0 / gb1 / gb2 / depth / lit (SSR comp) / ssgi (lit bilateral)
   VkDescriptorPoolSize gbSize = {};
   gbSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  gbSize.descriptorCount = static_cast<uint32_t>(count * 5);
+  gbSize.descriptorCount = static_cast<uint32_t>(count * 6);
 
   VkDescriptorPoolCreateInfo gbCI = {};
   gbCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

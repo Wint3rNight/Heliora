@@ -57,8 +57,12 @@ layout(set = 0, binding = 7) uniform samplerCube skyboxCubemap;
 // ---- Set 1: G-buffer samplers ----
 layout(set = 1, binding = 0) uniform sampler2D gBuffer0Sampler;  // albedo + metallic
 layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;  // world normal + roughness
-layout(set = 1, binding = 2) uniform sampler2D gBuffer2Sampler;  // AO
+layout(set = 1, binding = 2) uniform sampler2D gBuffer2Sampler;  // AO + isCloth + octN(geom)
 layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
+// binding 4 = litBuffer (read by SSR composite, not by this shader).
+// binding 5 = raw SSGI bounce from the dedicated SSGI pass — this shader
+// applies a 9-tap cross-bilateral with depth + normal weights.
+layout(set = 1, binding = 5) uniform sampler2D ssgiSampler;
 
 layout(location = 0) out vec4 outColor;
 
@@ -720,7 +724,30 @@ void main() {
     vec3 irradiance   = texture(irradianceMap, worldN).rgb;
     vec3 diffuseIBL   = kD_ibl * irradiance * albedo;
 
-    vec3  R              = reflect(-V, worldN);
+    // Geometric normal (octahedral-decoded from gBuffer2.ba). Used for
+    // the IBL reflection direction only — direct light keeps the
+    // perturbed worldN so bumpiness still reads in sun-lit specular.
+    // The perturbed normal varies wildly across screen pixels from
+    // normal-map detail; using it for R caused adjacent pixels to
+    // sample different prefilter mip texels → visible block pattern
+    // on the floor (N5 in mds/sponza_visual_diagnosis.md). The
+    // geometric normal varies smoothly along a surface, so R stays
+    // coherent and the mip texel choice changes only at real
+    // geometric edges. Inverse-octahedral decode from [0,1].
+    vec3 worldN_geom;
+    {
+        vec2 e = g2.ba * 2.0 - 1.0;
+        worldN_geom = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+        if (worldN_geom.z < 0.0) {
+            vec2 wrap = (1.0 - abs(worldN_geom.yx)) *
+                        vec2(worldN_geom.x >= 0.0 ? 1.0 : -1.0,
+                             worldN_geom.y >= 0.0 ? 1.0 : -1.0);
+            worldN_geom.xy = wrap;
+        }
+        worldN_geom = normalize(worldN_geom);
+    }
+
+    vec3  R              = reflect(-V, worldN_geom);
     // Karis split-sum LOD based on perceptual roughness.
     float roughLod       = roughnessForIBL * float(IBL_PREFILTER_MIPS - 1);
     // Filament-style geometric LOD based on screen-space derivative of R.
@@ -732,8 +759,17 @@ void main() {
     float envSize        = float(textureSize(prefilteredEnvMap, 0).x);
     float derivMag2      = max(dot(dRdx, dRdx), dot(dRdy, dRdy));
     float geomLod        = 0.5 * log2(max(derivMag2 * envSize * envSize, 1e-6));
+    // Upper cap one mip below max. The smallest prefilter mip (8×8 per
+    // cube face at IBL_PREFILTER_MIPS=5) is too low-resolution: adjacent
+    // screen pixels with normal-map-perturbed R end up sampling the same
+    // 8×8 texel, producing visible flat-bright blocks at texel
+    // boundaries (the "pixelated cluster" pattern on the floor under
+    // top-down camera). Capping at mip-2 trades a little roughness
+    // headroom for a 4× texel-density floor (16×16 per face) and kills
+    // the visible aliasing. Combined with N5(a) (geometric-normal R for
+    // IBL) this should be enough; if not, bake one extra mip.
     float prefilteredLod = clamp(max(roughLod, geomLod), 0.0,
-                                 float(IBL_PREFILTER_MIPS - 1));
+                                 float(IBL_PREFILTER_MIPS - 2));
     // Firefly clamp on the prefiltered env. Tightened 4.0 → 2.0 once auto-
     // exposure was added: on metallic gold trim (low roughness × high
     // metallic = almost-pure IBL specular contribution), a 4.0-bright
@@ -795,24 +831,62 @@ void main() {
     vec3 ambient = (diffuseIBL * skyOcclusion + specularIBL * skyOccSpec) *
                    ao * ssaoFactor * scene.qualityToggles2.w;
 
-    // One-bounce diffuse SSGI. Adds the "warm light bouncing off sunlit
-    // walls into shadowed interior" term that no IBL tuning can reproduce.
-    // Treated as additional incoming irradiance on the receiver Lambert
-    // diffuse — multiplied by receiver albedo, kD, and ao. Not modulated
-    // by skyOcclusion (the bounce light by definition comes from local
-    // surfaces, not the distant sky that skyOcclusion approximates).
+    // One-bounce diffuse SSGI. Now sampled from the dedicated SSGI pass
+    // with a 9-tap cross-bilateral filter: depth + normal edge weights
+    // make adjacent pixels-on-the-same-surface average together while
+    // pixels across edges (silhouettes, shadow boundaries) reject. The
+    // bilateral is what tames the shadow-edge "block" pattern the
+    // inline computeSSGI couldn't resolve via TAA alone.
     //
     // Close-range fade: SSGI's fixed pixel-radius Vogel disc covers a
-    // huge SOLID-angle at sub-meter view distances, so adjacent screen
-    // pixels look at wildly different parts of the scene and the
-    // temporal-rotated noise can't average out before TAA disocclusion
-    // kicks. Fade SSGI to zero below ~0.5 m view-Z and ramp it up to
-    // full contribution by ~2 m where the disc covers a sane angular
-    // extent. Above 2 m it's full strength as before.
-    float ssgiFade  = smoothstep(0.5, 2.0, -viewPos.z);
-    vec3 ssgiIrradiance = computeSSGI(uv, worldPos, worldN, -viewPos.z);
-    vec3 ssgiBounce     = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor *
-                          ssgiFade;
+    // huge SOLID-angle at sub-meter view distances. Fade to zero below
+    // 0.5 m view-Z, full contribution by 2 m.
+    float ssgiFade = smoothstep(0.5, 2.0, -viewPos.z);
+    vec3 ssgiIrradiance;
+    {
+        vec2 ssgiTexSize = vec2(textureSize(ssgiSampler, 0));
+        vec2 ssgiTexel   = 1.0 / ssgiTexSize;
+        float centerDepth = depth;
+        vec3  centerN     = worldN;
+        // 9-tap cross (center + 4 cardinal + 4 diagonal) with edge-aware
+        // weights. Sigma values tuned for typical Sponza scale: depth
+        // weight tolerates ~10 % relative-Z drift on the same surface,
+        // normal weight rejects across silhouettes within ~25°. The
+        // bilateral filter only acts on the noisy SSGI signal; it does
+        // not blur the underlying lit composite.
+        const ivec2 OFFSETS[9] = ivec2[9](
+            ivec2( 0,  0),
+            ivec2( 1,  0), ivec2(-1,  0), ivec2( 0,  1), ivec2( 0, -1),
+            ivec2( 1,  1), ivec2(-1, -1), ivec2( 1, -1), ivec2(-1,  1)
+        );
+        vec3  bilSum  = vec3(0.0);
+        float bilWSum = 0.0;
+        for (int k = 0; k < 9; ++k) {
+            vec2  sUV  = uv + vec2(OFFSETS[k]) * ssgiTexel;
+            vec3  sSSGI = texture(ssgiSampler, sUV).rgb;
+            float sD   = texture(gBufferDepthSampler, sUV).r;
+            vec3  sN   = texture(gBuffer1Sampler, sUV).xyz;
+            if (dot(sN, sN) < 0.1) continue;
+            sN = normalize(sN);
+            // Depth weight: exponential falloff on relative-Z distance.
+            float dz = abs(sD - centerDepth) /
+                       max(centerDepth + 1e-5, 1e-5);
+            float wD = exp(-dz * 32.0);
+            // Normal weight: dot product raised so it rolls off at ~25°.
+            float wN = pow(max(dot(sN, centerN), 0.0), 8.0);
+            // Spatial weight: 1 for center, 0.7 for cardinal, 0.5 for diag.
+            float wS = (k == 0) ? 1.0
+                     : (k < 5)  ? 0.7
+                                : 0.5;
+            float w  = wD * wN * wS;
+            bilSum  += sSSGI * w;
+            bilWSum += w;
+        }
+        ssgiIrradiance = (bilWSum > 1e-5) ? (bilSum / bilWSum)
+                                          : texture(ssgiSampler, uv).rgb;
+    }
+    vec3 ssgiBounce = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor *
+                      ssgiFade;
     ambient += ssgiBounce;
 
     // Point lights + omnidirectional shadow

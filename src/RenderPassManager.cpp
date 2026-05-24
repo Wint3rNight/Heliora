@@ -139,6 +139,58 @@ void RenderPassManager::createLitRenderPass(VkDevice device,
     throw std::runtime_error("Failed to create lit render pass");
 }
 
+// SSGI render pass — same shape as the lit pass: single color
+// attachment, finalLayout SHADER_READ_ONLY so the next pass (lit) can
+// sample it. The subpass dependencies wait on the previous pass's
+// fragment-shader sampling (so the G-buffer is committed before we
+// read it) and flush our color writes for fragment reads.
+void RenderPassManager::createSsgiRenderPass(VkDevice device,
+                                             VkFormat ssgiFormat) {
+  VkAttachmentDescription att = {};
+  att.format         = ssgiFormat;
+  att.samples        = VK_SAMPLE_COUNT_1_BIT;
+  att.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+  att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentReference colorRef = {};
+  colorRef.attachment = 0;
+  colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription subpass = {};
+  subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpass.colorAttachmentCount = 1;
+  subpass.pColorAttachments    = &colorRef;
+
+  std::array<VkSubpassDependency, 2> deps = {};
+  deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[0].dstSubpass    = 0;
+  deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[1].srcSubpass    = 0;
+  deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  VkRenderPassCreateInfo ci = {};
+  ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  ci.attachmentCount = 1;
+  ci.pAttachments    = &att;
+  ci.subpassCount    = 1;
+  ci.pSubpasses      = &subpass;
+  ci.dependencyCount = static_cast<uint32_t>(deps.size());
+  ci.pDependencies   = deps.data();
+  if (vkCreateRenderPass(device, &ci, nullptr, &ssgiRenderPass) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create SSGI render pass");
+}
+
 // ---------------------------------------------------------------------------
 // Composition render pass (3 attachments: swapchain + colorBuffer + history)
 // Subpass 0: SSR composite (samples litBuffer + G-buffer) → colorBuffer
@@ -369,6 +421,8 @@ void RenderPassManager::cleanup(VkDevice device) {
     vkDestroyRenderPass(device, imguiRenderPass, nullptr);
   if (litRenderPass != VK_NULL_HANDLE)
     vkDestroyRenderPass(device, litRenderPass, nullptr);
+  if (ssgiRenderPass != VK_NULL_HANDLE)
+    vkDestroyRenderPass(device, ssgiRenderPass, nullptr);
   vkDestroyRenderPass(device, gBufferRenderPass, nullptr);
   vkDestroyRenderPass(device, renderPass, nullptr);
   vkDestroyRenderPass(device, shadowRenderPass, nullptr);

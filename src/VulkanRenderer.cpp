@@ -986,6 +986,10 @@ void VulkanRenderer::createTaaResources() {
   }
 
   // Fresh allocation → history is undefined → don't blend the first frame.
+  // Shared with SSGI: ssgi.frag reads scene.taaParams.w (==taaHistoryValid),
+  // so dropping this also drops the SSGI temporal blend on the post-resize
+  // frame. createSsgiResources runs alongside createTaaResources on every
+  // swapchain recreate; both ping-pong histories invalidate together.
   taaHistoryValid = false;
 }
 

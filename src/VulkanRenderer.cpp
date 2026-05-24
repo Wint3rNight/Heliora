@@ -335,9 +335,14 @@ void VulkanRenderer::draw() {
       float target =
           *reinterpret_cast<const float *>(autoExpResultMapped[currentFrame]);
       if (!std::isfinite(target) || target <= 0.0f) target = 1.0f;
-      // Clamp the target into a sane EV range so a flash-bright frame
-      // doesn't blind the adaptation past recovery; ±~6 stops from 1.0.
-      target = glm::clamp(target, 1.0f / 64.0f, 64.0f);
+      // Clamp the target tightly. The Bruop formula `H = 1 / (9.6 × avg)`
+      // routinely returns 3–4× on Sponza-interior shots (lots of dark
+      // pixels drag avgLum low), which then amplifies every noise term
+      // by the same factor. Hard cap at 2.5× displayed amplification so
+      // residual SSGI / spec-AA grain doesn't get pushed past the
+      // perceptual visibility threshold. Lower bound 0.5× keeps dark
+      // scenes from going pitch black under a bright sun.
+      target = glm::clamp(target, 0.5f, 2.5f);
       float alpha = 1.0f - std::exp(-exposureDt / kAutoExpTauSeconds);
       autoExpAdaptedValue =
           autoExpAdaptedValue + alpha * (target - autoExpAdaptedValue);
@@ -2547,10 +2552,10 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
-  if (ImGui::SliderFloat("AA variance", &imguiSpecAAVariance, 0.0f, 1.0f,
+  if (ImGui::SliderFloat("AA variance", &imguiSpecAAVariance, 0.0f, 2.0f,
                          "%.3f"))
     sceneUbo.qualityToggles.z = imguiSpecAAVariance;
-  if (ImGui::SliderFloat("AA threshold", &imguiSpecAAThreshold, 0.0f, 0.5f,
+  if (ImGui::SliderFloat("AA threshold", &imguiSpecAAThreshold, 0.0f, 1.0f,
                          "%.3f"))
     sceneUbo.qualityToggles.w = imguiSpecAAThreshold;
   if (ImGui::SliderFloat("IBL roughness floor", &imguiIblRoughnessFloor, 0.0f,

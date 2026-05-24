@@ -205,13 +205,13 @@ private:
   float imguiFogDensity = 0.0f;
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
-  float imguiSpecAAVariance = 0.75f;       // tunable
+  float imguiSpecAAVariance = 1.25f;       // tunable
   // Karis-style spec-AA threshold cap. 0.18 (the plan's KAPPA) leaves
   // visible per-pixel sparkle on Sponza's dense cloth weave / foliage at
   // glancing angles. Bumping to 0.5 lets the kernel saturate more, folding
   // sub-pixel normal variance into much higher effective roughness on
   // high-frequency surfaces while leaving low-variance surfaces unchanged.
-  float imguiSpecAAThreshold = 0.5f;       // tunable
+  float imguiSpecAAThreshold = 1.0f;       // tunable
   // IBL specular mip floor. 0.3 forces the prefiltered env fetch to use at
   // least ~mip 1 of 4 — kills the per-pixel sky-reflection sparkle from
   // normal-mapped cloth at grazing.
@@ -244,18 +244,18 @@ private:
   // pixels. 0.30 = old conservative ("dead-black interior"), 0.55 = new
   // default ("warm interior"), 1.0 = unbounded (full sky everywhere).
   float imguiSkyOcclusionFloor = 0.55f;
-  // SSGI (screen-space one-bounce diffuse) intensity. 0 = disabled. ~1.0 is
-  // a tasteful default for Sponza — pushes warm bounce into shadowed
-  // interiors. Higher values approach "neon" and pick up screen-space
-  // artifacts at silhouettes. Plumbed through shadowParams.y so we don't
-  // have to extend the SceneUBO struct (which lives in 8 shaders).
-  float imguiSsgiIntensity = 1.0f;
-  // CAS-style sharpening strength applied after AgX in second.frag. AgX +
-  // bloom + TAA blend collectively soften the image; this hands a knob
-  // back. 0 = identity, 0.4 = light edge restoration, 0.8+ = aggressive.
-  // Plumbed through shadowParams.z (previously reserved for SSGI radius
-  // but unused).
-  float imguiSharpness = 0.4f;
+  // SSGI (screen-space one-bounce diffuse) intensity. 0 = disabled.
+  // Dropped 1.0 → 0.6 alongside the per-sample firefly clamp tightening
+  // and the close-range fade: 1.0 over-emphasized the residual SSGI grain
+  // on sun-lit floor pixels once auto-exposure started amplifying. 0.6
+  // keeps the warm-bounce feel without the visible noise floor.
+  float imguiSsgiIntensity = 0.6f;
+  // CAS-style sharpening strength. Dropped 0.4 → 0.10 — the previous 0.4
+  // was amplifying the residual SSGI/spec-AA noise into a visible chunky
+  // pattern on the floor. 0.10 still restores TAA-softening on real edges
+  // without exaggerating noise. Push back toward 0.3–0.4 only if the
+  // image looks too soft after the noise-reduction pass.
+  float imguiSharpness = 0.10f;
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)

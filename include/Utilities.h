@@ -227,7 +227,14 @@ struct SceneUniformBuffer {
   // its threshold cap at smaller normal-map gradients, widening the
   // effective spec lobe on textured surfaces. SPEC_AA_THRESHOLD synced to
   // 0.5 to match the imgui slider's actual default value.
-  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 0.75f, 0.5f);
+  // Spec-AA variance 0.75 → 1.25 and threshold cap 0.5 → 1.0. Auto-exposure
+  // amplified the previous gap: close-range floor pixels under bright sun
+  // had strong per-pixel normal-map gradients that the old kernel didn't
+  // saturate on, and CAS+auto-exposure surfaced the residual shimmer as
+  // the chunky pattern in the floor close-up. The new defaults make the
+  // AA kernel saturate on milder gradients and let it widen nearly to
+  // matte where the noise is dense.
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 1.25f, 1.0f);
   // x = exposure linear multiplier (= exp2(EV stops); applied in second.frag
   //     before ACES tonemap; 1.0 = neutral).
   // y = "use geometric normal only" diagnostic (1 = bypass normal-map).

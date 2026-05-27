@@ -29,6 +29,18 @@ public:
   };
   static constexpr int NUM_GPU_PASSES = 8;
 
+  enum class CpuPhase {
+    WaitFence = 0,
+    Acquire = 1,
+    ImageFence = 2,
+    Update = 3,
+    Record = 4,
+    Upload = 5,
+    Submit = 6,
+    Present = 7
+  };
+  static constexpr int NUM_CPU_PHASES = 8;
+
   // Lifecycle
   void init(VkDevice device, VkPhysicalDevice physicalDevice,
             uint32_t graphicsQueueFamilyIndex, uint32_t queryFrameCount = 1);
@@ -46,6 +58,7 @@ public:
   void endPassTimestamp(VkCommandBuffer cmd, GpuPass pass);
 
   void recordDrawCall(uint32_t indexCount);
+  void recordCpuPhase(CpuPhase phase, double milliseconds);
   void endFrame();
 
   // Queries
@@ -57,7 +70,13 @@ public:
   uint32_t getLastDrawCallCount() const;
   uint32_t getLastTriangleCount() const;
   double getLastGpuTimeMs() const; // total GPU time (sum of all passes)
+  double getAverageGpuTimeMs() const;
   double getPassGpuTimeMs(GpuPass pass) const;
+  double getAveragePassGpuTimeMs(GpuPass pass) const;
+  double getCpuPhaseTimeMs(CpuPhase phase) const;
+  double getAverageCpuPhaseTimeMs(CpuPhase phase) const;
+  double getCpuPhaseTotalMs() const;
+  double getAverageCpuPhaseTotalMs() const;
 
   struct VramStats {
     uint64_t usedBytes = 0, budgetBytes = 0;
@@ -97,6 +116,12 @@ private:
   uint32_t activeGpuQueryFrame = 0;
   std::vector<uint8_t> gpuQueryFrameValid;
   double lastPassGpuMs[NUM_GPU_PASSES] = {};
+  double totalPassGpuMs[NUM_GPU_PASSES] = {};
+  uint64_t gpuTimingFrames = 0;
+
+  double lastCpuPhaseMs[NUM_CPU_PHASES] = {};
+  double totalCpuPhaseMs[NUM_CPU_PHASES] = {};
+  uint64_t cpuPhaseSamples[NUM_CPU_PHASES] = {};
 
   uint32_t gpuQueryBase(uint32_t frameIndex) const {
     return (frameIndex % gpuQueryFrameCount) * NUM_GPU_PASSES * 2;

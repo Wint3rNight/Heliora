@@ -83,7 +83,9 @@ void PerformanceMetrics::collectGpuResults(VkDevice device,
           static_cast<double>(end - begin) * timestampPeriod / 1e6;
     else
       lastPassGpuMs[p] = 0.0;
+    totalPassGpuMs[p] += lastPassGpuMs[p];
   }
+  gpuTimingFrames++;
 }
 
 void PerformanceMetrics::setActiveGpuQueryFrame(uint32_t frameIndex) {
@@ -126,6 +128,15 @@ void PerformanceMetrics::markGpuQueriesSubmitted(uint32_t frameIndex) {
 void PerformanceMetrics::recordDrawCall(uint32_t indexCount) {
   currentDrawCalls++;
   currentTriangles += indexCount / 3;
+}
+
+void PerformanceMetrics::recordCpuPhase(CpuPhase phase, double milliseconds) {
+  int idx = static_cast<int>(phase);
+  if (idx < 0 || idx >= NUM_CPU_PHASES)
+    return;
+  lastCpuPhaseMs[idx] = milliseconds;
+  totalCpuPhaseMs[idx] += milliseconds;
+  cpuPhaseSamples[idx]++;
 }
 
 void PerformanceMetrics::endFrame() {
@@ -198,8 +209,51 @@ double PerformanceMetrics::getLastGpuTimeMs() const {
   return total;
 }
 
+double PerformanceMetrics::getAverageGpuTimeMs() const {
+  if (gpuTimingFrames == 0)
+    return 0.0;
+  double total = 0.0;
+  for (int p = 0; p < NUM_GPU_PASSES; p++)
+    total += totalPassGpuMs[p];
+  return total / static_cast<double>(gpuTimingFrames);
+}
+
 double PerformanceMetrics::getPassGpuTimeMs(GpuPass pass) const {
   return lastPassGpuMs[static_cast<int>(pass)];
+}
+
+double PerformanceMetrics::getAveragePassGpuTimeMs(GpuPass pass) const {
+  if (gpuTimingFrames == 0)
+    return 0.0;
+  return totalPassGpuMs[static_cast<int>(pass)] /
+         static_cast<double>(gpuTimingFrames);
+}
+
+double PerformanceMetrics::getCpuPhaseTimeMs(CpuPhase phase) const {
+  return lastCpuPhaseMs[static_cast<int>(phase)];
+}
+
+double PerformanceMetrics::getAverageCpuPhaseTimeMs(CpuPhase phase) const {
+  int idx = static_cast<int>(phase);
+  if (cpuPhaseSamples[idx] == 0)
+    return 0.0;
+  return totalCpuPhaseMs[idx] / static_cast<double>(cpuPhaseSamples[idx]);
+}
+
+double PerformanceMetrics::getCpuPhaseTotalMs() const {
+  double total = 0.0;
+  for (int p = 0; p < NUM_CPU_PHASES; p++)
+    total += lastCpuPhaseMs[p];
+  return total;
+}
+
+double PerformanceMetrics::getAverageCpuPhaseTotalMs() const {
+  double total = 0.0;
+  for (int p = 0; p < NUM_CPU_PHASES; p++) {
+    if (cpuPhaseSamples[p] > 0)
+      total += totalCpuPhaseMs[p] / static_cast<double>(cpuPhaseSamples[p]);
+  }
+  return total;
 }
 
 PerformanceMetrics::VramStats
@@ -232,27 +286,64 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║  Triangles/Frame:     {:>20}  ║", lastTriangles);
   spdlog::info("╠══════════════════════════════════════════════╣");
   if (gpuTimingAvailable) {
-    spdlog::info("║  GPU Pass Timing (last frame):               ║");
-    spdlog::info("║    Shadow:          {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::Shadow]);
-    spdlog::info("║    Point Shadow:    {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::PointShadow]);
-    spdlog::info("║    G-Buffer:        {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::GBuffer]);
-    spdlog::info("║    SSGI:            {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::SSGI]);
-    spdlog::info("║    Lit:             {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::Lit]);
-    spdlog::info("║    Auto Exposure:   {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::AutoExposure]);
-    spdlog::info("║    Composite:       {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::Composite]);
-    spdlog::info("║    ImGui:           {:>17.3f} ms  ║",
-                 lastPassGpuMs[(int)GpuPass::ImGui]);
-    spdlog::info("║    Total GPU:       {:>17.3f} ms  ║", getLastGpuTimeMs());
+    spdlog::info("║  GPU Pass Timing (last / avg):               ║");
+    spdlog::info("║    Shadow:          {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Shadow],
+                 getAveragePassGpuTimeMs(GpuPass::Shadow));
+    spdlog::info("║    Point Shadow:    {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::PointShadow],
+                 getAveragePassGpuTimeMs(GpuPass::PointShadow));
+    spdlog::info("║    G-Buffer:        {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::GBuffer],
+                 getAveragePassGpuTimeMs(GpuPass::GBuffer));
+    spdlog::info("║    SSGI:            {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::SSGI],
+                 getAveragePassGpuTimeMs(GpuPass::SSGI));
+    spdlog::info("║    Lit:             {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Lit],
+                 getAveragePassGpuTimeMs(GpuPass::Lit));
+    spdlog::info("║    Auto Exposure:   {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::AutoExposure],
+                 getAveragePassGpuTimeMs(GpuPass::AutoExposure));
+    spdlog::info("║    Composite:       {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Composite],
+                 getAveragePassGpuTimeMs(GpuPass::Composite));
+    spdlog::info("║    ImGui:           {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::ImGui],
+                 getAveragePassGpuTimeMs(GpuPass::ImGui));
+    spdlog::info("║    Total GPU:       {:>7.3f} / {:>7.3f} ms  ║",
+                 getLastGpuTimeMs(), getAverageGpuTimeMs());
   } else {
     spdlog::info("║  GPU Timing:          {:>20}  ║", "N/A");
   }
+  spdlog::info("╠══════════════════════════════════════════════╣");
+  spdlog::info("║  CPU Phase Timing (last / avg):              ║");
+  spdlog::info("║    Wait fence:      {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::WaitFence),
+               getAverageCpuPhaseTimeMs(CpuPhase::WaitFence));
+  spdlog::info("║    Acquire image:   {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Acquire),
+               getAverageCpuPhaseTimeMs(CpuPhase::Acquire));
+  spdlog::info("║    Image fence:     {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::ImageFence),
+               getAverageCpuPhaseTimeMs(CpuPhase::ImageFence));
+  spdlog::info("║    Update scene:    {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Update),
+               getAverageCpuPhaseTimeMs(CpuPhase::Update));
+  spdlog::info("║    Record cmds:     {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Record),
+               getAverageCpuPhaseTimeMs(CpuPhase::Record));
+  spdlog::info("║    Upload UBO:      {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Upload),
+               getAverageCpuPhaseTimeMs(CpuPhase::Upload));
+  spdlog::info("║    Submit:          {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Submit),
+               getAverageCpuPhaseTimeMs(CpuPhase::Submit));
+  spdlog::info("║    Present:         {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Present),
+               getAverageCpuPhaseTimeMs(CpuPhase::Present));
+  spdlog::info("║    CPU measured:    {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTotalMs(), getAverageCpuPhaseTotalMs());
   VramStats vram = queryVram(allocator);
   double usedMB = static_cast<double>(vram.usedBytes) / (1024.0 * 1024.0);
   double budgetMB = static_cast<double>(vram.budgetBytes) / (1024.0 * 1024.0);

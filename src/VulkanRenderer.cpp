@@ -198,7 +198,9 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, imguiSsgiIntensity,
                                       imguiSharpness,
                                       imguiSsrEnabled ? 1.0f : 0.0f);
-    sceneUbo.fogParams = glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp, 0.0f);
+    sceneUbo.fogParams =
+        glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp,
+                  static_cast<float>(std::clamp(imguiSsgiSamples, 4, 12)));
     sceneUbo.lightCounts =
         glm::ivec4(1, 0, 0x3f, 0); // z = lighting-isolation bit mask
 
@@ -259,8 +261,17 @@ void VulkanRenderer::draw() {
 
   metrics.beginFrame();
 
+  using CpuClock = std::chrono::high_resolution_clock;
+  auto elapsedMs = [](CpuClock::time_point start) {
+    return std::chrono::duration<double, std::milli>(CpuClock::now() - start)
+        .count();
+  };
+
+  auto phaseStart = CpuClock::now();
   vkWaitForFences(logicalDevice, 1, &drawFences[currentFrame], VK_TRUE,
                   std::numeric_limits<uint64_t>::max());
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::WaitFence,
+                         elapsedMs(phaseStart));
   metrics.collectGpuResults(logicalDevice, currentFrame);
 
   // Check resize BEFORE acquiring — a successful acquire signals
@@ -273,10 +284,13 @@ void VulkanRenderer::draw() {
   }
 
   uint32_t imageIndex;
+  phaseStart = CpuClock::now();
   VkResult acquireResult = vkAcquireNextImageKHR(
       logicalDevice, swapchain.getSwapchain(),
       std::numeric_limits<uint64_t>::max(), imageAvailable[currentFrame],
       VK_NULL_HANDLE, &imageIndex);
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Acquire,
+                         elapsedMs(phaseStart));
 
   if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
     // Failed acquire → semaphore NOT signaled per spec → safe to recreate
@@ -287,13 +301,17 @@ void VulkanRenderer::draw() {
     throw std::runtime_error("Failed to acquire swap chain image");
   }
 
+  phaseStart = CpuClock::now();
   if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
     vkWaitForFences(logicalDevice, 1, &imagesInFlight[imageIndex], VK_TRUE,
                     UINT64_MAX);
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::ImageFence,
+                         elapsedMs(phaseStart));
 
   imagesInFlight[imageIndex] = drawFences[currentFrame];
   vkResetFences(logicalDevice, 1, &drawFences[currentFrame]);
 
+  phaseStart = CpuClock::now();
   // Day/night cycle: advance sim-hour at imguiDayNightSpeed sim-hours per
   // real-second, then place the sun on a great-circle arc through the
   // zenith. Sunrise at hour 6 (east horizon), zenith at hour 12, sunset at
@@ -391,9 +409,13 @@ void VulkanRenderer::draw() {
   if (imguiEnableSsgiBounce)  lightingMask |= 1 << 4;
   if (imguiEnableBloom)       lightingMask |= 1 << 5;
   sceneUbo.lightCounts.z = lightingMask;
-  // shadowParams.y = SSGI intensity, .z = sharpening strength
-  // (.w left at 0 → shader uses default for SSGI depth tolerance).
-  sceneUbo.shadowParams.y    = imguiSsgiIntensity;
+  sceneUbo.fogParams.w =
+      static_cast<float>(std::clamp(imguiSsgiSamples, 4, 12));
+  // shadowParams.y = active SSGI intensity, .z = sharpening strength.
+  // If SSGI bounce is disabled in lighting isolation, keep the pass cheap by
+  // making ssgi.frag return immediately instead of running the sample loop.
+  sceneUbo.shadowParams.y    =
+      imguiEnableSsgiBounce ? imguiSsgiIntensity : 0.0f;
   sceneUbo.shadowParams.z    = imguiSharpness;
   sceneUbo.shadowParams.w    = imguiSsrEnabled ? 1.0f : 0.0f;
 
@@ -459,12 +481,20 @@ void VulkanRenderer::draw() {
   taaHistoryValid = taaEnable;
 
   updateLightSpaceMatrices();
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Update,
+                         elapsedMs(phaseStart));
 
   metrics.setActiveGpuQueryFrame(currentFrame);
+  phaseStart = CpuClock::now();
   recordCommands(imageIndex);
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Record,
+                         elapsedMs(phaseStart));
 
+  phaseStart = CpuClock::now();
   descriptorManager.updateUniformBuffer(device.getAllocator(), imageIndex,
                                         &sceneUbo, sizeof(SceneUniformBuffer));
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Upload,
+                         elapsedMs(phaseStart));
 
   VkSubmitInfo submitInfo = {};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -481,9 +511,12 @@ void VulkanRenderer::draw() {
   // so the presentation engine's wait binds to the right semaphore.
   submitInfo.pSignalSemaphores = &renderFinished[imageIndex];
 
+  phaseStart = CpuClock::now();
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo,
                     drawFences[currentFrame]) != VK_SUCCESS)
     throw std::runtime_error("Failed to submit draw command buffer");
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Submit,
+                         elapsedMs(phaseStart));
   metrics.markGpuQueriesSubmitted(currentFrame);
 
   VkPresentInfoKHR presentInfo = {};
@@ -495,8 +528,11 @@ void VulkanRenderer::draw() {
   presentInfo.pSwapchains = &sc;
   presentInfo.pImageIndices = &imageIndex;
 
+  phaseStart = CpuClock::now();
   VkResult result =
       vkQueuePresentKHR(device.getPresentationQueue(), &presentInfo);
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Present,
+                         elapsedMs(phaseStart));
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
       framebufferResized) {
     framebufferResized = false;
@@ -2720,7 +2756,7 @@ void VulkanRenderer::setDrawDistance(float dist) {
 void VulkanRenderer::buildImGuiUI() {
   // Performance panel — pinned top-left
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_Always);
   ImGui::Begin("Performance", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
@@ -2744,7 +2780,22 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::Text("Comp: %.2f | ImGui: %.2f ms",
               metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Composite),
               metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::ImGui));
-  ImGui::Text("GPU total: %.2f ms", metrics.getLastGpuTimeMs());
+  ImGui::Text("GPU total: %.2f | avg %.2f ms", metrics.getLastGpuTimeMs(),
+              metrics.getAverageGpuTimeMs());
+  ImGui::Text("CPU wait/acq/pres: %.2f | %.2f | %.2f ms",
+              metrics.getCpuPhaseTimeMs(
+                  PerformanceMetrics::CpuPhase::WaitFence),
+              metrics.getCpuPhaseTimeMs(
+                  PerformanceMetrics::CpuPhase::Acquire),
+              metrics.getCpuPhaseTimeMs(
+                  PerformanceMetrics::CpuPhase::Present));
+  ImGui::Text("CPU upd/rec/sub: %.2f | %.2f | %.2f ms",
+              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
+              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
+              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Submit));
+  ImGui::Text("CPU measured: %.2f | avg %.2f ms",
+              metrics.getCpuPhaseTotalMs(),
+              metrics.getAverageCpuPhaseTotalMs());
   ImGui::Text("Draws: %u  |  Tris: %uk", metrics.getLastDrawCallCount(),
               metrics.getLastTriangleCount() / 1000);
   auto vram = PerformanceMetrics::queryVram(device.getAllocator());
@@ -2754,7 +2805,7 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::End();
 
   // Camera panel
-  ImGui::SetNextWindowPos(ImVec2(10, 250), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Always);
   ImGui::Begin("Camera", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -2769,7 +2820,7 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::End();
 
   // Lighting panel
-  ImGui::SetNextWindowPos(ImVec2(10, 380), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 450), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
   ImGui::Begin("Lighting", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -2828,7 +2879,7 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::End();
 
   // Debug views panel
-  ImGui::SetNextWindowPos(ImVec2(10, 620), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 690), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 95), ImGuiCond_Always);
   ImGui::Begin("Debug Views", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -2846,7 +2897,7 @@ void VulkanRenderer::buildImGuiUI() {
   // Tunables + scene controls. The per-fix A/B checkboxes that lived here
   // before were retired once each fix was validated — keeping only the
   // values that actually need runtime tuning.
-  ImGui::SetNextWindowPos(ImVec2(10, 700), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 770), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_Always);
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -2890,6 +2941,7 @@ void VulkanRenderer::buildImGuiUI() {
   // 2 = strong (visible artifacts at silhouettes).
   ImGui::SliderFloat("SSGI intensity", &imguiSsgiIntensity, 0.0f, 2.0f,
                      "%.2f");
+  ImGui::SliderInt("SSGI samples", &imguiSsgiSamples, 4, 12);
   ImGui::SeparatorText("Lighting isolation");
   ImGui::Checkbox("Sun direct", &imguiEnableSunDirect);
   ImGui::Checkbox("Point lights", &imguiEnablePointLights);

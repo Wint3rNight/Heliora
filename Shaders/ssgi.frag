@@ -153,7 +153,9 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     if (recvNoL > 0.0 && sampleSunVisibility(worldPos, viewZ) > 0.75)
         return vec3(0.0);
 
-    const int   SSGI_SAMPLES   = 12;
+    const int   SSGI_MAX_SAMPLES = 12;
+    int ssgiSamples = int(clamp(scene.fogParams.w, 4.0,
+                                float(SSGI_MAX_SAMPLES)));
     const float SSGI_RADIUS_PX = 18.0;
     const float SSGI_DEPTH_TOL = 0.06;
 
@@ -166,8 +168,9 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     float totalW = 0.0;
     int   validCount = 0;
 
-    for (int i = 0; i < SSGI_SAMPLES; ++i) {
-        vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * SSGI_RADIUS_PX * texelSize;
+    for (int i = 0; i < SSGI_MAX_SAMPLES; ++i) {
+        if (i >= ssgiSamples) break;
+        vec2 off = vogelDisk(i, ssgiSamples, phi) * SSGI_RADIUS_PX * texelSize;
         vec2 sUV = uv + off;
         if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) continue;
 
@@ -217,13 +220,17 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         validCount++;
     }
 
-    if (totalW < 1e-4 || validCount < 3) return vec3(0.0);
+    int minValidCount = max(2, ssgiSamples / 4);
+    if (totalW < 1e-4 || validCount < minValidCount) return vec3(0.0);
     // Sparse one/two-hit gathers are the root of the blocky white islands:
     // one random sunlit candidate was being normalized as if the whole local
     // neighborhood agreed. Require several agreeing samples before allowing
     // full-strength bounce, but keep a smooth ramp so real contact bounce
     // near sun patches does not hard-pop.
-    float confidence = smoothstep(3.0, 8.0, float(validCount));
+    float fullConfidenceCount =
+        float(max(minValidCount + 1, (ssgiSamples * 2) / 3));
+    float confidence = smoothstep(float(minValidCount), fullConfidenceCount,
+                                  float(validCount));
     return bounce / totalW * scene.shadowParams.y * confidence;
 }
 

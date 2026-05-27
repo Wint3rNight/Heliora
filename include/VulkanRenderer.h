@@ -264,6 +264,9 @@ private:
   // on sun-lit floor pixels once auto-exposure started amplifying. 0.6
   // keeps the warm-bounce feel without the visible noise floor.
   float imguiSsgiIntensity = 0.6f;
+  // SSGI sample quality. 8 is the default performance/quality balance; 12 is
+  // the old high-quality path, useful for A/B checks when chasing artifacts.
+  int imguiSsgiSamples = 8;
   bool imguiEnableSunDirect = true;
   bool imguiEnablePointLights = true;
   bool imguiEnableSpotLights = true;

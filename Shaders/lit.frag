@@ -718,6 +718,12 @@ void main() {
     float heuristic    = nonMetal * roughBand * chromaFactor;
 
     float clothFactor  = max(materialCloth, heuristic);
+    // Global cubemap specular is not locally visible. On rough dielectrics
+    // such as Sponza stone/cloth it reads as hard rectangular env-map shapes,
+    // even in real sun. Keep metals and genuinely glossy materials, but route
+    // rough non-metals through diffuse IBL/SSGI/direct specular only until a
+    // proper local reflection-probe/specular-occlusion system exists.
+    float roughDielectricIbl = nonMetal * smoothstep(0.30, 0.45, roughnessForIBL);
 
     // SSAO
     float ssaoFactor = computeSSAO(uv, viewPos, viewN);
@@ -781,20 +787,19 @@ void main() {
     // gets sharpened by CAS — visible as the chunky shimmering pattern
     // on banner ornaments. 2.0 caps a bright-sky reflection at one
     // perceived stop above mid-grey under typical auto-exposure.
-    vec3  prefilteredEnv = min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(2.0));
-    vec2  brdf           = texture(brdfLUT, vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
-    vec3  specularIBL    = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
-    // Cloth attenuation on IBL specular too — fabric shouldn't reflect the
-    // sky as sharply as polished surfaces. Mirrors the direct-light cloth
-    // attenuation in cookTorrance.
-    specularIBL *= mix(1.0, 0.35, clothFactor);
-    // Global cubemap specular is not locally visible. On rough dielectrics
-    // such as Sponza stone/cloth it reads as hard rectangular env-map shapes,
-    // even in real sun. Keep metals and genuinely glossy materials, but route
-    // rough non-metals through diffuse IBL/SSGI/direct specular only until a
-    // proper local reflection-probe/specular-occlusion system exists.
-    float roughDielectricIbl = nonMetal * smoothstep(0.30, 0.45, roughnessForIBL);
-    specularIBL *= (1.0 - roughDielectricIbl);
+    vec3 specularIBL = vec3(0.0);
+    if (roughDielectricIbl < 0.999) {
+        vec3 prefilteredEnv =
+            min(textureLod(prefilteredEnvMap, R, prefilteredLod).rgb, vec3(2.0));
+        vec2 brdf = texture(brdfLUT,
+                            vec2(max(dot(worldN, V), 0.0), roughnessForIBL)).rg;
+        specularIBL = prefilteredEnv * (kS_ibl * brdf.x + brdf.y);
+        // Cloth attenuation on IBL specular too — fabric shouldn't reflect the
+        // sky as sharply as polished surfaces. Mirrors the direct-light cloth
+        // attenuation in cookTorrance.
+        specularIBL *= mix(1.0, 0.35, clothFactor);
+        specularIBL *= (1.0 - roughDielectricIbl);
+    }
 
     // Note: SSR is applied in a separate composite pass that samples this lit
     // image; here we keep IBL specular only.

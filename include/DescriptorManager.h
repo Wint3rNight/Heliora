@@ -26,10 +26,7 @@ public:
   VkDescriptorSetLayout getBindlessLayout() const { return bindlessSetLayout; }
   VkDescriptorSetLayout getGBufferLayout() const { return gBufferSetLayout; }
   VkDescriptorSetLayout getInputLayout() const { return inputSetLayout; }
-  // TAA history-prev sampler (binding 0) + G-buffer depth sampler (binding 1).
-  // Bound at set 2 of the tonemap pipeline next session. Layout is created
-  // in init() but no sets are allocated against it yet — the per-frame
-  // ping-pong descriptors will be added in the wire-up step.
+  // TAA history-prev sampler (binding 0) + G-buffer depth/color samplers.
   VkDescriptorSetLayout getTaaLayout() const { return taaSetLayout; }
   VkPushConstantRange getPushConstantRange() const { return pushConstantRange; }
 
@@ -42,13 +39,13 @@ public:
   // MAX_BINDLESS_TEXTURES combined-image-samplers at binding 0. Flagged
   // UPDATE_AFTER_BIND so textures can be registered after the set is bound.
   VkDescriptorSet getBindlessSet() const { return bindlessDescriptorSet; }
-  VkDescriptorSet getGBufferSet(size_t parity, size_t i) const {
-    return gBufferDescriptorSets[parity * gBufferSwapCount + i];
+  VkDescriptorSet getGBufferSet(size_t historyIndex, size_t i) const {
+    return gBufferDescriptorSets[historyIndex * gBufferSwapCount + i];
   }
   VkDescriptorSet getInputSet(size_t i) const { return inputDescriptorSets[i]; }
-  // TAA set indexed by (parity * swapCount + swapIdx). Binding 0 =
-  // historyPrev view (the OTHER ping-pong image, written last frame),
-  // binding 1 = G-buffer depth view for this swap index.
+  // TAA set indexed by (historyIndex * swapCount + swapIdx). Binding 0 =
+  // the previous history ring slot, binding 1 = G-buffer depth view for this
+  // swap index.
   VkDescriptorSet getTaaSet(size_t i) const { return taaDescriptorSets[i]; }
 
   // --- Data updates ---
@@ -86,9 +83,9 @@ public:
   // (Re)creates G-buffer descriptor sets. Binds gb0/gb1/gb2/depth +
   // the lit-pass output (for SSR composite) + the SSGI bounce image
   // (for lit.frag's cross-bilateral filter).
-  // ssgiViews must have exactly 2 entries (ping-pong). Produces
-  // 2 * swapCount G-buffer sets indexed (parity * swapCount + i).
-  // Per parity P, binding 5 = ssgiViews[P].
+  // Produces historyCount * swapCount G-buffer sets indexed
+  // (historyIndex * swapCount + i). Per history index H, binding 5 =
+  // ssgiViews[H].
   void recreateGBufferSets(VkDevice device,
                            const std::vector<VkImageView> &gb0Views,
                            const std::vector<VkImageView> &gb1Views,
@@ -101,9 +98,9 @@ public:
   // (Re)creates per-swapchain-image input attachment descriptor sets.
   void recreateInputSets(VkDevice device, const VulkanSwapchain &swapchain);
 
-  // (Re)creates TAA descriptor sets — 2 * swapCount entries.
-  // Layout for set s = parity * swapCount + swapIdx:
-  //   binding 0 = historyPrevViews[parity] (image written last frame)
+  // (Re)creates TAA descriptor sets — historyCount * swapCount entries.
+  // Layout for set s = historyIndex * swapCount + swapIdx:
+  //   binding 0 = previous history image
   //   binding 1 = gBufferDepthViews[swapIdx]
   //   binding 2 = colorBufferViews[swapIdx]  (HDR pre-tonemap, this frame)
   // All sampled with `sampler` (CLAMP_TO_EDGE recommended).
@@ -115,11 +112,10 @@ public:
 
   // --- SSGI prev-history set 2 accessors ---
   VkDescriptorSetLayout getSsgiPrevLayout() const { return ssgiPrevSetLayout; }
-  VkDescriptorSet getSsgiPrevSet(size_t parity) const {
-    return ssgiPrevDescriptorSets[parity];
+  VkDescriptorSet getSsgiPrevSet(size_t historyIndex) const {
+    return ssgiPrevDescriptorSets[historyIndex];
   }
-  // ssgiHistoryViews has size 2 (ping-pong). For parity P, the set
-  // at index P binds historyViews[(P+1)&1] — last frame's SSGI.
+  // For history index H, the set at index H binds the previous ring slot.
   void recreateSsgiPrevSets(VkDevice device,
                             const std::vector<VkImageView> &ssgiHistoryViews,
                             VkSampler sampler);
@@ -155,12 +151,12 @@ private:
   std::vector<VkDescriptorSet> descriptorSets;        // one per swapchain image
   std::vector<VkDescriptorSet> samplerDescriptorSets; // one per loaded material (legacy)
   VkDescriptorSet bindlessDescriptorSet = VK_NULL_HANDLE; // Phase 7.2: single global set
-  std::vector<VkDescriptorSet> gBufferDescriptorSets; // 2 * swapCount (parity*swapCount + i)
-  // Set by recreateGBufferSets so getGBufferSet(parity, i) can index correctly.
+  std::vector<VkDescriptorSet> gBufferDescriptorSets; // historyCount * swapCount
+  // Set by recreateGBufferSets so getGBufferSet(historyIndex, i) can index.
   size_t gBufferSwapCount = 0;
   std::vector<VkDescriptorSet> inputDescriptorSets;   // one per swapchain image
-  std::vector<VkDescriptorSet> taaDescriptorSets;     // 2 * swapCount
-  std::vector<VkDescriptorSet> ssgiPrevDescriptorSets; // size 2, indexed by parity
+  std::vector<VkDescriptorSet> taaDescriptorSets;     // historyCount * swapCount
+  std::vector<VkDescriptorSet> ssgiPrevDescriptorSets; // indexed by history ring slot
 
   // --- Uniform buffers ---
   std::vector<AllocatedBuffer> vpUniformBuffers;

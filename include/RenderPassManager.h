@@ -29,7 +29,7 @@ public:
   // Creates the composition pass: 2 subpasses, 3 attachments.
   //   Subpass 0 (SSR composite — samples litBuffer + G-buffer) → colorBuffer
   //   Subpass 1 (TAA + ACES+gamma) → swapchain (LDR) + history (HDR)
-  // historyFormat is the HDR format used for the TAA ping-pong history images
+  // historyFormat is the HDR format used for the TAA history images
   // (must match VulkanRenderer::litFormat).
   void createRenderPass(VkDevice device, VkFormat swapchainFormat,
                         VkFormat colorFormat, VkFormat historyFormat);

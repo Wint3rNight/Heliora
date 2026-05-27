@@ -147,11 +147,11 @@ private:
   VkImageView imageView = VK_NULL_HANDLE;
 };
 
-const int MAX_FRAMES_DRAWS = 3;
+const int MAX_FRAMES_DRAWS = 2;
 const int MAX_OBJECTS = 40;
 const int MAX_POINT_LIGHTS = 4;
 const int MAX_SPOT_LIGHTS = 2;
-const uint32_t SHADOW_MAP_SIZE = 4096;
+const uint32_t SHADOW_MAP_SIZE = 2048;
 const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
 constexpr int NUM_CSM_CASCADES = 4;
 
@@ -234,7 +234,7 @@ struct SceneUniformBuffer {
   // the chunky pattern in the floor close-up. The new defaults make the
   // AA kernel saturate on milder gradients and let it widen nearly to
   // matte where the noise is dense.
-  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.15f, 0.55f, 1.25f, 1.0f);
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.45f, 0.55f, 1.25f, 1.0f);
   // x = exposure linear multiplier (= exp2(EV stops); applied in second.frag
   //     before ACES tonemap; 1.0 = neutral).
   // y = "use geometric normal only" diagnostic (1 = bypass normal-map).

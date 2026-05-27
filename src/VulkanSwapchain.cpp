@@ -86,6 +86,7 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
 
   VkSurfaceFormatKHR surfFmt = chooseBestSurfaceFormat(fmts);
   VkPresentModeKHR presMode = chooseBestPresentationMode(pms);
+  activePresentMode = presMode;
   VkExtent2D ext = chooseSwapExtent(caps, window);
 
   uint32_t imageCount = caps.minImageCount + 1;
@@ -213,9 +214,14 @@ VkSurfaceFormatKHR VulkanSwapchain::chooseBestSurfaceFormat(
 
 VkPresentModeKHR VulkanSwapchain::chooseBestPresentationMode(
     const std::vector<VkPresentModeKHR> &modes) {
-  for (auto m : modes)
-    if (m == VK_PRESENT_MODE_MAILBOX_KHR)
-      return m;
+  if (preferMailboxPresent) {
+    for (auto m : modes)
+      if (m == VK_PRESENT_MODE_MAILBOX_KHR)
+        return m;
+    for (auto m : modes)
+      if (m == VK_PRESENT_MODE_IMMEDIATE_KHR)
+        return m;
+  }
   return VK_PRESENT_MODE_FIFO_KHR;
 }
 

@@ -4,8 +4,12 @@
 #include <spdlog/spdlog.h>
 
 void PerformanceMetrics::init(VkDevice device, VkPhysicalDevice physicalDevice,
-                              uint32_t graphicsQueueFamilyIndex) {
+                              uint32_t graphicsQueueFamilyIndex,
+                              uint32_t queryFrameCount) {
   frameTimeHistory.resize(HISTORY_SIZE, 0.0);
+  gpuQueryFrameCount = std::max(1u, queryFrameCount);
+  activeGpuQueryFrame = 0;
+  gpuQueryFrameValid.assign(gpuQueryFrameCount, 0);
 
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(physicalDevice, &props);
@@ -31,7 +35,8 @@ void PerformanceMetrics::init(VkDevice device, VkPhysicalDevice physicalDevice,
   VkQueryPoolCreateInfo queryPoolInfo = {};
   queryPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
   queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-  queryPoolInfo.queryCount = NUM_GPU_PASSES * 2; // begin + end per pass
+  queryPoolInfo.queryCount =
+      gpuQueryFrameCount * NUM_GPU_PASSES * 2; // begin + end per pass/frame
 
   if (vkCreateQueryPool(device, &queryPoolInfo, nullptr, &timestampQueryPool) !=
       VK_SUCCESS) {
@@ -53,16 +58,52 @@ void PerformanceMetrics::beginFrame() {
   currentTriangles = 0;
 }
 
+void PerformanceMetrics::collectGpuResults(VkDevice device,
+                                           uint32_t frameIndex) {
+  if (!gpuTimingAvailable || timestampQueryPool == VK_NULL_HANDLE ||
+      gpuQueryFrameValid.empty())
+    return;
+
+  uint32_t queryFrame = frameIndex % gpuQueryFrameCount;
+  if (!gpuQueryFrameValid[queryFrame])
+    return;
+
+  uint64_t ts[NUM_GPU_PASSES * 2] = {};
+  VkResult r = vkGetQueryPoolResults(
+      device, timestampQueryPool, gpuQueryBase(queryFrame),
+      NUM_GPU_PASSES * 2, sizeof(ts), ts, sizeof(uint64_t),
+      VK_QUERY_RESULT_64_BIT);
+  if (r != VK_SUCCESS)
+    return;
+
+  for (int p = 0; p < NUM_GPU_PASSES; p++) {
+    uint64_t begin = ts[p * 2], end = ts[p * 2 + 1];
+    if (end > begin)
+      lastPassGpuMs[p] =
+          static_cast<double>(end - begin) * timestampPeriod / 1e6;
+    else
+      lastPassGpuMs[p] = 0.0;
+  }
+}
+
+void PerformanceMetrics::setActiveGpuQueryFrame(uint32_t frameIndex) {
+  activeGpuQueryFrame = frameIndex % gpuQueryFrameCount;
+}
+
 void PerformanceMetrics::resetGpuQueries(VkCommandBuffer cmd) {
   if (!gpuTimingAvailable)
     return;
-  vkCmdResetQueryPool(cmd, timestampQueryPool, 0, NUM_GPU_PASSES * 2);
+  vkCmdResetQueryPool(cmd, timestampQueryPool,
+                      gpuQueryBase(activeGpuQueryFrame), NUM_GPU_PASSES * 2);
+  if (!gpuQueryFrameValid.empty())
+    gpuQueryFrameValid[activeGpuQueryFrame] = 0;
 }
 
 void PerformanceMetrics::beginPassTimestamp(VkCommandBuffer cmd, GpuPass pass) {
   if (!gpuTimingAvailable)
     return;
-  uint32_t slot = static_cast<uint32_t>(pass) * 2;
+  uint32_t slot =
+      gpuQueryBase(activeGpuQueryFrame) + static_cast<uint32_t>(pass) * 2;
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                       timestampQueryPool, slot);
 }
@@ -70,9 +111,16 @@ void PerformanceMetrics::beginPassTimestamp(VkCommandBuffer cmd, GpuPass pass) {
 void PerformanceMetrics::endPassTimestamp(VkCommandBuffer cmd, GpuPass pass) {
   if (!gpuTimingAvailable)
     return;
-  uint32_t slot = static_cast<uint32_t>(pass) * 2 + 1;
+  uint32_t slot =
+      gpuQueryBase(activeGpuQueryFrame) + static_cast<uint32_t>(pass) * 2 + 1;
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timestampQueryPool, slot);
+}
+
+void PerformanceMetrics::markGpuQueriesSubmitted(uint32_t frameIndex) {
+  if (!gpuTimingAvailable || gpuQueryFrameValid.empty())
+    return;
+  gpuQueryFrameValid[frameIndex % gpuQueryFrameCount] = 1;
 }
 
 void PerformanceMetrics::recordDrawCall(uint32_t indexCount) {
@@ -80,10 +128,11 @@ void PerformanceMetrics::recordDrawCall(uint32_t indexCount) {
   currentTriangles += indexCount / 3;
 }
 
-void PerformanceMetrics::endFrame(VkDevice device) {
+void PerformanceMetrics::endFrame() {
   auto frameEnd = Clock::now();
   double frameTimeMs =
       std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+  lastFrameTimeMs = frameTimeMs;
 
   rollingSum -= frameTimeHistory[historyIndex];
   frameTimeHistory[historyIndex] = frameTimeMs;
@@ -101,34 +150,22 @@ void PerformanceMetrics::endFrame(VkDevice device) {
   lastDrawCalls = currentDrawCalls;
   lastTriangles = currentTriangles;
 
-  if (gpuTimingAvailable && timestampQueryPool != VK_NULL_HANDLE) {
-    uint64_t ts[NUM_GPU_PASSES * 2] = {};
-    VkResult r = vkGetQueryPoolResults(
-        device, timestampQueryPool, 0, NUM_GPU_PASSES * 2, sizeof(ts), ts,
-        sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    if (r == VK_SUCCESS) {
-      for (int p = 0; p < NUM_GPU_PASSES; p++) {
-        uint64_t begin = ts[p * 2], end = ts[p * 2 + 1];
-        if (end > begin)
-          lastPassGpuMs[p] =
-              static_cast<double>(end - begin) * timestampPeriod / 1e6;
-        else
-          lastPassGpuMs[p] = 0.0;
-      }
-    }
-  }
-
   // Periodic one-line snapshot — useful when shutdown is killed by timeout
   // (so the full report in printReport() may never run).
   if (totalFrames > 0 && totalFrames % 120 == 0) {
     spdlog::info("[perf] frame={} avg={:.2f}ms fps={:.1f} draws={} tris={}k "
-                 "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} deferred={:.2f}",
+                 "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} ssgi={:.2f} "
+                 "lit={:.2f} autoExp={:.2f} comp={:.2f} imgui={:.2f}",
                  totalFrames, getAverageFrameTimeMs(), getAverageFps(),
                  lastDrawCalls, lastTriangles / 1000,
                  lastPassGpuMs[(int)GpuPass::Shadow],
                  lastPassGpuMs[(int)GpuPass::PointShadow],
                  lastPassGpuMs[(int)GpuPass::GBuffer],
-                 lastPassGpuMs[(int)GpuPass::Deferred]);
+                 lastPassGpuMs[(int)GpuPass::SSGI],
+                 lastPassGpuMs[(int)GpuPass::Lit],
+                 lastPassGpuMs[(int)GpuPass::AutoExposure],
+                 lastPassGpuMs[(int)GpuPass::Composite],
+                 lastPassGpuMs[(int)GpuPass::ImGui]);
   }
 }
 
@@ -193,13 +230,25 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║  Avg FPS:             {:>17.1f}     ║", getAverageFps());
   spdlog::info("║  Draw Calls/Frame:    {:>20}  ║", lastDrawCalls);
   spdlog::info("║  Triangles/Frame:     {:>20}  ║", lastTriangles);
-  spdlog::info("╠══════════════════════════════════════════════╣"); 
+  spdlog::info("╠══════════════════════════════════════════════╣");
   if (gpuTimingAvailable) {
     spdlog::info("║  GPU Pass Timing (last frame):               ║");
-    spdlog::info("║    Shadow:          {:>17.3f} ms  ║", lastPassGpuMs[0]);
-    spdlog::info("║    Point Shadow:    {:>17.3f} ms  ║", lastPassGpuMs[1]);
-    spdlog::info("║    G-Buffer:        {:>17.3f} ms  ║", lastPassGpuMs[2]);
-    spdlog::info("║    Deferred PBR:    {:>17.3f} ms  ║", lastPassGpuMs[3]);
+    spdlog::info("║    Shadow:          {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Shadow]);
+    spdlog::info("║    Point Shadow:    {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::PointShadow]);
+    spdlog::info("║    G-Buffer:        {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::GBuffer]);
+    spdlog::info("║    SSGI:            {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::SSGI]);
+    spdlog::info("║    Lit:             {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Lit]);
+    spdlog::info("║    Auto Exposure:   {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::AutoExposure]);
+    spdlog::info("║    Composite:       {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Composite]);
+    spdlog::info("║    ImGui:           {:>17.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::ImGui]);
     spdlog::info("║    Total GPU:       {:>17.3f} ms  ║", getLastGpuTimeMs());
   } else {
     spdlog::info("║  GPU Timing:          {:>20}  ║", "N/A");

@@ -165,13 +165,14 @@ void DescriptorManager::recreateGBufferSets(
     const std::vector<VkImageView> &gbDepth,
     const std::vector<VkImageView> &lit,
     const std::vector<VkImageView> &ssgi, VkSampler sampler) {
-  // ssgi must have exactly 2 entries (ping-pong).
-  // Produces 2 * swapCount sets indexed (parity * swapCount + i).
+  // Produces historyCount * swapCount sets indexed
+  // (historyIndex * swapCount + i).
   vkResetDescriptorPool(device, gBufferDescriptorPool, 0);
 
   size_t swapCount = gb0.size();
+  size_t historyCount = ssgi.size();
   gBufferSwapCount = swapCount;
-  size_t totalSets = 2 * swapCount;
+  size_t totalSets = historyCount * swapCount;
   gBufferDescriptorSets.assign(totalSets, VK_NULL_HANDLE);
   std::vector<VkDescriptorSetLayout> layouts(totalSets, gBufferSetLayout);
 
@@ -184,7 +185,7 @@ void DescriptorManager::recreateGBufferSets(
                                gBufferDescriptorSets.data()) != VK_SUCCESS)
     throw std::runtime_error("Failed to allocate G-buffer descriptor sets");
 
-  for (size_t parity = 0; parity < 2; ++parity) {
+  for (size_t historyIndex = 0; historyIndex < historyCount; ++historyIndex) {
     for (size_t i = 0; i < swapCount; ++i) {
       VkDescriptorImageInfo imgs[6] = {
           {sampler, gb0[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -192,9 +193,9 @@ void DescriptorManager::recreateGBufferSets(
           {sampler, gb2[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
           {sampler, gbDepth[i], VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
           {sampler, lit[i],     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-          {sampler, ssgi[parity], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {sampler, ssgi[historyIndex], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       };
-      VkDescriptorSet set = gBufferDescriptorSets[parity * swapCount + i];
+      VkDescriptorSet set = gBufferDescriptorSets[historyIndex * swapCount + i];
       VkWriteDescriptorSet writes[6] = {};
       for (int b = 0; b < 6; ++b) {
         writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -219,11 +220,12 @@ void DescriptorManager::recreateTaaSets(
     VkDevice device, const std::vector<VkImageView> &historyPrevViews,
     const std::vector<VkImageView> &gBufferDepthViews,
     const std::vector<VkImageView> &colorBufferViews, VkSampler sampler) {
-  // historyPrevViews has size 2 (the two ping-pong images).
-  // gBufferDepthViews and colorBufferViews have size swapCount.
-  // 2 * swapCount sets, indexed (parity * swapCount + swapIdx).
+  // historyPrevViews is the TAA history ring.
+  // historyCount * swapCount sets, indexed
+  // (historyIndex * swapCount + swapIdx).
+  size_t historyCount = historyPrevViews.size();
   size_t swapCount = gBufferDepthViews.size();
-  size_t totalSets = 2 * swapCount;
+  size_t totalSets = historyCount * swapCount;
 
   if (taaDescriptorPool != VK_NULL_HANDLE) {
     vkDestroyDescriptorPool(device, taaDescriptorPool, nullptr);
@@ -253,8 +255,9 @@ void DescriptorManager::recreateTaaSets(
       VK_SUCCESS)
     throw std::runtime_error("Failed to allocate TAA descriptor sets");
 
-  for (size_t parity = 0; parity < 2; ++parity) {
-    VkImageView historyPrev = historyPrevViews[(parity + 1) & 1];
+  for (size_t historyIndex = 0; historyIndex < historyCount; ++historyIndex) {
+    VkImageView historyPrev =
+        historyPrevViews[(historyIndex + historyCount - 1) % historyCount];
     for (size_t i = 0; i < swapCount; ++i) {
       VkDescriptorImageInfo histInfo = {
           sampler, historyPrev, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -264,7 +267,7 @@ void DescriptorManager::recreateTaaSets(
       VkDescriptorImageInfo colorInfo = {
           sampler, colorBufferViews[i],
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorSet set = taaDescriptorSets[parity * swapCount + i];
+      VkDescriptorSet set = taaDescriptorSets[historyIndex * swapCount + i];
       VkWriteDescriptorSet writes[3] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = set;
@@ -296,37 +299,39 @@ void DescriptorManager::recreateSsgiPrevSets(
     vkDestroyDescriptorPool(device, ssgiPrevDescriptorPool, nullptr);
     ssgiPrevDescriptorPool = VK_NULL_HANDLE;
   }
+  size_t historyCount = ssgiHistoryViews.size();
   VkDescriptorPoolSize sz = {};
   sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sz.descriptorCount = 2;
+  sz.descriptorCount = static_cast<uint32_t>(historyCount);
   VkDescriptorPoolCreateInfo pci = {};
   pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pci.maxSets = 2;
+  pci.maxSets = static_cast<uint32_t>(historyCount);
   pci.poolSizeCount = 1;
   pci.pPoolSizes = &sz;
   if (vkCreateDescriptorPool(device, &pci, nullptr,
                              &ssgiPrevDescriptorPool) != VK_SUCCESS)
     throw std::runtime_error("Failed to create SSGI prev descriptor pool");
 
-  std::vector<VkDescriptorSetLayout> layouts(2, ssgiPrevSetLayout);
-  ssgiPrevDescriptorSets.assign(2, VK_NULL_HANDLE);
+  std::vector<VkDescriptorSetLayout> layouts(historyCount, ssgiPrevSetLayout);
+  ssgiPrevDescriptorSets.assign(historyCount, VK_NULL_HANDLE);
 
   VkDescriptorSetAllocateInfo ai = {};
   ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   ai.descriptorPool = ssgiPrevDescriptorPool;
-  ai.descriptorSetCount = 2;
+  ai.descriptorSetCount = static_cast<uint32_t>(historyCount);
   ai.pSetLayouts = layouts.data();
   if (vkAllocateDescriptorSets(device, &ai,
                                ssgiPrevDescriptorSets.data()) != VK_SUCCESS)
     throw std::runtime_error("Failed to allocate SSGI prev descriptor sets");
 
-  for (size_t parity = 0; parity < 2; ++parity) {
+  for (size_t historyIndex = 0; historyIndex < historyCount; ++historyIndex) {
     VkDescriptorImageInfo info = {
-        sampler, ssgiHistoryViews[(parity + 1) & 1],
+        sampler,
+        ssgiHistoryViews[(historyIndex + historyCount - 1) % historyCount],
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w = {};
     w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = ssgiPrevDescriptorSets[parity];
+    w.dstSet = ssgiPrevDescriptorSets[historyIndex];
     w.dstBinding = 0;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.descriptorCount = 1;
@@ -553,16 +558,17 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
     throw std::runtime_error(
         "Failed to create material sampler descriptor pool");
 
-  // G-buffer sampler pool: 6 samplers per frame, doubled for SSGI parity.
+  // G-buffer sampler pool: 6 samplers per frame, one set per SSGI history slot.
   //   gb0 / gb1 / gb2 / depth / lit (SSR comp) / ssgi (lit bilateral)
-  // 2 * count sets total (one per swap image, per parity).
+  // historyCount * count sets total (one per swap image, per history slot).
   VkDescriptorPoolSize gbSize = {};
   gbSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  gbSize.descriptorCount = static_cast<uint32_t>(count * 12);
+  gbSize.descriptorCount =
+      static_cast<uint32_t>(count * 6 * (MAX_FRAMES_DRAWS + 1));
 
   VkDescriptorPoolCreateInfo gbCI = {};
   gbCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  gbCI.maxSets = static_cast<uint32_t>(count * 2);
+  gbCI.maxSets = static_cast<uint32_t>(count * (MAX_FRAMES_DRAWS + 1));
   gbCI.poolSizeCount = 1;
   gbCI.pPoolSizes = &gbSize;
   if (vkCreateDescriptorPool(device, &gbCI, nullptr, &gBufferDescriptorPool) !=

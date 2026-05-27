@@ -225,8 +225,8 @@ void RenderPassManager::createRenderPass(VkDevice device,
 
   // Attachment 2: HDR history (write-target this frame; sampled next frame).
   // initialLayout=UNDEFINED — the prev frame finished with SHADER_READ_ONLY,
-  // but we don't need the prev content (we sample the OTHER ping-pong image
-  // via descriptor). finalLayout=SHADER_READ_ONLY so next frame's sampler
+  // but we don't need the prev content (we sample the previous history ring
+  // slot via descriptor). finalLayout=SHADER_READ_ONLY so next frame's sampler
   // bind is well-defined.
   VkAttachmentDescription histAtt = {};
   histAtt.format = historyFormat;
@@ -302,9 +302,8 @@ void RenderPassManager::createRenderPass(VkDevice device,
                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
   deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
 
-  // External → subpass 1: ensure the PREVIOUS frame's TAA fragment-shader
-  // read of the OTHER history image (now being written this frame as the
-  // ping-pong target) completes before we start writing the same image.
+  // External → subpass 1: ensure any earlier TAA fragment-shader read of the
+  // history image now being written completes before we start writing it.
   // Without this dep the layout transition + write could race with the
   // prev frame's sampler read.
   deps[3].srcSubpass = VK_SUBPASS_EXTERNAL;

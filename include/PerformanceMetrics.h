@@ -17,27 +17,40 @@ public:
   PerformanceMetrics &operator=(const PerformanceMetrics &) = delete;
 
   // GPU pass identifiers for per-pass timing
-  enum class GpuPass { Shadow = 0, PointShadow = 1, GBuffer = 2, Deferred = 3 };
-  static constexpr int NUM_GPU_PASSES = 4;
+  enum class GpuPass {
+    Shadow = 0,
+    PointShadow = 1,
+    GBuffer = 2,
+    SSGI = 3,
+    Lit = 4,
+    AutoExposure = 5,
+    Composite = 6,
+    ImGui = 7
+  };
+  static constexpr int NUM_GPU_PASSES = 8;
 
   // Lifecycle
   void init(VkDevice device, VkPhysicalDevice physicalDevice,
-            uint32_t graphicsQueueFamilyIndex);
+            uint32_t graphicsQueueFamilyIndex, uint32_t queryFrameCount = 1);
   void cleanup(VkDevice device);
 
   // Per-frame API
   void beginFrame();
+  void collectGpuResults(VkDevice device, uint32_t frameIndex);
+  void setActiveGpuQueryFrame(uint32_t frameIndex);
   void resetGpuQueries(VkCommandBuffer cmd);
+  void markGpuQueriesSubmitted(uint32_t frameIndex);
 
   // Per-pass GPU timestamps — call begin/end around each render pass
   void beginPassTimestamp(VkCommandBuffer cmd, GpuPass pass);
   void endPassTimestamp(VkCommandBuffer cmd, GpuPass pass);
 
   void recordDrawCall(uint32_t indexCount);
-  void endFrame(VkDevice device);
+  void endFrame();
 
   // Queries
   double getAverageFrameTimeMs() const;
+  double getLastFrameTimeMs() const { return lastFrameTimeMs; }
   double getMinFrameTimeMs() const;
   double getMaxFrameTimeMs() const;
   double getAverageFps() const;
@@ -68,14 +81,24 @@ private:
 
   double minFrameTime = std::numeric_limits<double>::max();
   double maxFrameTime = 0.0;
+  double lastFrameTimeMs = 0.0;
   uint64_t totalFrames = 0;
 
   uint32_t currentDrawCalls = 0, currentTriangles = 0;
   uint32_t lastDrawCalls = 0, lastTriangles = 0;
 
-  // GPU timing — NUM_GPU_PASSES * 2 query slots (begin + end per pass)
+  // GPU timing — each frame-in-flight owns NUM_GPU_PASSES * 2 query slots.
+  // Results are read only after that frame slot's fence has completed, so the
+  // performance overlay does not force a same-frame CPU/GPU sync.
   VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
   float timestampPeriod = 0.0f;
   bool gpuTimingAvailable = false;
+  uint32_t gpuQueryFrameCount = 1;
+  uint32_t activeGpuQueryFrame = 0;
+  std::vector<uint8_t> gpuQueryFrameValid;
   double lastPassGpuMs[NUM_GPU_PASSES] = {};
+
+  uint32_t gpuQueryBase(uint32_t frameIndex) const {
+    return (frameIndex % gpuQueryFrameCount) * NUM_GPU_PASSES * 2;
+  }
 };

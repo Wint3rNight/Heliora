@@ -49,10 +49,9 @@ layout(set = 1, binding = 0) uniform sampler2D gBuffer0Sampler;  // albedo + met
 layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;  // worldN + roughness
 layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
 
-// Set 2: prev-frame SSGI history (the OTHER ping-pong image, written
-// last frame). Sampled with bilinear + CLAMP_TO_EDGE; CPU rotates the
-// binding each frame so this is always last-frame data, never this
-// frame's in-flight output.
+// Set 2: prev-frame SSGI history. Sampled with bilinear + CLAMP_TO_EDGE;
+// CPU rotates the binding through a history ring so this is always last-frame
+// data, never this frame's in-flight output.
 layout(set = 2, binding = 0) uniform sampler2D ssgiHistoryPrev;
 
 layout(location = 0) out vec4 outSSGI;
@@ -61,6 +60,36 @@ vec3 reconstructViewPos(vec2 uv, float depth) {
     vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
     vec4 v    = scene.invProj * clip;
     return v.xyz / v.w;
+}
+
+bool ssgiPathVisible(vec2 uv, vec2 sUV, float viewZ, float sViewZ,
+                     vec3 recvN, vec3 sampleN) {
+    // SSGI is screen-space, so without a cheap path test a sunlit floor tile
+    // on the far side of a curtain/wall can be treated as a valid bounce
+    // emitter for a shadowed tile. Those false emitters are the beige square
+    // clusters visible on the Sponza floor.
+    const float STEPS = 3.0;
+    for (int step = 1; step < 3; ++step) {
+        float t = float(step) / STEPS;
+        vec2 midUV = mix(uv, sUV, t);
+        float midDepth = texture(gBufferDepthSampler, midUV).r;
+        if (midDepth >= 0.9999)
+            return false;
+
+        float expectedZ = mix(viewZ, sViewZ, t);
+        float midZ = -reconstructViewPos(midUV, midDepth).z;
+        float zTolerance = max(0.04 * expectedZ, 0.035);
+        if (abs(midZ - expectedZ) > zTolerance)
+            return false;
+
+        vec3 midN = texture(gBuffer1Sampler, midUV).xyz;
+        if (dot(midN, midN) < 0.1)
+            return false;
+        midN = normalize(midN);
+        if (dot(midN, recvN) < 0.72 || dot(midN, sampleN) < 0.72)
+            return false;
+    }
+    return true;
 }
 
 float interleavedGradientNoise(vec2 px) {
@@ -74,7 +103,7 @@ vec2 vogelDisk(int i, int n, float phi) {
     return r * vec2(cos(th), sin(th));
 }
 
-// Cheap 1-tap shadow lookup for SSGI samples. NO PCF, NO Vogel disc —
+// Cheap 1-tap shadow lookup for SSGI samples. NO PCF, NO Vogel disc -
 // just project + hardware-compare. Returns visibility in [0,1] where
 // 1.0 = fully lit by the sun, 0.0 = fully shadowed. Walks cascades
 // (0..3) and stops at the first one the sample falls inside.
@@ -92,10 +121,10 @@ float sampleSunVisibility(vec3 worldPos, float viewZ) {
         if (proj.z >= 0.0 && proj.z <= 1.0 &&
             proj.x >= 0.0 && proj.x <= 1.0 &&
             proj.y >= 0.0 && proj.y <= 1.0) {
-            // Small constant bias is fine here — SSGI samples don't need
+            // Small constant bias is fine here - SSGI samples don't need
             // the receiver-plane gradient bias because we only care about
             // "is this pixel in shadow at all", not penumbra accuracy.
-            float bias    = 0.001 * float(c + 1);
+            float bias = 0.001 * float(c + 1);
             float tapDepth = proj.z - bias;
             return texture(shadowMap,
                            vec4(proj.xy, float(c), tapDepth));
@@ -117,9 +146,16 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
                     scene.directionalLight.colorIntensity.a;
 
-    const int   SSGI_SAMPLES   = 32;
+    // SSGI is there to recover missing bounce in shadowed regions. On pixels
+    // that are already directly sunlit, the gather is mostly invisible but
+    // still costs the full sample loop and can add high-frequency shimmer.
+    float recvNoL = max(dot(worldN, sunDir), 0.0);
+    if (recvNoL > 0.0 && sampleSunVisibility(worldPos, viewZ) > 0.75)
+        return vec3(0.0);
+
+    const int   SSGI_SAMPLES   = 12;
     const float SSGI_RADIUS_PX = 18.0;
-    const float SSGI_DEPTH_TOL = 0.12;
+    const float SSGI_DEPTH_TOL = 0.06;
 
     float temporalSeed = fract(scene.taaParams.x * 9311.0 +
                                scene.taaParams.y * 7919.0);
@@ -128,6 +164,7 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
 
     vec3  bounce = vec3(0.0);
     float totalW = 0.0;
+    int   validCount = 0;
 
     for (int i = 0; i < SSGI_SAMPLES; ++i) {
         vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * SSGI_RADIUS_PX * texelSize;
@@ -144,6 +181,7 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         vec3 sViewPos = reconstructViewPos(sUV, sDepth);
         float sViewZ  = -sViewPos.z;
         if (abs(sViewZ - viewZ) > SSGI_DEPTH_TOL * viewZ) continue;
+        if (!ssgiPathVisible(uv, sUV, viewZ, sViewZ, worldN, sN)) continue;
 
         vec3 sWorldPos = (scene.invView * vec4(sViewPos, 1.0)).xyz;
         vec3 dir       = sWorldPos - worldPos;
@@ -164,22 +202,29 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         // Shadow-test THIS sample so walls/floors that geometrically
         // face the sun but are actually occluded don't contribute false
         // bright bounce. This is the fix for the "square lights coming
-        // through the wall" symptom — without it, every sample point's
+        // through the wall" symptom - without it, every sample point's
         // sNoL > 0 surface gets counted as fully sunlit. 1-tap lookup
-        // (no PCF) — cheap, single-frame Vogel temporal rotation washes
+        // (no PCF) - cheap, single-frame Vogel temporal rotation washes
         // the per-pixel binary visibility into a smooth gradient.
         float sVisibility = (sNoL > 0.0) ? sampleSunVisibility(sWorldPos, sViewZ)
                                          : 0.0;
         vec3  sLit    = sAlbedo * sunColor * sNoL * sVisibility;
-        sLit = min(sLit, vec3(2.5));
+        sLit = min(sLit, vec3(1.0));
 
         float w = cosRecv * cosEmit * falloff;
         bounce += sLit * w;
         totalW += w;
+        validCount++;
     }
 
-    if (totalW < 1e-4) return vec3(0.0);
-    return bounce / totalW * scene.shadowParams.y;
+    if (totalW < 1e-4 || validCount < 3) return vec3(0.0);
+    // Sparse one/two-hit gathers are the root of the blocky white islands:
+    // one random sunlit candidate was being normalized as if the whole local
+    // neighborhood agreed. Require several agreeing samples before allowing
+    // full-strength bounce, but keep a smooth ramp so real contact bounce
+    // near sun patches does not hard-pop.
+    float confidence = smoothstep(3.0, 8.0, float(validCount));
+    return bounce / totalW * scene.shadowParams.y * confidence;
 }
 
 // Reconstruct world position from a depth-buffer sample. Same as
@@ -204,8 +249,10 @@ float reconstructLinearViewZ(vec2 uv, float depth) {
 }
 
 void main() {
-    vec2 texSize = vec2(textureSize(gBuffer0Sampler, 0));
-    vec2 uv      = gl_FragCoord.xy / texSize;
+    // The SSGI target is half-resolution. Map each low-res output pixel back
+    // to normalized full-screen UVs, then sample the full-res G-buffer there.
+    vec2 outSize = vec2(textureSize(ssgiHistoryPrev, 0));
+    vec2 uv      = (gl_FragCoord.xy + vec2(0.5)) / outSize;
 
     float depth = texture(gBufferDepthSampler, uv).r;
     if (depth >= 0.9999) {
@@ -221,10 +268,11 @@ void main() {
     vec3 viewPos  = reconstructViewPos(uv, depth);
     vec3 worldPos = (scene.invView * vec4(viewPos, 1.0)).xyz;
 
-    // 1. Current-frame raw bounce (single-pass 32-Vogel sample set,
-    //    same code that was producing the visible 8-12 px clusters).
+    // 1. Current-frame raw bounce. Keep the default sample count modest:
+    //    every SSGI candidate also runs a path-visibility test and a sun
+    //    shadow lookup, so this full-screen pass gets expensive quickly.
     vec3 ssgiCurr = computeSSGI(uv, worldPos, worldN, -viewPos.z);
-    ssgiCurr = min(ssgiCurr, vec3(2.5)); // per-pass firefly clamp
+    ssgiCurr = min(ssgiCurr, vec3(1.0)); // per-pass firefly clamp
 
     // 2. Reproject last frame's SSGI to find where this pixel was on
     //    screen one frame ago. Same math as second.frag's TAA.

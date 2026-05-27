@@ -61,7 +61,7 @@ layout(set = 1, binding = 2) uniform sampler2D gBuffer2Sampler;  // AO + isCloth
 layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
 // binding 4 = litBuffer (read by SSR composite, not by this shader).
 // binding 5 = raw SSGI bounce from the dedicated SSGI pass — this shader
-// applies a 9-tap cross-bilateral with depth + normal weights.
+// applies a mixed-radius cross-bilateral with depth + normal weights.
 layout(set = 1, binding = 5) uniform sampler2D ssgiSampler;
 
 layout(location = 0) out vec4 outColor;
@@ -69,7 +69,9 @@ layout(location = 0) out vec4 outColor;
 const float PI = 3.14159265359;
 const int IBL_PREFILTER_MIPS = 5;
 
-// Hemisphere kernel in view space (16 samples)
+// Hemisphere kernel in view space. The first 8 taps are used in the lit pass;
+// the remaining entries are kept so the std140 shader layout and old tuning
+// values stay easy to compare while profiling.
 const vec3 ssaoKernel[16] = vec3[16](
     vec3( 0.5381,  0.1856, -0.1495), vec3( 0.1379,  0.2486,  0.4430),
     vec3( 0.3371,  0.5679, -0.0057), vec3(-0.6999, -0.0451, -0.0019),
@@ -156,30 +158,24 @@ float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     float bias = max(0.0008 * float(cascade + 1) * (1.0 - dot(N, L)), 0.0005);
     vec2  texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
 
-    // 12-tap Vogel-disk PCF over a hardware compare sampler. Each tap's
-    // reference depth is shifted along the receiver plane to match the
-    // local surface slope.
-    // 32-tap Vogel-disk PCF. The bumped sample count reduces the per-pixel
-    // shadow quantization step from 1/12 (8.3%) to 1/32 (3.1%); below the
-    // JND once multiplied by HDR sun intensity. Same radius and rotation as
-    // before, so penumbra width is unchanged.
-    const int SAMPLES = 32;
+    // 16-tap Vogel-disk PCF. The previous 32 taps helped hide fixed shadow
+    // quantization, but it made the fullscreen lit pass too expensive in
+    // Sponza. Temporal rotation plus TAA still average the remaining PCF
+    // noise while halving the shadow-map samples taken per lit pixel.
+    const int SAMPLES = 16;
     float radius = (1.5 + float(cascade) * 0.5);
     // Per-frame temporal rotation of the Vogel disk so the PCF noise
     // pattern is no longer screen-space-stable. Without this, the dithered
     // shadow penumbra is the same pixel-for-pixel each frame and TAA
-    // accumulation can't average it out — that was why the floor dither
-    // persisted under bright sun even with TAA enabled.
-    // scene.taaParams.xy cycles through 8 Halton values per second so the
-    // hash below produces 8 distinct phi offsets across the cycle.
+    // accumulation can't average it out.
     float temporalSeed = fract(scene.taaParams.x * 9311.0 +
                                scene.taaParams.y * 7919.0);
-    float phi    = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
-                   * 6.2831853;
-    float lit    = 0.0;
+    float phi = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
+                * 6.2831853;
+    float lit = 0.0;
     for (int i = 0; i < SAMPLES; ++i) {
-        vec2  off       = vogelDisk(i, SAMPLES, phi) * radius * texelSize;
-        float tapDepth  = proj.z - bias + dot(grad, off);
+        vec2 off = vogelDisk(i, SAMPLES, phi) * radius * texelSize;
+        float tapDepth = proj.z - bias + dot(grad, off);
         lit += texture(shadowMap,
                        vec4(proj.xy + off, float(cascade), tapDepth));
     }
@@ -396,7 +392,8 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
     const float radius = 1.0;
     const float bias   = 0.03;
 
-    for (int i = 0; i < 16; ++i) {
+    const int SSAO_SAMPLES = 8;
+    for (int i = 0; i < SSAO_SAMPLES; ++i) {
         vec3 samplePos = viewPos + TBN * ssaoKernel[i] * radius;
 
         vec4 offset = scene.projection * vec4(samplePos, 1.0);
@@ -416,7 +413,7 @@ float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
         float rangeCheck = smoothstep(0.0, 1.0, radius / abs(viewPos.z - sLinearZ));
         occlusion += (sLinearZ >= samplePos.z + bias ? 1.0 : 0.0) * rangeCheck;
     }
-    return 1.0 - (occlusion / 16.0);
+    return 1.0 - (occlusion / float(SSAO_SAMPLES));
 }
 
 // ---- Screen-Space Global Illumination (one-bounce diffuse) ---------------
@@ -548,9 +545,9 @@ vec3 computeBloom(vec2 uv) {
     vec3 sunDir   = normalize(-scene.directionalLight.direction.xyz);
     vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
                     scene.directionalLight.colorIntensity.a;
-    for (int x = -2; x <= 2; ++x) {
-        for (int y = -2; y <= 2; ++y) {
-            vec2 sUV    = uv + vec2(x, y) * texelSize * 3.0;
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            vec2 sUV    = uv + vec2(x, y) * texelSize * 4.0;
             vec3 albedo = texture(gBuffer0Sampler, sUV).rgb;
             vec3 N      = texture(gBuffer1Sampler, sUV).xyz;
             if (dot(N, N) < 0.1) continue;   // skip sky/empty pixels
@@ -630,6 +627,13 @@ vec3 applyHeightFog(vec3 color, vec3 worldPos) {
 void main() {
     vec2 texSize = vec2(textureSize(gBuffer0Sampler, 0));
     vec2 uv      = gl_FragCoord.xy / texSize;
+    int lightingMask = scene.lightCounts.z;
+    bool enableSunDirect  = (lightingMask & (1 << 0)) != 0;
+    bool enablePointLights = (lightingMask & (1 << 1)) != 0;
+    bool enableSpotLights  = (lightingMask & (1 << 2)) != 0;
+    bool enableIblAmbient  = (lightingMask & (1 << 3)) != 0;
+    bool enableSsgiBounce  = (lightingMask & (1 << 4)) != 0;
+    bool enableBloom       = (lightingMask & (1 << 5)) != 0;
 
     float depth = texture(gBufferDepthSampler, uv).r;
 
@@ -784,6 +788,13 @@ void main() {
     // sky as sharply as polished surfaces. Mirrors the direct-light cloth
     // attenuation in cookTorrance.
     specularIBL *= mix(1.0, 0.35, clothFactor);
+    // Global cubemap specular is not locally visible. On rough dielectrics
+    // such as Sponza stone/cloth it reads as hard rectangular env-map shapes,
+    // even in real sun. Keep metals and genuinely glossy materials, but route
+    // rough non-metals through diffuse IBL/SSGI/direct specular only until a
+    // proper local reflection-probe/specular-occlusion system exists.
+    float roughDielectricIbl = nonMetal * smoothstep(0.30, 0.45, roughnessForIBL);
+    specularIBL *= (1.0 - roughDielectricIbl);
 
     // Note: SSR is applied in a separate composite pass that samples this lit
     // image; here we keep IBL specular only.
@@ -796,7 +807,9 @@ void main() {
                     clothFactor,
                     scene.directionalLight.colorIntensity.rgb,
                     scene.directionalLight.colorIntensity.a);
-    vec3 directLight = (1.0 - sunShadow) * sunDirectUnshadowed;
+    vec3 directLight = enableSunDirect
+                       ? (1.0 - sunShadow) * sunDirectUnshadowed
+                       : vec3(0.0);
 
     // Ambient (IBL diffuse + specular) is scaled by qualityToggles2.w.
     // The prefilter + irradiance cubemaps are baked once from the daytime
@@ -820,16 +833,27 @@ void main() {
     // leak. NOT physically correct GI — a real fix is light probes or
     // a long-radius AO pass (GTAO). This is a free proxy.
     //
-    // Specular IBL is reduced more aggressively (skyOcclusion squared)
-    // because it's the dominant source of "glitter on indoor textures":
-    // glossy surfaces in shadow reflect the bright skybox cubemap and
-    // the high-frequency sky detail (clouds, sun edges) reads as
-    // sparkle. Diffuse IBL stays at the linear scaling — fully killing
-    // diffuse skylight indoors would make interiors read as black.
-    float skyOcclusion = mix(scene.qualityToggles.y, 1.0, 1.0 - sunShadow);
-    float skyOccSpec   = skyOcclusion * skyOcclusion;
-    vec3 ambient = (diffuseIBL * skyOcclusion + specularIBL * skyOccSpec) *
-                   ao * ssaoFactor * scene.qualityToggles2.w;
+    // Specular IBL needs a much harder visibility term than diffuse IBL.
+    // The prefiltered env map is a global sky cubemap; it has no knowledge of
+    // Sponza's walls, floor, or curtains. If shadowed indoor pixels still get
+    // even ~30% of that specular cubemap, glossy floors reflect the cubemap's
+    // bright rectangular texels and it looks like light is passing through
+    // walls. Keep diffuse skylight at the tunable floor so interiors do not go
+    // black, but collapse shadowed specular IBL. This is intentionally
+    // thresholded, not just a small floor: with auto-exposure, even a 2%
+    // global-cubemap reflection is still visible if the cubemap contains a
+    // hard bright rectangle.
+    float iblSunVisibility = 1.0 - sunShadow;
+    float skyOccDiffuse = mix(scene.qualityToggles.y, 1.0, iblSunVisibility);
+    float specVisibility = smoothstep(0.35, 0.90,
+                                      clamp(iblSunVisibility, 0.0, 1.0));
+    float skyOccSpec    = specVisibility * specVisibility;
+    float materialOcc   = clamp(ao * ssaoFactor, 0.0, 1.0);
+    vec3 ambient = enableIblAmbient
+                   ? (diffuseIBL * skyOccDiffuse * materialOcc +
+                      specularIBL * skyOccSpec * materialOcc * materialOcc) *
+                     scene.qualityToggles2.w
+                   : vec3(0.0);
 
     // One-bounce diffuse SSGI. Now sampled from the dedicated SSGI pass
     // with a 9-tap cross-bilateral filter: depth + normal edge weights
@@ -842,8 +866,9 @@ void main() {
     // huge SOLID-angle at sub-meter view distances. Fade to zero below
     // 0.5 m view-Z, full contribution by 2 m.
     float ssgiFade = smoothstep(0.5, 2.0, -viewPos.z);
-    vec3 ssgiIrradiance;
-    {
+    vec3 ssgiBounce = vec3(0.0);
+    if (enableSsgiBounce) {
+        vec3 ssgiIrradiance;
         vec2 ssgiTexSize = vec2(textureSize(ssgiSampler, 0));
         vec2 ssgiTexel   = 1.0 / ssgiTexSize;
         vec3  centerN     = worldN;
@@ -886,13 +911,13 @@ void main() {
         }
         ssgiIrradiance = (bilWSum > 1e-5) ? (bilSum / bilWSum)
                                           : texture(ssgiSampler, uv).rgb;
+        ssgiBounce = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor *
+                     ssgiFade;
     }
-    vec3 ssgiBounce = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor *
-                      ssgiFade;
     ambient += ssgiBounce;
 
     // Point lights + omnidirectional shadow
-    int pointCount = clamp(scene.lightCounts.x, 0, 4);
+    int pointCount = enablePointLights ? clamp(scene.lightCounts.x, 0, 4) : 0;
     for (int i = 0; i < pointCount; ++i) {
         vec3  toLight = scene.pointLights[i].position.xyz - worldPos;
         float dist    = length(toLight);
@@ -906,7 +931,7 @@ void main() {
     }
 
     // Spot lights
-    int spotCount = clamp(scene.lightCounts.y, 0, 2);
+    int spotCount = enableSpotLights ? clamp(scene.lightCounts.y, 0, 2) : 0;
     for (int i = 0; i < spotCount; ++i) {
         vec3  toLight = scene.spotLights[i].position.xyz - worldPos;
         float dist    = length(toLight);
@@ -938,11 +963,19 @@ void main() {
     // tuning the intensity slider — flat surfaces should read mostly black,
     // shadowed-but-near-sunlit-wall surfaces should show warm bounce.
     if (scene.debugMode == 11) { outColor = vec4(ssgiBounce, 1.0); return; }
+    // mode 12: raw accumulated SSGI before receiver albedo / AO modulation.
+    if (scene.debugMode == 12) { outColor = vec4(texture(ssgiSampler, uv).rgb, 1.0); return; }
 
     vec3 lighting = ambient + directLight;
 
-    // Bloom
-    lighting += computeBloom(uv);
+    // Bloom is a post effect, but this local estimate intentionally samples
+    // the G-buffer instead of a downsampled lit buffer. Keep it out of pixels
+    // that are shadowed from the sun; otherwise albedo * NdotL fabricates
+    // "sun bloom" behind walls and shows up as white floor squares.
+    float sunVisibility = 1.0 - sunShadow;
+    if (enableBloom && sunVisibility > 0.25) {
+        lighting += computeBloom(uv) * sunVisibility;
+    }
 
     // FXAA (depth-edge + albedo-luminance blend)
     lighting = applyFXAA(uv, lighting);

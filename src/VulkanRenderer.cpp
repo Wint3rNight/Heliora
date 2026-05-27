@@ -13,6 +13,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
 #include <cmath>
@@ -97,9 +98,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     createSsgiResources();
 
     // 8b. TAA history images. Format matches litFormat so they live in the
-    //     same HDR-precision domain. Currently allocated but not yet wired
-    //     into the render pass (Phase 6 work-in-progress — plan file
-    //     "Session 2" section has the remaining wire-up steps).
+    //     same HDR-precision domain.
     createTaaResources();
 
     // 8c. Composite framebuffers (3 attachments: swap + colorBuffer + history)
@@ -115,12 +114,14 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //     views (from createGBuffer), and colorBuffer views (from swapchain
     //     init). Order: must follow all three.
     {
-      std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
-                                            taaHistoryViews[1].get()};
+      std::vector<VkImageView> histViews;
       std::vector<VkImageView> depthViews;
       std::vector<VkImageView> colorViews;
+      histViews.reserve(taaHistoryViews.size());
       depthViews.reserve(gBufferDepthViews.size());
       colorViews.reserve(swapchain.getImageCount());
+      for (const auto &v : taaHistoryViews)
+        histViews.push_back(v.get());
       for (const auto &v : gBufferDepthViews)
         depthViews.push_back(v.get());
       for (size_t i = 0; i < swapchain.getImageCount(); ++i)
@@ -150,7 +151,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 12. Performance metrics
     QueueFamilyIndices qi = device.getQueueFamilies();
     metrics.init(device.getLogicalDevice(), device.getPhysicalDevice(),
-                 static_cast<uint32_t>(qi.graphicsFamily));
+                 static_cast<uint32_t>(qi.graphicsFamily), MAX_FRAMES_DRAWS);
 
     // 13. Scene UBO defaults
     rebuildProjection();
@@ -192,13 +193,14 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         glm::vec4(glm::cos(glm::radians(12.5f)), glm::cos(glm::radians(20.0f)),
                   0.0f, 0.0f);
 
-    // shadowParams.y/.z/.w piggyback SSGI tunables since they were unused.
-    // .x stays as the point-shadow far plane.
+    // shadowParams.y/.z/.w piggyback post/SSGI tunables since they were unused.
+    // .x stays as the point-shadow far plane; .w toggles SSR.
     sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, imguiSsgiIntensity,
-                                      0.0f, 0.0f);
+                                      imguiSharpness,
+                                      imguiSsrEnabled ? 1.0f : 0.0f);
     sceneUbo.fogParams = glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp, 0.0f);
     sceneUbo.lightCounts =
-        glm::ivec4(2, 0, 0, 0); // spot lights off; sun+IBL+torches only
+        glm::ivec4(1, 0, 0x3f, 0); // z = lighting-isolation bit mask
 
     updateLightSpaceMatrices();
     updatePointShadowMatrices();
@@ -226,6 +228,22 @@ SceneNode &VulkanRenderer::getRootNode() { return rootNode; }
 
 void VulkanRenderer::updateCameraView(const glm::mat4 &viewMatrix,
                                       const glm::vec3 &cameraPosition) {
+  if (taaHasLastCamera) {
+    float posDelta = glm::length(cameraPosition - taaLastCameraPos);
+    float viewDelta = 0.0f;
+    for (int c = 0; c < 4; ++c) {
+      for (int r = 0; r < 4; ++r) {
+        viewDelta = std::max(
+            viewDelta, std::abs(viewMatrix[c][r] - taaLastView[c][r]));
+      }
+    }
+    cameraMovedThisFrame = posDelta > 0.001f || viewDelta > 0.0001f;
+  } else {
+    cameraMovedThisFrame = true;
+    taaHasLastCamera = true;
+  }
+  taaLastCameraPos = cameraPosition;
+  taaLastView = viewMatrix;
   sceneUbo.view = viewMatrix;
   sceneUbo.cameraPosition = glm::vec4(cameraPosition, 1.0f);
   sceneUbo.invView = glm::inverse(viewMatrix);
@@ -243,6 +261,7 @@ void VulkanRenderer::draw() {
 
   vkWaitForFences(logicalDevice, 1, &drawFences[currentFrame], VK_TRUE,
                   std::numeric_limits<uint64_t>::max());
+  metrics.collectGpuResults(logicalDevice, currentFrame);
 
   // Check resize BEFORE acquiring — a successful acquire signals
   // imageAvailable, and returning early without consuming it would leave it
@@ -359,12 +378,24 @@ void VulkanRenderer::draw() {
   }
   sceneUbo.qualityToggles2.x =
       autoExpAdaptedValue * std::exp2(imguiExposureEV);
+  sceneUbo.qualityToggles.x  = imguiIblRoughnessFloor;
   sceneUbo.qualityToggles2.z = imguiMinSurfaceRoughness;
   sceneUbo.qualityToggles.y  = imguiSkyOcclusionFloor;
+  sceneUbo.qualityToggles.z  = imguiSpecAAVariance;
+  sceneUbo.qualityToggles.w  = imguiSpecAAThreshold;
+  int lightingMask = 0;
+  if (imguiEnableSunDirect)   lightingMask |= 1 << 0;
+  if (imguiEnablePointLights) lightingMask |= 1 << 1;
+  if (imguiEnableSpotLights)  lightingMask |= 1 << 2;
+  if (imguiEnableIblAmbient)  lightingMask |= 1 << 3;
+  if (imguiEnableSsgiBounce)  lightingMask |= 1 << 4;
+  if (imguiEnableBloom)       lightingMask |= 1 << 5;
+  sceneUbo.lightCounts.z = lightingMask;
   // shadowParams.y = SSGI intensity, .z = sharpening strength
   // (.w left at 0 → shader uses default for SSGI depth tolerance).
   sceneUbo.shadowParams.y    = imguiSsgiIntensity;
   sceneUbo.shadowParams.z    = imguiSharpness;
+  sceneUbo.shadowParams.w    = imguiSsrEnabled ? 1.0f : 0.0f;
 
   // --- TAA per-frame state ---
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
@@ -400,7 +431,8 @@ void VulkanRenderer::draw() {
   // user reported: "textures slightly move all the time", and severely
   // jagged edges even on a static camera).
   sceneUbo.projection = taaBaseProjection;
-  const bool taaEnable = true;
+  const bool taaStable = !imguiResponsiveTaa || !cameraMovedThisFrame;
+  const bool taaEnable = imguiTaaEnabled && taaStable;
   if (taaEnable) {
     // Modify column 2 (the z coupling) so the offset is a constant screen-
     // space delta independent of vertex depth: clip.x_new = clip.x +
@@ -417,17 +449,18 @@ void VulkanRenderer::draw() {
   sceneUbo.taaParams = glm::vec4(taaEnable ? jitterNDC.x : 0.0f,
                                  taaEnable ? jitterNDC.y : 0.0f,
                                  taaEnable ? 1.0f : 0.0f,
-                                 taaHistoryValid ? 1.0f : 0.0f);
+                                 (taaHistoryValid && taaStable) ? 1.0f : 0.0f);
   sceneUbo.viewportSize = glm::vec4(float(ext.width), float(ext.height),
                                     1.0f / float(ext.width),
                                     1.0f / float(ext.height));
   // taaHistoryValid is the input to THIS frame's TAA blend (so the first
   // frame after init/resize must read it as false). Promote it to true for
   // the NEXT frame now that we're about to render content into the history.
-  taaHistoryValid = true;
+  taaHistoryValid = taaEnable;
 
   updateLightSpaceMatrices();
 
+  metrics.setActiveGpuQueryFrame(currentFrame);
   recordCommands(imageIndex);
 
   descriptorManager.updateUniformBuffer(device.getAllocator(), imageIndex,
@@ -451,6 +484,7 @@ void VulkanRenderer::draw() {
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo,
                     drawFences[currentFrame]) != VK_SUCCESS)
     throw std::runtime_error("Failed to submit draw command buffer");
+  metrics.markGpuQueriesSubmitted(currentFrame);
 
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -473,10 +507,10 @@ void VulkanRenderer::draw() {
   }
   currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
   // Advance TAA frame counter AFTER this frame finishes recording so the
-  // Halton jitter index used above (line ~288) matches the parity that
-  // recordCommands picked for the framebuffer / descriptor set.
+  // Halton jitter index used above matches the history ring slots that
+  // recordCommands picked for framebuffers / descriptor sets.
   taaFrameCounter++;
-  metrics.endFrame(logicalDevice);
+  metrics.endFrame();
 }
 
 // Swapchain recreation
@@ -523,12 +557,14 @@ void VulkanRenderer::recreateSwapChain() {
 
   descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
   {
-    std::vector<VkImageView> histViews = {taaHistoryViews[0].get(),
-                                          taaHistoryViews[1].get()};
+    std::vector<VkImageView> histViews;
     std::vector<VkImageView> depthViews;
     std::vector<VkImageView> colorViews;
+    histViews.reserve(taaHistoryViews.size());
     depthViews.reserve(gBufferDepthViews.size());
     colorViews.reserve(swapchain.getImageCount());
+    for (const auto &v : taaHistoryViews)
+      histViews.push_back(v.get());
     for (const auto &v : gBufferDepthViews)
       depthViews.push_back(v.get());
     for (size_t i = 0; i < swapchain.getImageCount(); ++i)
@@ -661,17 +697,22 @@ void VulkanRenderer::createGBuffer() {
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
   }
-  // ssgi views are size-2 (ping-pong). DescriptorManager produces
-  // 2 * swapCount G-buffer sets indexed (parity * swapCount + i); per
-  // parity P, binding 5 = ssgiHistoryViews[P].
-  std::vector<VkImageView> ssgv = {ssgiHistoryViews[0].get(),
-                                   ssgiHistoryViews[1].get()};
+  // SSGI views are a temporal history ring. DescriptorManager produces
+  // historyCount * swapCount G-buffer sets indexed
+  // (historyIndex * swapCount + i); per history index H, binding 5 =
+  // ssgiHistoryViews[H].
+  std::vector<VkImageView> ssgv;
+  ssgv.reserve(ssgiHistoryViews.size());
+  for (const auto &view : ssgiHistoryViews)
+    ssgv.push_back(view.get());
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
                                         textureManager.getTextureSampler());
   {
-    std::vector<VkImageView> ssgiHv = {ssgiHistoryViews[0].get(),
-                                       ssgiHistoryViews[1].get()};
+    std::vector<VkImageView> ssgiHv;
+    ssgiHv.reserve(ssgiHistoryViews.size());
+    for (const auto &view : ssgiHistoryViews)
+      ssgiHv.push_back(view.get());
     descriptorManager.recreateSsgiPrevSets(device.getLogicalDevice(), ssgiHv,
                                            ssgiSampler);
   }
@@ -782,27 +823,30 @@ void VulkanRenderer::cleanupLitResources() {
   }
 }
 
-// SSGI bounce-buffer resources. Same shape as the lit buffer (single
-// HDR R16 attachment per swap image) but rendered to by a dedicated
-// pre-lit pass — output gets sampled by lit.frag with a cross-bilateral
-// filter to suppress the per-pixel SSGI noise.
+// SSGI bounce-buffer resources. This is intentionally half-resolution: the
+// pass is a diffuse, cross-bilaterally filtered bounce term, and the full-res
+// path-check gather is too expensive for Sponza.
 void VulkanRenderer::createSsgiResources() {
   VkDevice dev = device.getLogicalDevice();
+  VkExtent2D fullExtent = swapchain.getExtent();
+  VkExtent2D ssgiExtent = {std::max(1u, fullExtent.width / 2),
+                           std::max(1u, fullExtent.height / 2)};
 
   ssgiHistoryImages.clear();
   ssgiHistoryViews.clear();
-  ssgiFramebuffers.assign(2, VK_NULL_HANDLE);
-  ssgiHistoryImages.reserve(2);
-  ssgiHistoryViews.reserve(2);
+  const size_t historyCount = MAX_FRAMES_DRAWS + 1;
+  ssgiFramebuffers.assign(historyCount, VK_NULL_HANDLE);
+  ssgiHistoryImages.reserve(historyCount);
+  ssgiHistoryViews.reserve(historyCount);
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-  for (int i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < historyCount; ++i) {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.extent = {ssgiExtent.width, ssgiExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.format = litFormat;
@@ -835,8 +879,8 @@ void VulkanRenderer::createSsgiResources() {
     fbci.renderPass = renderPassManager.getSsgiRenderPass();
     fbci.attachmentCount = 1;
     fbci.pAttachments = &attachment;
-    fbci.width = swapchain.getExtent().width;
-    fbci.height = swapchain.getExtent().height;
+    fbci.width = ssgiExtent.width;
+    fbci.height = ssgiExtent.height;
     fbci.layers = 1;
     if (vkCreateFramebuffer(dev, &fbci, nullptr, &ssgiFramebuffers[i]) !=
         VK_SUCCESS)
@@ -848,7 +892,7 @@ void VulkanRenderer::createSsgiResources() {
   // pass declares initialLayout=UNDEFINED + loadOp=CLEAR for the SSGI
   // attachment, so the write side handles its own transition each frame.
   VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
-  for (int i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < historyCount; ++i) {
     VkImageMemoryBarrier b = {};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -895,23 +939,23 @@ void VulkanRenderer::cleanupSsgiResources() {
   }
 }
 
-// TAA history images. Two persistent HDR images that ping-pong each frame:
-// frame N writes taaHistory[N&1], samples taaHistory[(N+1)&1]. Format
-// matches litFormat so reads from history feed straight into the same
-// HDR-precision pipeline. Usage: SAMPLED (read as history-prev) +
-// COLOR_ATTACHMENT (written as history-curr by the composite render pass
-// once it gains the 2nd color attachment in the next session).
+// TAA history images. The ring is one larger than the max frames-in-flight,
+// so a frame can sample the previous logical frame without another in-flight
+// frame overwriting that image too early. Format matches litFormat so reads
+// from history feed straight into the same HDR-precision pipeline. Usage:
+// SAMPLED (read as history-prev) + COLOR_ATTACHMENT (written as history-curr).
 void VulkanRenderer::createTaaResources() {
   VkDevice dev = device.getLogicalDevice();
   taaHistoryImages.clear();
   taaHistoryViews.clear();
-  taaHistoryImages.reserve(2);
-  taaHistoryViews.reserve(2);
+  const size_t historyCount = MAX_FRAMES_DRAWS + 1;
+  taaHistoryImages.reserve(historyCount);
+  taaHistoryViews.reserve(historyCount);
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-  for (int i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < historyCount; ++i) {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -949,7 +993,7 @@ void VulkanRenderer::createTaaResources() {
   // the history attachment with loadOp=DONT_CARE, so the transition back
   // to COLOR_ATTACHMENT_OPTIMAL is handled by the render pass itself.
   VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
-  for (int i = 0; i < 2; ++i) {
+  for (size_t i = 0; i < historyCount; ++i) {
     VkImageMemoryBarrier b = {};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -989,7 +1033,7 @@ void VulkanRenderer::createTaaResources() {
   // Shared with SSGI: ssgi.frag reads scene.taaParams.w (==taaHistoryValid),
   // so dropping this also drops the SSGI temporal blend on the post-resize
   // frame. createSsgiResources runs alongside createTaaResources on every
-  // swapchain recreate; both ping-pong histories invalidate together.
+  // swapchain recreate; both temporal history rings invalidate together.
   taaHistoryValid = false;
 }
 
@@ -1004,21 +1048,22 @@ void VulkanRenderer::cleanupTaaResources() {
   }
 }
 
-// Composite framebuffers: 2 * swapCount entries, indexed by
-// (parity * swapCount + swapIdx). Each binds:
+// Composite framebuffers: historyCount * swapCount entries, indexed by
+// (historyIndex * swapCount + swapIdx). Each binds:
 //   attachment 0 = swap image view (per swapIdx)
 //   attachment 1 = colorBuffer view (per swapIdx)
-//   attachment 2 = TAA history view (per parity — alternates each frame)
+//   attachment 2 = TAA history view (per history ring slot)
 void VulkanRenderer::createCompositeFramebuffers() {
   VkDevice dev = device.getLogicalDevice();
   size_t swapCount = swapchain.getImageCount();
-  compositeFramebuffers.assign(2 * swapCount, VK_NULL_HANDLE);
+  size_t historyCount = taaHistoryViews.size();
+  compositeFramebuffers.assign(historyCount * swapCount, VK_NULL_HANDLE);
 
-  for (size_t parity = 0; parity < 2; ++parity) {
+  for (size_t historyIndex = 0; historyIndex < historyCount; ++historyIndex) {
     for (size_t i = 0; i < swapCount; ++i) {
       std::array<VkImageView, 3> atts = {swapchain.getSwapImageView(i),
                                          swapchain.getColorBufferView(i),
-                                         taaHistoryViews[parity].get()};
+                                         taaHistoryViews[historyIndex].get()};
       VkFramebufferCreateInfo ci = {};
       ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
       ci.renderPass = renderPassManager.getRenderPass();
@@ -1030,7 +1075,7 @@ void VulkanRenderer::createCompositeFramebuffers() {
       VkFramebuffer fb = VK_NULL_HANDLE;
       if (vkCreateFramebuffer(dev, &ci, nullptr, &fb) != VK_SUCCESS)
         throw std::runtime_error("Failed to create composite framebuffer");
-      compositeFramebuffers[parity * swapCount + i] = fb;
+      compositeFramebuffers[historyIndex * swapCount + i] = fb;
     }
   }
 }
@@ -1658,6 +1703,21 @@ static bool sphereInFrustum(const glm::vec4 planes[6], glm::vec3 center,
   return true;
 }
 
+static const char *presentModeName(VkPresentModeKHR mode) {
+  switch (mode) {
+  case VK_PRESENT_MODE_IMMEDIATE_KHR:
+    return "IMMEDIATE";
+  case VK_PRESENT_MODE_MAILBOX_KHR:
+    return "MAILBOX";
+  case VK_PRESENT_MODE_FIFO_KHR:
+    return "FIFO";
+  case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+    return "FIFO_RELAXED";
+  default:
+    return "UNKNOWN";
+  }
+}
+
 void VulkanRenderer::recordCommands(uint32_t currentImage) {
   VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
   vkResetCommandBuffer(cmd, 0);
@@ -1687,10 +1747,13 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   viewport.maxDepth = 1.0f;
   VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
 
-  // SSGI ping-pong parity. Synced to taaFrameCounter so both temporal
-  // accumulators stay phase-aligned (helps when debugging via the GPU
-  // capture — both histories advance together).
-  uint32_t ssgiParity = taaFrameCounter & 1u;
+  // Temporal history indices. Rings are larger than the number of frames in
+  // flight, so an in-flight frame's previous-history read is not overwritten
+  // by a later CPU submission.
+  uint32_t ssgiHistoryIndex =
+      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  uint32_t taaHistoryIndex =
+      static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
 
   // --- G-buffer pass ---
   {
@@ -1894,35 +1957,44 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
   // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
   // pass's finalLayout) + scene UBO + prev-frame SSGI history (set 2);
-  // writes the blended result to ssgiHistoryImages[ssgiParity]. lit.frag
-  // samples this same-parity output with cross-bilateral (set 1, binding 5).
+  // writes the blended result to ssgiHistoryImages[ssgiHistoryIndex]. lit.frag
+  // samples this same history output with cross-bilateral (set 1, binding 5).
   {
+    VkExtent2D ssgiExtent = {std::max(1u, swapchain.getExtent().width / 2),
+                             std::max(1u, swapchain.getExtent().height / 2)};
+    VkViewport ssgiViewport = viewport;
+    ssgiViewport.width = static_cast<float>(ssgiExtent.width);
+    ssgiViewport.height = static_cast<float>(ssgiExtent.height);
+    VkRect2D ssgiScissor = {{0, 0}, ssgiExtent};
+
     VkClearValue clear = {};
     clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
 
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getSsgiRenderPass();
-    rpbi.framebuffer = ssgiFramebuffers[ssgiParity];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.framebuffer = ssgiFramebuffers[ssgiHistoryIndex];
+    rpbi.renderArea = {{0, 0}, ssgiExtent};
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clear;
 
     vkdbgBeginLabel(cmd, "SSGI (reproject + blend)", 0.95f, 0.55f, 0.20f);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdSetViewport(cmd, 0, 1, &ssgiViewport);
+    vkCmdSetScissor(cmd, 0, 1, &ssgiScissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getSsgiPipeline());
     std::array<VkDescriptorSet, 3> ssgiSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiParity, currentImage),
-        descriptorManager.getSsgiPrevSet(ssgiParity)};
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+        descriptorManager.getSsgiPrevSet(ssgiHistoryIndex)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getSsgiLayout(), 0, 3, ssgiSets.data(),
                             0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
     vkdbgEndLabel(cmd);
   }
 
@@ -1941,6 +2013,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
     vkdbgBeginLabel(cmd, "Deferred Lighting (PBR+IBL+SSAO+Bloom)", 0.1f, 0.8f,
                     0.3f);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -1948,12 +2021,13 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                       pipeline.getLitPipeline());
     std::array<VkDescriptorSet, 2> litSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiParity, currentImage)};
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
     vkdbgEndLabel(cmd);
   }
 
@@ -1962,7 +2036,9 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   // (the render pass's finalLayout). Pass 1 histograms it; pass 2 reduces
   // and writes one float into a host-visible buffer that next frame's CPU
   // reads to drive eye adaptation.
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
   recordAutoExposurePass(cmd, currentImage);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
 
   // --- Composition pass (SSR composite + TAA + ACES tone-mapping) ---
   {
@@ -1974,11 +2050,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     clears[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
     clears[2].color = {0.0f, 0.0f, 0.0f, 1.0f};
 
-    // Parity selects which TAA history image is THIS frame's write target.
+    // History index selects which TAA history image is THIS frame's write target.
     // taaFrameCounter is incremented at end-of-draw, so its current value is
     // the index of the frame we're recording.
-    uint32_t parity = taaFrameCounter & 1u;
-    size_t fbIdx = parity * swapchain.getImageCount() + currentImage;
+    size_t fbIdx = taaHistoryIndex * swapchain.getImageCount() + currentImage;
 
     VkRenderPassBeginInfo rpbi = {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1989,7 +2064,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     rpbi.pClearValues = clears.data();
 
     vkdbgBeginLabel(cmd, "Composition (SSR + ACES Tonemap)", 0.6f, 0.2f, 0.8f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Deferred);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -1999,7 +2074,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                       pipeline.getDeferredPipeline());
     std::array<VkDescriptorSet, 2> deferredSets = {
         descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiParity, currentImage)};
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getDeferredLayout(), 0, 2,
                             deferredSets.data(), 0, nullptr);
@@ -2010,7 +2085,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getSecondPipeline());
     // 3 sets: scene UBO (0), input attachment (1), TAA samplers (2).
-    // TAA set is picked by parity to point at the OTHER ping-pong image.
+    // TAA set points at the previous history ring slot.
     std::array<VkDescriptorSet, 3> secondSets = {
         descriptorManager.getVPSet(currentImage),
         descriptorManager.getInputSet(currentImage),
@@ -2022,12 +2097,14 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
     vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Deferred);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
     vkdbgEndLabel(cmd);
   }
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
   recordImGuiCommands(cmd, currentImage);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
   vkdbgEndLabel(cmd);
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
@@ -2068,12 +2145,25 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
   VkCullModeFlags shadowLastCull = defaultShadowCull;
 
   auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
+                              const glm::vec4 casterPlanes[6],
                               int lodIndex) -> void {
     if (node->getModelId() >= 0) {
       MeshModel *mdl = modelManager.getModel(node->getModelId());
       if (mdl) {
+        const glm::mat4 model = node->getGlobalTransform();
+        float maxScale =
+            glm::max(glm::length(glm::vec3(model[0])),
+                     glm::max(glm::length(glm::vec3(model[1])),
+                              glm::length(glm::vec3(model[2]))));
         for (size_t k = 0; k < mdl->getMeshCount(); k++) {
           const Mesh *mesh = mdl->getMesh(k);
+          glm::vec3 meshWCenter =
+              glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
+          if (imguiCullShadowCasters &&
+              !sphereInFrustum(casterPlanes, meshWCenter,
+                               mesh->boundingRadius * maxScale))
+            continue;
+
           // doubleSided foliage: front-face culling discards the lit side and
           // the only remaining face faces away from the sun, so the leaf
           // casts no shadow. Use NONE so both sides write depth.
@@ -2086,7 +2176,7 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
           }
           // Phase 7.2: push model + LSM + albedo bindless index per mesh.
           ShadowPushConstants push{};
-          push.model = node->getGlobalTransform();
+          push.model = model;
           push.lightSpaceMatrix = lsm;
           push.albedoIdx =
               static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
@@ -2113,7 +2203,7 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
       }
     }
     for (auto &child : node->getChildren())
-      self(self, child.get(), lsm, lodIndex);
+      self(self, child.get(), lsm, casterPlanes, lodIndex);
   };
 
   for (int cascade = 0; cascade < NUM_CSM_CASCADES; cascade++) {
@@ -2147,8 +2237,11 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
     vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getShadowLayout(), 0, 1, &bindlessSet,
                             0, nullptr);
+    glm::vec4 casterPlanes[6];
+    extractFrustumPlanes(sceneUbo.lightSpaceMatrices[cascade], casterPlanes);
     renderNodeShadow(renderNodeShadow, &rootNode,
-                     sceneUbo.lightSpaceMatrices[cascade], cascadeLod(cascade));
+                     sceneUbo.lightSpaceMatrices[cascade], casterPlanes,
+                     cascadeLod(cascade));
     vkCmdEndRenderPass(cmdBuffer);
     vkdbgEndLabel(cmdBuffer);
   }
@@ -2183,7 +2276,7 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
     vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
     VkCullModeFlags defaultPointCull = imguiShadowFrontFaceCull
                                            ? VK_CULL_MODE_FRONT_BIT
-                                           : VK_CULL_MODE_BACK_BIT;
+                                           : VK_CULL_MODE_NONE;
     vkCmdSetCullMode(cmdBuffer, defaultPointCull);
     VkCullModeFlags pointLastCull = defaultPointCull;
     vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2225,7 +2318,7 @@ void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(ShadowPushConstants), &push);
-            int useLod = std::min(2, mesh->getLodCount() - 1);
+            int useLod = 0;
             VkBuffer vb[] = {mesh->getVertexBuffer()};
             VkDeviceSize off[] = {0};
             vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
@@ -2631,22 +2724,27 @@ void VulkanRenderer::buildImGuiUI() {
   ImGui::Begin("Performance", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
-  ImGui::Text("FPS: %.1f  |  Avg: %.2f ms", metrics.getAverageFps(),
+  ImGui::Text("CPU submit FPS: %.1f | CPU: %.2f ms | Avg: %.2f ms",
+              metrics.getAverageFps(), metrics.getLastFrameTimeMs(),
               metrics.getAverageFrameTimeMs());
   frameTimeGraphData[frameTimeGraphOffset] =
-      static_cast<float>(metrics.getAverageFrameTimeMs());
+      static_cast<float>(metrics.getLastFrameTimeMs());
   frameTimeGraphOffset = (frameTimeGraphOffset + 1) % 128;
   ImGui::PlotLines("##ft", frameTimeGraphData, 128, frameTimeGraphOffset,
                    "Frame time (ms)", 0.0f, 50.0f, ImVec2(322, 60));
-  ImGui::Text("Shadow:   %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow));
-  ImGui::Text(
-      "PtShadow: %.2f ms",
-      metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
-  ImGui::Text("GBuffer:  %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::GBuffer));
-  ImGui::Text("Deferred: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Deferred));
+  ImGui::Text("Shadow: %.2f | Pt: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow),
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
+  ImGui::Text("GBuffer: %.2f | SSGI: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::GBuffer),
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::SSGI));
+  ImGui::Text("Lit: %.2f | AutoExp: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Lit),
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::AutoExposure));
+  ImGui::Text("Comp: %.2f | ImGui: %.2f ms",
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Composite),
+              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::ImGui));
+  ImGui::Text("GPU total: %.2f ms", metrics.getLastGpuTimeMs());
   ImGui::Text("Draws: %u  |  Tris: %uk", metrics.getLastDrawCallCount(),
               metrics.getLastTriangleCount() / 1000);
   auto vram = PerformanceMetrics::queryVram(device.getAllocator());
@@ -2739,8 +2837,8 @@ void VulkanRenderer::buildImGuiUI() {
                               "Metallic",      "Roughness",   "Depth",
                               "Shadow vis",    "SSAO factor", "Direct only",
                               "Indirect only", "Direct (no shadow)",
-                              "SSGI bounce"};
-  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 12))
+                              "SSGI bounce",   "SSGI raw"};
+  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 13))
     sceneUbo.debugMode = imguiDebugMode;
   ImGui::Checkbox("Use geometric normal only", &imguiUseGeomNormalOnly);
   ImGui::End();
@@ -2749,7 +2847,7 @@ void VulkanRenderer::buildImGuiUI() {
   // before were retired once each fix was validated — keeping only the
   // values that actually need runtime tuning.
   ImGui::SetNextWindowPos(ImVec2(10, 700), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 340), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_Always);
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
@@ -2770,6 +2868,14 @@ void VulkanRenderer::buildImGuiUI() {
                      1.0f, "%.2f");
   ImGui::SliderFloat("CSM far", &imguiCsmFar, 100.0f, 5000.0f, "%.0f");
   ImGui::Checkbox("Shadow front-face cull", &imguiShadowFrontFaceCull);
+  ImGui::Checkbox("Cull shadow casters", &imguiCullShadowCasters);
+  if (ImGui::Checkbox("Uncapped present", &imguiPreferMailboxPresent)) {
+    swapchain.setPreferMailbox(imguiPreferMailboxPresent);
+    framebufferResized = true;
+  }
+  ImGui::SameLine();
+  ImGui::Text("actual: %s",
+              presentModeName(swapchain.getActivePresentMode()));
   ImGui::SliderFloat("IBL / sky intensity", &imguiIblIntensity, 0.0f, 2.0f,
                      "%.2f");
   // Auto-exposure (histogram-based). When on, the manual EV slider acts
@@ -2784,6 +2890,16 @@ void VulkanRenderer::buildImGuiUI() {
   // 2 = strong (visible artifacts at silhouettes).
   ImGui::SliderFloat("SSGI intensity", &imguiSsgiIntensity, 0.0f, 2.0f,
                      "%.2f");
+  ImGui::SeparatorText("Lighting isolation");
+  ImGui::Checkbox("Sun direct", &imguiEnableSunDirect);
+  ImGui::Checkbox("Point lights", &imguiEnablePointLights);
+  ImGui::Checkbox("Spot lights", &imguiEnableSpotLights);
+  ImGui::Checkbox("IBL ambient", &imguiEnableIblAmbient);
+  ImGui::Checkbox("SSGI bounce", &imguiEnableSsgiBounce);
+  ImGui::Checkbox("Bloom", &imguiEnableBloom);
+  ImGui::Checkbox("SSR reflections", &imguiSsrEnabled);
+  ImGui::Checkbox("TAA", &imguiTaaEnabled);
+  ImGui::Checkbox("Responsive TAA", &imguiResponsiveTaa);
   // Sharpening strength after AgX. 0 = off, 0.4 = default light, 1.0 =
   // strong / starts ringing.
   ImGui::SliderFloat("Sharpness", &imguiSharpness, 0.0f, 1.0f, "%.2f");

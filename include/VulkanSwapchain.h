@@ -14,7 +14,7 @@ public:
   VulkanSwapchain(const VulkanSwapchain &) = delete;
   VulkanSwapchain &operator=(const VulkanSwapchain &) = delete;
 
-  // Composite framebuffers (3 attachments including TAA history ping-pong)
+  // Composite framebuffers (3 attachments including TAA history)
   // are owned by VulkanRenderer, not this class. init/recreate only own the
   // swapchain images + HDR colorBuffer + per-image command buffers.
   void init(const VulkanDevice &device, GLFWwindow *window);
@@ -35,6 +35,9 @@ public:
   VkImageView getColorBufferView(size_t i) const {
     return colorBufferImageView[i].get();
   }
+  void setPreferMailbox(bool prefer) { preferMailboxPresent = prefer; }
+  bool getPreferMailbox() const { return preferMailboxPresent; }
+  VkPresentModeKHR getActivePresentMode() const { return activePresentMode; }
 
   VkFormat queryImageFormat(const VulkanDevice &device) const;
   VkFormat chooseSupportedFormat(VkPhysicalDevice physicalDevice,
@@ -54,6 +57,8 @@ private:
   // attachment in tone-mapping subpass).
   std::vector<AllocatedImage> colorBufferImage;
   std::vector<ImageViewHandle> colorBufferImageView;
+  bool preferMailboxPresent = true;
+  VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
 
   void createSwapChain(const VulkanDevice &device, GLFWwindow *window);
   void createColorBufferImage(const VulkanDevice &device);

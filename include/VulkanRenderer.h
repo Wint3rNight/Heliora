@@ -94,38 +94,32 @@ private:
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
 
-  // --- SSGI bounce history (HDR, ping-pong, persistent across frames) ---
-  // Two images written-then-sampled the same way TAA history works:
-  //   frame N writes ssgiHistory[N&1], reads ssgiHistory[(N+1)&1]
+  // --- SSGI bounce history (HDR, persistent across frames) ---
+  // Ring is one larger than the max frames-in-flight so frame N+K never
+  // overwrites the image that an in-flight frame is still sampling.
   // The current frame's *output* is what lit.frag samples (set 1 binding 5),
-  // so binding 5 must rotate with parity — see DescriptorManager changes.
-  // See mds/plans/2026-05-24-ssgi-temporal-reproject.md and
-  // mds/sponza_visual_diagnosis.md N6.
-  std::vector<AllocatedImage>  ssgiHistoryImages;   // size 2
-  std::vector<ImageViewHandle> ssgiHistoryViews;    // size 2
-  std::vector<VkFramebuffer>   ssgiFramebuffers;    // size 2, one per parity
+  // so binding 5 must rotate with the history index.
+  // See mds/sponza_visual_diagnosis.md N6/N9.
+  std::vector<AllocatedImage>  ssgiHistoryImages;   // size MAX_FRAMES_DRAWS + 1
+  std::vector<ImageViewHandle> ssgiHistoryViews;    // size MAX_FRAMES_DRAWS + 1
+  std::vector<VkFramebuffer>   ssgiFramebuffers;    // one per history image
   // Sampler used to read ssgiHistoryPrev in ssgi.frag (set 2 binding 0).
   // CLAMP_TO_EDGE + LINEAR so reprojected UVs near the screen edge sample
   // the edge texel; the shader bounds-checks for true off-screen reject.
   VkSampler ssgiSampler = VK_NULL_HANDLE;
 
-  // --- TAA history (HDR, ping-pong, persistent across frames) ---
-  // Two physical images that alternate roles each frame:
-  //   frame N writes taaHistory[N&1], samples taaHistory[(N+1)&1]
-  // taaFramebuffers has 2 * swap-image-count entries; index by:
-  //   parity = taaFrameCounter & 1
-  //   slot   = parity * swapCount + swapIndex
-  std::vector<AllocatedImage> taaHistoryImages;   // size 2
-  std::vector<ImageViewHandle> taaHistoryViews;   // size 2
+  // --- TAA history (HDR, persistent across frames) ---
+  // Same ring sizing as SSGI: MAX_FRAMES_DRAWS + 1 avoids overwriting a
+  // history image that a still-in-flight frame is sampling.
+  std::vector<AllocatedImage> taaHistoryImages;   // size MAX_FRAMES_DRAWS + 1
+  std::vector<ImageViewHandle> taaHistoryViews;   // size MAX_FRAMES_DRAWS + 1
   // Sampler used by the TAA shader to read history-prev and depth.
   // CLAMP_TO_EDGE so reprojected UVs that drift just past the edge fall
   // back gracefully (treated as off-screen by the shader's bounds check).
   VkSampler taaSampler = VK_NULL_HANDLE;
   // Composite framebuffers — 3 attachments (swap, colorBuffer, history).
-  // Size: 2 * swapCount. Index: parity * swapCount + swapIdx, where
-  // parity = taaFrameCounter & 1. The history attachment at slot s is
-  // taaHistoryViews[parity], so each parity owns one of the two ping-pong
-  // images as its write target this frame.
+  // Size: taaHistoryViews.size() * swapCount. Index:
+  // historyIndex * swapCount + swapIdx.
   std::vector<VkFramebuffer> compositeFramebuffers;
 
   // --- Auto-exposure (histogram-based) ---
@@ -227,10 +221,11 @@ private:
   // sub-pixel normal variance into much higher effective roughness on
   // high-frequency surfaces while leaving low-variance surfaces unchanged.
   float imguiSpecAAThreshold = 1.0f;       // tunable
-  // IBL specular mip floor. 0.3 forces the prefiltered env fetch to use at
-  // least ~mip 1 of 4 — kills the per-pixel sky-reflection sparkle from
-  // normal-mapped cloth at grazing.
-  float imguiIblRoughnessFloor = 0.3f;     // tunable
+  // IBL specular mip floor. This only affects global cubemap specular, not
+  // direct-light highlights. Keeping it moderately high prevents the
+  // environment map's bright texels from reading as rectangular local lights
+  // on glossy indoor floors.
+  float imguiIblRoughnessFloor = 0.45f;    // tunable
   bool imguiShadowFrontFaceCull = false;   // off → CULL_NONE in shadow pass.
                                            // Front-face cull silently drops
                                            // any single-sided wall whose only
@@ -242,6 +237,10 @@ private:
                                            // + receiver-plane gradient
                                            // already handle the acne that
                                            // front-cull was protecting.
+  bool imguiCullShadowCasters = false;      // opt-in only: tight CSM caster
+                                           // culling can remove off-slice
+                                           // occluders that still cast into
+                                           // the cascade.
   float imguiCsmFar = 2000.0f;             // cascade far plane
   float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
   // Exposure stops applied BEFORE the ACES tonemap in second.frag. ACES has
@@ -265,6 +264,16 @@ private:
   // on sun-lit floor pixels once auto-exposure started amplifying. 0.6
   // keeps the warm-bounce feel without the visible noise floor.
   float imguiSsgiIntensity = 0.6f;
+  bool imguiEnableSunDirect = true;
+  bool imguiEnablePointLights = true;
+  bool imguiEnableSpotLights = true;
+  bool imguiEnableIblAmbient = true;
+  bool imguiEnableSsgiBounce = true;
+  bool imguiEnableBloom = true;
+  bool imguiSsrEnabled = false;            // off by default: avoids rough Sponza SSR leaks
+  bool imguiTaaEnabled = false;
+  bool imguiResponsiveTaa = true;          // drop history while camera moves
+  bool imguiPreferMailboxPresent = true;   // on = MAILBOX / uncapped present
   // CAS-style sharpening strength. Dropped 0.4 → 0.10 — the previous 0.4
   // was amplifying the residual SSGI/spec-AA noise into a visible chunky
   // pattern on the floor. 0.10 still restores TAA-softening on real edges
@@ -277,9 +286,8 @@ private:
   bool imguiUseGeomNormalOnly = false;     // P2 diag: bypass normal-map sampling
 
   // --- TAA state ---
-  // Frame counter drives the Halton index and the history ping-pong parity.
-  // Wraps every 8 frames for jitter (matches Halton sample count) but the
-  // ping-pong only needs parity, so we can just use frameCounter & 1.
+  // Frame counter drives the Halton index and temporal history ring slots.
+  // Jitter wraps every 8 frames; history slots wrap by their ring size.
   uint32_t taaFrameCounter = 0;
   // Un-jittered baseline projection. Updated only by rebuildProjection().
   // Each draw() starts by copying this into sceneUbo.projection BEFORE
@@ -291,6 +299,10 @@ private:
   // frame's image (which was rendered with last frame's jitter).
   glm::mat4 taaPrevViewProj = glm::mat4(1.0f);
   bool taaHistoryValid = false;            // dropped on swapchain recreate / first frame
+  glm::vec3 taaLastCameraPos = glm::vec3(0.0f);
+  glm::mat4 taaLastView = glm::mat4(1.0f);
+  bool taaHasLastCamera = false;
+  bool cameraMovedThisFrame = false;
   float frameTimeGraphData[128] = {};
   int frameTimeGraphOffset = 0;
 

@@ -51,10 +51,12 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 // Reflects the LIT color buffer along view-space reflection vector.
 // Returns a Fresnel-weighted reflection contribution; 0 on miss.
-vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness, vec3 F0) {
+vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness,
+                float metallic, vec3 F0) {
     // Only fire on near-mirror surfaces. Sponza fabric is rough — was getting
     // hit by SSR before and producing speckle.
-    if (roughness > 0.30) return vec3(0.0);
+    if (roughness > 0.18) return vec3(0.0);
+    if (metallic < 0.25 && roughness > 0.08) return vec3(0.0);
     vec3 reflDir = normalize(reflect(normalize(viewPos), viewN));
     if (reflDir.z > 0.0) return vec3(0.0); // ray points back at camera
 
@@ -96,10 +98,20 @@ vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness, vec3 F0) {
             vec4 fc  = scene.projection * vec4(lo, 1.0);
             vec2 fUV = fc.xy / fc.w * 0.5 + 0.5;
 
-            // Skip if the hit is at the sky (depth ≈ 1) — the lit buffer at
-            // the sky already contains the skybox color so reflecting that is
-            // legitimate. We allow it.
-            vec3 reflColor = texture(litSampler, fUV).rgb;
+            float hitDepth = texture(gBufferDepthSampler, fUV).r;
+            if (hitDepth >= 0.9999) return vec3(0.0);
+            vec3 hitView = reconstructViewPos(fUV, hitDepth);
+            float rayZ = -lo.z;
+            float hitZ = -hitView.z;
+            if (abs(hitZ - rayZ) > max(0.08 * hitZ, 0.05))
+                return vec3(0.0);
+
+            vec3 hitWorldN = texture(gBuffer1Sampler, fUV).xyz;
+            if (dot(hitWorldN, hitWorldN) < 0.1) return vec3(0.0);
+            vec3 hitViewN = normalize(mat3(scene.view) * normalize(hitWorldN));
+            if (dot(hitViewN, -reflDir) < 0.05) return vec3(0.0);
+
+            vec3 reflColor = min(texture(litSampler, fUV).rgb, vec3(3.0));
 
             vec2 edgeDist   = smoothstep(0.95, 1.0, abs(fUV * 2.0 - 1.0));
             float edgeFade  = 1.0 - clamp(max(edgeDist.x, edgeDist.y), 0.0, 1.0);
@@ -108,7 +120,7 @@ vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness, vec3 F0) {
             // pow(1-r, 4) sharpens the falloff so semi-rough surfaces get
             // very little SSR contribution (visible speckle goes away).
             float roughFade = pow(1.0 - roughness, 4.0);
-            float ssrWeight = fresnel * roughFade * edgeFade;
+            float ssrWeight = min(fresnel * roughFade * edgeFade, 0.35);
 
             return reflColor * ssrWeight;
         }
@@ -121,6 +133,10 @@ void main() {
     vec2 uv      = gl_FragCoord.xy / texSize;
 
     vec3 lit = texture(litSampler, uv).rgb;
+    if (scene.shadowParams.w < 0.5) {
+        outColor = vec4(lit, 1.0);
+        return;
+    }
 
     // Skip SSR for sky pixels (depth at 1.0): no surface to reflect from.
     float depth = texture(gBufferDepthSampler, uv).r;
@@ -141,7 +157,7 @@ void main() {
     vec3 viewPos = reconstructViewPos(uv, depth);
     vec3 viewN   = normalize(mat3(scene.view) * worldN);
 
-    vec3 ssr = computeSSR(uv, viewPos, viewN, roughness, F0);
+    vec3 ssr = computeSSR(uv, viewPos, viewN, roughness, metallic, F0);
     // Additive blend — SSR contribution is already Fresnel- and edge-fade-weighted.
     outColor = vec4(lit + ssr, 1.0);
 }

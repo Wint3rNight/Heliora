@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,8 @@ struct InstancedDrawable {
   glm::vec3 groupCenter = glm::vec3(0.0f);
   float groupRadius = 0.0f;
 };
+
+class CommandThreadPool;
 
 class VulkanRenderer {
 public:
@@ -200,6 +203,15 @@ private:
   // --- Instanced drawables ---
   std::vector<InstancedDrawable> instancedDrawables;
 
+  // --- Multi-threaded command recording (Phase 7.4) ---
+  struct ThreadCommandFrameResources {
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer gBufferSecondary = VK_NULL_HANDLE;
+  };
+  std::vector<std::vector<ThreadCommandFrameResources>> threadedCommandFrames;
+  std::unique_ptr<CommandThreadPool> commandThreadPool;
+  uint32_t threadedCommandWorkerCount = 0;
+
   // --- Subsystems ---
   VulkanDevice device;
   VulkanSwapchain swapchain;
@@ -341,6 +353,8 @@ private:
 
   // --- Init helpers ---
   void createSynchronization();
+  void createThreadedCommandResources();
+  void cleanupThreadedCommandResources();
   void createShadowResources();
   void cleanupShadowResources();
   void createGBuffer();
@@ -372,6 +386,9 @@ private:
 
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);
+  void recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
+                         const VkViewport &viewport,
+                         const VkRect2D &scissor);
   void recordShadowPass(VkCommandBuffer cmdBuffer);
   void recordPointShadowPass(VkCommandBuffer cmdBuffer);
   void recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex);

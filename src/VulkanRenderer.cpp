@@ -17,13 +17,119 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <exception>
 #include <filesystem>
+#include <functional>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
+
+class CommandThreadPool {
+public:
+  explicit CommandThreadPool(uint32_t workerCount) {
+    workers.reserve(workerCount);
+    for (uint32_t i = 0; i < workerCount; ++i)
+      workers.emplace_back([this] { workerLoop(); });
+  }
+
+  ~CommandThreadPool() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    workCv.notify_all();
+    for (std::thread &worker : workers) {
+      if (worker.joinable())
+        worker.join();
+    }
+  }
+
+  uint32_t size() const { return static_cast<uint32_t>(workers.size()); }
+
+  void dispatch(uint32_t taskCount,
+                const std::function<void(uint32_t)> &callback) {
+    if (taskCount == 0)
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      firstException = nullptr;
+      outstandingTasks += taskCount;
+      for (uint32_t i = 0; i < taskCount; ++i) {
+        tasks.emplace_back([this, callback, i] {
+          try {
+            callback(i);
+          } catch (...) {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!firstException)
+              firstException = std::current_exception();
+          }
+        });
+      }
+    }
+
+    workCv.notify_all();
+    waitIdle();
+
+    std::exception_ptr failure;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      failure = firstException;
+      firstException = nullptr;
+    }
+    if (failure)
+      std::rethrow_exception(failure);
+  }
+
+private:
+  void waitIdle() {
+    std::unique_lock<std::mutex> lock(mutex);
+    doneCv.wait(lock, [this] {
+      return tasks.empty() && outstandingTasks == 0;
+    });
+  }
+
+  void workerLoop() {
+    while (true) {
+      std::function<void()> task;
+      {
+        std::unique_lock<std::mutex> lock(mutex);
+        workCv.wait(lock, [this] { return stopping || !tasks.empty(); });
+        if (stopping && tasks.empty())
+          return;
+        task = std::move(tasks.front());
+        tasks.pop_front();
+      }
+
+      task();
+
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (outstandingTasks > 0)
+          --outstandingTasks;
+        if (tasks.empty() && outstandingTasks == 0)
+          doneCv.notify_all();
+      }
+    }
+  }
+
+  std::vector<std::thread> workers;
+  std::deque<std::function<void()>> tasks;
+  mutable std::mutex mutex;
+  std::condition_variable workCv;
+  std::condition_variable doneCv;
+  uint32_t outstandingTasks = 0;
+  bool stopping = false;
+  std::exception_ptr firstException;
+};
 
 VulkanRenderer::VulkanRenderer() {}
 
@@ -167,6 +273,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     // 11. Synchronization
     createSynchronization();
+    createThreadedCommandResources();
 
     // 12. Performance metrics
     QueueFamilyIndices qi = device.getQueueFamilies();
@@ -2220,6 +2327,7 @@ void VulkanRenderer::cleanup() {
   for (VkSemaphore s : renderFinished)
     vkDestroySemaphore(device.getLogicalDevice(), s, nullptr);
   renderFinished.clear();
+  cleanupThreadedCommandResources();
 
   pipeline.cleanup(device.getLogicalDevice());
   renderPassManager.cleanup(device.getLogicalDevice());
@@ -2267,6 +2375,38 @@ static const char *presentModeName(VkPresentModeKHR mode) {
   }
 }
 
+enum class GBufferDrawKind {
+  Mesh,
+  Instanced,
+};
+
+struct GBufferDrawItem {
+  GBufferDrawKind kind = GBufferDrawKind::Mesh;
+  const Mesh *mesh = nullptr;
+  int lod = 0;
+  ModelPushConstants push{};
+  VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
+  VkBuffer instanceBuffer = VK_NULL_HANDLE;
+  uint32_t instanceCount = 1;
+  uint32_t indexCount = 0;
+};
+
+static glm::uvec4 materialTextureIndices0(const Material &mat) {
+  return glm::uvec4(static_cast<uint32_t>(mat.albedoTextureId),
+                    static_cast<uint32_t>(mat.normalTextureId),
+                    static_cast<uint32_t>(mat.metallicTextureId),
+                    static_cast<uint32_t>(mat.roughnessTextureId));
+}
+
+static glm::uvec4 materialTextureIndices1(const Material &mat) {
+  const uint32_t materialFlags =
+      (mat.isCloth ? 1u : 0u) | (mat.alphaMasked ? 2u : 0u);
+  const uint32_t alphaCutoff255 = static_cast<uint32_t>(
+      glm::clamp(mat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
+  return glm::uvec4(static_cast<uint32_t>(mat.aoTextureId), materialFlags,
+                    alphaCutoff255, 0u);
+}
+
 void VulkanRenderer::recordCommands(uint32_t currentImage) {
   VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
   vkResetCommandBuffer(cmd, 0);
@@ -2304,204 +2444,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   uint32_t taaHistoryIndex =
       static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
 
-  // --- G-buffer pass ---
-  {
-    std::array<VkClearValue, 4> clears{};
-    clears[3].depthStencil = {1.0f, 0};
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getGBufferRenderPass();
-    rpbi.framebuffer = gBufferFramebuffers[currentImage];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
-    rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
-    rpbi.pClearValues = clears.data();
-
-    vkdbgBeginLabel(cmd, "G-Buffer Pass", 0.1f, 0.4f, 1.0f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getGraphicsPipeline());
-    // Cull mode is now dynamic so the per-draw override below can flip to
-    // NONE for materials marked doubleSided (Sponza foliage). Default
-    // matches the original static state.
-    vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
-    VkCullModeFlags lastCullMode = VK_CULL_MODE_BACK_BIT;
-
-    glm::vec4 frustumPlanes[6];
-    extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
-
-    // Phase 7.2: bind VP + bindless texture array once per frame.
-    // Individual materials no longer have their own descriptor sets;
-    // texture indices are passed via push constants per-draw.
-    VkDescriptorSet vpSet = descriptorManager.getVPSet(currentImage);
-    std::array<VkDescriptorSet, 2> gbSets = {
-        vpSet, descriptorManager.getBindlessSet()};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getGraphicsLayout(), 0, 2,
-                            gbSets.data(), 0, nullptr);
-
-    auto renderNode = [&](auto &self, SceneNode *node) -> void {
-      if (node->getModelId() >= 0) {
-        MeshModel *mdl = modelManager.getModel(node->getModelId());
-        if (mdl) {
-          glm::mat4 m = node->getGlobalTransform();
-          glm::vec3 wCenter =
-              glm::vec3(m * glm::vec4(mdl->boundingCenter, 1.0f));
-          float maxScale = glm::max(glm::length(glm::vec3(m[0])),
-                                    glm::max(glm::length(glm::vec3(m[1])),
-                                             glm::length(glm::vec3(m[2]))));
-          bool inFrustum = sphereInFrustum(frustumPlanes, wCenter,
-                                           mdl->boundingRadius * maxScale);
-
-          if (inFrustum) {
-            // Pick LOD from camera distance to bounding sphere center
-            float camDist =
-                glm::length(wCenter - glm::vec3(sceneUbo.cameraPosition));
-            int lod = (camDist < imguiLodNear)  ? 0
-                      : (camDist < imguiLodFar) ? 1
-                                                : 2;
-
-            ModelPushConstants push{};
-            push.model = m;
-            push.normal = node->getNormalMatrix();
-
-            for (size_t k = 0; k < mdl->getMeshCount(); k++) {
-              const Mesh *mesh = mdl->getMesh(k);
-
-              // Per-mesh frustum cull (Sponza has ~100 submeshes; many
-              // off-screen)
-              glm::vec3 meshWCenter =
-                  glm::vec3(m * glm::vec4(mesh->boundingCenter, 1.0f));
-              if (!sphereInFrustum(frustumPlanes, meshWCenter,
-                                   mesh->boundingRadius * maxScale))
-                continue;
-
-              int useLod = std::min(lod, mesh->getLodCount() - 1);
-              VkBuffer vb[] = {mesh->getVertexBuffer()};
-              VkDeviceSize off[] = {0};
-              vkCmdBindVertexBuffers(cmd, 0, 1, vb, off);
-              vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
-                                   VK_INDEX_TYPE_UINT32);
-
-              const Material &mat = mesh->getMaterial();
-              VkCullModeFlags wantCull = mat.doubleSided
-                                             ? VK_CULL_MODE_NONE
-                                             : VK_CULL_MODE_BACK_BIT;
-              if (wantCull != lastCullMode) {
-                vkCmdSetCullMode(cmd, wantCull);
-                lastCullMode = wantCull;
-              }
-              // Phase 7.2: fill bindless texture indices from material.
-              // texIdx1.y is a packed bitfield of per-material flags.
-              uint32_t materialFlags = (mat.isCloth ? 1u : 0u) |
-                                       (mat.alphaMasked ? 2u : 0u);
-              uint32_t alphaCutoff255 = static_cast<uint32_t>(
-                  glm::clamp(mat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
-              push.texIdx0 = glm::uvec4(
-                  static_cast<uint32_t>(mat.albedoTextureId),
-                  static_cast<uint32_t>(mat.normalTextureId),
-                  static_cast<uint32_t>(mat.metallicTextureId),
-                  static_cast<uint32_t>(mat.roughnessTextureId));
-              push.texIdx1 = glm::uvec4(
-                  static_cast<uint32_t>(mat.aoTextureId), materialFlags,
-                  alphaCutoff255, 0u);
-              vkCmdPushConstants(cmd, pipeline.getGraphicsLayout(),
-                                 VK_SHADER_STAGE_VERTEX_BIT |
-                                     VK_SHADER_STAGE_FRAGMENT_BIT,
-                                 0, sizeof(ModelPushConstants), &push);
-              int idxCount = mesh->getIndexCount(useLod);
-              vkCmdDrawIndexed(cmd, idxCount, 1, 0, 0, 0);
-              metrics.recordDrawCall(idxCount);
-            }
-          }
-        }
-      }
-      for (auto &child : node->getChildren())
-        self(self, child.get());
-    };
-    renderNode(renderNode, &rootNode);
-
-    // Instanced drawables: one draw call per mesh, all transforms in instance
-    // buffer. Frustum-cull the entire batch by its precomputed group sphere,
-    // and pick LOD by distance to the group center.
-    if (!instancedDrawables.empty()) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipeline.getInstancedPipeline());
-      // Instanced pipeline shares geoDynState (CULL_MODE dynamic) — set it
-      // explicitly. Instanced models in the scene are opaque, no per-mesh
-      // override needed.
-      vkCmdSetCullMode(cmd, VK_CULL_MODE_BACK_BIT);
-      // Phase 7.2: bind VP + bindless for instanced pipeline too.
-      std::array<VkDescriptorSet, 2> instSets = {
-          descriptorManager.getVPSet(currentImage),
-          descriptorManager.getBindlessSet()};
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              pipeline.getInstancedLayout(), 0, 2,
-                              instSets.data(), 0, nullptr);
-      for (const InstancedDrawable &drawable : instancedDrawables) {
-        MeshModel *mdl = modelManager.getModel(drawable.modelId);
-        if (!mdl)
-          continue;
-
-        if (!sphereInFrustum(frustumPlanes, drawable.groupCenter,
-                             drawable.groupRadius))
-          continue;
-
-        float groupDist = glm::length(drawable.groupCenter -
-                                      glm::vec3(sceneUbo.cameraPosition));
-        int instLod = (groupDist < imguiLodNear)  ? 0
-                      : (groupDist < imguiLodFar) ? 1
-                                                  : 2;
-
-        VkBuffer instanceBuf = drawable.instanceBuffer.get();
-        VkDeviceSize instanceOff = 0;
-
-        for (size_t k = 0; k < mdl->getMeshCount(); k++) {
-          const Mesh *mesh = mdl->getMesh(k);
-          int useLod = std::min(instLod, mesh->getLodCount() - 1);
-          VkBuffer vb[] = {mesh->getVertexBuffer()};
-          VkDeviceSize off[] = {0};
-          vkCmdBindVertexBuffers(cmd, 0, 1, vb, off);
-          vkCmdBindVertexBuffers(cmd, 1, 1, &instanceBuf, &instanceOff);
-          vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
-                               VK_INDEX_TYPE_UINT32);
-          // Phase 7.2: push bindless texture indices for this mesh.
-          // model/normal are unused by the instanced vertex shader (it reads
-          // them from the instance buffer), but the struct must match.
-          const Material &iMat = mesh->getMaterial();
-          uint32_t iMaterialFlags = (iMat.isCloth ? 1u : 0u) |
-                                    (iMat.alphaMasked ? 2u : 0u);
-          uint32_t iAlphaCutoff255 = static_cast<uint32_t>(
-              glm::clamp(iMat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
-          ModelPushConstants iPush{};
-          iPush.texIdx0 = glm::uvec4(
-              static_cast<uint32_t>(iMat.albedoTextureId),
-              static_cast<uint32_t>(iMat.normalTextureId),
-              static_cast<uint32_t>(iMat.metallicTextureId),
-              static_cast<uint32_t>(iMat.roughnessTextureId));
-          iPush.texIdx1 = glm::uvec4(
-              static_cast<uint32_t>(iMat.aoTextureId), iMaterialFlags,
-              iAlphaCutoff255, 0u);
-          vkCmdPushConstants(cmd, pipeline.getInstancedLayout(),
-                             VK_SHADER_STAGE_VERTEX_BIT |
-                                 VK_SHADER_STAGE_FRAGMENT_BIT,
-                             0, sizeof(ModelPushConstants), &iPush);
-          uint32_t instanceCount =
-              static_cast<uint32_t>(drawable.instances.size());
-          int idxCount = mesh->getIndexCount(useLod);
-          vkCmdDrawIndexed(cmd, idxCount, instanceCount, 0, 0, 0);
-          metrics.recordDrawCall(idxCount * instanceCount);
-        }
-      }
-    }
-
-    vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
-    vkdbgEndLabel(cmd);
-  }
+  recordGBufferPass(cmd, currentImage, viewport, scissor);
 
   // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
   // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
@@ -2663,6 +2606,241 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to stop recording command buffer");
+}
+
+void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
+                                       const VkViewport &viewport,
+                                       const VkRect2D &scissor) {
+  std::vector<GBufferDrawItem> drawItems;
+  drawItems.reserve(128);
+
+  glm::vec4 frustumPlanes[6];
+  extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
+
+  auto appendNode = [&](auto &self, SceneNode *node) -> void {
+    if (node->getModelId() >= 0) {
+      MeshModel *mdl = modelManager.getModel(node->getModelId());
+      if (mdl) {
+        glm::mat4 model = node->getGlobalTransform();
+        glm::vec3 wCenter =
+            glm::vec3(model * glm::vec4(mdl->boundingCenter, 1.0f));
+        float maxScale =
+            glm::max(glm::length(glm::vec3(model[0])),
+                     glm::max(glm::length(glm::vec3(model[1])),
+                              glm::length(glm::vec3(model[2]))));
+        if (sphereInFrustum(frustumPlanes, wCenter,
+                            mdl->boundingRadius * maxScale)) {
+          float camDist =
+              glm::length(wCenter - glm::vec3(sceneUbo.cameraPosition));
+          int lod = (camDist < imguiLodNear)  ? 0
+                    : (camDist < imguiLodFar) ? 1
+                                              : 2;
+
+          ModelPushConstants basePush{};
+          basePush.model = model;
+          basePush.normal = node->getNormalMatrix();
+
+          for (size_t k = 0; k < mdl->getMeshCount(); k++) {
+            const Mesh *mesh = mdl->getMesh(k);
+            glm::vec3 meshWCenter =
+                glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
+            if (!sphereInFrustum(frustumPlanes, meshWCenter,
+                                 mesh->boundingRadius * maxScale))
+              continue;
+
+            const Material &mat = mesh->getMaterial();
+            GBufferDrawItem item{};
+            item.kind = GBufferDrawKind::Mesh;
+            item.mesh = mesh;
+            item.lod = std::min(lod, mesh->getLodCount() - 1);
+            item.push = basePush;
+            item.push.texIdx0 = materialTextureIndices0(mat);
+            item.push.texIdx1 = materialTextureIndices1(mat);
+            item.cullMode =
+                mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+            item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+            drawItems.push_back(item);
+          }
+        }
+      }
+    }
+    for (auto &child : node->getChildren())
+      self(self, child.get());
+  };
+  appendNode(appendNode, &rootNode);
+
+  // Instanced drawables still become ordinary draw items here. The secondary
+  // command buffer recorder switches to the instanced pipeline for these items.
+  for (const InstancedDrawable &drawable : instancedDrawables) {
+    MeshModel *mdl = modelManager.getModel(drawable.modelId);
+    if (!mdl || drawable.instances.empty())
+      continue;
+    if (!sphereInFrustum(frustumPlanes, drawable.groupCenter,
+                         drawable.groupRadius))
+      continue;
+
+    float groupDist =
+        glm::length(drawable.groupCenter - glm::vec3(sceneUbo.cameraPosition));
+    int instLod = (groupDist < imguiLodNear)  ? 0
+                  : (groupDist < imguiLodFar) ? 1
+                                              : 2;
+    for (size_t k = 0; k < mdl->getMeshCount(); k++) {
+      const Mesh *mesh = mdl->getMesh(k);
+      const Material &mat = mesh->getMaterial();
+      GBufferDrawItem item{};
+      item.kind = GBufferDrawKind::Instanced;
+      item.mesh = mesh;
+      item.lod = std::min(instLod, mesh->getLodCount() - 1);
+      item.push.texIdx0 = materialTextureIndices0(mat);
+      item.push.texIdx1 = materialTextureIndices1(mat);
+      item.cullMode = VK_CULL_MODE_BACK_BIT;
+      item.instanceBuffer = drawable.instanceBuffer.get();
+      item.instanceCount = static_cast<uint32_t>(drawable.instances.size());
+      item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+      drawItems.push_back(item);
+    }
+  }
+
+  for (const GBufferDrawItem &item : drawItems)
+    metrics.recordDrawCall(item.indexCount * item.instanceCount);
+
+  std::array<VkClearValue, 4> clears{};
+  clears[3].depthStencil = {1.0f, 0};
+
+  VkRenderPassBeginInfo rpbi = {};
+  rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  rpbi.renderPass = renderPassManager.getGBufferRenderPass();
+  rpbi.framebuffer = gBufferFramebuffers[currentImage];
+  rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+  rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
+  rpbi.pClearValues = clears.data();
+
+  vkdbgBeginLabel(cmd, "G-Buffer Pass", 0.1f, 0.4f, 1.0f);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+
+  const VkDescriptorSet vpSet = descriptorManager.getVPSet(currentImage);
+  const VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
+  const std::array<VkDescriptorSet, 2> graphicsSets = {vpSet, bindlessSet};
+  const std::array<VkDescriptorSet, 2> instancedSets = {vpSet, bindlessSet};
+
+  auto recordDrawCommands = [&](VkCommandBuffer drawCmd, size_t begin,
+                                size_t end) {
+    vkCmdSetViewport(drawCmd, 0, 1, &viewport);
+    vkCmdSetScissor(drawCmd, 0, 1, &scissor);
+    GBufferDrawKind boundKind = GBufferDrawKind::Mesh;
+    bool pipelineBound = false;
+    VkCullModeFlags lastCull = VK_CULL_MODE_BACK_BIT;
+    bool cullValid = false;
+
+    for (size_t i = begin; i < end; ++i) {
+      const GBufferDrawItem &item = drawItems[i];
+      if (!pipelineBound || boundKind != item.kind) {
+        if (item.kind == GBufferDrawKind::Mesh) {
+          vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getGraphicsPipeline());
+          vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  pipeline.getGraphicsLayout(), 0, 2,
+                                  graphicsSets.data(), 0, nullptr);
+        } else {
+          vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getInstancedPipeline());
+          vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  pipeline.getInstancedLayout(), 0, 2,
+                                  instancedSets.data(), 0, nullptr);
+        }
+        boundKind = item.kind;
+        pipelineBound = true;
+        cullValid = false;
+      }
+
+      if (!cullValid || item.cullMode != lastCull) {
+        vkCmdSetCullMode(drawCmd, item.cullMode);
+        lastCull = item.cullMode;
+        cullValid = true;
+      }
+
+      VkBuffer vb[] = {item.mesh->getVertexBuffer()};
+      VkDeviceSize off[] = {0};
+      vkCmdBindVertexBuffers(drawCmd, 0, 1, vb, off);
+      if (item.kind == GBufferDrawKind::Instanced) {
+        VkDeviceSize instanceOff = 0;
+        vkCmdBindVertexBuffers(drawCmd, 1, 1, &item.instanceBuffer,
+                               &instanceOff);
+      }
+      vkCmdBindIndexBuffer(drawCmd, item.mesh->getIndexBuffer(item.lod), 0,
+                           VK_INDEX_TYPE_UINT32);
+      VkPipelineLayout layout =
+          item.kind == GBufferDrawKind::Mesh ? pipeline.getGraphicsLayout()
+                                             : pipeline.getInstancedLayout();
+      vkCmdPushConstants(drawCmd, layout,
+                         VK_SHADER_STAGE_VERTEX_BIT |
+                             VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(ModelPushConstants), &item.push);
+      vkCmdDrawIndexed(drawCmd, item.indexCount, item.instanceCount, 0, 0, 0);
+    }
+  };
+
+  const bool canRecordThreaded =
+      commandThreadPool && threadedCommandWorkerCount > 0 &&
+      currentFrame < static_cast<int>(threadedCommandFrames.size()) &&
+      !threadedCommandFrames[currentFrame].empty() && !drawItems.empty();
+
+  if (!canRecordThreaded) {
+    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    recordDrawCommands(cmd, 0, drawItems.size());
+    vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+    vkdbgEndLabel(cmd);
+    return;
+  }
+
+  auto &frameResources = threadedCommandFrames[currentFrame];
+  const uint32_t workerCount = std::min<uint32_t>(
+      threadedCommandWorkerCount, static_cast<uint32_t>(drawItems.size()));
+  std::vector<VkCommandBuffer> secondaries(workerCount, VK_NULL_HANDLE);
+
+  for (uint32_t i = 0; i < workerCount; ++i) {
+    ThreadCommandFrameResources &res = frameResources[i];
+    vkResetCommandPool(device.getLogicalDevice(), res.pool, 0);
+    secondaries[i] = res.gBufferSecondary;
+  }
+
+  const VkRenderPass gbufferPass = renderPassManager.getGBufferRenderPass();
+  const VkFramebuffer gbufferFramebuffer = gBufferFramebuffers[currentImage];
+
+  auto recordRange = [&](uint32_t workerIndex) {
+    const size_t begin =
+        (drawItems.size() * size_t(workerIndex)) / size_t(workerCount);
+    const size_t end =
+        (drawItems.size() * size_t(workerIndex + 1)) / size_t(workerCount);
+    VkCommandBuffer secondary = secondaries[workerIndex];
+
+    VkCommandBufferInheritanceInfo inheritance{};
+    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance.renderPass = gbufferPass;
+    inheritance.subpass = 0;
+    inheritance.framebuffer = gbufferFramebuffer;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                      VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    beginInfo.pInheritanceInfo = &inheritance;
+    if (vkBeginCommandBuffer(secondary, &beginInfo) != VK_SUCCESS)
+      throw std::runtime_error("Failed to begin G-buffer secondary command buffer");
+
+    recordDrawCommands(secondary, begin, end);
+    if (vkEndCommandBuffer(secondary) != VK_SUCCESS)
+      throw std::runtime_error("Failed to end G-buffer secondary command buffer");
+  };
+
+  commandThreadPool->dispatch(workerCount, recordRange);
+
+  vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+  vkCmdExecuteCommands(cmd, workerCount, secondaries.data());
+  vkCmdEndRenderPass(cmd);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+  vkdbgEndLabel(cmd);
 }
 
 // Shadow passes (unchanged)
@@ -3550,4 +3728,70 @@ void VulkanRenderer::createSynchronization() {
         VK_SUCCESS)
       throw std::runtime_error("Failed to create renderFinished semaphore");
   }
+}
+
+void VulkanRenderer::createThreadedCommandResources() {
+  cleanupThreadedCommandResources();
+
+  const uint32_t hardwareThreads =
+      std::max(1u, std::thread::hardware_concurrency());
+  // Keep this conservative: command recording benefits from a few workers, but
+  // oversubscribing the CPU can hurt frame pacing more than it helps.
+  threadedCommandWorkerCount =
+      std::min<uint32_t>(4u, std::max(1u, hardwareThreads > 1
+                                              ? hardwareThreads - 1u
+                                              : 1u));
+  commandThreadPool =
+      std::make_unique<CommandThreadPool>(threadedCommandWorkerCount);
+
+  QueueFamilyIndices qi = device.getQueueFamilies();
+  VkDevice dev = device.getLogicalDevice();
+  threadedCommandFrames.assign(MAX_FRAMES_DRAWS, {});
+
+  VkCommandPoolCreateInfo poolInfo{};
+  poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                   VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  poolInfo.queueFamilyIndex = static_cast<uint32_t>(qi.graphicsFamily);
+
+  for (size_t frame = 0; frame < threadedCommandFrames.size(); ++frame) {
+    threadedCommandFrames[frame].resize(threadedCommandWorkerCount);
+    for (uint32_t worker = 0; worker < threadedCommandWorkerCount; ++worker) {
+      ThreadCommandFrameResources &res = threadedCommandFrames[frame][worker];
+      if (vkCreateCommandPool(dev, &poolInfo, nullptr, &res.pool) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create worker command pool");
+
+      VkCommandBufferAllocateInfo allocInfo{};
+      allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+      allocInfo.commandPool = res.pool;
+      allocInfo.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+      allocInfo.commandBufferCount = 1;
+      if (vkAllocateCommandBuffers(dev, &allocInfo, &res.gBufferSecondary) !=
+          VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate G-buffer secondary command buffer");
+    }
+  }
+
+  spdlog::info("Phase 7.4 threaded command recording: {} worker(s)",
+               threadedCommandWorkerCount);
+}
+
+void VulkanRenderer::cleanupThreadedCommandResources() {
+  commandThreadPool.reset();
+
+  VkDevice dev = device.getLogicalDevice();
+  if (dev != VK_NULL_HANDLE) {
+    for (auto &frameResources : threadedCommandFrames) {
+      for (ThreadCommandFrameResources &res : frameResources) {
+        if (res.pool != VK_NULL_HANDLE) {
+          vkDestroyCommandPool(dev, res.pool, nullptr);
+          res.pool = VK_NULL_HANDLE;
+          res.gBufferSecondary = VK_NULL_HANDLE;
+        }
+      }
+    }
+  }
+
+  threadedCommandFrames.clear();
+  threadedCommandWorkerCount = 0;
 }

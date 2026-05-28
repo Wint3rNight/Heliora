@@ -15,6 +15,7 @@ find_package(glfw3 REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(assimp REQUIRED)
 find_package(spdlog REQUIRED)
+find_package(Threads REQUIRED)
 
 # meshoptimizer — mesh simplification for LOD generation
 include(FetchContent)
@@ -73,6 +74,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         glfw
         glm::glm
         spdlog::spdlog
+        Threads::Threads
 )
 
 # Vulkan-style depth [0,1] for all glm projection matrices

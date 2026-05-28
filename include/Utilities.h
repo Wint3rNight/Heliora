@@ -246,11 +246,13 @@ struct SceneUniformBuffer {
   //     reflect baked daylight off every glossy surface).
   alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
   // TAA state. Populated by VulkanRenderer each frame.
-  //   prevViewProj: previous frame's view*projection (no jitter applied to
-  //     prevProjection so reprojection lands on the un-jittered surface).
+  //   prevViewProj: previous frame's jittered projection*view. Reprojection
+  //     samples history where the surface actually landed in the previous
+  //     jittered frame.
   //   taaParams.xy: current frame's sub-pixel jitter in clip-space NDC units
-  //     (i.e. already divided by viewport*2). Applied directly to clip.xy in
-  //     the vertex shader and subtracted during world-pos reconstruction.
+  //     (i.e. already divided by viewport*2). The CPU bakes this into the
+  //     projection; second.frag reconstructs with the matching inverse
+  //     projection, so it does not subtract jitter manually.
   //   taaParams.z:  taaEnable (0 = passthrough, 1 = TAA on).
   //   taaParams.w:  historyValid (0 on first frame / after resize / on debug
   //     mode change).

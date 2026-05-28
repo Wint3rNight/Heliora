@@ -75,6 +75,10 @@ public:
   double getAveragePassGpuTimeMs(GpuPass pass) const;
   double getCpuPhaseTimeMs(CpuPhase phase) const;
   double getAverageCpuPhaseTimeMs(CpuPhase phase) const;
+  double getCpuActiveTimeMs() const;
+  double getAverageCpuActiveTimeMs() const;
+  double getCpuSyncWaitTimeMs() const;
+  double getAverageCpuSyncWaitTimeMs() const;
   double getCpuPhaseTotalMs() const;
   double getAverageCpuPhaseTotalMs() const;
 

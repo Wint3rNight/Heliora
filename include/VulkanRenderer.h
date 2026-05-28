@@ -194,11 +194,15 @@ private:
   // to the swap image, not to our frame-in-flight slot. Indexing this by
   // currentFrame caused a validation hit when the swap engine had not
   // finished presenting the image whose semaphore we tried to reuse.
+  // imagesInFlight maps swap image -> frame fence. frameImageInFlight is the
+  // reverse owner map, used to clear stale image entries when a frame fence is
+  // reused for a different acquired image.
   // See https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
   std::vector<VkFence> drawFences;
   std::vector<VkFence> imagesInFlight;
+  std::vector<uint32_t> frameImageInFlight;
   bool framebufferResized = false;
 
   // --- ImGui ---

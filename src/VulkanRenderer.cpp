@@ -272,6 +272,10 @@ void VulkanRenderer::draw() {
                   std::numeric_limits<uint64_t>::max());
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::WaitFence,
                          elapsedMs(phaseStart));
+  // This is the expected frame-in-flight throttle: if the CPU finishes
+  // recording faster than the GPU can consume work, it waits here before
+  // reusing this frame slot's fence, acquire semaphore, query range, and
+  // exposure result buffer. It is idle time, not active CPU renderer cost.
   metrics.collectGpuResults(logicalDevice, currentFrame);
 
   // Check resize BEFORE acquiring — a successful acquire signals
@@ -302,12 +306,37 @@ void VulkanRenderer::draw() {
   }
 
   phaseStart = CpuClock::now();
-  if (imagesInFlight[imageIndex] != VK_NULL_HANDLE)
-    vkWaitForFences(logicalDevice, 1, &imagesInFlight[imageIndex], VK_TRUE,
-                    UINT64_MAX);
+  VkFence imageFence = imagesInFlight[imageIndex];
+  if (imageFence != VK_NULL_HANDLE) {
+    bool fenceStillOwnsImage = false;
+    for (size_t frame = 0; frame < drawFences.size(); ++frame) {
+      if (drawFences[frame] == imageFence) {
+        fenceStillOwnsImage =
+            frame < frameImageInFlight.size() &&
+            frameImageInFlight[frame] == imageIndex;
+        break;
+      }
+    }
+
+    if (fenceStillOwnsImage) {
+      vkWaitForFences(logicalDevice, 1, &imageFence, VK_TRUE, UINT64_MAX);
+    } else {
+      imagesInFlight[imageIndex] = VK_NULL_HANDLE;
+    }
+  }
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::ImageFence,
                          elapsedMs(phaseStart));
 
+  const uint32_t invalidImageIndex = std::numeric_limits<uint32_t>::max();
+  if (currentFrame < static_cast<int>(frameImageInFlight.size())) {
+    uint32_t previousImage = frameImageInFlight[currentFrame];
+    if (previousImage != invalidImageIndex &&
+        previousImage < imagesInFlight.size() &&
+        imagesInFlight[previousImage] == drawFences[currentFrame]) {
+      imagesInFlight[previousImage] = VK_NULL_HANDLE;
+    }
+    frameImageInFlight[currentFrame] = imageIndex;
+  }
   imagesInFlight[imageIndex] = drawFences[currentFrame];
   vkResetFences(logicalDevice, 1, &drawFences[currentFrame]);
 
@@ -572,6 +601,8 @@ void VulkanRenderer::recreateSwapChain() {
   createAutoExposureResources();
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
+  frameImageInFlight.assign(MAX_FRAMES_DRAWS,
+                            std::numeric_limits<uint32_t>::max());
 
   // renderFinished is sized by swap-image count; if the new swapchain has
   // a different count, resize and (re)create the missing semaphores.
@@ -2793,6 +2824,8 @@ void VulkanRenderer::buildImGuiUI() {
               metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
               metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
               metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Submit));
+  ImGui::Text("CPU active: %.2f | sync wait: %.2f ms",
+              metrics.getCpuActiveTimeMs(), metrics.getCpuSyncWaitTimeMs());
   ImGui::Text("CPU measured: %.2f | avg %.2f ms",
               metrics.getCpuPhaseTotalMs(),
               metrics.getAverageCpuPhaseTotalMs());
@@ -2986,8 +3019,6 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd,
   vkCmdEndRenderPass(cmd);
 }
 
-// Synchronization (unchanged)
-
 void VulkanRenderer::createSynchronization() {
   size_t swapCount = swapchain.getImageCount();
   imageAvailable.resize(MAX_FRAMES_DRAWS);
@@ -2996,6 +3027,8 @@ void VulkanRenderer::createSynchronization() {
   // comment for the validation rationale).
   renderFinished.resize(swapCount);
   imagesInFlight.resize(swapCount, VK_NULL_HANDLE);
+  frameImageInFlight.resize(MAX_FRAMES_DRAWS,
+                            std::numeric_limits<uint32_t>::max());
 
   VkSemaphoreCreateInfo semInfo = {};
   semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;

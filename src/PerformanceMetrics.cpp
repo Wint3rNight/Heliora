@@ -240,6 +240,34 @@ double PerformanceMetrics::getAverageCpuPhaseTimeMs(CpuPhase phase) const {
   return totalCpuPhaseMs[idx] / static_cast<double>(cpuPhaseSamples[idx]);
 }
 
+double PerformanceMetrics::getCpuActiveTimeMs() const {
+  return getCpuPhaseTimeMs(CpuPhase::Update) +
+         getCpuPhaseTimeMs(CpuPhase::Record) +
+         getCpuPhaseTimeMs(CpuPhase::Upload) +
+         getCpuPhaseTimeMs(CpuPhase::Submit);
+}
+
+double PerformanceMetrics::getAverageCpuActiveTimeMs() const {
+  return getAverageCpuPhaseTimeMs(CpuPhase::Update) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Record) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Upload) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Submit);
+}
+
+double PerformanceMetrics::getCpuSyncWaitTimeMs() const {
+  return getCpuPhaseTimeMs(CpuPhase::WaitFence) +
+         getCpuPhaseTimeMs(CpuPhase::Acquire) +
+         getCpuPhaseTimeMs(CpuPhase::ImageFence) +
+         getCpuPhaseTimeMs(CpuPhase::Present);
+}
+
+double PerformanceMetrics::getAverageCpuSyncWaitTimeMs() const {
+  return getAverageCpuPhaseTimeMs(CpuPhase::WaitFence) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Acquire) +
+         getAverageCpuPhaseTimeMs(CpuPhase::ImageFence) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Present);
+}
+
 double PerformanceMetrics::getCpuPhaseTotalMs() const {
   double total = 0.0;
   for (int p = 0; p < NUM_CPU_PHASES; p++)
@@ -342,6 +370,10 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║    Present:         {:>7.3f} / {:>7.3f} ms  ║",
                getCpuPhaseTimeMs(CpuPhase::Present),
                getAverageCpuPhaseTimeMs(CpuPhase::Present));
+  spdlog::info("║    CPU active:      {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuActiveTimeMs(), getAverageCpuActiveTimeMs());
+  spdlog::info("║    Sync/WSI wait:   {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuSyncWaitTimeMs(), getAverageCpuSyncWaitTimeMs());
   spdlog::info("║    CPU measured:    {:>7.3f} / {:>7.3f} ms  ║",
                getCpuPhaseTotalMs(), getAverageCpuPhaseTotalMs());
   VramStats vram = queryVram(allocator);

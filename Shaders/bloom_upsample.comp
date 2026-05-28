@@ -1,0 +1,43 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcTex;
+layout(set = 0, binding = 1, rgba16f) uniform image2D dstImage;
+
+layout(push_constant) uniform BloomUpsamplePC {
+    vec2 srcTexelSize;
+    float radius;
+    float intensity;
+    int finalPass;
+} pc;
+
+vec3 tentUpsample(vec2 uv) {
+    vec2 t = pc.srcTexelSize * max(pc.radius, 0.0);
+    vec3 s = texture(srcTex, uv).rgb * 4.0;
+    s += texture(srcTex, uv + vec2(-t.x,  0.0)).rgb * 2.0;
+    s += texture(srcTex, uv + vec2( t.x,  0.0)).rgb * 2.0;
+    s += texture(srcTex, uv + vec2( 0.0, -t.y)).rgb * 2.0;
+    s += texture(srcTex, uv + vec2( 0.0,  t.y)).rgb * 2.0;
+    s += texture(srcTex, uv + vec2(-t.x, -t.y)).rgb;
+    s += texture(srcTex, uv + vec2( t.x, -t.y)).rgb;
+    s += texture(srcTex, uv + vec2(-t.x,  t.y)).rgb;
+    s += texture(srcTex, uv + vec2( t.x,  t.y)).rgb;
+    return s * (1.0 / 16.0);
+}
+
+void main() {
+    ivec2 dstPx = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(dstImage);
+    if (dstPx.x >= dstSize.x || dstPx.y >= dstSize.y) {
+        return;
+    }
+
+    vec2 uv = (vec2(dstPx) + vec2(0.5)) / vec2(dstSize);
+    vec3 existing = imageLoad(dstImage, dstPx).rgb;
+    vec3 combined = existing + tentUpsample(uv);
+    if (pc.finalPass != 0) {
+        combined *= pc.intensity;
+    }
+    imageStore(dstImage, dstPx, vec4(combined, 1.0));
+}

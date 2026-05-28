@@ -23,11 +23,12 @@ public:
     GBuffer = 2,
     SSGI = 3,
     Lit = 4,
-    AutoExposure = 5,
-    Composite = 6,
-    ImGui = 7
+    Bloom = 5,
+    AutoExposure = 6,
+    Composite = 7,
+    ImGui = 8
   };
-  static constexpr int NUM_GPU_PASSES = 8;
+  static constexpr int NUM_GPU_PASSES = 9;
 
   enum class CpuPhase {
     WaitFence = 0,

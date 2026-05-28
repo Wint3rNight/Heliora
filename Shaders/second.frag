@@ -48,6 +48,7 @@ layout(set = 2, binding = 1) uniform sampler2D depthTex;
 // Same image as inputColor — but as a regular sampler so we can read neighbors
 // with offsets for the 3x3 YCoCg AABB clamp.
 layout(set = 2, binding = 2) uniform sampler2D currentTex;
+layout(set = 2, binding = 3) uniform sampler2D bloomTex;
 
 layout(location = 0) out vec4 outSwap;
 layout(location = 1) out vec4 outHistory;
@@ -211,7 +212,19 @@ vec3 sampleHistoryCatmullRom(sampler2D tex, vec2 uv, vec2 texSize) {
 }
 
 void main() {
+    vec2 uv = gl_FragCoord.xy * scene.viewportSize.zw;
     vec3 current = subpassLoad(inputColor).rgb;
+    vec3 bloom = texture(bloomTex, uv).rgb;
+    if (scene.debugMode == 13) {
+        outHistory = vec4(current, 1.0);
+        outSwap = vec4(tonemapAndEncode(bloom * 8.0), 1.0);
+        return;
+    }
+
+    bool enableBloom = (scene.lightCounts.z & (1 << 5)) != 0;
+    if (enableBloom) {
+        current += bloom;
+    }
 
     bool taaEnable    = scene.taaParams.z > 0.5;
     bool historyValid = scene.taaParams.w > 0.5;
@@ -222,7 +235,6 @@ void main() {
         return;
     }
 
-    vec2 uv     = gl_FragCoord.xy * scene.viewportSize.zw;
     float depth = texture(depthTex, uv).r;
 
     vec2 prevUV;
@@ -291,7 +303,12 @@ void main() {
     float lumaSum2 = 0.0;
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
-        vec3 n  = texelFetch(currentTex, px + ivec2(dx, dy), 0).rgb;
+        ivec2 nPx = px + ivec2(dx, dy);
+        vec2 nUv = (vec2(nPx) + vec2(0.5)) * scene.viewportSize.zw;
+        vec3 n  = texelFetch(currentTex, nPx, 0).rgb;
+        if (enableBloom) {
+            n += texture(bloomTex, nUv).rgb;
+        }
         vec3 yc = rgbToYCoCg(n);
         ycMin = min(ycMin, yc);
         ycMax = max(ycMax, yc);

@@ -527,44 +527,6 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
     return bounce / totalW * scene.shadowParams.y;
 }
 
-// ---- Bloom (bright-pass on estimated lit neighbors, not raw albedo) ----
-// Samples albedo * NdotL * sunColor to approximate which neighbors are
-// actually sunlit rather than just brightly-coloured in the texture.
-vec3 computeBloom(vec2 uv) {
-    vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
-    vec3 bloom  = vec3(0.0);
-    float totalW = 0.0;
-    // Threshold lowered 2.0 → 1.2 and contribution raised 0.05 → 0.12.
-    // The previous values produced no visible glare on sunlit plaster —
-    // the reference image has a clear soft-halo bloom around sun-lit
-    // edges that hides per-pixel spec sparkle in the high-frequency
-    // brightness rolloff. A wider, softer halo is what makes "warm
-    // sunlit stone" read as one continuous lit surface instead of a
-    // grid of glinting normal-map pixels.
-    const float threshold = 1.2;
-    vec3 sunDir   = normalize(-scene.directionalLight.direction.xyz);
-    vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
-                    scene.directionalLight.colorIntensity.a;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            vec2 sUV    = uv + vec2(x, y) * texelSize * 4.0;
-            vec3 albedo = texture(gBuffer0Sampler, sUV).rgb;
-            vec3 N      = texture(gBuffer1Sampler, sUV).xyz;
-            if (dot(N, N) < 0.1) continue;   // skip sky/empty pixels
-            float NdotL = max(dot(normalize(N), sunDir), 0.0);
-            vec3  litEst = albedo * sunColor * NdotL;
-            float lum    = dot(litEst, vec3(0.2126, 0.7152, 0.0722));
-            if (lum > threshold) { bloom += litEst; totalW += 1.0; }
-        }
-    }
-    // Contribution dialed back 0.12 → 0.07 — combined with AgX's softer
-    // tonemap rolloff, the previous 0.12 was bleeding too much glow into
-    // the midtones and reading as "blurry" rather than "warm". 0.07 keeps
-    // the halo visible on sunlit surfaces without softening adjacent
-    // detail.
-    return totalW > 0.0 ? bloom / totalW * 0.07 : vec3(0.0);
-}
-
 // ---- FXAA (edge anti-aliasing using G-buffer depth + albedo) ----
 vec3 applyFXAA(vec2 uv, vec3 litColor) {
     vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
@@ -633,7 +595,6 @@ void main() {
     bool enableSpotLights  = (lightingMask & (1 << 2)) != 0;
     bool enableIblAmbient  = (lightingMask & (1 << 3)) != 0;
     bool enableSsgiBounce  = (lightingMask & (1 << 4)) != 0;
-    bool enableBloom       = (lightingMask & (1 << 5)) != 0;
 
     float depth = texture(gBufferDepthSampler, uv).r;
 
@@ -972,15 +933,6 @@ void main() {
     if (scene.debugMode == 12) { outColor = vec4(texture(ssgiSampler, uv).rgb, 1.0); return; }
 
     vec3 lighting = ambient + directLight;
-
-    // Bloom is a post effect, but this local estimate intentionally samples
-    // the G-buffer instead of a downsampled lit buffer. Keep it out of pixels
-    // that are shadowed from the sun; otherwise albedo * NdotL fabricates
-    // "sun bloom" behind walls and shows up as white floor squares.
-    float sunVisibility = 1.0 - sunShadow;
-    if (enableBloom && sunVisibility > 0.25) {
-        lighting += computeBloom(uv) * sunVisibility;
-    }
 
     // FXAA (depth-edge + albedo-luminance blend)
     lighting = applyFXAA(uv, lighting);

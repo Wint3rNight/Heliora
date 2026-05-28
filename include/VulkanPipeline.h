@@ -13,7 +13,7 @@ public:
   VulkanPipeline &operator=(const VulkanPipeline &) = delete;
 
   // gBufferPass    : geometry pass (shader.vert + shader.frag → 3 MRT outputs)
-  // litPass        : single-subpass PBR + IBL + bloom + FXAA + fog → litBuffer
+  // litPass        : single-subpass PBR + IBL + FXAA + fog → litBuffer
   // compositionPass: 2-subpass pass: (0) SSR composite → colorBuffer, (1) ACES → swapchain
   // shadowPass     : depth-only (unchanged)
   void createPipelines(VkDevice device, VkRenderPass gBufferPass,

@@ -166,7 +166,8 @@ void PerformanceMetrics::endFrame() {
   if (totalFrames > 0 && totalFrames % 120 == 0) {
     spdlog::info("[perf] frame={} avg={:.2f}ms fps={:.1f} draws={} tris={}k "
                  "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} ssgi={:.2f} "
-                 "lit={:.2f} autoExp={:.2f} comp={:.2f} imgui={:.2f}",
+                 "lit={:.2f} bloom={:.2f} autoExp={:.2f} comp={:.2f} "
+                 "imgui={:.2f}",
                  totalFrames, getAverageFrameTimeMs(), getAverageFps(),
                  lastDrawCalls, lastTriangles / 1000,
                  lastPassGpuMs[(int)GpuPass::Shadow],
@@ -174,6 +175,7 @@ void PerformanceMetrics::endFrame() {
                  lastPassGpuMs[(int)GpuPass::GBuffer],
                  lastPassGpuMs[(int)GpuPass::SSGI],
                  lastPassGpuMs[(int)GpuPass::Lit],
+                 lastPassGpuMs[(int)GpuPass::Bloom],
                  lastPassGpuMs[(int)GpuPass::AutoExposure],
                  lastPassGpuMs[(int)GpuPass::Composite],
                  lastPassGpuMs[(int)GpuPass::ImGui]);
@@ -330,6 +332,9 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
     spdlog::info("║    Lit:             {:>7.3f} / {:>7.3f} ms  ║",
                  lastPassGpuMs[(int)GpuPass::Lit],
                  getAveragePassGpuTimeMs(GpuPass::Lit));
+    spdlog::info("║    Bloom:           {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Bloom],
+                 getAveragePassGpuTimeMs(GpuPass::Bloom));
     spdlog::info("║    Auto Exposure:   {:>7.3f} / {:>7.3f} ms  ║",
                  lastPassGpuMs[(int)GpuPass::AutoExposure],
                  getAveragePassGpuTimeMs(GpuPass::AutoExposure));

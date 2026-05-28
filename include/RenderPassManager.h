@@ -16,7 +16,7 @@ public:
                                VkFormat gb1Format, VkFormat gb2Format,
                                VkFormat depthFormat);
 
-  // Creates the lit pass: single subpass that runs full PBR+IBL+SSAO+bloom+FXAA
+  // Creates the lit pass: single subpass that runs full PBR+IBL+SSAO+FXAA
   // and writes the lit HDR color into a sampleable image. SSR is NOT applied
   // here — it samples this image in the next pass.
   void createLitRenderPass(VkDevice device, VkFormat litFormat);

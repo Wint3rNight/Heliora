@@ -219,7 +219,8 @@ void DescriptorManager::recreateInputSets(VkDevice device,
 void DescriptorManager::recreateTaaSets(
     VkDevice device, const std::vector<VkImageView> &historyPrevViews,
     const std::vector<VkImageView> &gBufferDepthViews,
-    const std::vector<VkImageView> &colorBufferViews, VkSampler sampler) {
+    const std::vector<VkImageView> &colorBufferViews,
+    const std::vector<VkImageView> &bloomViews, VkSampler sampler) {
   // historyPrevViews is the TAA history ring.
   // historyCount * swapCount sets, indexed
   // (historyIndex * swapCount + swapIdx).
@@ -233,7 +234,7 @@ void DescriptorManager::recreateTaaSets(
   }
   VkDescriptorPoolSize sz = {};
   sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sz.descriptorCount = static_cast<uint32_t>(totalSets * 3);
+  sz.descriptorCount = static_cast<uint32_t>(totalSets * 4);
   VkDescriptorPoolCreateInfo pci = {};
   pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pci.maxSets = static_cast<uint32_t>(totalSets);
@@ -267,8 +268,11 @@ void DescriptorManager::recreateTaaSets(
       VkDescriptorImageInfo colorInfo = {
           sampler, colorBufferViews[i],
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkDescriptorImageInfo bloomInfo = {
+          sampler, bloomViews[i],
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
       VkDescriptorSet set = taaDescriptorSets[historyIndex * swapCount + i];
-      VkWriteDescriptorSet writes[3] = {};
+      VkWriteDescriptorSet writes[4] = {};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = set;
       writes[0].dstBinding = 0;
@@ -287,7 +291,13 @@ void DescriptorManager::recreateTaaSets(
       writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       writes[2].descriptorCount = 1;
       writes[2].pImageInfo = &colorInfo;
-      vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+      writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[3].dstSet = set;
+      writes[3].dstBinding = 3;
+      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[3].descriptorCount = 1;
+      writes[3].pImageInfo = &bloomInfo;
+      vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
     }
   }
 }
@@ -460,7 +470,7 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
     throw std::runtime_error(
         "Failed to create input attachment descriptor set layout");
 
-  // --- TAA layout (set 2, tonemap subpass): 3 sampled-image bindings ---
+  // --- TAA layout (set 2, tonemap subpass): 4 sampled-image bindings ---
   // binding 0 = previous-frame TAA history (HDR R16G16B16A16_SFLOAT)
   // binding 1 = G-buffer depth (used to reconstruct world pos for
   //             reprojection through prevViewProj)
@@ -468,8 +478,10 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
   //             YCoCg neighborhood clamp. Same image as the input
   //             attachment at set=1,binding=0 — kept as a separate
   //             descriptor because subpassLoad does not accept offsets.
-  std::array<VkDescriptorSetLayoutBinding, 3> taaBindings = {};
-  for (uint32_t i = 0; i < 3; ++i) {
+  // binding 3 = full-resolution bloom pyramid result, added before TAA so
+  //             history accumulation sees the same HDR signal as display.
+  std::array<VkDescriptorSetLayoutBinding, 4> taaBindings = {};
+  for (uint32_t i = 0; i < 4; ++i) {
     taaBindings[i].binding = i;
     taaBindings[i].descriptorType =
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

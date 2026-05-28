@@ -89,7 +89,7 @@ void RenderPassManager::createGBufferRenderPass(VkDevice device,
 }
 
 // Lit render pass (1 attachment: litBuffer)
-// Single subpass: PBR + IBL + SSAO + bloom + FXAA + fog → litBuffer.
+// Single subpass: PBR + IBL + SSAO + FXAA + fog → litBuffer.
 // finalLayout = SHADER_READ_ONLY_OPTIMAL so the composition pass can sample.
 
 void RenderPassManager::createLitRenderPass(VkDevice device,

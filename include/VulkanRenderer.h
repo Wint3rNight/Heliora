@@ -8,6 +8,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -93,6 +94,28 @@ private:
   std::vector<ImageViewHandle> litViews;
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
+
+  // --- Bloom pyramid (HDR post process) ---
+  // Six separately allocated full/half/quarter/... resolution images per swapchain
+  // image. Compute shaders downsample litBuffer into the pyramid, then
+  // upsample additively back to mip 0. The tonemap/TAA pass samples mip 0.
+  static constexpr uint32_t BLOOM_MIP_COUNT = 6;
+  struct BloomMipResources {
+    VkExtent2D extent = {};
+    std::vector<AllocatedImage> images;
+    std::vector<ImageViewHandle> views;
+  };
+  VkFormat bloomFormat = VK_FORMAT_UNDEFINED;
+  std::array<BloomMipResources, BLOOM_MIP_COUNT> bloomMips;
+  VkSampler bloomSampler = VK_NULL_HANDLE;
+  VkDescriptorSetLayout bloomSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool bloomDescriptorPool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> bloomDownsampleSets;
+  std::vector<VkDescriptorSet> bloomUpsampleSets;
+  VkPipelineLayout bloomDownsamplePipelineLayout = VK_NULL_HANDLE;
+  VkPipelineLayout bloomUpsamplePipelineLayout = VK_NULL_HANDLE;
+  VkPipeline bloomDownsamplePipeline = VK_NULL_HANDLE;
+  VkPipeline bloomUpsamplePipeline = VK_NULL_HANDLE;
 
   // --- SSGI bounce history (HDR, persistent across frames) ---
   // Ring is one larger than the max frames-in-flight so frame N+K never
@@ -277,6 +300,9 @@ private:
   bool imguiEnableIblAmbient = true;
   bool imguiEnableSsgiBounce = true;
   bool imguiEnableBloom = true;
+  float imguiBloomThreshold = 0.8f;
+  float imguiBloomIntensity = 0.12f;
+  float imguiBloomRadius = 1.25f;
   bool imguiSsrEnabled = false;            // off by default: avoids rough Sponza SSR leaks
   bool imguiTaaEnabled = false;
   bool imguiResponsiveTaa = true;          // drop history while camera moves
@@ -321,6 +347,9 @@ private:
   void cleanupGBuffer();
   void createLitResources();
   void cleanupLitResources();
+  void createBloomResources();
+  void cleanupBloomResources();
+  void recordBloomPass(VkCommandBuffer cmd, uint32_t currentImage);
   void createSsgiResources();
   void cleanupSsgiResources();
   void createTaaResources();

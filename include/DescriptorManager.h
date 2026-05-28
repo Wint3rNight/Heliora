@@ -103,11 +103,13 @@ public:
   //   binding 0 = previous history image
   //   binding 1 = gBufferDepthViews[swapIdx]
   //   binding 2 = colorBufferViews[swapIdx]  (HDR pre-tonemap, this frame)
+  //   binding 3 = bloomViews[swapIdx]        (HDR bloom pyramid result)
   // All sampled with `sampler` (CLAMP_TO_EDGE recommended).
   void recreateTaaSets(VkDevice device,
                        const std::vector<VkImageView> &historyPrevViews,
                        const std::vector<VkImageView> &gBufferDepthViews,
                        const std::vector<VkImageView> &colorBufferViews,
+                       const std::vector<VkImageView> &bloomViews,
                        VkSampler sampler);
 
   // --- SSGI prev-history set 2 accessors ---

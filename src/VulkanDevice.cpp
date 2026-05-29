@@ -111,7 +111,10 @@ void VulkanDevice::init(GLFWwindow *newWindow) {
 
 void VulkanDevice::cleanup() {
   vmaDestroyAllocator(allocator);
-  vkDestroyCommandPool(mainDevice.logicalDevice, graphicsCommandPool, nullptr);
+  if (computeCommandPool != VK_NULL_HANDLE)
+    vkDestroyCommandPool(mainDevice.logicalDevice, computeCommandPool, nullptr);
+  if (graphicsCommandPool != VK_NULL_HANDLE)
+    vkDestroyCommandPool(mainDevice.logicalDevice, graphicsCommandPool, nullptr);
   vkDestroyDevice(mainDevice.logicalDevice, nullptr);
   vkDestroySurfaceKHR(instance, surface, nullptr);
 
@@ -124,6 +127,10 @@ void VulkanDevice::cleanup() {
 
 QueueFamilyIndices VulkanDevice::getQueueFamilies() const {
   return getQueueFamilies(mainDevice.physicalDevice);
+}
+
+bool VulkanDevice::hasDedicatedComputeQueue() const {
+  return getQueueFamilies().hasDedicatedCompute();
 }
 
 // --- Instance creation ---
@@ -221,7 +228,8 @@ void VulkanDevice::createLogicalDevice() {
   std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
   // set for family indices to avoid duplicate queue create info
   std::set<int> queueFamilyIndicies = {indices.graphicsFamily,
-                                       indices.presentationFamily};
+                                       indices.presentationFamily,
+                                       indices.computeFamily};
 
   // queues the logical device needs to create and info to do so
   for (int queueFamilyIndex : queueFamilyIndicies) {
@@ -266,18 +274,19 @@ void VulkanDevice::createLogicalDevice() {
   //   - descriptorBindingVariableDescriptorCount: the last binding in the
   //     set is the variable-size texture array; this allows it.
   //   - runtimeDescriptorArray: GLSL `texture2D textures[]` (no fixed size).
-  VkPhysicalDeviceDescriptorIndexingFeatures diFeatures = {};
-  diFeatures.sType =
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-  diFeatures.shaderSampledImageArrayNonUniformIndexing       = VK_TRUE;
-  diFeatures.descriptorBindingPartiallyBound                 = VK_TRUE;
-  diFeatures.descriptorBindingSampledImageUpdateAfterBind    = VK_TRUE;
-  diFeatures.descriptorBindingVariableDescriptorCount        = VK_TRUE;
-  diFeatures.runtimeDescriptorArray                          = VK_TRUE;
+  VkPhysicalDeviceVulkan12Features vk12Features = {};
+  vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  vk12Features.descriptorIndexing = VK_TRUE;
+  vk12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  vk12Features.descriptorBindingPartiallyBound = VK_TRUE;
+  vk12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+  vk12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+  vk12Features.runtimeDescriptorArray = VK_TRUE;
+  vk12Features.timelineSemaphore = VK_TRUE;
 
   VkPhysicalDeviceFeatures2 features2 = {};
   features2.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-  features2.pNext        = &diFeatures;
+  features2.pNext        = &vk12Features;
   features2.features.samplerAnisotropy = VK_TRUE;
 
   deviceCreateInfo.pEnabledFeatures = nullptr; // mutually exclusive w/ pNext
@@ -294,8 +303,19 @@ void VulkanDevice::createLogicalDevice() {
   // queues are created at the same time as the logical device
   vkGetDeviceQueue(mainDevice.logicalDevice, indices.graphicsFamily, 0,
                    &graphicsQueue);
+  vkGetDeviceQueue(mainDevice.logicalDevice, indices.computeFamily, 0,
+                   &computeQueue);
   vkGetDeviceQueue(mainDevice.logicalDevice, indices.presentationFamily, 0,
                    &presentationQueue);
+
+  if (indices.hasDedicatedCompute()) {
+    spdlog::info("Dedicated compute queue enabled: family {}",
+                 indices.computeFamily);
+  } else {
+    spdlog::info("Dedicated compute queue unavailable; compute work uses "
+                 "graphics family {}",
+                 indices.computeFamily);
+  }
 }
 
 // --- Phase 7.1: debug-utils function pointer loader ---
@@ -333,7 +353,15 @@ void VulkanDevice::createCommandPool() {
   VkResult result = vkCreateCommandPool(mainDevice.logicalDevice, &poolInfo,
                                         nullptr, &graphicsCommandPool);
   if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create command pool");
+    throw std::runtime_error("Failed to create graphics command pool");
+  }
+
+  poolInfo.queueFamilyIndex =
+      static_cast<uint32_t>(queueFamilyIndices.computeFamily);
+  result = vkCreateCommandPool(mainDevice.logicalDevice, &poolInfo, nullptr,
+                               &computeCommandPool);
+  if (result != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create compute command pool");
   }
 }
 
@@ -390,6 +418,10 @@ void VulkanDevice::selectPhysicalDevice() {
                  VK_VERSION_MAJOR(deviceProperties.apiVersion),
                  VK_VERSION_MINOR(deviceProperties.apiVersion),
                  VK_VERSION_PATCH(deviceProperties.apiVersion));
+    QueueFamilyIndices indices = getQueueFamilies(mainDevice.physicalDevice);
+    spdlog::info("Queue families: graphics={}, present={}, compute={}",
+                 indices.graphicsFamily, indices.presentationFamily,
+                 indices.computeFamily);
   } else {
     spdlog::critical("Failed to find a suitable GPU");
     throw std::runtime_error("Failed to find a suitable GPU");
@@ -406,6 +438,9 @@ int VulkanDevice::rateDeviceSuitability(VkPhysicalDevice device) {
   }
   if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
     score += 100;
+  }
+  if (getQueueFamilies(device).hasDedicatedCompute()) {
+    score += 25;
   }
   return score;
 }
@@ -501,14 +536,24 @@ VulkanDevice::getQueueFamilies(VkPhysicalDevice device) const {
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount,
                                            queueFamilyList.data());
 
-  // go through each queue family and check if it has the required queues
-  int i = 0;
+  int firstComputeFamily = -1;
 
-  for (const auto &queueFamily : queueFamilyList) {
+  for (int i = 0; i < static_cast<int>(queueFamilyList.size()); ++i) {
+    const auto &queueFamily = queueFamilyList[i];
     // check if queue family has graphics capabilities
     if (queueFamily.queueCount > 0 &&
         queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-      indices.graphicsFamily = i; // set graphics family index
+      if (indices.graphicsFamily < 0)
+        indices.graphicsFamily = i; // set graphics family index
+    }
+
+    if (queueFamily.queueCount > 0 &&
+        queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      if (firstComputeFamily < 0)
+        firstComputeFamily = i;
+      if (!(queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+          indices.computeFamily < 0)
+        indices.computeFamily = i; // prefer a dedicated async compute family
     }
 
     // check if queue family supports presentation
@@ -516,16 +561,14 @@ VulkanDevice::getQueueFamilies(VkPhysicalDevice device) const {
     vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface,
                                          &presentationSupport);
     if (queueFamily.queueCount > 0 && presentationSupport) {
-      indices.presentationFamily = i; // set presentation family index
+      if (indices.presentationFamily < 0)
+        indices.presentationFamily = i; // set presentation family index
     }
-
-    // check if queue family is valid, if so break loop
-    if (indices.isValid()) {
-      break;
-    }
-
-    i++;
   }
+
+  if (indices.computeFamily < 0)
+    indices.computeFamily = firstComputeFamily;
+
   return indices;
 }
 

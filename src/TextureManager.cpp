@@ -125,6 +125,33 @@ glm::vec4 sampleEquirectangular(const float *pixels, int width, int height,
   return glm::mix(a, b, ty);
 }
 
+struct QueueSharingInfo {
+  VkSharingMode mode = VK_SHARING_MODE_EXCLUSIVE;
+  uint32_t familyCount = 0;
+  std::array<uint32_t, 2> families{};
+};
+
+QueueSharingInfo graphicsComputeSharing(const VulkanDevice &device) {
+  QueueFamilyIndices indices = device.getQueueFamilies();
+  QueueSharingInfo sharing{};
+  if (indices.hasDedicatedCompute()) {
+    sharing.mode = VK_SHARING_MODE_CONCURRENT;
+    sharing.families = {static_cast<uint32_t>(indices.graphicsFamily),
+                        static_cast<uint32_t>(indices.computeFamily)};
+    sharing.familyCount = 2;
+  }
+  return sharing;
+}
+
+void applyGraphicsComputeSharing(VkImageCreateInfo &ci,
+                                 const QueueSharingInfo &sharing) {
+  ci.sharingMode = sharing.mode;
+  if (sharing.mode == VK_SHARING_MODE_CONCURRENT) {
+    ci.queueFamilyIndexCount = sharing.familyCount;
+    ci.pQueueFamilyIndices = sharing.families.data();
+  }
+}
+
 // Layout transition helper for layered/mipped images
 static void transitionCubemapLayout(VkDevice device, VkQueue queue,
                                     VkCommandPool pool, VkImage image,
@@ -186,7 +213,7 @@ static void transitionCubemapLayout(VkDevice device, VkQueue queue,
     case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
       return VK_PIPELINE_STAGE_TRANSFER_BIT;
     case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-      return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      return VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     default:
       return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     }
@@ -608,8 +635,11 @@ void TextureManager::destroyComputePipelines(VkDevice dev) {
 int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
                                               const VulkanDevice &device) {
   VkDevice dev = device.getLogicalDevice();
+  const VkQueue computeQueue = device.getComputeQueue();
+  const VkCommandPool computeCommandPool = device.getComputeCommandPool();
   constexpr uint32_t OUT_SIZE = 32;
   constexpr const char *cacheKey = "__irradiance_map__";
+  const QueueSharingInfo sharing = graphicsComputeSharing(device);
 
   VkImageCreateInfo imgCI = {};
   imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -622,7 +652,7 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
   imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-  imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  applyGraphicsComputeSharing(imgCI, sharing);
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   VkImage img = VK_NULL_HANDLE;
@@ -633,8 +663,8 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   AllocatedImage irradianceImg(device.getAllocator(), img, alloc);
 
   transitionCubemapLayout(
-      dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(), img,
-      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6);
+      dev, computeQueue, computeCommandPool, img, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_GENERAL, 6);
 
   // 2D_ARRAY view for storage image write (compute sees 6 layers)
   VkImageViewCreateInfo avCI = {};
@@ -680,15 +710,16 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   vkUpdateDescriptorSets(dev, 2, writes.data(), 0, nullptr);
 
   // Dispatch: each workgroup is 8×8×1 threads, cover 32×32×6 pixels
-  VkCommandBuffer cmd =
-      beginCommandBuffer(dev, device.getGraphicsCommandPool());
+  VkCommandBuffer cmd = beginCommandBuffer(dev, computeCommandPool);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout, 0,
                           1, &ds, 0, nullptr);
   uint32_t groups = (OUT_SIZE + 7) / 8;
   vkCmdDispatch(cmd, groups, groups, 6);
 
-  // Barrier: compute writes done → fragment shader reads
+  // Barrier: compute writes done and the image is in shader-read layout before
+  // the startup submit waits. This command buffer runs on the compute queue, so
+  // both stage masks must be compute-compatible.
   VkImageMemoryBarrier barrier = {};
   barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -700,11 +731,10 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   barrier.image = img;
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &barrier);
 
-  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
-                            device.getGraphicsQueue(), cmd);
+  endAndSubmitCommandBuffer(dev, computeCommandPool, computeQueue, cmd);
 
   vkDestroyImageView(dev, arrayView, nullptr);
   vkFreeDescriptorSets(dev, computePool, 1, &ds);
@@ -729,9 +759,12 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
 int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
                                              const VulkanDevice &device) {
   VkDevice dev = device.getLogicalDevice();
+  const VkQueue computeQueue = device.getComputeQueue();
+  const VkCommandPool computeCommandPool = device.getComputeCommandPool();
   constexpr const char *cacheKey = "__prefiltered_env__";
   constexpr uint32_t BASE_SIZE = 128;
   const uint32_t nMips = static_cast<uint32_t>(IBL_PREFILTER_MIPS);
+  const QueueSharingInfo sharing = graphicsComputeSharing(device);
 
   VkImageCreateInfo imgCI = {};
   imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -744,7 +777,7 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
   imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
   imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-  imgCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  applyGraphicsComputeSharing(imgCI, sharing);
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   VkImage img = VK_NULL_HANDLE;
@@ -756,8 +789,8 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
 
   // All mip levels start as GENERAL so compute can write to them
   transitionCubemapLayout(
-      dev, device.getGraphicsQueue(), device.getGraphicsCommandPool(), img,
-      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 6, nMips);
+      dev, computeQueue, computeCommandPool, img, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_GENERAL, 6, nMips);
 
   // One descriptor set, updated per mip
   VkDescriptorSetAllocateInfo dsAI = {};
@@ -812,8 +845,7 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
       uint32_t h;
     } pc{roughness, mipSize, mipSize};
 
-    VkCommandBuffer cmd =
-        beginCommandBuffer(dev, device.getGraphicsCommandPool());
+    VkCommandBuffer cmd = beginCommandBuffer(dev, computeCommandPool);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeLayout,
                             0, 1, &ds, 0, nullptr);
@@ -822,15 +854,13 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
     uint32_t gx = (mipSize + 7) / 8;
     uint32_t gy = (mipSize + 7) / 8;
     vkCmdDispatch(cmd, gx, gy, 6);
-    endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
-                              device.getGraphicsQueue(), cmd);
+    endAndSubmitCommandBuffer(dev, computeCommandPool, computeQueue, cmd);
 
     vkDestroyImageView(dev, mipView, nullptr);
   }
 
   // All mips written: transition to shader-read for fragment sampling
-  transitionCubemapLayout(dev, device.getGraphicsQueue(),
-                          device.getGraphicsCommandPool(), img,
+  transitionCubemapLayout(dev, computeQueue, computeCommandPool, img,
                           VK_IMAGE_LAYOUT_GENERAL,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6, nMips);
 
@@ -1126,6 +1156,7 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   stbi_image_free(hdr);
 
   VkDeviceSize imageSize = cubemap.size() * sizeof(float);
+  const QueueSharingInfo sharing = graphicsComputeSharing(device);
   AllocatedBuffer staging;
   createBuffer(device.getAllocator(), imageSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -1147,7 +1178,7 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
-  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  applyGraphicsComputeSharing(ci, sharing);
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

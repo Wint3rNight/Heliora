@@ -63,6 +63,8 @@ layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
 // binding 5 = raw SSGI bounce from the dedicated SSGI pass — this shader
 // applies a mixed-radius cross-bilateral with depth + normal weights.
 layout(set = 1, binding = 5) uniform sampler2D ssgiSampler;
+// binding 6 = async compute SSAO output. 1.0 = unoccluded.
+layout(set = 1, binding = 6) uniform sampler2D ssaoSampler;
 
 layout(location = 0) out vec4 outColor;
 
@@ -686,8 +688,9 @@ void main() {
     // proper local reflection-probe/specular-occlusion system exists.
     float roughDielectricIbl = nonMetal * smoothstep(0.30, 0.45, roughnessForIBL);
 
-    // SSAO
-    float ssaoFactor = computeSSAO(uv, viewPos, viewN);
+    // SSAO is produced by a Phase 7.5 async compute pass that runs after the
+    // G-buffer submit and overlaps with shadow-map rendering on graphics.
+    float ssaoFactor = texture(ssaoSampler, uv).r;
 
     // IBL ambient (diffuse irradiance + specular prefiltered)
     vec3 kS_ibl = FresnelSchlickRoughness(max(dot(worldN, V), 0.0), F0, roughnessForIBL);

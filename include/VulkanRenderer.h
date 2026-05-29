@@ -134,6 +134,20 @@ private:
   // the edge texel; the shader bounds-checks for true off-screen reject.
   VkSampler ssgiSampler = VK_NULL_HANDLE;
 
+  // --- Async SSAO output (Phase 7.5) ---
+  // One full-resolution single-channel image per swapchain image. The compute
+  // queue writes it after the G-buffer submit; the graphics queue samples it
+  // in lit.frag after waiting on the async timeline semaphore.
+  VkFormat ssaoFormat = VK_FORMAT_UNDEFINED;
+  std::vector<AllocatedImage> ssaoImages;
+  std::vector<ImageViewHandle> ssaoViews;
+  VkSampler ssaoResultSampler = VK_NULL_HANDLE;
+  VkDescriptorSetLayout ssaoOutputSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool ssaoDescriptorPool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> ssaoOutputSets;
+  VkPipelineLayout ssaoPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline ssaoPipeline = VK_NULL_HANDLE;
+
   // --- TAA history (HDR, persistent across frames) ---
   // Same ring sizing as SSGI: MAX_FRAMES_DRAWS + 1 avoids overwriting a
   // history image that a still-in-flight frame is sampling.
@@ -235,9 +249,18 @@ private:
   // See https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
   std::vector<VkSemaphore> imageAvailable;
   std::vector<VkSemaphore> renderFinished;
+  std::vector<VkSemaphore> asyncComputeTimeline;
+  std::vector<uint64_t> asyncComputeTimelineValue;
   std::vector<VkFence> drawFences;
   std::vector<VkFence> imagesInFlight;
   std::vector<uint32_t> frameImageInFlight;
+
+  // Split graphics/compute command buffers for Phase 7.5 async SSAO.
+  // swapchain.getCommandBuffer(image) records the G-buffer submit; these
+  // additional primaries record shadow work and post-lighting work.
+  std::vector<VkCommandBuffer> shadowCommandBuffers;
+  std::vector<VkCommandBuffer> postCommandBuffers;
+  std::vector<VkCommandBuffer> ssaoCommandBuffers;
   bool framebufferResized = false;
 
   // --- ImGui ---
@@ -353,6 +376,8 @@ private:
 
   // --- Init helpers ---
   void createSynchronization();
+  void createAsyncFrameCommandBuffers();
+  void cleanupAsyncFrameCommandBuffers();
   void createThreadedCommandResources();
   void cleanupThreadedCommandResources();
   void createShadowResources();
@@ -366,6 +391,8 @@ private:
   void recordBloomPass(VkCommandBuffer cmd, uint32_t currentImage);
   void createSsgiResources();
   void cleanupSsgiResources();
+  void createSsaoResources();
+  void cleanupSsaoResources();
   void createTaaResources();
   void cleanupTaaResources();
   void createCompositeFramebuffers();
@@ -386,6 +413,10 @@ private:
 
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);
+  void recordGBufferCommands(uint32_t currentImage);
+  void recordShadowCommands(VkCommandBuffer cmd);
+  void recordSsaoComputeCommands(VkCommandBuffer cmd, uint32_t currentImage);
+  void recordPostCommands(VkCommandBuffer cmd, uint32_t currentImage);
   void recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
                          const VkViewport &viewport,
                          const VkRect2D &scissor);

@@ -131,6 +131,36 @@ private:
   std::exception_ptr firstException;
 };
 
+namespace {
+struct RendererQueueSharingInfo {
+  VkSharingMode mode = VK_SHARING_MODE_EXCLUSIVE;
+  uint32_t familyCount = 0;
+  std::array<uint32_t, 2> families{};
+};
+
+RendererQueueSharingInfo rendererGraphicsComputeSharing(
+    const VulkanDevice &device) {
+  QueueFamilyIndices indices = device.getQueueFamilies();
+  RendererQueueSharingInfo sharing{};
+  if (indices.hasDedicatedCompute()) {
+    sharing.mode = VK_SHARING_MODE_CONCURRENT;
+    sharing.families = {static_cast<uint32_t>(indices.graphicsFamily),
+                        static_cast<uint32_t>(indices.computeFamily)};
+    sharing.familyCount = 2;
+  }
+  return sharing;
+}
+
+void applyRendererQueueSharing(VkImageCreateInfo &ci,
+                               const RendererQueueSharingInfo &sharing) {
+  ci.sharingMode = sharing.mode;
+  if (sharing.mode == VK_SHARING_MODE_CONCURRENT) {
+    ci.queueFamilyIndexCount = sharing.familyCount;
+    ci.pQueueFamilyIndices = sharing.families.data();
+  }
+}
+} // namespace
+
 VulkanRenderer::VulkanRenderer() {}
 
 int VulkanRenderer::init(GLFWwindow *newWindow) {
@@ -163,6 +193,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     VkFormat gb2Fmt = VK_FORMAT_R8G8B8A8_UNORM;
     litFormat = colorFormat;
     bloomFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    ssaoFormat = VK_FORMAT_R16_SFLOAT;
     {
       VkFormatProperties props{};
       vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
@@ -173,6 +204,17 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
       if ((props.optimalTilingFeatures & required) != required)
         throw std::runtime_error(
             "Bloom requires R16G16B16A16_SFLOAT sampled storage images");
+    }
+    {
+      VkFormatProperties props{};
+      vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
+                                          ssaoFormat, &props);
+      const VkFormatFeatureFlags required =
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+      if ((props.optimalTilingFeatures & required) != required)
+        throw std::runtime_error(
+            "Async SSAO requires R16_SFLOAT sampled storage images");
     }
 
     // 3. Render passes
@@ -215,6 +257,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //     so the G-buffer descriptor set (set 1) gets a 6th binding
     //     pointing at these views.
     createSsgiResources();
+    createSsaoResources();
 
     // 8b. TAA history images. Format matches litFormat so they live in the
     //     same HDR-precision domain.
@@ -264,7 +307,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         renderPassManager.getSsgiRenderPass(), swapchain.getExtent(),
         descriptorManager);
 
-    // 10. IBL + SSAO resources (requires textureManager and descriptorManager)
+    // 10. IBL resources (requires textureManager and descriptorManager)
     initIBL();
 
     // 10b. Auto-exposure compute resources. Must come after createLitResources()
@@ -273,6 +316,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     // 11. Synchronization
     createSynchronization();
+    createAsyncFrameCommandBuffers();
     createThreadedCommandResources();
 
     // 12. Performance metrics
@@ -642,7 +686,10 @@ void VulkanRenderer::draw() {
 
   metrics.setActiveGpuQueryFrame(currentFrame);
   phaseStart = CpuClock::now();
-  recordCommands(imageIndex);
+  recordGBufferCommands(imageIndex);
+  recordSsaoComputeCommands(ssaoCommandBuffers[imageIndex], imageIndex);
+  recordShadowCommands(shadowCommandBuffers[imageIndex]);
+  recordPostCommands(postCommandBuffers[imageIndex], imageIndex);
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Record,
                          elapsedMs(phaseStart));
 
@@ -652,25 +699,98 @@ void VulkanRenderer::draw() {
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Upload,
                          elapsedMs(phaseStart));
 
-  VkSubmitInfo submitInfo = {};
-  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submitInfo.waitSemaphoreCount = 1;
-  submitInfo.pWaitSemaphores = &imageAvailable[currentFrame];
-  VkPipelineStageFlags waitStages[] = {
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-  submitInfo.pWaitDstStageMask = waitStages;
-  submitInfo.commandBufferCount = 1;
-  VkCommandBuffer cmdBuffer = swapchain.getCommandBuffer(imageIndex);
-  submitInfo.pCommandBuffers = &cmdBuffer;
-  submitInfo.signalSemaphoreCount = 1;
+  phaseStart = CpuClock::now();
+  VkSemaphore timeline = asyncComputeTimeline[currentFrame];
+  const uint64_t gbufferReadyValue =
+      asyncComputeTimelineValue[currentFrame] + 1;
+  const uint64_t ssaoReadyValue = asyncComputeTimelineValue[currentFrame] + 2;
+  asyncComputeTimelineValue[currentFrame] = ssaoReadyValue;
+
+  VkCommandBuffer gbufferCmd = swapchain.getCommandBuffer(imageIndex);
+  VkCommandBuffer ssaoCmd = ssaoCommandBuffers[imageIndex];
+  VkCommandBuffer shadowCmd = shadowCommandBuffers[imageIndex];
+  VkCommandBuffer postCmd = postCommandBuffers[imageIndex];
+
+  uint64_t zeroValue = 0;
+  VkPipelineStageFlags imageWaitStage =
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  VkTimelineSemaphoreSubmitInfo gbufferTimelineInfo = {};
+  gbufferTimelineInfo.sType =
+      VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  gbufferTimelineInfo.waitSemaphoreValueCount = 1;
+  gbufferTimelineInfo.pWaitSemaphoreValues = &zeroValue; // binary wait
+  gbufferTimelineInfo.signalSemaphoreValueCount = 1;
+  gbufferTimelineInfo.pSignalSemaphoreValues = &gbufferReadyValue;
+  VkSubmitInfo gbufferSubmit = {};
+  gbufferSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  gbufferSubmit.pNext = &gbufferTimelineInfo;
+  gbufferSubmit.waitSemaphoreCount = 1;
+  gbufferSubmit.pWaitSemaphores = &imageAvailable[currentFrame];
+  gbufferSubmit.pWaitDstStageMask = &imageWaitStage;
+  gbufferSubmit.commandBufferCount = 1;
+  gbufferSubmit.pCommandBuffers = &gbufferCmd;
+  gbufferSubmit.signalSemaphoreCount = 1;
+  gbufferSubmit.pSignalSemaphores = &timeline;
+  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &gbufferSubmit,
+                    VK_NULL_HANDLE) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to submit G-buffer command buffer");
+  }
+
+  VkPipelineStageFlags computeWaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  VkTimelineSemaphoreSubmitInfo ssaoTimelineInfo = {};
+  ssaoTimelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  ssaoTimelineInfo.waitSemaphoreValueCount = 1;
+  ssaoTimelineInfo.pWaitSemaphoreValues = &gbufferReadyValue;
+  ssaoTimelineInfo.signalSemaphoreValueCount = 1;
+  ssaoTimelineInfo.pSignalSemaphoreValues = &ssaoReadyValue;
+  VkSubmitInfo ssaoSubmit = {};
+  ssaoSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  ssaoSubmit.pNext = &ssaoTimelineInfo;
+  ssaoSubmit.waitSemaphoreCount = 1;
+  ssaoSubmit.pWaitSemaphores = &timeline;
+  ssaoSubmit.pWaitDstStageMask = &computeWaitStage;
+  ssaoSubmit.commandBufferCount = 1;
+  ssaoSubmit.pCommandBuffers = &ssaoCmd;
+  ssaoSubmit.signalSemaphoreCount = 1;
+  ssaoSubmit.pSignalSemaphores = &timeline;
+  if (vkQueueSubmit(device.getComputeQueue(), 1, &ssaoSubmit,
+                    VK_NULL_HANDLE) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to submit SSAO compute command buffer");
+  }
+
+  VkSubmitInfo shadowSubmit = {};
+  shadowSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  shadowSubmit.commandBufferCount = 1;
+  shadowSubmit.pCommandBuffers = &shadowCmd;
+  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &shadowSubmit,
+                    VK_NULL_HANDLE) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to submit shadow command buffer");
+  }
+
+  uint64_t renderFinishedSignalValue = 0; // binary signal, ignored
+  VkPipelineStageFlags postWaitStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  VkTimelineSemaphoreSubmitInfo postTimelineInfo = {};
+  postTimelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  postTimelineInfo.waitSemaphoreValueCount = 1;
+  postTimelineInfo.pWaitSemaphoreValues = &ssaoReadyValue;
+  postTimelineInfo.signalSemaphoreValueCount = 1;
+  postTimelineInfo.pSignalSemaphoreValues = &renderFinishedSignalValue;
+  VkSubmitInfo postSubmit = {};
+  postSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  postSubmit.pNext = &postTimelineInfo;
+  postSubmit.waitSemaphoreCount = 1;
+  postSubmit.pWaitSemaphores = &timeline;
+  postSubmit.pWaitDstStageMask = &postWaitStage;
+  postSubmit.commandBufferCount = 1;
+  postSubmit.pCommandBuffers = &postCmd;
+  postSubmit.signalSemaphoreCount = 1;
   // renderFinished is indexed by acquired swap-image, not by frame-in-flight,
   // so the presentation engine's wait binds to the right semaphore.
-  submitInfo.pSignalSemaphores = &renderFinished[imageIndex];
-
-  phaseStart = CpuClock::now();
-  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &submitInfo,
-                    drawFences[currentFrame]) != VK_SUCCESS)
-    throw std::runtime_error("Failed to submit draw command buffer");
+  postSubmit.pSignalSemaphores = &renderFinished[imageIndex];
+  if (vkQueueSubmit(device.getGraphicsQueue(), 1, &postSubmit,
+                    drawFences[currentFrame]) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to submit post command buffer");
+  }
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Submit,
                          elapsedMs(phaseStart));
   metrics.markGpuQueriesSubmitted(currentFrame);
@@ -708,6 +828,8 @@ void VulkanRenderer::draw() {
 // Swapchain recreation
 
 void VulkanRenderer::recreateSwapChain() {
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  cleanupAsyncFrameCommandBuffers();
   swapchain.recreate(device, window);
 
   cleanupImGuiFramebuffers();
@@ -716,6 +838,7 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
   cleanupGBuffer();
+  cleanupSsaoResources();
   cleanupBloomResources();
   cleanupSsgiResources();
   cleanupLitResources();
@@ -723,6 +846,7 @@ void VulkanRenderer::recreateSwapChain() {
   createLitResources();
   createBloomResources();
   createSsgiResources();
+  createSsaoResources();
   createTaaResources();
   createCompositeFramebuffers();
   createGBuffer();
@@ -774,6 +898,7 @@ void VulkanRenderer::recreateSwapChain() {
                                       taaSampler);
   }
 
+  createAsyncFrameCommandBuffers();
   rebuildProjection();
 }
 
@@ -785,6 +910,8 @@ void VulkanRenderer::createGBuffer() {
   VkFormat gb0Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   VkFormat gb1Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   VkFormat gb2Fmt = VK_FORMAT_R8G8B8A8_UNORM;
+  const RendererQueueSharingInfo queueSharing =
+      rendererGraphicsComputeSharing(device);
 
   gBuffer0Images.resize(count);
   gBuffer0Views.resize(count);
@@ -811,7 +938,7 @@ void VulkanRenderer::createGBuffer() {
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    applyRendererQueueSharing(ci, queueSharing);
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
@@ -843,7 +970,7 @@ void VulkanRenderer::createGBuffer() {
     ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    applyRendererQueueSharing(ci, queueSharing);
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
@@ -885,18 +1012,20 @@ void VulkanRenderer::createGBuffer() {
       throw std::runtime_error("Failed to create G-buffer framebuffer");
   }
 
-  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv;
+  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv, ssaov;
   gb0v.reserve(count);
   gb1v.reserve(count);
   gb2v.reserve(count);
   depv.reserve(count);
   litv.reserve(count);
+  ssaov.reserve(count);
   for (size_t i = 0; i < count; i++) {
     gb0v.push_back(gBuffer0Views[i].get());
     gb1v.push_back(gBuffer1Views[i].get());
     gb2v.push_back(gBuffer2Views[i].get());
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
+    ssaov.push_back(ssaoViews[i].get());
   }
   // SSGI views are a temporal history ring. DescriptorManager produces
   // historyCount * swapCount G-buffer sets indexed
@@ -908,7 +1037,9 @@ void VulkanRenderer::createGBuffer() {
     ssgv.push_back(view.get());
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
-                                        textureManager.getTextureSampler());
+                                        ssaov,
+                                        textureManager.getTextureSampler(),
+                                        ssaoResultSampler);
   {
     std::vector<VkImageView> ssgiHv;
     ssgiHv.reserve(ssgiHistoryViews.size());
@@ -1320,6 +1451,209 @@ VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
   return mod;
 }
 } // namespace
+
+void VulkanRenderer::createSsaoResources() {
+  cleanupSsaoResources();
+
+  VkDevice dev = device.getLogicalDevice();
+  const size_t swapCount = swapchain.getImageCount();
+  const VkExtent2D extent = swapchain.getExtent();
+  const RendererQueueSharingInfo queueSharing =
+      rendererGraphicsComputeSharing(device);
+
+  ssaoImages.clear();
+  ssaoViews.clear();
+  ssaoImages.reserve(swapCount);
+  ssaoViews.reserve(swapCount);
+
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+  for (size_t i = 0; i < swapCount; ++i) {
+    VkImageCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.extent = {extent.width, extent.height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.format = ssaoFormat;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    applyRendererQueueSharing(ci, queueSharing);
+
+    VkImage rawImg = VK_NULL_HANDLE;
+    VmaAllocation alloc = VK_NULL_HANDLE;
+    if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
+                       nullptr) != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create SSAO image");
+    }
+    ssaoImages.emplace_back(device.getAllocator(), rawImg, alloc);
+
+    VkImageViewCreateInfo vci = {};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = ssaoImages.back().get();
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = ssaoFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(dev, &vci, nullptr, &view) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSAO image view");
+    ssaoViews.emplace_back(dev, view);
+  }
+
+  if (ssaoResultSampler == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxAnisotropy = 1.0f;
+    if (vkCreateSampler(dev, &sci, nullptr, &ssaoResultSampler) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create SSAO sampler");
+  }
+
+  VkDescriptorSetLayoutBinding outBinding = {};
+  outBinding.binding = 0;
+  outBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  outBinding.descriptorCount = 1;
+  outBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+  VkDescriptorSetLayoutCreateInfo dslCI = {};
+  dslCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dslCI.bindingCount = 1;
+  dslCI.pBindings = &outBinding;
+  if (vkCreateDescriptorSetLayout(dev, &dslCI, nullptr,
+                                  &ssaoOutputSetLayout) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create SSAO output descriptor layout");
+  }
+
+  VkDescriptorPoolSize poolSize = {};
+  poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  poolSize.descriptorCount = static_cast<uint32_t>(swapCount);
+  VkDescriptorPoolCreateInfo poolCI = {};
+  poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolCI.maxSets = static_cast<uint32_t>(swapCount);
+  poolCI.poolSizeCount = 1;
+  poolCI.pPoolSizes = &poolSize;
+  if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &ssaoDescriptorPool) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to create SSAO descriptor pool");
+  }
+
+  std::vector<VkDescriptorSetLayout> layouts(swapCount, ssaoOutputSetLayout);
+  ssaoOutputSets.assign(swapCount, VK_NULL_HANDLE);
+  VkDescriptorSetAllocateInfo allocInfo = {};
+  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool = ssaoDescriptorPool;
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(swapCount);
+  allocInfo.pSetLayouts = layouts.data();
+  if (vkAllocateDescriptorSets(dev, &allocInfo, ssaoOutputSets.data()) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to allocate SSAO descriptor sets");
+  }
+
+  for (size_t i = 0; i < swapCount; ++i) {
+    VkDescriptorImageInfo imageInfo = {};
+    imageInfo.imageView = ssaoViews[i].get();
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = ssaoOutputSets[i];
+    write.dstBinding = 0;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
+    vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
+  }
+
+  std::array<VkDescriptorSetLayout, 3> setLayouts = {
+      descriptorManager.getVPLayout(), descriptorManager.getGBufferLayout(),
+      ssaoOutputSetLayout};
+  VkPipelineLayoutCreateInfo plCI = {};
+  plCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plCI.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+  plCI.pSetLayouts = setLayouts.data();
+  if (vkCreatePipelineLayout(dev, &plCI, nullptr, &ssaoPipelineLayout) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to create SSAO pipeline layout");
+  }
+
+  VkShaderModule shader = loadComputeSpv(dev, "Shaders/ssao.comp.spv");
+  VkPipelineShaderStageCreateInfo stageCI = {};
+  stageCI.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stageCI.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  stageCI.module = shader;
+  stageCI.pName = "main";
+  VkComputePipelineCreateInfo pipelineCI = {};
+  pipelineCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipelineCI.stage = stageCI;
+  pipelineCI.layout = ssaoPipelineLayout;
+  if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipelineCI, nullptr,
+                               &ssaoPipeline) != VK_SUCCESS) {
+    vkDestroyShaderModule(dev, shader, nullptr);
+    throw std::runtime_error("Failed to create SSAO compute pipeline");
+  }
+  vkDestroyShaderModule(dev, shader, nullptr);
+
+  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getComputeCommandPool());
+  std::vector<VkImageMemoryBarrier> barriers;
+  barriers.reserve(ssaoImages.size());
+  for (const AllocatedImage &img : ssaoImages) {
+    VkImageMemoryBarrier b = {};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = 0;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.get();
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barriers.push_back(b);
+  }
+  if (!barriers.empty()) {
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, static_cast<uint32_t>(barriers.size()),
+                         barriers.data());
+  }
+  endAndSubmitCommandBuffer(dev, device.getComputeCommandPool(),
+                            device.getComputeQueue(), cmd);
+}
+
+void VulkanRenderer::cleanupSsaoResources() {
+  VkDevice dev = device.getLogicalDevice();
+  if (dev == VK_NULL_HANDLE)
+    return;
+
+  if (ssaoPipeline != VK_NULL_HANDLE) {
+    vkDestroyPipeline(dev, ssaoPipeline, nullptr);
+    ssaoPipeline = VK_NULL_HANDLE;
+  }
+  if (ssaoPipelineLayout != VK_NULL_HANDLE) {
+    vkDestroyPipelineLayout(dev, ssaoPipelineLayout, nullptr);
+    ssaoPipelineLayout = VK_NULL_HANDLE;
+  }
+  if (ssaoDescriptorPool != VK_NULL_HANDLE) {
+    vkDestroyDescriptorPool(dev, ssaoDescriptorPool, nullptr);
+    ssaoDescriptorPool = VK_NULL_HANDLE;
+  }
+  ssaoOutputSets.clear();
+  if (ssaoOutputSetLayout != VK_NULL_HANDLE) {
+    vkDestroyDescriptorSetLayout(dev, ssaoOutputSetLayout, nullptr);
+    ssaoOutputSetLayout = VK_NULL_HANDLE;
+  }
+  ssaoViews.clear();
+  ssaoImages.clear();
+  if (ssaoResultSampler != VK_NULL_HANDLE) {
+    vkDestroySampler(dev, ssaoResultSampler, nullptr);
+    ssaoResultSampler = VK_NULL_HANDLE;
+  }
+}
 
 void VulkanRenderer::createBloomResources() {
   VkDevice dev = device.getLogicalDevice();
@@ -2327,6 +2661,11 @@ void VulkanRenderer::cleanup() {
   for (VkSemaphore s : renderFinished)
     vkDestroySemaphore(device.getLogicalDevice(), s, nullptr);
   renderFinished.clear();
+  for (VkSemaphore s : asyncComputeTimeline)
+    vkDestroySemaphore(device.getLogicalDevice(), s, nullptr);
+  asyncComputeTimeline.clear();
+  asyncComputeTimelineValue.clear();
+  cleanupAsyncFrameCommandBuffers();
   cleanupThreadedCommandResources();
 
   pipeline.cleanup(device.getLogicalDevice());
@@ -2606,6 +2945,267 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to stop recording command buffer");
+}
+
+void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
+  VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
+  vkResetCommandBuffer(cmd, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+    throw std::runtime_error("Failed to begin G-buffer command buffer");
+
+  metrics.resetGpuQueries(cmd);
+
+  VkViewport viewport = {};
+  viewport.width = static_cast<float>(swapchain.getExtent().width);
+  viewport.height = static_cast<float>(swapchain.getExtent().height);
+  viewport.maxDepth = 1.0f;
+  VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
+  recordGBufferPass(cmd, currentImage, viewport, scissor);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+    throw std::runtime_error("Failed to end G-buffer command buffer");
+}
+
+void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
+  vkResetCommandBuffer(cmd, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+    throw std::runtime_error("Failed to begin shadow command buffer");
+
+  vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
+  recordShadowPass(cmd);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
+  vkdbgEndLabel(cmd);
+
+  vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
+  recordPointShadowPass(cmd);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
+  vkdbgEndLabel(cmd);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+    throw std::runtime_error("Failed to end shadow command buffer");
+}
+
+void VulkanRenderer::recordSsaoComputeCommands(VkCommandBuffer cmd,
+                                               uint32_t currentImage) {
+  vkResetCommandBuffer(cmd, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+    throw std::runtime_error("Failed to begin SSAO compute command buffer");
+
+  VkImageMemoryBarrier toGeneral = {};
+  toGeneral.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  toGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  toGeneral.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toGeneral.image = ssaoImages[currentImage].get();
+  toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &toGeneral);
+
+  vkdbgBeginLabel(cmd, "Async SSAO Compute", 0.2f, 0.7f, 1.0f);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ssaoPipeline);
+  const uint32_t ssgiHistoryIndex =
+      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  std::array<VkDescriptorSet, 3> sets = {
+      descriptorManager.getVPSet(currentImage),
+      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+      ssaoOutputSets[currentImage]};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          ssaoPipelineLayout, 0,
+                          static_cast<uint32_t>(sets.size()), sets.data(), 0,
+                          nullptr);
+  VkExtent2D extent = swapchain.getExtent();
+  vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+  vkdbgEndLabel(cmd);
+
+  VkImageMemoryBarrier toSampled = toGeneral;
+  toSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  toSampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  toSampled.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &toSampled);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+    throw std::runtime_error("Failed to end SSAO compute command buffer");
+}
+
+void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
+                                        uint32_t currentImage) {
+  vkResetCommandBuffer(cmd, 0);
+
+  VkCommandBufferBeginInfo beginInfo = {};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+    throw std::runtime_error("Failed to begin post command buffer");
+
+  VkViewport viewport = {};
+  viewport.width = static_cast<float>(swapchain.getExtent().width);
+  viewport.height = static_cast<float>(swapchain.getExtent().height);
+  viewport.maxDepth = 1.0f;
+  VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
+
+  uint32_t ssgiHistoryIndex =
+      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  uint32_t taaHistoryIndex =
+      static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
+
+  // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
+  {
+    VkExtent2D ssgiExtent = {std::max(1u, swapchain.getExtent().width / 2),
+                             std::max(1u, swapchain.getExtent().height / 2)};
+    VkViewport ssgiViewport = viewport;
+    ssgiViewport.width = static_cast<float>(ssgiExtent.width);
+    ssgiViewport.height = static_cast<float>(ssgiExtent.height);
+    VkRect2D ssgiScissor = {{0, 0}, ssgiExtent};
+
+    VkClearValue clear = {};
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = renderPassManager.getSsgiRenderPass();
+    rpbi.framebuffer = ssgiFramebuffers[ssgiHistoryIndex];
+    rpbi.renderArea = {{0, 0}, ssgiExtent};
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear;
+
+    vkdbgBeginLabel(cmd, "SSGI (reproject + blend)", 0.95f, 0.55f, 0.20f);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
+    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(cmd, 0, 1, &ssgiViewport);
+    vkCmdSetScissor(cmd, 0, 1, &ssgiScissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline.getSsgiPipeline());
+    std::array<VkDescriptorSet, 3> ssgiSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+        descriptorManager.getSsgiPrevSet(ssgiHistoryIndex)};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getSsgiLayout(), 0, 3, ssgiSets.data(),
+                            0, nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
+    vkdbgEndLabel(cmd);
+  }
+
+  // --- Lit pass (PBR + IBL + async SSAO + FXAA + fog -> litBuffer) ---
+  {
+    VkClearValue clear = {};
+    clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = renderPassManager.getLitRenderPass();
+    rpbi.framebuffer = litFramebuffers[currentImage];
+    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.clearValueCount = 1;
+    rpbi.pClearValues = &clear;
+
+    vkdbgBeginLabel(cmd, "Deferred Lighting (PBR+IBL+SSAO)", 0.1f, 0.8f,
+                    0.3f);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
+    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline.getLitPipeline());
+    std::array<VkDescriptorSet, 2> litSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
+    vkdbgEndLabel(cmd);
+  }
+
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
+  recordBloomPass(cmd, currentImage);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
+
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
+  recordAutoExposurePass(cmd, currentImage);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
+
+  // --- Composition pass (SSR composite + TAA + tone-mapping) ---
+  {
+    std::array<VkClearValue, 3> clears{};
+    clears[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
+    clears[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
+    clears[2].color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    size_t fbIdx = taaHistoryIndex * swapchain.getImageCount() + currentImage;
+
+    VkRenderPassBeginInfo rpbi = {};
+    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpbi.renderPass = renderPassManager.getRenderPass();
+    rpbi.framebuffer = compositeFramebuffers[fbIdx];
+    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
+    rpbi.pClearValues = clears.data();
+
+    vkdbgBeginLabel(cmd, "Composition (SSR + AgX Tonemap)", 0.6f, 0.2f, 0.8f);
+    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
+    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline.getDeferredPipeline());
+    std::array<VkDescriptorSet, 2> deferredSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getDeferredLayout(), 0, 2,
+                            deferredSets.data(), 0, nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline.getSecondPipeline());
+    std::array<VkDescriptorSet, 3> secondSets = {
+        descriptorManager.getVPSet(currentImage),
+        descriptorManager.getInputSet(currentImage),
+        descriptorManager.getTaaSet(fbIdx)};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.getSecondLayout(), 0,
+                            static_cast<uint32_t>(secondSets.size()),
+                            secondSets.data(), 0, nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(cmd);
+    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
+    vkdbgEndLabel(cmd);
+  }
+
+  vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
+  recordImGuiCommands(cmd, currentImage);
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
+  vkdbgEndLabel(cmd);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+    throw std::runtime_error("Failed to end post command buffer");
 }
 
 void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
@@ -3703,6 +4303,8 @@ void VulkanRenderer::createSynchronization() {
   size_t swapCount = swapchain.getImageCount();
   imageAvailable.resize(MAX_FRAMES_DRAWS);
   drawFences.resize(MAX_FRAMES_DRAWS);
+  asyncComputeTimeline.resize(MAX_FRAMES_DRAWS, VK_NULL_HANDLE);
+  asyncComputeTimelineValue.assign(MAX_FRAMES_DRAWS, 0);
   // renderFinished is per-swap-image, not per-frame-in-flight (see header
   // comment for the validation rationale).
   renderFinished.resize(swapCount);
@@ -3712,6 +4314,13 @@ void VulkanRenderer::createSynchronization() {
 
   VkSemaphoreCreateInfo semInfo = {};
   semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  VkSemaphoreTypeCreateInfo timelineInfo = {};
+  timelineInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+  timelineInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  timelineInfo.initialValue = 0;
+  VkSemaphoreCreateInfo timelineSemInfo = {};
+  timelineSemInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  timelineSemInfo.pNext = &timelineInfo;
   VkFenceCreateInfo fenceInfo = {};
   fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
   fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -3720,6 +4329,8 @@ void VulkanRenderer::createSynchronization() {
   for (size_t i = 0; i < MAX_FRAMES_DRAWS; i++) {
     if (vkCreateSemaphore(dev, &semInfo, nullptr, &imageAvailable[i]) !=
             VK_SUCCESS ||
+        vkCreateSemaphore(dev, &timelineSemInfo, nullptr,
+                          &asyncComputeTimeline[i]) != VK_SUCCESS ||
         vkCreateFence(dev, &fenceInfo, nullptr, &drawFences[i]) != VK_SUCCESS)
       throw std::runtime_error("Failed to create synchronization primitives");
   }
@@ -3728,6 +4339,52 @@ void VulkanRenderer::createSynchronization() {
         VK_SUCCESS)
       throw std::runtime_error("Failed to create renderFinished semaphore");
   }
+}
+
+void VulkanRenderer::createAsyncFrameCommandBuffers() {
+  cleanupAsyncFrameCommandBuffers();
+
+  const size_t count = swapchain.getImageCount();
+  VkDevice dev = device.getLogicalDevice();
+  shadowCommandBuffers.assign(count, VK_NULL_HANDLE);
+  postCommandBuffers.assign(count, VK_NULL_HANDLE);
+  ssaoCommandBuffers.assign(count, VK_NULL_HANDLE);
+
+  auto allocate = [&](VkCommandPool pool, std::vector<VkCommandBuffer> &out,
+                      const char *label) {
+    VkCommandBufferAllocateInfo ai = {};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = pool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = static_cast<uint32_t>(out.size());
+    if (!out.empty() && vkAllocateCommandBuffers(dev, &ai, out.data()) !=
+                            VK_SUCCESS) {
+      throw std::runtime_error(std::string("Failed to allocate ") + label +
+                               " command buffers");
+    }
+  };
+
+  allocate(device.getGraphicsCommandPool(), shadowCommandBuffers, "shadow");
+  allocate(device.getGraphicsCommandPool(), postCommandBuffers, "post");
+  allocate(device.getComputeCommandPool(), ssaoCommandBuffers, "SSAO compute");
+}
+
+void VulkanRenderer::cleanupAsyncFrameCommandBuffers() {
+  VkDevice dev = device.getLogicalDevice();
+  if (dev == VK_NULL_HANDLE)
+    return;
+
+  auto freeBuffers = [&](VkCommandPool pool, std::vector<VkCommandBuffer> &bufs) {
+    if (!bufs.empty()) {
+      vkFreeCommandBuffers(dev, pool, static_cast<uint32_t>(bufs.size()),
+                           bufs.data());
+      bufs.clear();
+    }
+  };
+
+  freeBuffers(device.getGraphicsCommandPool(), shadowCommandBuffers);
+  freeBuffers(device.getGraphicsCommandPool(), postCommandBuffers);
+  freeBuffers(device.getComputeCommandPool(), ssaoCommandBuffers);
 }
 
 void VulkanRenderer::createThreadedCommandResources() {

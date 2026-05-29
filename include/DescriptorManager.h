@@ -82,7 +82,7 @@ public:
 
   // (Re)creates G-buffer descriptor sets. Binds gb0/gb1/gb2/depth +
   // the lit-pass output (for SSR composite) + the SSGI bounce image
-  // (for lit.frag's cross-bilateral filter).
+  // (for lit.frag's cross-bilateral filter) + the async SSAO output.
   // Produces historyCount * swapCount G-buffer sets indexed
   // (historyIndex * swapCount + i). Per history index H, binding 5 =
   // ssgiViews[H].
@@ -93,7 +93,8 @@ public:
                            const std::vector<VkImageView> &gbDepthViews,
                            const std::vector<VkImageView> &litViews,
                            const std::vector<VkImageView> &ssgiViews,
-                           VkSampler sampler);
+                           const std::vector<VkImageView> &ssaoViews,
+                           VkSampler sampler, VkSampler ssaoSampler);
 
   // (Re)creates per-swapchain-image input attachment descriptor sets.
   void recreateInputSets(VkDevice device, const VulkanSwapchain &swapchain);

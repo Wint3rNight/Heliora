@@ -27,10 +27,13 @@ public:
   VkDevice getLogicalDevice() const { return mainDevice.logicalDevice; }
   VkSurfaceKHR getSurface() const { return surface; }
   VkQueue getGraphicsQueue() const { return graphicsQueue; }
+  VkQueue getComputeQueue() const { return computeQueue; }
   VkQueue getPresentationQueue() const { return presentationQueue; }
   VkCommandPool getGraphicsCommandPool() const { return graphicsCommandPool; }
+  VkCommandPool getComputeCommandPool() const { return computeCommandPool; }
   VmaAllocator getAllocator() const { return allocator; }
   QueueFamilyIndices getQueueFamilies() const;
+  bool hasDedicatedComputeQueue() const;
 
 private:
   // --- Vulkan handles ---
@@ -43,9 +46,11 @@ private:
   } mainDevice;
 
   VkQueue graphicsQueue = VK_NULL_HANDLE;
+  VkQueue computeQueue = VK_NULL_HANDLE;
   VkQueue presentationQueue = VK_NULL_HANDLE;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkCommandPool graphicsCommandPool = VK_NULL_HANDLE;
+  VkCommandPool computeCommandPool = VK_NULL_HANDLE;
   VmaAllocator allocator = VK_NULL_HANDLE;
 
   GLFWwindow *window = nullptr;

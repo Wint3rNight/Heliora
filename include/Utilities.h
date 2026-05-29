@@ -300,9 +300,17 @@ struct ShadowPushConstants {
 struct QueueFamilyIndices {
   int graphicsFamily = -1;     // location of the graphics queue family
   int presentationFamily = -1; // location of the presentation queue family
+  int computeFamily = -1;      // compute-capable queue, dedicated if available
 
   // check if the queue family indices are valid
-  bool isValid() { return graphicsFamily >= 0 && presentationFamily >= 0; }
+  bool isValid() const {
+    return graphicsFamily >= 0 && presentationFamily >= 0 &&
+           computeFamily >= 0;
+  }
+
+  bool hasDedicatedCompute() const {
+    return computeFamily >= 0 && computeFamily != graphicsFamily;
+  }
 };
 
 struct SwapChainDetails {
@@ -539,7 +547,8 @@ static void transitionImageLayout(VkDevice device, VkQueue queue,
     imageMemoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
     srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
   }
   vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0,
                        nullptr, 1, &imageMemoryBarrier);

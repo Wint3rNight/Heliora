@@ -42,10 +42,12 @@ public:
 
   int getVertexCount() const;
   VkBuffer getVertexBuffer() const;
+  const std::vector<Vertex> &getCpuVertices() const { return cpuVertices; }
 
   // LOD 0 = full detail, LOD 1 = ~50%, LOD 2 = ~12%
   int      getIndexCount(int lod = 0) const;
   VkBuffer getIndexBuffer(int lod = 0) const;
+  const std::vector<uint32_t> &getCpuIndices(int lod = 0) const;
   int      getLodCount() const;
 
   // Called after construction to append a reduced-index LOD level
@@ -68,10 +70,13 @@ private:
 
   int indexCount;
   AllocatedBuffer indexBuffer;
+  std::vector<Vertex> cpuVertices;
+  std::vector<uint32_t> cpuIndices;
 
   // Extra LOD index buffers: [0] = LOD1, [1] = LOD2
   std::vector<AllocatedBuffer> extraLodIndexBuffers;
   std::vector<int>             extraLodIndexCounts;
+  std::vector<std::vector<uint32_t>> extraLodCpuIndices;
 
   VmaAllocator allocator;
   VkDevice device;

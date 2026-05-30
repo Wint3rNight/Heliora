@@ -21,6 +21,8 @@ Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice, VkQueue transferQueue,
            std::vector<uint32_t> *indices, Material newMaterial) {
   vertexCount = vertices->size();
   indexCount = indices->size();
+  cpuVertices = *vertices;
+  cpuIndices = *indices;
   allocator = newAllocator;
   device = newDevice;
   material = newMaterial;
@@ -63,6 +65,15 @@ VkBuffer Mesh::getIndexBuffer(int lod) const {
              : indexBuffer.get();
 }
 
+const std::vector<uint32_t> &Mesh::getCpuIndices(int lod) const {
+  if (lod <= 0 || extraLodCpuIndices.empty())
+    return cpuIndices;
+  int i = lod - 1;
+  return (i < static_cast<int>(extraLodCpuIndices.size()))
+             ? extraLodCpuIndices[i]
+             : cpuIndices;
+}
+
 int Mesh::getLodCount() const {
   return 1 + static_cast<int>(extraLodIndexBuffers.size());
 }
@@ -95,6 +106,7 @@ void Mesh::addLod(VmaAllocator newAllocator, VkDevice newDevice,
 
   extraLodIndexBuffers.push_back(std::move(lodBuf));
   extraLodIndexCounts.push_back(static_cast<int>(indices->size()));
+  extraLodCpuIndices.push_back(*indices);
 }
 
 void Mesh::destroyBuffers() {
@@ -104,6 +116,7 @@ void Mesh::destroyBuffers() {
     b.reset();
   extraLodIndexBuffers.clear();
   extraLodIndexCounts.clear();
+  extraLodCpuIndices.clear();
 }
 
 Mesh::~Mesh() {}

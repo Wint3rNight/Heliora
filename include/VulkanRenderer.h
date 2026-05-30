@@ -217,6 +217,65 @@ private:
   // --- Instanced drawables ---
   std::vector<InstancedDrawable> instancedDrawables;
 
+  // --- GPU-driven rendering staging (Phase 7.6) ---
+  // CPU-filled for now; the compute culling pass will consume this SSBO when
+  // indirect draw generation is wired in.
+  struct GpuDrivenFrameResources {
+    AllocatedBuffer meshBuffer;
+    AllocatedBuffer transformBuffer;
+    AllocatedBuffer indirectBuffer;
+    AllocatedBuffer countBuffer;
+    AllocatedBuffer frustumBuffer;
+    VkDeviceSize meshBufferSize = 0;
+    VkDeviceSize transformBufferSize = 0;
+    VkDeviceSize indirectBufferSize = 0;
+    bool descriptorDirty = true;
+  };
+
+  struct GpuDrivenGeometryRange {
+    const Mesh *mesh = nullptr;
+    int lod = 0;
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    int32_t vertexOffset = 0;
+  };
+
+  std::vector<GpuDrivenFrameResources> gpuDrivenFrames;
+  AllocatedBuffer gpuDrivenStaticVertexBuffer;
+  AllocatedBuffer gpuDrivenStaticIndexBuffer;
+  VkDeviceSize gpuDrivenStaticVertexBufferSize = 0;
+  VkDeviceSize gpuDrivenStaticIndexBufferSize = 0;
+  std::vector<Vertex> gpuDrivenStaticVertices;
+  std::vector<uint32_t> gpuDrivenStaticIndices;
+  std::vector<GpuDrivenGeometryRange> gpuDrivenGeometryRanges;
+  std::vector<int> gpuDrivenModelIds;
+  uint32_t gpuDrivenCandidateCount = 0;
+  uint32_t gpuDrivenMeshCount = 0;
+  std::vector<AllocatedImage> gpuDrivenHzbImages;
+  std::vector<ImageViewHandle> gpuDrivenHzbViews;
+  std::vector<std::vector<ImageViewHandle>> gpuDrivenHzbMipViews;
+  std::vector<bool> gpuDrivenHzbValid;
+  VkExtent2D gpuDrivenHzbExtent = {};
+  uint32_t gpuDrivenHzbMipCount = 0;
+  VkFormat gpuDrivenHzbFormat = VK_FORMAT_UNDEFINED;
+  VkSampler gpuDrivenHzbSampler = VK_NULL_HANDLE;
+  VkDescriptorSetLayout gpuDrivenSetLayout = VK_NULL_HANDLE;
+  VkDescriptorSetLayout gpuDrivenHzbBuildSetLayout = VK_NULL_HANDLE;
+  VkDescriptorPool gpuDrivenDescriptorPool = VK_NULL_HANDLE;
+  VkDescriptorPool gpuDrivenHzbBuildDescriptorPool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> gpuDrivenDescriptorSets;
+  std::vector<VkDescriptorSet> gpuDrivenHzbBuildSets;
+  VkPipelineLayout gpuCullPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline gpuCullPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout gpuDrivenHzbBuildPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline gpuDrivenHzbBuildPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout gpuDrivenGBufferPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline gpuDrivenGBufferPipeline = VK_NULL_HANDLE;
+  bool imguiGpuDrivenEnabled = true;
+  bool imguiHzbCullingEnabled = true;
+  int imguiGpuDrivenMinCandidates = 256;
+  bool gpuDrivenLastFrameUsed = false;
+
   // --- Multi-threaded command recording (Phase 7.4) ---
   struct ThreadCommandFrameResources {
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -400,6 +459,10 @@ private:
   void createAutoExposureResources();
   void cleanupAutoExposureResources();
   void recordAutoExposurePass(VkCommandBuffer cmd, uint32_t currentImage);
+  void createGpuDrivenResources();
+  void cleanupGpuDrivenResources();
+  void updateGpuDrivenDescriptorSet(uint32_t imageIndex);
+  void recordGpuDrivenHzbBuild(VkCommandBuffer cmd, uint32_t currentImage);
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();
@@ -410,6 +473,16 @@ private:
 
   void updateLightSpaceMatrices();
   void updatePointShadowMatrices();
+  void registerGpuDrivenModelGeometry(int modelId);
+  const GpuDrivenGeometryRange *findGpuDrivenGeometry(const Mesh *mesh,
+                                                      int lod) const;
+  void uploadGpuDrivenStaticGeometry();
+  void uploadGpuDrivenMeshRecords(GpuDrivenFrameResources &frame,
+                                  const void *records, VkDeviceSize bytes,
+                                  uint32_t recordCount);
+  bool ensureGpuDrivenBuffer(AllocatedBuffer &buffer, VkDeviceSize &capacity,
+                             VkDeviceSize requiredSize,
+                             VkBufferUsageFlags usage);
 
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);

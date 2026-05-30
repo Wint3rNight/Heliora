@@ -283,11 +283,14 @@ void VulkanDevice::createLogicalDevice() {
   vk12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
   vk12Features.runtimeDescriptorArray = VK_TRUE;
   vk12Features.timelineSemaphore = VK_TRUE;
+  vk12Features.drawIndirectCount = VK_TRUE;
 
   VkPhysicalDeviceFeatures2 features2 = {};
   features2.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   features2.pNext        = &vk12Features;
   features2.features.samplerAnisotropy = VK_TRUE;
+  features2.features.multiDrawIndirect = VK_TRUE;
+  features2.features.drawIndirectFirstInstance = VK_TRUE;
 
   deviceCreateInfo.pEnabledFeatures = nullptr; // mutually exclusive w/ pNext
   deviceCreateInfo.pNext            = &features2;
@@ -508,6 +511,13 @@ bool VulkanDevice::checkDeviceSuitable(VkPhysicalDevice device) {
   VkPhysicalDeviceFeatures deviceFeatures;
   vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 
+  VkPhysicalDeviceVulkan12Features vk12Features{};
+  vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &vk12Features;
+  vkGetPhysicalDeviceFeatures2(device, &features2);
+
   QueueFamilyIndices indices = getQueueFamilies(device);
 
   bool extensionsSupported = checkDeviceExtensionSupport(device);
@@ -521,7 +531,10 @@ bool VulkanDevice::checkDeviceSuitable(VkPhysicalDevice device) {
   }
 
   return indices.isValid() && extensionsSupported && swapChainValid &&
-         deviceFeatures.samplerAnisotropy;
+         deviceFeatures.samplerAnisotropy &&
+         deviceFeatures.multiDrawIndirect &&
+         deviceFeatures.drawIndirectFirstInstance &&
+         vk12Features.drawIndirectCount;
 }
 
 QueueFamilyIndices

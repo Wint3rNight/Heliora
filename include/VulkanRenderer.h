@@ -4,9 +4,6 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_vulkan.h>
 
 #include <array>
 #include <cstdint>
@@ -15,6 +12,7 @@
 #include <vector>
 
 #include "DescriptorManager.h"
+#include "ImGuiLayer.h"
 #include "Model.h"
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
@@ -56,7 +54,7 @@ public:
   void setFov(float fovDegrees);
   void setDrawDistance(float dist);
   float getCameraSpeed() const { return imguiCameraSpeed; }
-  bool imguiWantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }
+  bool imguiWantsMouse() const { return imguiLayer.wantsMouse(); }
 
   ~VulkanRenderer();
 
@@ -224,11 +222,14 @@ private:
     AllocatedBuffer meshBuffer;
     AllocatedBuffer transformBuffer;
     AllocatedBuffer indirectBuffer;
+    AllocatedBuffer noCullIndirectBuffer;
     AllocatedBuffer countBuffer;
+    AllocatedBuffer noCullCountBuffer;
     AllocatedBuffer frustumBuffer;
     VkDeviceSize meshBufferSize = 0;
     VkDeviceSize transformBufferSize = 0;
     VkDeviceSize indirectBufferSize = 0;
+    VkDeviceSize noCullIndirectBufferSize = 0;
     bool descriptorDirty = true;
   };
 
@@ -271,6 +272,7 @@ private:
   VkPipeline gpuDrivenHzbBuildPipeline = VK_NULL_HANDLE;
   VkPipelineLayout gpuDrivenGBufferPipelineLayout = VK_NULL_HANDLE;
   VkPipeline gpuDrivenGBufferPipeline = VK_NULL_HANDLE;
+  VkPipeline gpuDrivenGBufferNoCullPipeline = VK_NULL_HANDLE;
   bool imguiGpuDrivenEnabled = true;
   bool imguiHzbCullingEnabled = true;
   int imguiGpuDrivenMinCandidates = 256;
@@ -323,7 +325,7 @@ private:
   bool framebufferResized = false;
 
   // --- ImGui ---
-  std::vector<VkFramebuffer> imguiFramebuffers;
+  ImGuiLayer imguiLayer;
   glm::vec3 imguiCameraPos = {};
   float imguiCameraSpeed = 15.0f;
   float imguiCameraFov = 45.0f;
@@ -430,8 +432,6 @@ private:
   glm::mat4 taaLastView = glm::mat4(1.0f);
   bool taaHasLastCamera = false;
   bool cameraMovedThisFrame = false;
-  float frameTimeGraphData[128] = {};
-  int frameTimeGraphOffset = 0;
 
   // --- Init helpers ---
   void createSynchronization();
@@ -466,10 +466,6 @@ private:
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();
-  void initImGui();
-  void cleanupImGui();
-  void createImGuiFramebuffers();
-  void cleanupImGuiFramebuffers();
 
   void updateLightSpaceMatrices();
   void updatePointShadowMatrices();
@@ -496,6 +492,5 @@ private:
   void recordShadowPass(VkCommandBuffer cmdBuffer);
   void recordPointShadowPass(VkCommandBuffer cmdBuffer);
   void recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex);
-  void buildImGuiUI();
   void recreateSwapChain();
 };

@@ -52,7 +52,7 @@ target_link_libraries(imgui_lib PUBLIC Vulkan::Vulkan glfw)
 
 # Source File Management - Simplified
 # Note: Using GLOB is okay for small projects, but listing them is safer.
-file(GLOB_RECURSE ALL_SOURCES
+file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
         "src/*.cpp"
         "src/*.h"
         "include/*.h"

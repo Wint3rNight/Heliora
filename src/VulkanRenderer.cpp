@@ -5,9 +5,6 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_vulkan.h>
 
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
@@ -383,8 +380,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     textureManager.loadTexture("plain.png", device, descriptorManager);
 
     // 15. ImGui overlay
-    initImGui();
-    createImGuiFramebuffers();
+    imguiLayer.init(window, device, renderPassManager.getImGuiRenderPass(),
+                    static_cast<uint32_t>(swapchain.getImageCount()));
+    imguiLayer.createFramebuffers(device.getLogicalDevice(),
+                                  renderPassManager.getImGuiRenderPass(),
+                                  swapchain.getExtent(), swapchain.getImages());
 
   } catch (const std::runtime_error &e) {
     spdlog::critical("Renderer initialization failed: {}", e.what());
@@ -836,8 +836,9 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupAsyncFrameCommandBuffers();
   swapchain.recreate(device, window);
 
-  cleanupImGuiFramebuffers();
-  createImGuiFramebuffers();
+  imguiLayer.createFramebuffers(device.getLogicalDevice(),
+                                renderPassManager.getImGuiRenderPass(),
+                                swapchain.getExtent(), swapchain.getImages());
 
   cleanupAutoExposureResources();
   cleanupCompositeFramebuffers();
@@ -2642,8 +2643,7 @@ void VulkanRenderer::cleanup() {
   metrics.printReport(device.getAllocator());
 
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
-  cleanupImGuiFramebuffers();
-  cleanupImGui();
+  imguiLayer.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   cleanupAutoExposureResources();
@@ -2705,21 +2705,6 @@ static bool sphereInFrustum(const glm::vec4 planes[6], glm::vec3 center,
     if (glm::dot(glm::vec3(planes[i]), center) + planes[i].w < -radius)
       return false;
   return true;
-}
-
-static const char *presentModeName(VkPresentModeKHR mode) {
-  switch (mode) {
-  case VK_PRESENT_MODE_IMMEDIATE_KHR:
-    return "IMMEDIATE";
-  case VK_PRESENT_MODE_MAILBOX_KHR:
-    return "MAILBOX";
-  case VK_PRESENT_MODE_FIFO_KHR:
-    return "FIFO";
-  case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
-    return "FIFO_RELAXED";
-  default:
-    return "UNKNOWN";
-  }
 }
 
 static VkImageAspectFlags depthStencilAspectMask(VkFormat format) {
@@ -2962,7 +2947,7 @@ void VulkanRenderer::createGpuDrivenResources() {
       throw std::runtime_error("HZB requires R32_SFLOAT sampled storage images");
   }
 
-  std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+  std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
   for (uint32_t i = 0; i < 5; ++i) {
     bindings[i].binding = i;
     bindings[i].descriptorCount = 1;
@@ -2974,6 +2959,12 @@ void VulkanRenderer::createGpuDrivenResources() {
   bindings[5].descriptorCount = 1;
   bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  for (uint32_t i = 6; i < 8; ++i) {
+    bindings[i].binding = i;
+    bindings[i].descriptorCount = 1;
+    bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  }
 
   VkDescriptorSetLayoutCreateInfo layoutCI{};
   layoutCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -3103,7 +3094,7 @@ void VulkanRenderer::createGpuDrivenResources() {
 
   std::array<VkDescriptorPoolSize, 2> poolSizes{};
   poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  poolSizes[0].descriptorCount = static_cast<uint32_t>(swapCount * 5);
+  poolSizes[0].descriptorCount = static_cast<uint32_t>(swapCount * 7);
   poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   poolSizes[1].descriptorCount = static_cast<uint32_t>(swapCount);
   VkDescriptorPoolCreateInfo poolCI{};
@@ -3165,11 +3156,21 @@ void VulkanRenderer::createGpuDrivenResources() {
                           sizeof(VkDrawIndexedIndirectCommand),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    ensureGpuDrivenBuffer(frame.noCullIndirectBuffer,
+                          frame.noCullIndirectBufferSize,
+                          sizeof(VkDrawIndexedIndirectCommand),
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                              VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     createBuffer(device.getAllocator(), sizeof(uint32_t),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                  VMA_MEMORY_USAGE_AUTO, 0, &frame.countBuffer);
+    createBuffer(device.getAllocator(), sizeof(uint32_t),
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                 VMA_MEMORY_USAGE_AUTO, 0, &frame.noCullCountBuffer);
     createBuffer(device.getAllocator(), sizeof(GpuDrivenFrustumData),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                  VMA_MEMORY_USAGE_AUTO,
@@ -3329,7 +3330,7 @@ void VulkanRenderer::createGpuDrivenResources() {
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
-    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.cullMode = VK_CULL_MODE_BACK_BIT;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = 1.0f;
 
@@ -3385,6 +3386,13 @@ void VulkanRenderer::createGpuDrivenResources() {
                                   &gpuDrivenGBufferPipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create GPU-driven G-buffer pipeline");
 
+    raster.cullMode = VK_CULL_MODE_NONE;
+    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &pipeInfo, nullptr,
+                                  &gpuDrivenGBufferNoCullPipeline) !=
+        VK_SUCCESS)
+      throw std::runtime_error(
+          "Failed to create no-cull GPU-driven G-buffer pipeline");
+
     vkDestroyShaderModule(dev, fragMod, nullptr);
     vkDestroyShaderModule(dev, vertMod, nullptr);
   }
@@ -3394,6 +3402,8 @@ void VulkanRenderer::cleanupGpuDrivenResources() {
   VkDevice dev = device.getLogicalDevice();
   if (gpuDrivenGBufferPipeline != VK_NULL_HANDLE)
     vkDestroyPipeline(dev, gpuDrivenGBufferPipeline, nullptr);
+  if (gpuDrivenGBufferNoCullPipeline != VK_NULL_HANDLE)
+    vkDestroyPipeline(dev, gpuDrivenGBufferNoCullPipeline, nullptr);
   if (gpuDrivenGBufferPipelineLayout != VK_NULL_HANDLE)
     vkDestroyPipelineLayout(dev, gpuDrivenGBufferPipelineLayout, nullptr);
   if (gpuDrivenHzbBuildPipeline != VK_NULL_HANDLE)
@@ -3416,6 +3426,7 @@ void VulkanRenderer::cleanupGpuDrivenResources() {
     vkDestroyDescriptorSetLayout(dev, gpuDrivenSetLayout, nullptr);
 
   gpuDrivenGBufferPipeline = VK_NULL_HANDLE;
+  gpuDrivenGBufferNoCullPipeline = VK_NULL_HANDLE;
   gpuDrivenGBufferPipelineLayout = VK_NULL_HANDLE;
   gpuDrivenHzbBuildPipeline = VK_NULL_HANDLE;
   gpuDrivenHzbBuildPipelineLayout = VK_NULL_HANDLE;
@@ -3457,38 +3468,42 @@ void VulkanRenderer::updateGpuDrivenDescriptorSet(uint32_t imageIndex) {
 
   GpuDrivenFrameResources &frame = gpuDrivenFrames[imageIndex];
   if (!frame.meshBuffer || !frame.transformBuffer || !frame.indirectBuffer ||
-      !frame.countBuffer || !frame.frustumBuffer)
+      !frame.noCullIndirectBuffer || !frame.countBuffer ||
+      !frame.noCullCountBuffer || !frame.frustumBuffer)
     return;
   if (!frame.descriptorDirty)
     return;
 
-  std::array<VkDescriptorBufferInfo, 5> infos{};
+  std::array<VkDescriptorBufferInfo, 7> infos{};
   infos[0] = {frame.meshBuffer.get(), 0, VK_WHOLE_SIZE};
   infos[1] = {frame.frustumBuffer.get(), 0, VK_WHOLE_SIZE};
   infos[2] = {frame.transformBuffer.get(), 0, VK_WHOLE_SIZE};
   infos[3] = {frame.indirectBuffer.get(), 0, VK_WHOLE_SIZE};
   infos[4] = {frame.countBuffer.get(), 0, VK_WHOLE_SIZE};
+  infos[5] = {frame.noCullIndirectBuffer.get(), 0, VK_WHOLE_SIZE};
+  infos[6] = {frame.noCullCountBuffer.get(), 0, VK_WHOLE_SIZE};
 
   VkDescriptorImageInfo hzbInfo{};
   hzbInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   hzbInfo.imageView = gpuDrivenHzbViews[imageIndex].get();
   hzbInfo.sampler = gpuDrivenHzbSampler;
 
-  std::array<VkWriteDescriptorSet, 6> writes{};
-  for (uint32_t i = 0; i < 5; ++i) {
+  std::array<VkWriteDescriptorSet, 8> writes{};
+  const std::array<uint32_t, 7> bufferBindings = {0, 1, 2, 3, 4, 6, 7};
+  for (uint32_t i = 0; i < static_cast<uint32_t>(bufferBindings.size()); ++i) {
     writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[i].dstSet = gpuDrivenDescriptorSets[imageIndex];
-    writes[i].dstBinding = i;
+    writes[i].dstBinding = bufferBindings[i];
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[i].descriptorCount = 1;
     writes[i].pBufferInfo = &infos[i];
   }
-  writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  writes[5].dstSet = gpuDrivenDescriptorSets[imageIndex];
-  writes[5].dstBinding = 5;
-  writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[5].descriptorCount = 1;
-  writes[5].pImageInfo = &hzbInfo;
+  writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  writes[7].dstSet = gpuDrivenDescriptorSets[imageIndex];
+  writes[7].dstBinding = 5;
+  writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[7].descriptorCount = 1;
+  writes[7].pImageInfo = &hzbInfo;
   vkUpdateDescriptorSets(device.getLogicalDevice(),
                          static_cast<uint32_t>(writes.size()), writes.data(),
                          0, nullptr);
@@ -4157,6 +4172,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       gpuFrame && imguiGpuDrivenEnabled &&
       gpuDrivenCandidateCount >= minGpuDrivenCandidates &&
       gpuDrivenGBufferPipeline != VK_NULL_HANDLE &&
+      gpuDrivenGBufferNoCullPipeline != VK_NULL_HANDLE &&
       gpuCullPipeline != VK_NULL_HANDLE &&
       currentImage < gpuDrivenDescriptorSets.size() &&
       gpuDrivenStaticVertexBuffer && gpuDrivenStaticIndexBuffer;
@@ -4216,6 +4232,12 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     }
     if (ensureGpuDrivenBuffer(gpuFrame->indirectBuffer,
                               gpuFrame->indirectBufferSize, indirectBytes,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
+      gpuFrame->descriptorDirty = true;
+    }
+    if (ensureGpuDrivenBuffer(gpuFrame->noCullIndirectBuffer,
+                              gpuFrame->noCullIndirectBufferSize, indirectBytes,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                   VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
       gpuFrame->descriptorDirty = true;
@@ -4348,6 +4370,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
 
   const bool useGpuDriven =
       imguiGpuDrivenEnabled && gpuDrivenGBufferPipeline != VK_NULL_HANDLE &&
+      gpuDrivenGBufferNoCullPipeline != VK_NULL_HANDLE &&
       gpuCullPipeline != VK_NULL_HANDLE &&
       currentImage < gpuDrivenDescriptorSets.size() &&
       gpuFrame != nullptr && gpuDrivenMeshCount > 0 &&
@@ -4358,19 +4381,25 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   if (useGpuDriven) {
     vkdbgBeginLabel(cmd, "GPU Cull + Indirect Build", 0.8f, 0.25f, 1.0f);
     vkCmdFillBuffer(cmd, gpuFrame->countBuffer.get(), 0, sizeof(uint32_t), 0);
-    VkBufferMemoryBarrier countClearBarrier{};
-    countClearBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    countClearBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    countClearBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
-                                      VK_ACCESS_SHADER_WRITE_BIT;
-    countClearBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    countClearBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    countClearBarrier.buffer = gpuFrame->countBuffer.get();
-    countClearBarrier.offset = 0;
-    countClearBarrier.size = sizeof(uint32_t);
+    vkCmdFillBuffer(cmd, gpuFrame->noCullCountBuffer.get(), 0,
+                    sizeof(uint32_t), 0);
+    std::array<VkBufferMemoryBarrier, 2> countClearBarriers{};
+    for (VkBufferMemoryBarrier &barrier : countClearBarriers) {
+      barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                              VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.offset = 0;
+      barrier.size = sizeof(uint32_t);
+    }
+    countClearBarriers[0].buffer = gpuFrame->countBuffer.get();
+    countClearBarriers[1].buffer = gpuFrame->noCullCountBuffer.get();
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         1, &countClearBarrier, 0, nullptr);
+                         static_cast<uint32_t>(countClearBarriers.size()),
+                         countClearBarriers.data(), 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpuCullPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -4378,7 +4407,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
                             &gpuDrivenDescriptorSets[currentImage], 0, nullptr);
     vkCmdDispatch(cmd, (gpuDrivenMeshCount + 63) / 64, 1, 1);
 
-    std::array<VkBufferMemoryBarrier, 2> cullBarriers{};
+    std::array<VkBufferMemoryBarrier, 4> cullBarriers{};
     cullBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     cullBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     cullBarriers[0].dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -4390,6 +4419,11 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     cullBarriers[1] = cullBarriers[0];
     cullBarriers[1].buffer = gpuFrame->countBuffer.get();
     cullBarriers[1].size = sizeof(uint32_t);
+    cullBarriers[2] = cullBarriers[0];
+    cullBarriers[2].buffer = gpuFrame->noCullIndirectBuffer.get();
+    cullBarriers[3] = cullBarriers[0];
+    cullBarriers[3].buffer = gpuFrame->noCullCountBuffer.get();
+    cullBarriers[3].size = sizeof(uint32_t);
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, nullptr,
                          static_cast<uint32_t>(cullBarriers.size()),
@@ -4415,6 +4449,12 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     vkCmdDrawIndexedIndirectCount(
         cmd, gpuFrame->indirectBuffer.get(), 0, gpuFrame->countBuffer.get(), 0,
         gpuDrivenMeshCount, sizeof(VkDrawIndexedIndirectCommand));
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      gpuDrivenGBufferNoCullPipeline);
+    vkCmdDrawIndexedIndirectCount(
+        cmd, gpuFrame->noCullIndirectBuffer.get(), 0,
+        gpuFrame->noCullCountBuffer.get(), 0, gpuDrivenMeshCount,
+        sizeof(VkDrawIndexedIndirectCommand));
     vkCmdEndRenderPass(cmd);
     recordGpuDrivenHzbBuild(cmd, currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
@@ -4996,62 +5036,6 @@ void VulkanRenderer::cleanupShadowResources() {
 
 // ImGui integration
 
-void VulkanRenderer::initImGui() {
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  ImGui::StyleColorsDark();
-
-  ImGui_ImplGlfw_InitForVulkan(window, true);
-
-  QueueFamilyIndices qi = device.getQueueFamilies();
-  ImGui_ImplVulkan_InitInfo info = {};
-  info.ApiVersion = VK_API_VERSION_1_3;
-  info.Instance = device.getInstance();
-  info.PhysicalDevice = device.getPhysicalDevice();
-  info.Device = device.getLogicalDevice();
-  info.QueueFamily = static_cast<uint32_t>(qi.graphicsFamily);
-  info.Queue = device.getGraphicsQueue();
-  info.DescriptorPoolSize = 16; // let ImGui manage its own pool
-  info.MinImageCount = 2;
-  info.ImageCount = static_cast<uint32_t>(swapchain.getImageCount());
-  info.PipelineInfoMain.RenderPass = renderPassManager.getImGuiRenderPass();
-  info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-  ImGui_ImplVulkan_Init(&info);
-}
-
-void VulkanRenderer::cleanupImGui() {
-  ImGui_ImplVulkan_Shutdown();
-  ImGui_ImplGlfw_Shutdown();
-  ImGui::DestroyContext();
-}
-
-void VulkanRenderer::createImGuiFramebuffers() {
-  const auto &images = swapchain.getImages();
-  imguiFramebuffers.resize(images.size(), VK_NULL_HANDLE);
-  for (size_t i = 0; i < images.size(); i++) {
-    VkImageView view = images[i].imageView.get();
-    VkFramebufferCreateInfo fbci = {};
-    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbci.renderPass = renderPassManager.getImGuiRenderPass();
-    fbci.attachmentCount = 1;
-    fbci.pAttachments = &view;
-    fbci.width = swapchain.getExtent().width;
-    fbci.height = swapchain.getExtent().height;
-    fbci.layers = 1;
-    if (vkCreateFramebuffer(device.getLogicalDevice(), &fbci, nullptr,
-                            &imguiFramebuffers[i]) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create ImGui framebuffer");
-  }
-}
-
-void VulkanRenderer::cleanupImGuiFramebuffers() {
-  for (VkFramebuffer fb : imguiFramebuffers)
-    if (fb != VK_NULL_HANDLE)
-      vkDestroyFramebuffer(device.getLogicalDevice(), fb, nullptr);
-  imguiFramebuffers.clear();
-}
-
 void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
   imguiCameraPos = pos;
   imguiCameraSpeed = speed;
@@ -5088,261 +5072,71 @@ void VulkanRenderer::setDrawDistance(float dist) {
   rebuildProjection();
 }
 
-void VulkanRenderer::buildImGuiUI() {
-  // Performance panel — pinned top-left
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_Always);
-  ImGui::Begin("Performance", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  ImGui::Text("CPU submit FPS: %.1f | CPU: %.2f ms | Avg: %.2f ms",
-              metrics.getAverageFps(), metrics.getLastFrameTimeMs(),
-              metrics.getAverageFrameTimeMs());
-  frameTimeGraphData[frameTimeGraphOffset] =
-      static_cast<float>(metrics.getLastFrameTimeMs());
-  frameTimeGraphOffset = (frameTimeGraphOffset + 1) % 128;
-  ImGui::PlotLines("##ft", frameTimeGraphData, 128, frameTimeGraphOffset,
-                   "Frame time (ms)", 0.0f, 50.0f, ImVec2(322, 60));
-  ImGui::Text("Shadow: %.2f | Pt: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow),
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::PointShadow));
-  ImGui::Text("GBuffer: %.2f | SSGI: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::GBuffer),
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::SSGI));
-  ImGui::Text("Lit: %.2f | Bloom: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Lit),
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Bloom));
-  ImGui::Text("AutoExp: %.2f | Comp: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::AutoExposure),
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Composite));
-  ImGui::Text("ImGui: %.2f ms",
-              metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::ImGui));
-  ImGui::Text("GPU total: %.2f | avg %.2f ms", metrics.getLastGpuTimeMs(),
-              metrics.getAverageGpuTimeMs());
-  ImGui::Text("CPU wait/acq/pres: %.2f | %.2f | %.2f ms",
-              metrics.getCpuPhaseTimeMs(
-                  PerformanceMetrics::CpuPhase::WaitFence),
-              metrics.getCpuPhaseTimeMs(
-                  PerformanceMetrics::CpuPhase::Acquire),
-              metrics.getCpuPhaseTimeMs(
-                  PerformanceMetrics::CpuPhase::Present));
-  ImGui::Text("CPU upd/rec/sub: %.2f | %.2f | %.2f ms",
-              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
-              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
-              metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Submit));
-  ImGui::Text("CPU active: %.2f | sync wait: %.2f ms",
-              metrics.getCpuActiveTimeMs(), metrics.getCpuSyncWaitTimeMs());
-  ImGui::Text("CPU measured: %.2f | avg %.2f ms",
-              metrics.getCpuPhaseTotalMs(),
-              metrics.getAverageCpuPhaseTotalMs());
-  ImGui::Text("Draws: %u  |  Tris: %uk", metrics.getLastDrawCallCount(),
-              metrics.getLastTriangleCount() / 1000);
-  auto vram = PerformanceMetrics::queryVram(device.getAllocator());
-  ImGui::Text("VRAM: %llu MiB / %llu MiB",
-              static_cast<unsigned long long>(vram.usedBytes >> 20),
-              static_cast<unsigned long long>(vram.budgetBytes >> 20));
-  ImGui::End();
+void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
+  DebugUiContext ui{
+      metrics,
+      device.getAllocator(),
+      sceneUbo,
+      imguiCameraPos,
+      imguiCameraSpeed,
+      imguiCameraFov,
+      imguiDrawDistance,
+      imguiLodNear,
+      imguiLodFar,
+      imguiPointShadowFar,
+      imguiFogDensity,
+      imguiFogClamp,
+      imguiDebugMode,
+      imguiSpecAAVariance,
+      imguiSpecAAThreshold,
+      imguiIblRoughnessFloor,
+      imguiShadowFrontFaceCull,
+      imguiCullShadowCasters,
+      imguiCsmFar,
+      imguiIblIntensity,
+      imguiExposureEV,
+      imguiMinSurfaceRoughness,
+      imguiSkyOcclusionFloor,
+      imguiSsgiIntensity,
+      imguiSsgiSamples,
+      imguiEnableSunDirect,
+      imguiEnablePointLights,
+      imguiEnableSpotLights,
+      imguiEnableIblAmbient,
+      imguiEnableSsgiBounce,
+      imguiEnableBloom,
+      imguiBloomThreshold,
+      imguiBloomIntensity,
+      imguiBloomRadius,
+      imguiSsrEnabled,
+      imguiTaaEnabled,
+      imguiResponsiveTaa,
+      imguiPreferMailboxPresent,
+      imguiSharpness,
+      imguiDayNightEnable,
+      imguiDayNightSpeed,
+      imguiDayNightHour,
+      imguiUseGeomNormalOnly,
+      imguiGpuDrivenEnabled,
+      imguiHzbCullingEnabled,
+      imguiGpuDrivenMinCandidates,
+      autoExpEnabled,
+      autoExpAdaptedValue,
+      gpuDrivenCandidateCount,
+      gpuDrivenMeshCount,
+      gpuDrivenLastFrameUsed,
+      swapchain.getActivePresentMode(),
+      [this] { rebuildProjection(); },
+      [this] { updateLightSpaceMatrices(); },
+      [this] { updatePointShadowMatrices(); },
+      [this] { taaHistoryValid = false; },
+      [this](bool preferMailbox) {
+        swapchain.setPreferMailbox(preferMailbox);
+        framebufferResized = true;
+      }};
 
-  // Camera panel
-  ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Always);
-  ImGui::Begin("Camera", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  ImGui::Text("Pos: (%.1f, %.1f, %.1f)", imguiCameraPos.x, imguiCameraPos.y,
-              imguiCameraPos.z);
-  ImGui::SliderFloat("Speed", &imguiCameraSpeed, 0.5f, 50.0f);
-  if (ImGui::SliderFloat("FOV", &imguiCameraFov, 30.0f, 120.0f))
-    setFov(imguiCameraFov);
-  if (ImGui::SliderFloat("Draw Dist", &imguiDrawDistance, 100.0f, 20000.0f))
-    setDrawDistance(imguiDrawDistance);
-  ImGui::End();
-
-  // Lighting panel
-  ImGui::SetNextWindowPos(ImVec2(10, 450), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
-  ImGui::Begin("Lighting", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  if (ImGui::CollapsingHeader("Directional Light",
-                              ImGuiTreeNodeFlags_DefaultOpen)) {
-    glm::vec3 dir = glm::vec3(sceneUbo.directionalLight.direction);
-    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f)) {
-      sceneUbo.directionalLight.direction =
-          glm::vec4(glm::normalize(dir), 0.0f);
-      updateLightSpaceMatrices();
-    }
-    glm::vec3 col = glm::vec3(sceneUbo.directionalLight.colorIntensity);
-    if (ImGui::ColorEdit3("Color##sun", &col.x))
-      sceneUbo.directionalLight.colorIntensity =
-          glm::vec4(col, sceneUbo.directionalLight.colorIntensity.a);
-    float intens = sceneUbo.directionalLight.colorIntensity.a;
-    if (ImGui::SliderFloat("Intensity##sun", &intens, 0.0f, 5.0f))
-      sceneUbo.directionalLight.colorIntensity.a = intens;
-  }
-  int pointCount = sceneUbo.lightCounts.x;
-  for (int i = 0; i < pointCount; i++) {
-    char label[32];
-    snprintf(label, sizeof(label), "Point Light %d", i);
-    if (ImGui::CollapsingHeader(label)) {
-      glm::vec3 pos = glm::vec3(sceneUbo.pointLights[i].position);
-      char id[24];
-      snprintf(id, sizeof(id), "Pos##pt%d", i);
-      if (ImGui::DragFloat3(id, &pos.x, 0.1f))
-        sceneUbo.pointLights[i].position = glm::vec4(pos, 1.0f);
-      glm::vec3 col = glm::vec3(sceneUbo.pointLights[i].colorIntensity);
-      snprintf(id, sizeof(id), "Color##pt%d", i);
-      if (ImGui::ColorEdit3(id, &col.x))
-        sceneUbo.pointLights[i].colorIntensity =
-            glm::vec4(col, sceneUbo.pointLights[i].colorIntensity.a);
-      float intens = sceneUbo.pointLights[i].colorIntensity.a;
-      snprintf(id, sizeof(id), "Intensity##pt%d", i);
-      if (ImGui::SliderFloat(id, &intens, 0.0f, 10.0f))
-        sceneUbo.pointLights[i].colorIntensity.a = intens;
-    }
-  }
-  if (ImGui::CollapsingHeader("Post & Perf")) {
-    if (ImGui::SliderFloat("Fog density", &imguiFogDensity, 0.0f, 0.02f,
-                           "%.4f"))
-      sceneUbo.fogParams.x = imguiFogDensity;
-    if (ImGui::SliderFloat("Fog clamp", &imguiFogClamp, 0.0f, 1.0f))
-      sceneUbo.fogParams.z = imguiFogClamp;
-    ImGui::SliderFloat("LOD near", &imguiLodNear, 1.0f, 60.0f);
-    ImGui::SliderFloat("LOD far", &imguiLodFar, imguiLodNear + 1.0f, 200.0f);
-    if (ImGui::SliderFloat("Pt shadow far", &imguiPointShadowFar, 5.0f,
-                           100.0f)) {
-      sceneUbo.shadowParams.x = imguiPointShadowFar;
-      updatePointShadowMatrices();
-    }
-  }
-  ImGui::End();
-
-  // Debug views panel
-  ImGui::SetNextWindowPos(ImVec2(10, 690), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 95), ImGuiCond_Always);
-  ImGui::Begin("Debug Views", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  const char *debugModes[] = {"None",          "Albedo",      "Normals",
-                              "Metallic",      "Roughness",   "Depth",
-                              "Shadow vis",    "SSAO factor", "Direct only",
-                              "Indirect only", "Direct (no shadow)",
-                              "SSGI bounce",   "SSGI raw",    "Bloom only"};
-  if (ImGui::Combo("G-Buffer", &imguiDebugMode, debugModes, 14))
-    sceneUbo.debugMode = imguiDebugMode;
-  ImGui::Checkbox("Use geometric normal only", &imguiUseGeomNormalOnly);
-  ImGui::End();
-
-  // Tunables + scene controls. The per-fix A/B checkboxes that lived here
-  // before were retired once each fix was validated — keeping only the
-  // values that actually need runtime tuning.
-  ImGui::SetNextWindowPos(ImVec2(10, 770), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_Always);
-  ImGui::Begin("Scene Controls", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  if (ImGui::SliderFloat("AA variance", &imguiSpecAAVariance, 0.0f, 2.0f,
-                         "%.3f"))
-    sceneUbo.qualityToggles.z = imguiSpecAAVariance;
-  if (ImGui::SliderFloat("AA threshold", &imguiSpecAAThreshold, 0.0f, 1.0f,
-                         "%.3f"))
-    sceneUbo.qualityToggles.w = imguiSpecAAThreshold;
-  if (ImGui::SliderFloat("IBL roughness floor", &imguiIblRoughnessFloor, 0.0f,
-                         1.0f, "%.3f"))
-    sceneUbo.qualityToggles.x = imguiIblRoughnessFloor;
-  // Min-roughness floor for non-metals at the g-buffer write.
-  ImGui::SliderFloat("Min surface roughness", &imguiMinSurfaceRoughness, 0.0f,
-                     1.0f, "%.2f");
-  // Sky-occlusion proxy floor — bottom of IBL multiplier in shadow.
-  ImGui::SliderFloat("Sky occlusion floor", &imguiSkyOcclusionFloor, 0.0f,
-                     1.0f, "%.2f");
-  ImGui::SliderFloat("CSM far", &imguiCsmFar, 100.0f, 5000.0f, "%.0f");
-  ImGui::Checkbox("Shadow front-face cull", &imguiShadowFrontFaceCull);
-  ImGui::Checkbox("Cull shadow casters", &imguiCullShadowCasters);
-  ImGui::Checkbox("GPU-driven G-buffer", &imguiGpuDrivenEnabled);
-  ImGui::Checkbox("HZB occlusion cull", &imguiHzbCullingEnabled);
-  ImGui::SliderInt("GPU min candidates", &imguiGpuDrivenMinCandidates, 0, 2048);
-  ImGui::Text("GPU candidates: %u | submitted: %u",
-              gpuDrivenCandidateCount, gpuDrivenMeshCount);
-  ImGui::Text("GPU path: %s",
-              gpuDrivenLastFrameUsed ? "indirect" : "direct fallback");
-  if (ImGui::Checkbox("Uncapped present", &imguiPreferMailboxPresent)) {
-    swapchain.setPreferMailbox(imguiPreferMailboxPresent);
-    framebufferResized = true;
-  }
-  ImGui::SameLine();
-  ImGui::Text("actual: %s",
-              presentModeName(swapchain.getActivePresentMode()));
-  ImGui::SliderFloat("IBL / sky intensity", &imguiIblIntensity, 0.0f, 2.0f,
-                     "%.2f");
-  // Auto-exposure (histogram-based). When on, the manual EV slider acts
-  // as a bias on top of the adapted target.
-  ImGui::Checkbox("Auto-exposure", &autoExpEnabled);
-  ImGui::SameLine();
-  ImGui::Text("(%.2fx)", autoExpAdaptedValue);
-  // Pre-tonemap exposure (EV stops). Lifts midtones into AgX's linear
-  // range. With auto-exposure on this is a bias offset, not absolute.
-  ImGui::SliderFloat("Exposure (EV)", &imguiExposureEV, -3.0f, 3.0f, "%+.2f");
-  // SSGI intensity — one-bounce diffuse gather. 0 = off, 1 = default,
-  // 2 = strong (visible artifacts at silhouettes).
-  ImGui::SliderFloat("SSGI intensity", &imguiSsgiIntensity, 0.0f, 2.0f,
-                     "%.2f");
-  ImGui::SliderInt("SSGI samples", &imguiSsgiSamples, 4, 12);
-  ImGui::SeparatorText("Lighting isolation");
-  ImGui::Checkbox("Sun direct", &imguiEnableSunDirect);
-  ImGui::Checkbox("Point lights", &imguiEnablePointLights);
-  ImGui::Checkbox("Spot lights", &imguiEnableSpotLights);
-  ImGui::Checkbox("IBL ambient", &imguiEnableIblAmbient);
-  ImGui::Checkbox("SSGI bounce", &imguiEnableSsgiBounce);
-  if (ImGui::Checkbox("Bloom", &imguiEnableBloom))
-    taaHistoryValid = false;
-  if (imguiEnableBloom) {
-    float bloomSensitivity =
-        (4.0f - imguiBloomThreshold) / (4.0f - 0.2f);
-    if (ImGui::SliderFloat("Bloom sensitivity", &bloomSensitivity, 0.0f, 1.0f,
-                           "%.2f")) {
-      imguiBloomThreshold = glm::mix(4.0f, 0.2f, bloomSensitivity);
-    }
-    ImGui::SliderFloat("Bloom intensity", &imguiBloomIntensity, 0.0f, 1.0f,
-                       "%.3f");
-    ImGui::SliderFloat("Bloom radius", &imguiBloomRadius, 0.5f, 4.0f,
-                       "%.2f");
-  }
-  ImGui::Checkbox("SSR reflections", &imguiSsrEnabled);
-  ImGui::Checkbox("TAA", &imguiTaaEnabled);
-  ImGui::Checkbox("Responsive TAA", &imguiResponsiveTaa);
-  // Sharpening strength after AgX. 0 = off, 0.4 = default light, 1.0 =
-  // strong / starts ringing.
-  ImGui::SliderFloat("Sharpness", &imguiSharpness, 0.0f, 1.0f, "%.2f");
-  ImGui::Separator();
-  ImGui::Checkbox("Day/night cycle", &imguiDayNightEnable);
-  ImGui::SliderFloat("Sim hour", &imguiDayNightHour, 0.0f, 24.0f, "%.2f h");
-  ImGui::SliderFloat("Speed (sim-h / real-s)", &imguiDayNightSpeed, 0.1f,
-                     600.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-  ImGui::End();
-}
-
-void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd,
-                                         uint32_t imageIndex) {
-  ImGui_ImplVulkan_NewFrame();
-  ImGui_ImplGlfw_NewFrame();
-  ImGui::NewFrame();
-
-  buildImGuiUI();
-
-  ImGui::Render();
-
-  VkClearValue clear = {};
-  VkRenderPassBeginInfo rpbi = {};
-  rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  rpbi.renderPass = renderPassManager.getImGuiRenderPass();
-  rpbi.framebuffer = imguiFramebuffers[imageIndex];
-  rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
-  rpbi.clearValueCount = 1;
-  rpbi.pClearValues = &clear;
-  vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-  ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-  vkCmdEndRenderPass(cmd);
+  imguiLayer.record(cmd, renderPassManager.getImGuiRenderPass(),
+                    swapchain.getExtent(), imageIndex, ui);
 }
 
 void VulkanRenderer::createSynchronization() {

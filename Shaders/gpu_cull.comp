@@ -4,7 +4,7 @@ struct MeshRecord {
     vec4 aabbMin;
     vec4 aabbMax;
     uvec4 draw;   // x=firstIndex, y=indexCount, z=vertexOffset, w=baseInstance
-    uvec4 flags;  // x=instanceCount
+    uvec4 flags;  // x=instanceCount, w=cull mode (0 = none)
 };
 
 layout(local_size_x = 64) in;
@@ -29,6 +29,14 @@ layout(set = 0, binding = 4, std430) buffer DrawCount {
 } drawCount;
 
 layout(set = 0, binding = 5) uniform sampler2D hzb;
+
+layout(set = 0, binding = 6, std430) writeonly buffer NoCullIndirectCommands {
+    uint noCullCommands[];
+};
+
+layout(set = 0, binding = 7, std430) buffer NoCullDrawCount {
+    uint count;
+} noCullDrawCount;
 
 bool aabbVisible(vec3 bmin, vec3 bmax) {
     for (int i = 0; i < 6; ++i) {
@@ -100,6 +108,15 @@ void writeCommand(uint dst, MeshRecord m) {
     commands[base + 4u] = m.draw.w; // firstInstance = transform base
 }
 
+void writeNoCullCommand(uint dst, MeshRecord m) {
+    uint base = dst * 5u;
+    noCullCommands[base + 0u] = m.draw.y; // indexCount
+    noCullCommands[base + 1u] = m.flags.x; // instanceCount
+    noCullCommands[base + 2u] = m.draw.x; // firstIndex
+    noCullCommands[base + 3u] = m.draw.z; // vertexOffset (bit-compatible int32)
+    noCullCommands[base + 4u] = m.draw.w; // firstInstance = transform base
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= frustum.meshCount)
@@ -111,6 +128,11 @@ void main() {
     if (aabbOccludedByHzb(m.aabbMin.xyz, m.aabbMax.xyz))
         return;
 
-    uint dst = atomicAdd(drawCount.count, 1u);
-    writeCommand(dst, m);
+    if (m.flags.w == 0u) {
+        uint dst = atomicAdd(noCullDrawCount.count, 1u);
+        writeNoCullCommand(dst, m);
+    } else {
+        uint dst = atomicAdd(drawCount.count, 1u);
+        writeCommand(dst, m);
+    }
 }

@@ -3,6 +3,7 @@
 #include "RenderResources.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
+#include "VulkanSync.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -198,8 +199,7 @@ static void transitionCubemapLayout(VkDevice device, VkQueue queue,
   srcStage = stageFor(oldLayout, true);
   dstStage = stageFor(newLayout, false);
 
-  vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1,
-                       &b);
+  recordImageBarrier2(cmd, srcStage, dstStage, b);
   endAndSubmitCommandBuffer(device, pool, queue, cmd);
 }
 
@@ -705,9 +705,8 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = img;
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &barrier);
+  recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, barrier);
 
   endAndSubmitCommandBuffer(dev, computeCommandPool, computeQueue, cmd);
 
@@ -999,9 +998,8 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &b);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, b);
     vkCmdCopyBufferToImage(cmd, staging.get(), texImg.get(),
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            static_cast<uint32_t>(regions.size()),
@@ -1010,9 +1008,8 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
     b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, b);
     endAndSubmitCommandBuffer(device.getLogicalDevice(),
                               device.getGraphicsCommandPool(),
                               device.getGraphicsQueue(), cmd);

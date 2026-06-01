@@ -18,8 +18,10 @@ full engine rewrite.
 
 - New central image transitions should use Vulkan 1.3 synchronization2 through
   `RenderResources::transition`.
-- Existing manual `vkCmdPipelineBarrier` callsites are tolerated while passes
-  are being migrated, but new broad barriers should not be added casually.
+- Pass-local barriers should use the helpers in `VulkanSync.h`, which translate
+  legacy stage/access names into `vkCmdPipelineBarrier2` records.
+- Do not add app-level `vkCmdPipelineBarrier` callsites; keep any remaining
+  legacy references contained to vendored code.
 - Batch adjacent initialization barriers where the source/destination stage and
   access masks are identical.
 - Dedicated compute queues cannot use graphics-only stage masks. Compute
@@ -47,7 +49,8 @@ full engine rewrite.
 ## Pipelines And Draw Order
 
 - Keep using the pipeline cache.
-- Sort draw items by pipeline/material/cull mode where correctness allows it.
+- Sort opaque G-buffer draw items by pipeline/material/cull mode where
+  correctness allows it.
 - Pipeline bind reduction must be measured; do not trade major code complexity
   for unproven wins.
 - Hot shader reload should recreate affected development pipelines only, while

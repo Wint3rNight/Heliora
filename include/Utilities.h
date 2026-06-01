@@ -11,6 +11,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
+#include "VulkanSync.h"
+
 class AllocatedBuffer {
 public:
   AllocatedBuffer() = default;
@@ -550,8 +552,7 @@ static void transitionImageLayout(VkDevice device, VkQueue queue,
     dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
   }
-  vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0,
-                       nullptr, 1, &imageMemoryBarrier);
+  recordImageBarrier2(commandBuffer, srcStage, dstStage, imageMemoryBarrier);
 
   endAndSubmitCommandBuffer(device, commandPool, queue, commandBuffer);
 }

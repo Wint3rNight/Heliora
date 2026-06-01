@@ -1,17 +1,8 @@
 #include "RenderResources.h"
+#include "VulkanSync.h"
 
 #include <stdexcept>
 #include <utility>
-
-namespace {
-VkPipelineStageFlags2 toStage2(VkPipelineStageFlags flags) {
-  return static_cast<VkPipelineStageFlags2>(flags);
-}
-
-VkAccessFlags2 toAccess2(VkAccessFlags flags) {
-  return static_cast<VkAccessFlags2>(flags);
-}
-} // namespace
 
 RenderQueueSharingInfo
 renderGraphicsComputeSharing(const QueueFamilyIndices &indices) {
@@ -141,12 +132,12 @@ void RenderResources::transition(
 
   VkImageMemoryBarrier2 barrier{};
   barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-  barrier.srcStageMask = toStage2(srcStage);
-  barrier.dstStageMask = toStage2(dstStage);
+  barrier.srcStageMask = vkSyncStage2(srcStage);
+  barrier.dstStageMask = vkSyncStage2(dstStage);
   barrier.oldLayout = state.layout;
   barrier.newLayout = newLayout;
-  barrier.srcAccessMask = toAccess2(srcAccess);
-  barrier.dstAccessMask = toAccess2(dstAccess);
+  barrier.srcAccessMask = vkSyncAccess2(srcAccess);
+  barrier.dstAccessMask = vkSyncAccess2(dstAccess);
   barrier.image = image;
   barrier.subresourceRange = rangeOverride ? *rangeOverride : state.range;
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

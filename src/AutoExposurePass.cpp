@@ -1,6 +1,7 @@
 #include "AutoExposurePass.h"
 
 #include "VulkanDebug.h"
+#include "VulkanSync.h"
 
 #include <algorithm>
 #include <array>
@@ -354,9 +355,8 @@ void AutoExposurePass::record(VkCommandBuffer cmd, uint32_t currentImage,
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = litImages[currentImage].get();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &barrier);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, barrier);
   }
 
   {
@@ -373,14 +373,11 @@ void AutoExposurePass::record(VkCommandBuffer cmd, uint32_t currentImage,
   }
 
   {
-    VkMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
-                            VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier,
-                         0, nullptr, 0, nullptr);
+    recordMemoryBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_ACCESS_SHADER_READ_BIT |
+                             VK_ACCESS_SHADER_WRITE_BIT);
   }
 
   {
@@ -395,13 +392,10 @@ void AutoExposurePass::record(VkCommandBuffer cmd, uint32_t currentImage,
   }
 
   {
-    VkMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0,
-                         nullptr, 0, nullptr);
+    recordMemoryBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT,
+                         VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_ACCESS_HOST_READ_BIT);
   }
 
   vkdbgEndLabel(cmd);

@@ -1,6 +1,7 @@
 #include "SsgiPass.h"
 
 #include "VulkanDebug.h"
+#include "VulkanSync.h"
 
 #include <algorithm>
 #include <array>
@@ -94,9 +95,9 @@ void SsgiPass::create(VulkanDevice &newDevice, VkExtent2D fullExtent,
     barriers.push_back(barrier);
   }
   if (!barriers.empty()) {
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, static_cast<uint32_t>(barriers.size()),
+    recordImageBarriers2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         static_cast<uint32_t>(barriers.size()),
                          barriers.data());
   }
   endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),

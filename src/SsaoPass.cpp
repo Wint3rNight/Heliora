@@ -2,6 +2,7 @@
 
 #include "RenderResources.h"
 #include "VulkanDebug.h"
+#include "VulkanSync.h"
 
 #include <array>
 #include <filesystem>
@@ -208,9 +209,9 @@ void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
     barriers.push_back(barrier);
   }
   if (!barriers.empty()) {
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, static_cast<uint32_t>(barriers.size()),
+    recordImageBarriers2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         static_cast<uint32_t>(barriers.size()),
                          barriers.data());
   }
   endAndSubmitCommandBuffer(dev, device->getComputeCommandPool(),
@@ -273,9 +274,8 @@ void SsaoPass::recordCommands(VkCommandBuffer cmd, uint32_t currentImage,
   toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toGeneral.image = images[currentImage].get();
   toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &toGeneral);
+  recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toGeneral);
 
   vkdbgBeginLabel(cmd, "Async SSAO Compute", 0.2f, 0.7f, 1.0f);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -293,9 +293,8 @@ void SsaoPass::recordCommands(VkCommandBuffer cmd, uint32_t currentImage,
   toSampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   toSampled.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &toSampled);
+  recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toSampled);
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to end SSAO compute command buffer");

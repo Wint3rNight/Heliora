@@ -2,6 +2,7 @@
 
 #include "RenderResources.h"
 #include "VulkanDebug.h"
+#include "VulkanSync.h"
 
 #include <algorithm>
 #include <array>
@@ -342,9 +343,8 @@ void GpuDrivenGBufferPass::create(
                                   0, 1};
       initBarriers.push_back(barrier);
     }
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr,
+    recordImageBarriers2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          static_cast<uint32_t>(initBarriers.size()),
                          initBarriers.data());
     endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),
@@ -938,10 +938,10 @@ void GpuDrivenGBufferPass::recordIndirectGBuffer(
   }
   countClearBarriers[0].buffer = frame.countBuffer.get();
   countClearBarriers[1].buffer = frame.noCullCountBuffer.get();
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                       static_cast<uint32_t>(countClearBarriers.size()),
-                       countClearBarriers.data(), 0, nullptr);
+  recordBufferBarriers2(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        static_cast<uint32_t>(countClearBarriers.size()),
+                        countClearBarriers.data());
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cullPipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -966,10 +966,10 @@ void GpuDrivenGBufferPass::recordIndirectGBuffer(
   cullBarriers[3] = cullBarriers[0];
   cullBarriers[3].buffer = frame.noCullCountBuffer.get();
   cullBarriers[3].size = sizeof(uint32_t);
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, nullptr,
-                       static_cast<uint32_t>(cullBarriers.size()),
-                       cullBarriers.data(), 0, nullptr);
+  recordBufferBarriers2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                        static_cast<uint32_t>(cullBarriers.size()),
+                        cullBarriers.data());
   vkdbgEndLabel(cmd);
 
   vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -1029,9 +1029,8 @@ void GpuDrivenGBufferPass::recordHzbBuild(
   depthReadBarrier.image = gBufferDepthImages[imageIndex].get();
   depthReadBarrier.subresourceRange = {
       renderImageAspectMask(gBufferDepthFormat), 0, 1, 0, 1};
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &depthReadBarrier);
+  recordImageBarrier2(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, depthReadBarrier);
 
   const bool valid = imageIndex < hzbValid.size() && hzbValid[imageIndex];
   for (uint32_t mip = 0; mip < hzbMipCount; ++mip) {
@@ -1045,11 +1044,10 @@ void GpuDrivenGBufferPass::recordHzbBuild(
     toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toGeneral.image = hzbImages[imageIndex].get();
     toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd,
-                         valid ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                               : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &toGeneral);
+    recordImageBarrier2(cmd,
+                        valid ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                              : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toGeneral);
 
     const size_t setIndex = imageIndex * hzbMipCount + mip;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1069,9 +1067,8 @@ void GpuDrivenGBufferPass::recordHzbBuild(
     toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toRead.image = hzbImages[imageIndex].get();
     toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &toRead);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toRead);
   }
 
   if (imageIndex < hzbValid.size())

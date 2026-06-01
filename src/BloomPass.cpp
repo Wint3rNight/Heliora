@@ -1,6 +1,7 @@
 #include "BloomPass.h"
 
 #include "VulkanDebug.h"
+#include "VulkanSync.h"
 
 #include <algorithm>
 #include <array>
@@ -141,9 +142,9 @@ void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
       }
     }
     if (!barriers.empty()) {
-      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                           0, nullptr, static_cast<uint32_t>(barriers.size()),
+      recordImageBarriers2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           static_cast<uint32_t>(barriers.size()),
                            barriers.data());
     }
     endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),
@@ -386,9 +387,8 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = litImages[currentImage].get();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &barrier);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, barrier);
   }
 
   std::array<VkImageMemoryBarrier, kMipCount> toGeneral{};
@@ -405,9 +405,9 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
     barrier.image = mips[level].images[currentImage].get();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   }
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, static_cast<uint32_t>(toGeneral.size()),
+  recordImageBarriers2(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       static_cast<uint32_t>(toGeneral.size()),
                        toGeneral.data());
 
   auto barrierBloomMip = [&](uint32_t level) {
@@ -422,9 +422,8 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = mips[level].images[currentImage].get();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &barrier);
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, barrier);
   };
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, downsamplePipeline);
@@ -479,10 +478,9 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
     barrier.image = mips[level].images[currentImage].get();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   }
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, static_cast<uint32_t>(toRead.size()),
-                       toRead.data());
+  recordImageBarriers2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       static_cast<uint32_t>(toRead.size()), toRead.data());
 
   vkdbgEndLabel(cmd);
 }

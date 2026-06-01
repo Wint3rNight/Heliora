@@ -1563,6 +1563,25 @@ static glm::uvec4 materialTextureIndices1(const Material &mat) {
                     alphaCutoff255, 0u);
 }
 
+static void sortGBufferDrawItemsForState(std::vector<GBufferDrawItem> &items) {
+  std::stable_sort(items.begin(), items.end(),
+                   [](const GBufferDrawItem &a, const GBufferDrawItem &b) {
+                     if (a.kind != b.kind)
+                       return static_cast<int>(a.kind) <
+                              static_cast<int>(b.kind);
+                     if (a.cullMode != b.cullMode)
+                       return a.cullMode < b.cullMode;
+                     if (a.mesh != b.mesh)
+                       return std::less<const Mesh *>{}(a.mesh, b.mesh);
+                     return a.lod < b.lod;
+                   });
+
+  for (size_t i = 0; i < items.size(); ++i) {
+    items[i].materialId = static_cast<uint32_t>(i);
+    items[i].transformId = static_cast<uint32_t>(i);
+  }
+}
+
 void VulkanRenderer::recordCommands(uint32_t currentImage) {
   VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
   vkResetCommandBuffer(cmd, 0);
@@ -1945,6 +1964,8 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       drawItems.push_back(item);
     }
   }
+
+  sortGBufferDrawItemsForState(drawItems);
 
   const uint32_t minGpuDrivenCandidates =
       static_cast<uint32_t>(std::max(0, imguiGpuDrivenMinCandidates));

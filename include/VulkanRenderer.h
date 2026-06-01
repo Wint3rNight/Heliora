@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "DescriptorManager.h"
 #include "GpuDrivenGBufferPass.h"
@@ -140,48 +141,7 @@ private:
   // historyIndex * swapCount + swapIdx.
   std::vector<VkFramebuffer> compositeFramebuffers;
 
-  // --- Auto-exposure (histogram-based) ---
-  // Two-pass compute: pass 1 builds a 256-bin log-luminance histogram of
-  // litBuffer; pass 2 reduces it to a target exposure scalar (Lagarde
-  // 2014: H = 1 / (9.6 × avgLum)). CPU reads the previous frame's result
-  // each draw, lerps with an eye-adaptation time constant, and pushes
-  // into sceneUbo.qualityToggles2.x (the same slot the manual EV slider
-  // used to drive — the slider becomes a bias added on top).
-  // Refs: bruop.github.io/exposure, PKRenderer.
-  VkDescriptorSetLayout autoExpHistogramSetLayout = VK_NULL_HANDLE;
-  VkDescriptorSetLayout autoExpExposureSetLayout  = VK_NULL_HANDLE;
-  VkPipelineLayout      autoExpHistogramPipelineLayout = VK_NULL_HANDLE;
-  VkPipelineLayout      autoExpExposurePipelineLayout  = VK_NULL_HANDLE;
-  VkPipeline            autoExpHistogramPipeline = VK_NULL_HANDLE;
-  VkPipeline            autoExpExposurePipeline  = VK_NULL_HANDLE;
-  VkDescriptorPool      autoExpDescriptorPool    = VK_NULL_HANDLE;
-  // One histogram set per swap image (binds litViews[image]); one
-  // exposure set per frame-in-flight (binds the host-visible result for
-  // that frame). Reset bin counts live across dispatches — exposure.comp
-  // resets them after reducing.
-  std::vector<VkDescriptorSet> autoExpHistogramSets;
-  std::vector<VkDescriptorSet> autoExpExposureSets;
-  // Device-local 256 × uint32 histogram, persistent across frames (the
-  // exposure pass zeros each bin after reading it).
-  AllocatedBuffer autoExpHistogramBuffer;
-  // One small (16-byte) host-visible result buffer per frame-in-flight.
-  // Persistently mapped; CPU reads the previous-frame value before the
-  // current frame's compute dispatch overwrites it.
-  std::vector<AllocatedBuffer> autoExpResultBuffers;
-  std::vector<void *>          autoExpResultMapped;
-  // Running CPU-side adapted exposure. Lerped each frame toward the
-  // GPU-computed target with `tau` seconds time constant. Initialized
-  // to 1.0 so the first few pre-compute frames render at neutral scale.
-  float autoExpAdaptedValue = 1.0f;
-  bool  autoExpEnabled = true;   // ImGui toggle; off → manual EV only.
-  // Log-luminance range covered by the 256 bins. Values outside clip to
-  // bin 1 or bin 254; the Sponza HDR composite under default lighting
-  // sits roughly in [-6, +4] so we widen a touch on each side.
-  static constexpr float kAutoExpMinLogLum   = -10.0f;
-  static constexpr float kAutoExpMaxLogLum   = +4.0f;
-  // Eye-adaptation time constant in seconds. ~1.5 s feels natural for
-  // daylight adaptation; raise for slower / film-like behaviour.
-  static constexpr float kAutoExpTauSeconds  = 1.5f;
+  bool autoExpEnabled = true;   // ImGui toggle; off -> manual EV only.
 
   // --- IBL resources ---
   int iblSkyboxImageIndex = -1; // index into TextureManager::textureImages
@@ -220,6 +180,7 @@ private:
   PerformanceMetrics metrics;
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
   BloomPass bloomPass;
+  AutoExposurePass autoExposurePass;
 
   // --- Synchronization ---
   // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
@@ -377,9 +338,6 @@ private:
   void cleanupTaaResources();
   void createCompositeFramebuffers();
   void cleanupCompositeFramebuffers();
-  void createAutoExposureResources();
-  void cleanupAutoExposureResources();
-  void recordAutoExposurePass(VkCommandBuffer cmd, uint32_t currentImage);
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();

@@ -22,6 +22,7 @@
 #include "RenderPassManager.h"
 #include "SceneNode.h"
 #include "SsaoPass.h"
+#include "SsgiPass.h"
 #include "TextureManager.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
@@ -100,20 +101,6 @@ private:
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
 
-  // --- SSGI bounce history (HDR, persistent across frames) ---
-  // Ring is one larger than the max frames-in-flight so frame N+K never
-  // overwrites the image that an in-flight frame is still sampling.
-  // The current frame's *output* is what lit.frag samples (set 1 binding 5),
-  // so binding 5 must rotate with the history index.
-  // See mds/sponza_visual_diagnosis.md N6/N9.
-  std::vector<AllocatedImage>  ssgiHistoryImages;   // size MAX_FRAMES_DRAWS + 1
-  std::vector<ImageViewHandle> ssgiHistoryViews;    // size MAX_FRAMES_DRAWS + 1
-  std::vector<VkFramebuffer>   ssgiFramebuffers;    // one per history image
-  // Sampler used to read ssgiHistoryPrev in ssgi.frag (set 2 binding 0).
-  // CLAMP_TO_EDGE + LINEAR so reprojected UVs near the screen edge sample
-  // the edge texel; the shader bounds-checks for true off-screen reject.
-  VkSampler ssgiSampler = VK_NULL_HANDLE;
-
   // --- TAA history (HDR, persistent across frames) ---
   // Same ring sizing as SSGI: MAX_FRAMES_DRAWS + 1 avoids overwriting a
   // history image that a still-in-flight frame is sampling.
@@ -169,6 +156,7 @@ private:
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
   SsaoPass ssaoPass;
+  SsgiPass ssgiPass;
 
   // --- Synchronization ---
   // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
@@ -318,8 +306,6 @@ private:
   void cleanupGBuffer();
   void createLitResources();
   void cleanupLitResources();
-  void createSsgiResources();
-  void cleanupSsgiResources();
   void createTaaResources();
   void cleanupTaaResources();
   void createCompositeFramebuffers();

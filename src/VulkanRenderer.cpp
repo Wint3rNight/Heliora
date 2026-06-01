@@ -229,7 +229,9 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 8a. SSGI bounce-buffer images + framebuffers. Sampled by lit.frag,
     //     so the G-buffer descriptor set (set 1) gets a 6th binding
     //     pointing at these views.
-    createSsgiResources();
+    ssgiPass.create(device, swapchain.getExtent(), litFormat,
+                    renderPassManager.getSsgiRenderPass(),
+                    MAX_FRAMES_DRAWS + 1);
     ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
                     descriptorManager);
 
@@ -789,13 +791,15 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupGBuffer();
   ssaoPass.cleanup();
   bloomPass.cleanup();
-  cleanupSsgiResources();
+  ssgiPass.cleanup();
   cleanupLitResources();
   cleanupTaaResources();
   createLitResources();
   bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
                    litViews);
-  createSsgiResources();
+  ssgiPass.create(device, swapchain.getExtent(), litFormat,
+                  renderPassManager.getSsgiRenderPass(),
+                  MAX_FRAMES_DRAWS + 1);
   ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
                   descriptorManager);
   createTaaResources();
@@ -981,11 +985,8 @@ void VulkanRenderer::createGBuffer() {
   // SSGI views are a temporal history ring. DescriptorManager produces
   // historyCount * swapCount G-buffer sets indexed
   // (historyIndex * swapCount + i); per history index H, binding 5 =
-  // ssgiHistoryViews[H].
-  std::vector<VkImageView> ssgv;
-  ssgv.reserve(ssgiHistoryViews.size());
-  for (const auto &view : ssgiHistoryViews)
-    ssgv.push_back(view.get());
+  // SsgiPass history view H.
+  std::vector<VkImageView> ssgv = ssgiPass.views();
   const std::vector<VkImageView> ssaov = ssaoPass.views();
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
@@ -993,12 +994,9 @@ void VulkanRenderer::createGBuffer() {
                                         textureManager.getTextureSampler(),
                                         ssaoPass.sampler());
   {
-    std::vector<VkImageView> ssgiHv;
-    ssgiHv.reserve(ssgiHistoryViews.size());
-    for (const auto &view : ssgiHistoryViews)
-      ssgiHv.push_back(view.get());
+    std::vector<VkImageView> ssgiHv = ssgiPass.views();
     descriptorManager.recreateSsgiPrevSets(device.getLogicalDevice(), ssgiHv,
-                                           ssgiSampler);
+                                           ssgiPass.sampler());
   }
 }
 
@@ -1107,122 +1105,6 @@ void VulkanRenderer::cleanupLitResources() {
   }
 }
 
-// SSGI bounce-buffer resources. This is intentionally half-resolution: the
-// pass is a diffuse, cross-bilaterally filtered bounce term, and the full-res
-// path-check gather is too expensive for Sponza.
-void VulkanRenderer::createSsgiResources() {
-  VkDevice dev = device.getLogicalDevice();
-  VkExtent2D fullExtent = swapchain.getExtent();
-  VkExtent2D ssgiExtent = {std::max(1u, fullExtent.width / 2),
-                           std::max(1u, fullExtent.height / 2)};
-
-  ssgiHistoryImages.clear();
-  ssgiHistoryViews.clear();
-  const size_t historyCount = MAX_FRAMES_DRAWS + 1;
-  ssgiFramebuffers.assign(historyCount, VK_NULL_HANDLE);
-  ssgiHistoryImages.reserve(historyCount);
-  ssgiHistoryViews.reserve(historyCount);
-
-  VmaAllocationCreateInfo aci = {};
-  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-  for (size_t i = 0; i < historyCount; ++i) {
-    VkImageCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {ssgiExtent.width, ssgiExtent.height, 1};
-    ci.mipLevels = 1;
-    ci.arrayLayers = 1;
-    ci.format = litFormat;
-    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage rawImg = VK_NULL_HANDLE;
-    VmaAllocation alloc = VK_NULL_HANDLE;
-    if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
-                       nullptr) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI history image");
-    ssgiHistoryImages.emplace_back(device.getAllocator(), rawImg, alloc);
-
-    VkImageViewCreateInfo vci = {};
-    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image = ssgiHistoryImages.back().get();
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = litFormat;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkImageView v = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI history view");
-    ssgiHistoryViews.emplace_back(dev, v);
-
-    VkImageView attachment = v;
-    VkFramebufferCreateInfo fbci = {};
-    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbci.renderPass = renderPassManager.getSsgiRenderPass();
-    fbci.attachmentCount = 1;
-    fbci.pAttachments = &attachment;
-    fbci.width = ssgiExtent.width;
-    fbci.height = ssgiExtent.height;
-    fbci.layers = 1;
-    if (vkCreateFramebuffer(dev, &fbci, nullptr, &ssgiFramebuffers[i]) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI framebuffer");
-  }
-
-  // Transition both history images to SHADER_READ_ONLY_OPTIMAL so the
-  // FIRST frame's set-2 sampler read doesn't hit UNDEFINED. The render
-  // pass declares initialLayout=UNDEFINED + loadOp=CLEAR for the SSGI
-  // attachment, so the write side handles its own transition each frame.
-  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
-  for (size_t i = 0; i < historyCount; ++i) {
-    VkImageMemoryBarrier b = {};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = ssgiHistoryImages[i].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    b.srcAccessMask = 0;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
-  }
-  endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
-                            device.getGraphicsQueue(), cmd);
-
-  if (ssgiSampler == VK_NULL_HANDLE) {
-    VkSamplerCreateInfo sci = {};
-    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter = VK_FILTER_LINEAR;
-    sci.minFilter = VK_FILTER_LINEAR;
-    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxLod = 0.0f;
-    if (vkCreateSampler(dev, &sci, nullptr, &ssgiSampler) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSGI sampler");
-  }
-}
-
-void VulkanRenderer::cleanupSsgiResources() {
-  VkDevice dev = device.getLogicalDevice();
-  for (VkFramebuffer fb : ssgiFramebuffers)
-    if (fb != VK_NULL_HANDLE)
-      vkDestroyFramebuffer(dev, fb, nullptr);
-  ssgiFramebuffers.clear();
-  ssgiHistoryViews.clear();
-  ssgiHistoryImages.clear();
-  if (ssgiSampler != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, ssgiSampler, nullptr);
-    ssgiSampler = VK_NULL_HANDLE;
-  }
-}
-
 // TAA history images. The ring is one larger than the max frames-in-flight,
 // so a frame can sample the previous logical frame without another in-flight
 // frame overwriting that image too early. Format matches litFormat so reads
@@ -1316,7 +1198,7 @@ void VulkanRenderer::createTaaResources() {
   // Fresh allocation → history is undefined → don't blend the first frame.
   // Shared with SSGI: ssgi.frag reads scene.taaParams.w (==taaHistoryValid),
   // so dropping this also drops the SSGI temporal blend on the post-resize
-  // frame. createSsgiResources runs alongside createTaaResources on every
+  // frame. SsgiPass is recreated alongside createTaaResources on every
   // swapchain recreate; both temporal history rings invalidate together.
   taaHistoryValid = false;
 }
@@ -1512,7 +1394,7 @@ void VulkanRenderer::cleanup() {
   cleanupGBuffer();
   ssaoPass.cleanup();
   bloomPass.cleanup();
-  cleanupSsgiResources();
+  ssgiPass.cleanup();
   cleanupLitResources();
   cleanupTaaResources();
   cleanupIBL();
@@ -1615,56 +1497,20 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   // Temporal history indices. Rings are larger than the number of frames in
   // flight, so an in-flight frame's previous-history read is not overwritten
   // by a later CPU submission.
-  uint32_t ssgiHistoryIndex =
-      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
   uint32_t taaHistoryIndex =
       static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
 
   recordGBufferPass(cmd, currentImage, viewport, scissor);
 
-  // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
-  // Reads G-buffer (already in SHADER_READ_ONLY layout per the gbuffer
-  // pass's finalLayout) + scene UBO + prev-frame SSGI history (set 2);
-  // writes the blended result to ssgiHistoryImages[ssgiHistoryIndex]. lit.frag
-  // samples this same history output with cross-bilateral (set 1, binding 5).
-  {
-    VkExtent2D ssgiExtent = {std::max(1u, swapchain.getExtent().width / 2),
-                             std::max(1u, swapchain.getExtent().height / 2)};
-    VkViewport ssgiViewport = viewport;
-    ssgiViewport.width = static_cast<float>(ssgiExtent.width);
-    ssgiViewport.height = static_cast<float>(ssgiExtent.height);
-    VkRect2D ssgiScissor = {{0, 0}, ssgiExtent};
-
-    VkClearValue clear = {};
-    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getSsgiRenderPass();
-    rpbi.framebuffer = ssgiFramebuffers[ssgiHistoryIndex];
-    rpbi.renderArea = {{0, 0}, ssgiExtent};
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clear;
-
-    vkdbgBeginLabel(cmd, "SSGI (reproject + blend)", 0.95f, 0.55f, 0.20f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &ssgiViewport);
-    vkCmdSetScissor(cmd, 0, 1, &ssgiScissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getSsgiPipeline());
-    std::array<VkDescriptorSet, 3> ssgiSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
-        descriptorManager.getSsgiPrevSet(ssgiHistoryIndex)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSsgiLayout(), 0, 3, ssgiSets.data(),
-                            0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-    vkdbgEndLabel(cmd);
-  }
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
+  ssgiPass.record(cmd, ssgiHistoryIndex,
+                  descriptorManager.getVPSet(currentImage),
+                  descriptorManager.getGBufferSet(ssgiHistoryIndex,
+                                                  currentImage),
+                  descriptorManager.getSsgiPrevSet(ssgiHistoryIndex),
+                  pipeline.getSsgiPipeline(), pipeline.getSsgiLayout());
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
 
   // --- Lit pass (PBR + IBL + SSAO + FXAA + fog → litBuffer) ---
   {
@@ -1835,8 +1681,7 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
 
 void VulkanRenderer::recordSsaoComputeCommands(VkCommandBuffer cmd,
                                                uint32_t currentImage) {
-  const uint32_t ssgiHistoryIndex =
-      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  const uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
   ssaoPass.recordCommands(
       cmd, currentImage, descriptorManager.getVPSet(currentImage),
       descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage));
@@ -1857,50 +1702,18 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   viewport.maxDepth = 1.0f;
   VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
 
-  uint32_t ssgiHistoryIndex =
-      static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
+  uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
   uint32_t taaHistoryIndex =
       static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
 
-  // --- SSGI pass (one-bounce diffuse + temporal reproject) ---
-  {
-    VkExtent2D ssgiExtent = {std::max(1u, swapchain.getExtent().width / 2),
-                             std::max(1u, swapchain.getExtent().height / 2)};
-    VkViewport ssgiViewport = viewport;
-    ssgiViewport.width = static_cast<float>(ssgiExtent.width);
-    ssgiViewport.height = static_cast<float>(ssgiExtent.height);
-    VkRect2D ssgiScissor = {{0, 0}, ssgiExtent};
-
-    VkClearValue clear = {};
-    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getSsgiRenderPass();
-    rpbi.framebuffer = ssgiFramebuffers[ssgiHistoryIndex];
-    rpbi.renderArea = {{0, 0}, ssgiExtent};
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clear;
-
-    vkdbgBeginLabel(cmd, "SSGI (reproject + blend)", 0.95f, 0.55f, 0.20f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &ssgiViewport);
-    vkCmdSetScissor(cmd, 0, 1, &ssgiScissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getSsgiPipeline());
-    std::array<VkDescriptorSet, 3> ssgiSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
-        descriptorManager.getSsgiPrevSet(ssgiHistoryIndex)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSsgiLayout(), 0, 3, ssgiSets.data(),
-                            0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-    vkdbgEndLabel(cmd);
-  }
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
+  ssgiPass.record(cmd, ssgiHistoryIndex,
+                  descriptorManager.getVPSet(currentImage),
+                  descriptorManager.getGBufferSet(ssgiHistoryIndex,
+                                                  currentImage),
+                  descriptorManager.getSsgiPrevSet(ssgiHistoryIndex),
+                  pipeline.getSsgiPipeline(), pipeline.getSsgiLayout());
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
 
   // --- Lit pass (PBR + IBL + async SSAO + FXAA + fog -> litBuffer) ---
   {

@@ -148,6 +148,7 @@ void VulkanSwapchain::cleanupSwapChain(VkDevice device,
   swapChainImages.clear();
   colorBufferImage.clear();
   colorBufferImageView.clear();
+  colorBufferFormat = VK_FORMAT_UNDEFINED;
   if (swapchain != VK_NULL_HANDLE) {
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     swapchain = VK_NULL_HANDLE;
@@ -162,6 +163,7 @@ void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
       device.getPhysicalDevice(),
       {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM},
       VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+  colorBufferFormat = fmt;
 
   for (size_t i = 0; i < swapChainImages.size(); ++i) {
     // SAMPLED is needed for TAA's 3×3 neighborhood clamp: the tonemap subpass

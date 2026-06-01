@@ -31,10 +31,15 @@ public:
   VkImageView getSwapImageView(size_t i) const {
     return swapChainImages[i].imageView.get();
   }
+  VkImage getSwapImage(size_t i) const { return swapChainImages[i].image; }
   VkCommandBuffer getCommandBuffer(size_t i) const { return commandBuffers[i]; }
   VkImageView getColorBufferView(size_t i) const {
     return colorBufferImageView[i].get();
   }
+  VkImage getColorBufferImage(size_t i) const {
+    return colorBufferImage[i].get();
+  }
+  VkFormat getColorBufferFormat() const { return colorBufferFormat; }
   void setPreferMailbox(bool prefer) { preferMailboxPresent = prefer; }
   bool getPreferMailbox() const { return preferMailboxPresent; }
   VkPresentModeKHR getActivePresentMode() const { return activePresentMode; }
@@ -55,6 +60,7 @@ private:
 
   // HDR intermediate attachment (written by deferred pass, read as input
   // attachment in tone-mapping subpass).
+  VkFormat colorBufferFormat = VK_FORMAT_UNDEFINED;
   std::vector<AllocatedImage> colorBufferImage;
   std::vector<ImageViewHandle> colorBufferImageView;
   bool preferMailboxPresent = true;

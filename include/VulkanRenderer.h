@@ -20,6 +20,7 @@
 #include "Model.h"
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
+#include "RenderResources.h"
 #include "RenderPassManager.h"
 #include "SceneNode.h"
 #include "ShadowPass.h"
@@ -134,6 +135,7 @@ private:
   TextureManager textureManager;
   ModelManager modelManager;
   PerformanceMetrics metrics;
+  RenderResources renderResources;
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
@@ -284,6 +286,10 @@ private:
   void cleanupAsyncFrameCommandBuffers();
   void createThreadedCommandResources();
   void cleanupThreadedCommandResources();
+  void registerSwapchainResources();
+  void noteGBufferFinalLayouts(uint32_t imageIndex);
+  void noteLitFinalLayout(uint32_t imageIndex);
+  void noteCompositeFinalLayouts(uint32_t imageIndex, uint32_t historyIndex);
   void createGBuffer();
   void cleanupGBuffer();
   void createLitResources();

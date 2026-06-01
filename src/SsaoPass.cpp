@@ -1,5 +1,6 @@
 #include "SsaoPass.h"
 
+#include "RenderResources.h"
 #include "VulkanDebug.h"
 
 #include <array>
@@ -8,32 +9,6 @@
 #include <string>
 
 namespace {
-struct QueueSharingInfo {
-  VkSharingMode mode = VK_SHARING_MODE_EXCLUSIVE;
-  uint32_t familyCount = 0;
-  std::array<uint32_t, 2> families{};
-};
-
-QueueSharingInfo graphicsComputeSharing(const VulkanDevice &device) {
-  QueueFamilyIndices indices = device.getQueueFamilies();
-  QueueSharingInfo sharing{};
-  if (indices.hasDedicatedCompute()) {
-    sharing.mode = VK_SHARING_MODE_CONCURRENT;
-    sharing.families = {static_cast<uint32_t>(indices.graphicsFamily),
-                        static_cast<uint32_t>(indices.computeFamily)};
-    sharing.familyCount = 2;
-  }
-  return sharing;
-}
-
-void applyQueueSharing(VkImageCreateInfo &ci, const QueueSharingInfo &sharing) {
-  ci.sharingMode = sharing.mode;
-  if (sharing.mode == VK_SHARING_MODE_CONCURRENT) {
-    ci.queueFamilyIndexCount = sharing.familyCount;
-    ci.pQueueFamilyIndices = sharing.families.data();
-  }
-}
-
 VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
   std::vector<std::string> candidates = {relPath, "../" + relPath};
   std::string found;
@@ -78,7 +53,8 @@ void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
           "Async SSAO requires R16_SFLOAT sampled storage images");
   }
 
-  const QueueSharingInfo queueSharing = graphicsComputeSharing(*device);
+  const RenderQueueSharingInfo queueSharing =
+      renderGraphicsComputeSharing(device->getQueueFamilies());
   images.clear();
   imageViews.clear();
   images.reserve(swapCount);
@@ -98,7 +74,7 @@ void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
     imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
-    applyQueueSharing(imageCI, queueSharing);
+    applyRenderQueueSharing(imageCI, queueSharing);
 
     VkImage rawImage = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;

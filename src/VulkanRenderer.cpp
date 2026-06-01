@@ -127,36 +127,6 @@ private:
   std::exception_ptr firstException;
 };
 
-namespace {
-struct RendererQueueSharingInfo {
-  VkSharingMode mode = VK_SHARING_MODE_EXCLUSIVE;
-  uint32_t familyCount = 0;
-  std::array<uint32_t, 2> families{};
-};
-
-RendererQueueSharingInfo rendererGraphicsComputeSharing(
-    const VulkanDevice &device) {
-  QueueFamilyIndices indices = device.getQueueFamilies();
-  RendererQueueSharingInfo sharing{};
-  if (indices.hasDedicatedCompute()) {
-    sharing.mode = VK_SHARING_MODE_CONCURRENT;
-    sharing.families = {static_cast<uint32_t>(indices.graphicsFamily),
-                        static_cast<uint32_t>(indices.computeFamily)};
-    sharing.familyCount = 2;
-  }
-  return sharing;
-}
-
-void applyRendererQueueSharing(VkImageCreateInfo &ci,
-                               const RendererQueueSharingInfo &sharing) {
-  ci.sharingMode = sharing.mode;
-  if (sharing.mode == VK_SHARING_MODE_CONCURRENT) {
-    ci.queueFamilyIndexCount = sharing.familyCount;
-    ci.pQueueFamilyIndices = sharing.families.data();
-  }
-}
-} // namespace
-
 VulkanRenderer::VulkanRenderer() {}
 
 int VulkanRenderer::init(GLFWwindow *newWindow) {
@@ -176,7 +146,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     shadowDepthFormat = swapchain.chooseSupportedFormat(
         device.getPhysicalDevice(),
-        {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT,
+        {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
          VK_FORMAT_D24_UNORM_S8_UINT},
         VK_IMAGE_TILING_OPTIMAL,
         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
@@ -205,6 +175,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 4. Swapchain (images + colorBuffer + command buffers — composite
     //     framebuffers are owned by this class and created below in step 8c)
     swapchain.init(device, window);
+    registerSwapchainResources();
 
     // 5. Shadow resources (directional + point)
     shadowPass.create(device, renderPassManager.getShadowRenderPass(),
@@ -800,8 +771,10 @@ void VulkanRenderer::draw() {
 
 void VulkanRenderer::recreateSwapChain() {
   vkDeviceWaitIdle(device.getLogicalDevice());
+  renderResources.clear();
   cleanupAsyncFrameCommandBuffers();
   swapchain.recreate(device, window);
+  registerSwapchainResources();
 
   imguiLayer.createFramebuffers(device.getLogicalDevice(),
                                 renderPassManager.getImGuiRenderPass(),
@@ -898,6 +871,91 @@ void VulkanRenderer::recreateSwapChain() {
   rebuildProjection();
 }
 
+void VulkanRenderer::registerSwapchainResources() {
+  renderResources.clear();
+  const size_t count = swapchain.getImageCount();
+  renderResources.resizeFrames(count);
+
+  const QueueFamilyIndices queues = device.getQueueFamilies();
+  const uint32_t graphicsFamily = static_cast<uint32_t>(queues.graphicsFamily);
+  const VkSharingMode swapSharing =
+      queues.graphicsFamily != queues.presentationFamily
+          ? VK_SHARING_MODE_CONCURRENT
+          : VK_SHARING_MODE_EXCLUSIVE;
+
+  for (size_t i = 0; i < count; ++i) {
+    renderResources.registerImage(
+        {"swapchain[" + std::to_string(i) + "]", swapchain.getSwapImage(i),
+         swapchain.getImageFormat(), VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
+         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, swapSharing, graphicsFamily});
+    renderResources.registerImage(
+        {"compositeColor[" + std::to_string(i) + "]",
+         swapchain.getColorBufferImage(i), swapchain.getColorBufferFormat(),
+         VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_SHARING_MODE_EXCLUSIVE, graphicsFamily});
+
+    FrameRenderTargets &targets = renderResources.frame(i);
+    targets.swapchainImage = swapchain.getSwapImage(i);
+    targets.colorBuffer = swapchain.getColorBufferImage(i);
+  }
+}
+
+void VulkanRenderer::noteGBufferFinalLayouts(uint32_t imageIndex) {
+  if (imageIndex >= renderResources.frameCount())
+    return;
+
+  const FrameRenderTargets &targets = renderResources.frame(imageIndex);
+  constexpr VkPipelineStageFlags colorStage =
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  constexpr VkAccessFlags colorAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  renderResources.noteLayout(targets.gBuffer0,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             colorStage, colorAccess);
+  renderResources.noteLayout(targets.gBuffer1,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             colorStage, colorAccess);
+  renderResources.noteLayout(targets.gBuffer2,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             colorStage, colorAccess);
+  renderResources.noteLayout(targets.gBufferDepth,
+                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+}
+
+void VulkanRenderer::noteLitFinalLayout(uint32_t imageIndex) {
+  if (imageIndex >= renderResources.frameCount())
+    return;
+
+  const FrameRenderTargets &targets = renderResources.frame(imageIndex);
+  renderResources.noteLayout(targets.lit,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+}
+
+void VulkanRenderer::noteCompositeFinalLayouts(uint32_t imageIndex,
+                                               uint32_t historyIndex) {
+  if (imageIndex >= renderResources.frameCount())
+    return;
+
+  const FrameRenderTargets &targets = renderResources.frame(imageIndex);
+  renderResources.noteLayout(targets.swapchainImage,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  renderResources.noteLayout(targets.colorBuffer,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  if (historyIndex < taaHistoryImages.size()) {
+    renderResources.noteLayout(taaHistoryImages[historyIndex].get(),
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  }
+}
+
 // G-buffer resource management
 
 void VulkanRenderer::createGBuffer() {
@@ -906,8 +964,13 @@ void VulkanRenderer::createGBuffer() {
   VkFormat gb0Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   VkFormat gb1Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   VkFormat gb2Fmt = VK_FORMAT_R8G8B8A8_UNORM;
-  const RendererQueueSharingInfo queueSharing =
-      rendererGraphicsComputeSharing(device);
+  const QueueFamilyIndices queues = device.getQueueFamilies();
+  const uint32_t graphicsFamily = static_cast<uint32_t>(queues.graphicsFamily);
+  const RenderQueueSharingInfo queueSharing =
+      renderGraphicsComputeSharing(queues);
+
+  if (renderResources.frameCount() != count)
+    renderResources.resizeFrames(count);
 
   gBuffer0Images.resize(count);
   gBuffer0Views.resize(count);
@@ -934,7 +997,7 @@ void VulkanRenderer::createGBuffer() {
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    applyRendererQueueSharing(ci, queueSharing);
+    applyRenderQueueSharing(ci, queueSharing);
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
@@ -966,7 +1029,7 @@ void VulkanRenderer::createGBuffer() {
     ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    applyRendererQueueSharing(ci, queueSharing);
+    applyRenderQueueSharing(ci, queueSharing);
     VkImage rawImg = VK_NULL_HANDLE;
     VmaAllocation alloc = VK_NULL_HANDLE;
     if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
@@ -991,6 +1054,30 @@ void VulkanRenderer::createGBuffer() {
     makeColorImg(gBuffer1Images[i], gBuffer1Views[i], gb1Fmt);
     makeColorImg(gBuffer2Images[i], gBuffer2Views[i], gb2Fmt);
     makeDepthImg(gBufferDepthImages[i], gBufferDepthViews[i]);
+
+    renderResources.registerImage(
+        {"gBuffer0[" + std::to_string(i) + "]", gBuffer0Images[i].get(),
+         gb0Fmt, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
+         VK_IMAGE_LAYOUT_UNDEFINED, queueSharing.mode, graphicsFamily});
+    renderResources.registerImage(
+        {"gBuffer1[" + std::to_string(i) + "]", gBuffer1Images[i].get(),
+         gb1Fmt, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
+         VK_IMAGE_LAYOUT_UNDEFINED, queueSharing.mode, graphicsFamily});
+    renderResources.registerImage(
+        {"gBuffer2[" + std::to_string(i) + "]", gBuffer2Images[i].get(),
+         gb2Fmt, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
+         VK_IMAGE_LAYOUT_UNDEFINED, queueSharing.mode, graphicsFamily});
+    renderResources.registerImage(
+        {"gBufferDepth[" + std::to_string(i) + "]",
+         gBufferDepthImages[i].get(), gBufferDepthFormat,
+         renderImageAspectMask(gBufferDepthFormat), 1, 1,
+         VK_IMAGE_LAYOUT_UNDEFINED, queueSharing.mode, graphicsFamily});
+
+    FrameRenderTargets &targets = renderResources.frame(i);
+    targets.gBuffer0 = gBuffer0Images[i].get();
+    targets.gBuffer1 = gBuffer1Images[i].get();
+    targets.gBuffer2 = gBuffer2Images[i].get();
+    targets.gBufferDepth = gBufferDepthImages[i].get();
 
     std::array<VkImageView, 4> attachments = {
         gBuffer0Views[i].get(), gBuffer1Views[i].get(), gBuffer2Views[i].get(),
@@ -1060,6 +1147,11 @@ void VulkanRenderer::cleanupGBuffer() {
 void VulkanRenderer::createLitResources() {
   VkDevice dev = device.getLogicalDevice();
   size_t count = swapchain.getImageCount();
+  const QueueFamilyIndices queues = device.getQueueFamilies();
+  const uint32_t graphicsFamily = static_cast<uint32_t>(queues.graphicsFamily);
+
+  if (renderResources.frameCount() != count)
+    renderResources.resizeFrames(count);
 
   litImages.clear();
   litViews.clear();
@@ -1099,6 +1191,12 @@ void VulkanRenderer::createLitResources() {
     if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
       throw std::runtime_error("Failed to create lit view");
     litViews.emplace_back(dev, v);
+
+    renderResources.registerImage(
+        {"lit[" + std::to_string(i) + "]", litImages.back().get(), litFormat,
+         VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED,
+         VK_SHARING_MODE_EXCLUSIVE, graphicsFamily});
+    renderResources.frame(i).lit = litImages.back().get();
 
     VkImageView attachment = v;
     VkFramebufferCreateInfo fbci = {};
@@ -1151,6 +1249,8 @@ void VulkanRenderer::cleanupLitResources() {
 // SAMPLED (read as history-prev) + COLOR_ATTACHMENT (written as history-curr).
 void VulkanRenderer::createTaaResources() {
   VkDevice dev = device.getLogicalDevice();
+  const QueueFamilyIndices queues = device.getQueueFamilies();
+  const uint32_t graphicsFamily = static_cast<uint32_t>(queues.graphicsFamily);
   taaHistoryImages.clear();
   taaHistoryViews.clear();
   const size_t historyCount = MAX_FRAMES_DRAWS + 1;
@@ -1190,6 +1290,12 @@ void VulkanRenderer::createTaaResources() {
     if (vkCreateImageView(dev, &vci, nullptr, &v) != VK_SUCCESS)
       throw std::runtime_error("Failed to create TAA history view");
     taaHistoryViews.emplace_back(dev, v);
+
+    renderResources.registerImage(
+        {"taaHistory[" + std::to_string(i) + "]",
+         taaHistoryImages.back().get(), litFormat, VK_IMAGE_ASPECT_COLOR_BIT,
+         1, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_SHARING_MODE_EXCLUSIVE,
+         graphicsFamily});
   }
 
   // Transition both to SHADER_READ_ONLY_OPTIMAL so the first frame's
@@ -1199,19 +1305,11 @@ void VulkanRenderer::createTaaResources() {
   // to COLOR_ATTACHMENT_OPTIMAL is handled by the render pass itself.
   VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
   for (size_t i = 0; i < historyCount; ++i) {
-    VkImageMemoryBarrier b = {};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = taaHistoryImages[i].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    b.srcAccessMask = 0;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
+    renderResources.transition(
+        cmd, taaHistoryImages[i].get(),
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_ACCESS_SHADER_READ_BIT);
   }
   endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
                             device.getGraphicsQueue(), cmd);
@@ -1383,6 +1481,7 @@ void VulkanRenderer::cleanup() {
 
   metrics.printReport(device.getAllocator());
 
+  renderResources.clear();
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
   imguiLayer.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
@@ -1543,6 +1642,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    noteLitFinalLayout(currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
     vkdbgEndLabel(cmd);
   }
@@ -1575,6 +1675,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
       descriptorManager.getTaaSet(compositeFbIdx),
       pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
       pipeline.getSecondPipeline(), pipeline.getSecondLayout());
+  noteCompositeFinalLayouts(currentImage, taaHistoryIndex);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
@@ -1701,6 +1802,7 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
+    noteLitFinalLayout(currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
     vkdbgEndLabel(cmd);
   }
@@ -1727,6 +1829,7 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
       descriptorManager.getTaaSet(compositeFbIdx),
       pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
       pipeline.getSecondPipeline(), pipeline.getSecondLayout());
+  noteCompositeFinalLayouts(currentImage, taaHistoryIndex);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
@@ -1941,6 +2044,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   if (useGpuDriven) {
     gpuDrivenGBufferPass.recordIndirectGBuffer(
         cmd, currentImage, rpbi, viewport, scissor, vpSet, bindlessSet);
+    noteGBufferFinalLayouts(currentImage);
     gpuDrivenGBufferPass.recordHzbBuild(
         cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
         imguiGpuDrivenEnabled, imguiHzbCullingEnabled,
@@ -1954,6 +2058,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     recordDrawCommands(cmd, 0, drawItems.size());
     vkCmdEndRenderPass(cmd);
+    noteGBufferFinalLayouts(currentImage);
     gpuDrivenGBufferPass.recordHzbBuild(
         cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
         imguiGpuDrivenEnabled, imguiHzbCullingEnabled,
@@ -2008,6 +2113,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
   vkCmdExecuteCommands(cmd, workerCount, secondaries.data());
   vkCmdEndRenderPass(cmd);
+  noteGBufferFinalLayouts(currentImage);
   gpuDrivenGBufferPass.recordHzbBuild(
       cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
       imguiGpuDrivenEnabled, imguiHzbCullingEnabled, minGpuDrivenCandidates);
@@ -2121,6 +2227,12 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
 
   imguiLayer.record(cmd, renderPassManager.getImGuiRenderPass(),
                     swapchain.getExtent(), imageIndex, ui);
+  if (imageIndex < renderResources.frameCount()) {
+    renderResources.noteLayout(renderResources.frame(imageIndex).swapchainImage,
+                               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  }
 }
 
 void VulkanRenderer::createSynchronization() {

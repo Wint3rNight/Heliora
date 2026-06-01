@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 struct BloomDownsamplePC {
@@ -122,6 +123,8 @@ void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
   {
     VkCommandBuffer cmd =
         beginCommandBuffer(dev, device->getGraphicsCommandPool());
+    std::vector<VkImageMemoryBarrier> barriers;
+    barriers.reserve(kMipCount * swapCount);
     for (uint32_t level = 0; level < kMipCount; ++level) {
       for (size_t i = 0; i < swapCount; ++i) {
         VkImageMemoryBarrier barrier{};
@@ -134,10 +137,14 @@ void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
         barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &barrier);
+        barriers.push_back(barrier);
       }
+    }
+    if (!barriers.empty()) {
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                           0, nullptr, static_cast<uint32_t>(barriers.size()),
+                           barriers.data());
     }
     endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),
                               device->getGraphicsQueue(), cmd);

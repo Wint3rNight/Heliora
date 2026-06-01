@@ -1,5 +1,6 @@
 #include "GpuDrivenGBufferPass.h"
 
+#include "RenderResources.h"
 #include "VulkanDebug.h"
 
 #include <algorithm>
@@ -46,16 +47,6 @@ VkShaderModule createLocalShaderModule(VkDevice device,
   return module;
 }
 
-VkImageAspectFlags depthStencilAspectMask(VkFormat format) {
-  switch (format) {
-  case VK_FORMAT_D16_UNORM_S8_UINT:
-  case VK_FORMAT_D24_UNORM_S8_UINT:
-  case VK_FORMAT_D32_SFLOAT_S8_UINT:
-    return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-  default:
-    return VK_IMAGE_ASPECT_DEPTH_BIT;
-  }
-}
 } // namespace
 
 bool GpuDrivenGBufferPass::ensureBuffer(AllocatedBuffer &buffer,
@@ -1037,7 +1028,7 @@ void GpuDrivenGBufferPass::recordHzbBuild(
   depthReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   depthReadBarrier.image = gBufferDepthImages[imageIndex].get();
   depthReadBarrier.subresourceRange = {
-      depthStencilAspectMask(gBufferDepthFormat), 0, 1, 0, 1};
+      renderImageAspectMask(gBufferDepthFormat), 0, 1, 0, 1};
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &depthReadBarrier);

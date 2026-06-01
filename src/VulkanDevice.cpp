@@ -285,9 +285,15 @@ void VulkanDevice::createLogicalDevice() {
   vk12Features.timelineSemaphore = VK_TRUE;
   vk12Features.drawIndirectCount = VK_TRUE;
 
+  VkPhysicalDeviceSynchronization2Features sync2Features = {};
+  sync2Features.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+  sync2Features.synchronization2 = VK_TRUE;
+  sync2Features.pNext = &vk12Features;
+
   VkPhysicalDeviceFeatures2 features2 = {};
   features2.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-  features2.pNext        = &vk12Features;
+  features2.pNext        = &sync2Features;
   features2.features.samplerAnisotropy = VK_TRUE;
   features2.features.multiDrawIndirect = VK_TRUE;
   features2.features.drawIndirectFirstInstance = VK_TRUE;
@@ -513,10 +519,21 @@ bool VulkanDevice::checkDeviceSuitable(VkPhysicalDevice device) {
 
   VkPhysicalDeviceVulkan12Features vk12Features{};
   vk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  VkPhysicalDeviceSynchronization2Features sync2Features{};
+  sync2Features.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+  sync2Features.pNext = &vk12Features;
   VkPhysicalDeviceFeatures2 features2{};
   features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-  features2.pNext = &vk12Features;
+  features2.pNext = &sync2Features;
   vkGetPhysicalDeviceFeatures2(device, &features2);
+
+  VkPhysicalDeviceProperties deviceProperties{};
+  vkGetPhysicalDeviceProperties(device, &deviceProperties);
+  const uint32_t apiMajor = VK_VERSION_MAJOR(deviceProperties.apiVersion);
+  const uint32_t apiMinor = VK_VERSION_MINOR(deviceProperties.apiVersion);
+  const bool supportsVulkan13 =
+      apiMajor > 1 || (apiMajor == 1 && apiMinor >= 3);
 
   QueueFamilyIndices indices = getQueueFamilies(device);
 
@@ -534,7 +551,8 @@ bool VulkanDevice::checkDeviceSuitable(VkPhysicalDevice device) {
          deviceFeatures.samplerAnisotropy &&
          deviceFeatures.multiDrawIndirect &&
          deviceFeatures.drawIndirectFirstInstance &&
-         vk12Features.drawIndirectCount;
+         vk12Features.drawIndirectCount && supportsVulkan13 &&
+         sync2Features.synchronization2;
 }
 
 QueueFamilyIndices

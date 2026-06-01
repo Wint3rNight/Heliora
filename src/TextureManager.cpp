@@ -1,5 +1,6 @@
 #include "TextureManager.h"
 #include "DescriptorManager.h"
+#include "RenderResources.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -123,33 +124,6 @@ glm::vec4 sampleEquirectangular(const float *pixels, int width, int height,
   glm::vec4 a = glm::mix(texel(x0, y0), texel(x1, y0), tx);
   glm::vec4 b = glm::mix(texel(x0, y1), texel(x1, y1), tx);
   return glm::mix(a, b, ty);
-}
-
-struct QueueSharingInfo {
-  VkSharingMode mode = VK_SHARING_MODE_EXCLUSIVE;
-  uint32_t familyCount = 0;
-  std::array<uint32_t, 2> families{};
-};
-
-QueueSharingInfo graphicsComputeSharing(const VulkanDevice &device) {
-  QueueFamilyIndices indices = device.getQueueFamilies();
-  QueueSharingInfo sharing{};
-  if (indices.hasDedicatedCompute()) {
-    sharing.mode = VK_SHARING_MODE_CONCURRENT;
-    sharing.families = {static_cast<uint32_t>(indices.graphicsFamily),
-                        static_cast<uint32_t>(indices.computeFamily)};
-    sharing.familyCount = 2;
-  }
-  return sharing;
-}
-
-void applyGraphicsComputeSharing(VkImageCreateInfo &ci,
-                                 const QueueSharingInfo &sharing) {
-  ci.sharingMode = sharing.mode;
-  if (sharing.mode == VK_SHARING_MODE_CONCURRENT) {
-    ci.queueFamilyIndexCount = sharing.familyCount;
-    ci.pQueueFamilyIndices = sharing.families.data();
-  }
 }
 
 // Layout transition helper for layered/mipped images
@@ -639,7 +613,8 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   const VkCommandPool computeCommandPool = device.getComputeCommandPool();
   constexpr uint32_t OUT_SIZE = 32;
   constexpr const char *cacheKey = "__irradiance_map__";
-  const QueueSharingInfo sharing = graphicsComputeSharing(device);
+  const RenderQueueSharingInfo sharing =
+      renderGraphicsComputeSharing(device.getQueueFamilies());
 
   VkImageCreateInfo imgCI = {};
   imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -652,7 +627,7 @@ int TextureManager::dispatchIrradianceCompute(int srcImageIndex,
   imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
   imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-  applyGraphicsComputeSharing(imgCI, sharing);
+  applyRenderQueueSharing(imgCI, sharing);
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   VkImage img = VK_NULL_HANDLE;
@@ -764,7 +739,8 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
   constexpr const char *cacheKey = "__prefiltered_env__";
   constexpr uint32_t BASE_SIZE = 128;
   const uint32_t nMips = static_cast<uint32_t>(IBL_PREFILTER_MIPS);
-  const QueueSharingInfo sharing = graphicsComputeSharing(device);
+  const RenderQueueSharingInfo sharing =
+      renderGraphicsComputeSharing(device.getQueueFamilies());
 
   VkImageCreateInfo imgCI = {};
   imgCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -777,7 +753,7 @@ int TextureManager::dispatchPrefilterCompute(int srcImageIndex,
   imgCI.tiling = VK_IMAGE_TILING_OPTIMAL;
   imgCI.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imgCI.samples = VK_SAMPLE_COUNT_1_BIT;
-  applyGraphicsComputeSharing(imgCI, sharing);
+  applyRenderQueueSharing(imgCI, sharing);
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   VkImage img = VK_NULL_HANDLE;
@@ -1156,7 +1132,8 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   stbi_image_free(hdr);
 
   VkDeviceSize imageSize = cubemap.size() * sizeof(float);
-  const QueueSharingInfo sharing = graphicsComputeSharing(device);
+  const RenderQueueSharingInfo sharing =
+      renderGraphicsComputeSharing(device.getQueueFamilies());
   AllocatedBuffer staging;
   createBuffer(device.getAllocator(), imageSize,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -1178,7 +1155,7 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
-  applyGraphicsComputeSharing(ci, sharing);
+  applyRenderQueueSharing(ci, sharing);
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

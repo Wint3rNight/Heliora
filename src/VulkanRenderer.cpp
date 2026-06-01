@@ -20,7 +20,6 @@
 #include <cstring>
 #include <deque>
 #include <exception>
-#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -189,18 +188,6 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     VkFormat gb1Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat gb2Fmt = VK_FORMAT_R8G8B8A8_UNORM;
     litFormat = colorFormat;
-    ssaoFormat = VK_FORMAT_R16_SFLOAT;
-    {
-      VkFormatProperties props{};
-      vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
-                                          ssaoFormat, &props);
-      const VkFormatFeatureFlags required =
-          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-      if ((props.optimalTilingFeatures & required) != required)
-        throw std::runtime_error(
-            "Async SSAO requires R16_SFLOAT sampled storage images");
-    }
 
     // 3. Render passes
     renderPassManager.createGBufferRenderPass(
@@ -243,7 +230,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //     so the G-buffer descriptor set (set 1) gets a 6th binding
     //     pointing at these views.
     createSsgiResources();
-    createSsaoResources();
+    ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
+                    descriptorManager);
 
     // 8b. TAA history images. Format matches litFormat so they live in the
     //     same HDR-precision domain.
@@ -799,7 +787,7 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupCompositeFramebuffers();
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
-  cleanupSsaoResources();
+  ssaoPass.cleanup();
   bloomPass.cleanup();
   cleanupSsgiResources();
   cleanupLitResources();
@@ -808,7 +796,8 @@ void VulkanRenderer::recreateSwapChain() {
   bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
                    litViews);
   createSsgiResources();
-  createSsaoResources();
+  ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
+                  descriptorManager);
   createTaaResources();
   createCompositeFramebuffers();
   createGBuffer();
@@ -976,20 +965,18 @@ void VulkanRenderer::createGBuffer() {
       throw std::runtime_error("Failed to create G-buffer framebuffer");
   }
 
-  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv, ssaov;
+  std::vector<VkImageView> gb0v, gb1v, gb2v, depv, litv;
   gb0v.reserve(count);
   gb1v.reserve(count);
   gb2v.reserve(count);
   depv.reserve(count);
   litv.reserve(count);
-  ssaov.reserve(count);
   for (size_t i = 0; i < count; i++) {
     gb0v.push_back(gBuffer0Views[i].get());
     gb1v.push_back(gBuffer1Views[i].get());
     gb2v.push_back(gBuffer2Views[i].get());
     depv.push_back(gBufferDepthViews[i].get());
     litv.push_back(litViews[i].get());
-    ssaov.push_back(ssaoViews[i].get());
   }
   // SSGI views are a temporal history ring. DescriptorManager produces
   // historyCount * swapCount G-buffer sets indexed
@@ -999,11 +986,12 @@ void VulkanRenderer::createGBuffer() {
   ssgv.reserve(ssgiHistoryViews.size());
   for (const auto &view : ssgiHistoryViews)
     ssgv.push_back(view.get());
+  const std::vector<VkImageView> ssaov = ssaoPass.views();
   descriptorManager.recreateGBufferSets(device.getLogicalDevice(), gb0v, gb1v,
                                         gb2v, depv, litv, ssgv,
                                         ssaov,
                                         textureManager.getTextureSampler(),
-                                        ssaoResultSampler);
+                                        ssaoPass.sampler());
   {
     std::vector<VkImageView> ssgiHv;
     ssgiHv.reserve(ssgiHistoryViews.size());
@@ -1384,241 +1372,6 @@ void VulkanRenderer::cleanupCompositeFramebuffers() {
   compositeFramebuffers.clear();
 }
 
-// --- Auto-exposure (histogram-based) ---------------------------------------
-// Two-pass compute path. Pass 1 builds a 256-bin log-luminance histogram of
-// the litBuffer (post-deferred HDR). Pass 2 reduces the histogram to a
-// single target exposure scalar, written into a host-visible result buffer
-// per frame-in-flight. The CPU reads the *previous* frame's value next
-// frame (one-frame latency, irrelevant for ~1.5 s eye adaptation) and
-// lerps the running adapted-exposure toward it, then pushes that into
-// sceneUbo.qualityToggles2.x.
-
-namespace {
-VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
-  // Same dual-candidate resolve pattern as TextureManager's loader so the
-  // binary works whether launched from build/ or repo root.
-  std::vector<std::string> candidates = {relPath, "../" + relPath};
-  std::string found;
-  for (const auto &c : candidates)
-    if (std::filesystem::exists(c)) { found = c; break; }
-  if (found.empty())
-    throw std::runtime_error("Compute shader not found: " + relPath);
-
-  auto code = readFile(found);
-  VkShaderModuleCreateInfo ci = {};
-  ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-  ci.codeSize = code.size();
-  ci.pCode = reinterpret_cast<const uint32_t *>(code.data());
-  VkShaderModule mod = VK_NULL_HANDLE;
-  if (vkCreateShaderModule(device, &ci, nullptr, &mod) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create shader module: " + found);
-  return mod;
-}
-} // namespace
-
-void VulkanRenderer::createSsaoResources() {
-  cleanupSsaoResources();
-
-  VkDevice dev = device.getLogicalDevice();
-  const size_t swapCount = swapchain.getImageCount();
-  const VkExtent2D extent = swapchain.getExtent();
-  const RendererQueueSharingInfo queueSharing =
-      rendererGraphicsComputeSharing(device);
-
-  ssaoImages.clear();
-  ssaoViews.clear();
-  ssaoImages.reserve(swapCount);
-  ssaoViews.reserve(swapCount);
-
-  VmaAllocationCreateInfo aci = {};
-  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-  for (size_t i = 0; i < swapCount; ++i) {
-    VkImageCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {extent.width, extent.height, 1};
-    ci.mipLevels = 1;
-    ci.arrayLayers = 1;
-    ci.format = ssaoFormat;
-    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    applyRendererQueueSharing(ci, queueSharing);
-
-    VkImage rawImg = VK_NULL_HANDLE;
-    VmaAllocation alloc = VK_NULL_HANDLE;
-    if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
-                       nullptr) != VK_SUCCESS) {
-      throw std::runtime_error("Failed to create SSAO image");
-    }
-    ssaoImages.emplace_back(device.getAllocator(), rawImg, alloc);
-
-    VkImageViewCreateInfo vci = {};
-    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vci.image = ssaoImages.back().get();
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = ssaoFormat;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkImageView view = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev, &vci, nullptr, &view) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSAO image view");
-    ssaoViews.emplace_back(dev, view);
-  }
-
-  if (ssaoResultSampler == VK_NULL_HANDLE) {
-    VkSamplerCreateInfo sci = {};
-    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter = VK_FILTER_LINEAR;
-    sci.minFilter = VK_FILTER_LINEAR;
-    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxAnisotropy = 1.0f;
-    if (vkCreateSampler(dev, &sci, nullptr, &ssaoResultSampler) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create SSAO sampler");
-  }
-
-  VkDescriptorSetLayoutBinding outBinding = {};
-  outBinding.binding = 0;
-  outBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  outBinding.descriptorCount = 1;
-  outBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-  VkDescriptorSetLayoutCreateInfo dslCI = {};
-  dslCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  dslCI.bindingCount = 1;
-  dslCI.pBindings = &outBinding;
-  if (vkCreateDescriptorSetLayout(dev, &dslCI, nullptr,
-                                  &ssaoOutputSetLayout) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create SSAO output descriptor layout");
-  }
-
-  VkDescriptorPoolSize poolSize = {};
-  poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-  poolSize.descriptorCount = static_cast<uint32_t>(swapCount);
-  VkDescriptorPoolCreateInfo poolCI = {};
-  poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  poolCI.maxSets = static_cast<uint32_t>(swapCount);
-  poolCI.poolSizeCount = 1;
-  poolCI.pPoolSizes = &poolSize;
-  if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &ssaoDescriptorPool) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to create SSAO descriptor pool");
-  }
-
-  std::vector<VkDescriptorSetLayout> layouts(swapCount, ssaoOutputSetLayout);
-  ssaoOutputSets.assign(swapCount, VK_NULL_HANDLE);
-  VkDescriptorSetAllocateInfo allocInfo = {};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = ssaoDescriptorPool;
-  allocInfo.descriptorSetCount = static_cast<uint32_t>(swapCount);
-  allocInfo.pSetLayouts = layouts.data();
-  if (vkAllocateDescriptorSets(dev, &allocInfo, ssaoOutputSets.data()) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate SSAO descriptor sets");
-  }
-
-  for (size_t i = 0; i < swapCount; ++i) {
-    VkDescriptorImageInfo imageInfo = {};
-    imageInfo.imageView = ssaoViews[i].get();
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = ssaoOutputSets[i];
-    write.dstBinding = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
-    vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
-  }
-
-  std::array<VkDescriptorSetLayout, 3> setLayouts = {
-      descriptorManager.getVPLayout(), descriptorManager.getGBufferLayout(),
-      ssaoOutputSetLayout};
-  VkPipelineLayoutCreateInfo plCI = {};
-  plCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  plCI.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
-  plCI.pSetLayouts = setLayouts.data();
-  if (vkCreatePipelineLayout(dev, &plCI, nullptr, &ssaoPipelineLayout) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to create SSAO pipeline layout");
-  }
-
-  VkShaderModule shader = loadComputeSpv(dev, "Shaders/ssao.comp.spv");
-  VkPipelineShaderStageCreateInfo stageCI = {};
-  stageCI.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stageCI.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  stageCI.module = shader;
-  stageCI.pName = "main";
-  VkComputePipelineCreateInfo pipelineCI = {};
-  pipelineCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  pipelineCI.stage = stageCI;
-  pipelineCI.layout = ssaoPipelineLayout;
-  if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipelineCI, nullptr,
-                               &ssaoPipeline) != VK_SUCCESS) {
-    vkDestroyShaderModule(dev, shader, nullptr);
-    throw std::runtime_error("Failed to create SSAO compute pipeline");
-  }
-  vkDestroyShaderModule(dev, shader, nullptr);
-
-  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getComputeCommandPool());
-  std::vector<VkImageMemoryBarrier> barriers;
-  barriers.reserve(ssaoImages.size());
-  for (const AllocatedImage &img : ssaoImages) {
-    VkImageMemoryBarrier b = {};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcAccessMask = 0;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = img.get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    barriers.push_back(b);
-  }
-  if (!barriers.empty()) {
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, static_cast<uint32_t>(barriers.size()),
-                         barriers.data());
-  }
-  endAndSubmitCommandBuffer(dev, device.getComputeCommandPool(),
-                            device.getComputeQueue(), cmd);
-}
-
-void VulkanRenderer::cleanupSsaoResources() {
-  VkDevice dev = device.getLogicalDevice();
-  if (dev == VK_NULL_HANDLE)
-    return;
-
-  if (ssaoPipeline != VK_NULL_HANDLE) {
-    vkDestroyPipeline(dev, ssaoPipeline, nullptr);
-    ssaoPipeline = VK_NULL_HANDLE;
-  }
-  if (ssaoPipelineLayout != VK_NULL_HANDLE) {
-    vkDestroyPipelineLayout(dev, ssaoPipelineLayout, nullptr);
-    ssaoPipelineLayout = VK_NULL_HANDLE;
-  }
-  if (ssaoDescriptorPool != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, ssaoDescriptorPool, nullptr);
-    ssaoDescriptorPool = VK_NULL_HANDLE;
-  }
-  ssaoOutputSets.clear();
-  if (ssaoOutputSetLayout != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(dev, ssaoOutputSetLayout, nullptr);
-    ssaoOutputSetLayout = VK_NULL_HANDLE;
-  }
-  ssaoViews.clear();
-  ssaoImages.clear();
-  if (ssaoResultSampler != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, ssaoResultSampler, nullptr);
-    ssaoResultSampler = VK_NULL_HANDLE;
-  }
-}
-
 // IBL resource management
 
 void VulkanRenderer::initIBL() {
@@ -1757,7 +1510,7 @@ void VulkanRenderer::cleanup() {
   cleanupCompositeFramebuffers();
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
-  cleanupSsaoResources();
+  ssaoPass.cleanup();
   bloomPass.cleanup();
   cleanupSsgiResources();
   cleanupLitResources();
@@ -2082,55 +1835,11 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
 
 void VulkanRenderer::recordSsaoComputeCommands(VkCommandBuffer cmd,
                                                uint32_t currentImage) {
-  vkResetCommandBuffer(cmd, 0);
-
-  VkCommandBufferBeginInfo beginInfo = {};
-  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
-    throw std::runtime_error("Failed to begin SSAO compute command buffer");
-
-  VkImageMemoryBarrier toGeneral = {};
-  toGeneral.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  toGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-  toGeneral.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toGeneral.image = ssaoImages[currentImage].get();
-  toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &toGeneral);
-
-  vkdbgBeginLabel(cmd, "Async SSAO Compute", 0.2f, 0.7f, 1.0f);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ssaoPipeline);
   const uint32_t ssgiHistoryIndex =
       static_cast<uint32_t>(taaFrameCounter % ssgiHistoryViews.size());
-  std::array<VkDescriptorSet, 3> sets = {
-      descriptorManager.getVPSet(currentImage),
-      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
-      ssaoOutputSets[currentImage]};
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          ssaoPipelineLayout, 0,
-                          static_cast<uint32_t>(sets.size()), sets.data(), 0,
-                          nullptr);
-  VkExtent2D extent = swapchain.getExtent();
-  vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-  vkdbgEndLabel(cmd);
-
-  VkImageMemoryBarrier toSampled = toGeneral;
-  toSampled.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-  toSampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  toSampled.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  toSampled.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, 1, &toSampled);
-
-  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
-    throw std::runtime_error("Failed to end SSAO compute command buffer");
+  ssaoPass.recordCommands(
+      cmd, currentImage, descriptorManager.getVPSet(currentImage),
+      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage));
 }
 
 void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,

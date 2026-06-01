@@ -21,6 +21,7 @@
 #include "PerformanceMetrics.h"
 #include "RenderPassManager.h"
 #include "SceneNode.h"
+#include "SsaoPass.h"
 #include "TextureManager.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
@@ -113,20 +114,6 @@ private:
   // the edge texel; the shader bounds-checks for true off-screen reject.
   VkSampler ssgiSampler = VK_NULL_HANDLE;
 
-  // --- Async SSAO output (Phase 7.5) ---
-  // One full-resolution single-channel image per swapchain image. The compute
-  // queue writes it after the G-buffer submit; the graphics queue samples it
-  // in lit.frag after waiting on the async timeline semaphore.
-  VkFormat ssaoFormat = VK_FORMAT_UNDEFINED;
-  std::vector<AllocatedImage> ssaoImages;
-  std::vector<ImageViewHandle> ssaoViews;
-  VkSampler ssaoResultSampler = VK_NULL_HANDLE;
-  VkDescriptorSetLayout ssaoOutputSetLayout = VK_NULL_HANDLE;
-  VkDescriptorPool ssaoDescriptorPool = VK_NULL_HANDLE;
-  std::vector<VkDescriptorSet> ssaoOutputSets;
-  VkPipelineLayout ssaoPipelineLayout = VK_NULL_HANDLE;
-  VkPipeline ssaoPipeline = VK_NULL_HANDLE;
-
   // --- TAA history (HDR, persistent across frames) ---
   // Same ring sizing as SSGI: MAX_FRAMES_DRAWS + 1 avoids overwriting a
   // history image that a still-in-flight frame is sampling.
@@ -181,6 +168,7 @@ private:
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
+  SsaoPass ssaoPass;
 
   // --- Synchronization ---
   // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
@@ -332,8 +320,6 @@ private:
   void cleanupLitResources();
   void createSsgiResources();
   void cleanupSsgiResources();
-  void createSsaoResources();
-  void cleanupSsaoResources();
   void createTaaResources();
   void cleanupTaaResources();
   void createCompositeFramebuffers();

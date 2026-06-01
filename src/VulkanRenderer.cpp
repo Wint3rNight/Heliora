@@ -189,19 +189,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     VkFormat gb1Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat gb2Fmt = VK_FORMAT_R8G8B8A8_UNORM;
     litFormat = colorFormat;
-    bloomFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     ssaoFormat = VK_FORMAT_R16_SFLOAT;
-    {
-      VkFormatProperties props{};
-      vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
-                                          bloomFormat, &props);
-      const VkFormatFeatureFlags required =
-          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-          VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-      if ((props.optimalTilingFeatures & required) != required)
-        throw std::runtime_error(
-            "Bloom requires R16G16B16A16_SFLOAT sampled storage images");
-    }
     {
       VkFormatProperties props{};
       vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
@@ -248,7 +236,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 8. Lit-buffer resources (created BEFORE G-buffer set update so that
     //    recreateGBufferSets has the lit views to bind).
     createLitResources();
-    createBloomResources();
+    bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
+                     litViews);
 
     // 8a. SSGI bounce-buffer images + framebuffers. Sampled by lit.frag,
     //     so the G-buffer descriptor set (set 1) gets a 6th binding
@@ -272,7 +261,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //     + bloom pyramid result).
     //     Needs taaHistory views (from createTaaResources), gBufferDepth
     //     views (from createGBuffer), colorBuffer views (from swapchain init),
-    //     and bloom mip 0 views (from createBloomResources). Order: must
+    //     and bloom mip 0 views (from BloomPass). Order: must
     //     follow all four.
     {
       std::vector<VkImageView> histViews;
@@ -289,8 +278,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         depthViews.push_back(v.get());
       for (size_t i = 0; i < swapchain.getImageCount(); ++i)
         colorViews.push_back(swapchain.getColorBufferView(i));
-      for (const auto &v : bloomMips[0].views)
-        bloomViews.push_back(v.get());
+      bloomViews = bloomPass.mip0Views();
       descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
                                         depthViews, colorViews, bloomViews,
                                         taaSampler);
@@ -846,12 +834,13 @@ void VulkanRenderer::recreateSwapChain() {
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
   cleanupSsaoResources();
-  cleanupBloomResources();
+  bloomPass.cleanup();
   cleanupSsgiResources();
   cleanupLitResources();
   cleanupTaaResources();
   createLitResources();
-  createBloomResources();
+  bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
+                   litViews);
   createSsgiResources();
   createSsaoResources();
   createTaaResources();
@@ -901,8 +890,7 @@ void VulkanRenderer::recreateSwapChain() {
       depthViews.push_back(v.get());
     for (size_t i = 0; i < swapchain.getImageCount(); ++i)
       colorViews.push_back(swapchain.getColorBufferView(i));
-    for (const auto &v : bloomMips[0].views)
-      bloomViews.push_back(v.get());
+    bloomViews = bloomPass.mip0Views();
     descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
                                       depthViews, colorViews, bloomViews,
                                       taaSampler);
@@ -1665,460 +1653,6 @@ void VulkanRenderer::cleanupSsaoResources() {
   }
 }
 
-void VulkanRenderer::createBloomResources() {
-  VkDevice dev = device.getLogicalDevice();
-  const size_t swapCount = swapchain.getImageCount();
-  VkExtent2D extent = swapchain.getExtent();
-
-  for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-    bloomMips[level].extent = extent;
-    bloomMips[level].images.clear();
-    bloomMips[level].views.clear();
-    bloomMips[level].images.reserve(swapCount);
-    bloomMips[level].views.reserve(swapCount);
-
-    VmaAllocationCreateInfo aci = {};
-    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-    for (size_t i = 0; i < swapCount; ++i) {
-      VkImageCreateInfo ci = {};
-      ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-      ci.imageType = VK_IMAGE_TYPE_2D;
-      ci.extent = {extent.width, extent.height, 1};
-      ci.mipLevels = 1;
-      ci.arrayLayers = 1;
-      ci.format = bloomFormat;
-      ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-      ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-      ci.samples = VK_SAMPLE_COUNT_1_BIT;
-      ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-      ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-      VkImage rawImg = VK_NULL_HANDLE;
-      VmaAllocation alloc = VK_NULL_HANDLE;
-      if (vmaCreateImage(device.getAllocator(), &ci, &aci, &rawImg, &alloc,
-                         nullptr) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create bloom image");
-      bloomMips[level].images.emplace_back(device.getAllocator(), rawImg,
-                                           alloc);
-
-      VkImageViewCreateInfo vci = {};
-      vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-      vci.image = bloomMips[level].images.back().get();
-      vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-      vci.format = bloomFormat;
-      vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      VkImageView view = VK_NULL_HANDLE;
-      if (vkCreateImageView(dev, &vci, nullptr, &view) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create bloom image view");
-      bloomMips[level].views.emplace_back(dev, view);
-    }
-
-    extent.width = std::max(1u, extent.width / 2);
-    extent.height = std::max(1u, extent.height / 2);
-  }
-
-  // Prime every bloom image into shader-read layout. recordBloomPass flips the
-  // current swap image to GENERAL while compute writes, then back to shader-read
-  // for the tonemap/TAA subpass.
-  {
-    VkCommandBuffer cmd =
-        beginCommandBuffer(dev, device.getGraphicsCommandPool());
-    for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-      for (size_t i = 0; i < swapCount; ++i) {
-        VkImageMemoryBarrier b = {};
-        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = bloomMips[level].images[i].get();
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        b.srcAccessMask = 0;
-        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &b);
-      }
-    }
-    endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(),
-                              device.getGraphicsQueue(), cmd);
-  }
-
-  if (bloomSampler == VK_NULL_HANDLE) {
-    VkSamplerCreateInfo sci = {};
-    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter = VK_FILTER_LINEAR;
-    sci.minFilter = VK_FILTER_LINEAR;
-    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxAnisotropy = 1.0f;
-    sci.minLod = 0.0f;
-    sci.maxLod = 0.0f;
-    if (vkCreateSampler(dev, &sci, nullptr, &bloomSampler) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create bloom sampler");
-  }
-
-  {
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    ci.bindingCount = static_cast<uint32_t>(bindings.size());
-    ci.pBindings = bindings.data();
-    if (vkCreateDescriptorSetLayout(dev, &ci, nullptr, &bloomSetLayout) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create bloom descriptor layout");
-  }
-
-  struct BloomDownsamplePC {
-    float srcTexelSize[2];
-    float threshold;
-    float knee;
-    int prefilter;
-  };
-  struct BloomUpsamplePC {
-    float srcTexelSize[2];
-    float radius;
-    float intensity;
-    int finalPass;
-  };
-
-  auto createBloomPipelineLayout = [&](uint32_t pcSize) {
-    VkPushConstantRange pc = {};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.offset = 0;
-    pc.size = pcSize;
-    VkPipelineLayoutCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    ci.setLayoutCount = 1;
-    ci.pSetLayouts = &bloomSetLayout;
-    ci.pushConstantRangeCount = 1;
-    ci.pPushConstantRanges = &pc;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(dev, &ci, nullptr, &layout) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create bloom pipeline layout");
-    return layout;
-  };
-  bloomDownsamplePipelineLayout =
-      createBloomPipelineLayout(sizeof(BloomDownsamplePC));
-  bloomUpsamplePipelineLayout =
-      createBloomPipelineLayout(sizeof(BloomUpsamplePC));
-
-  const uint32_t downCount =
-      static_cast<uint32_t>(swapCount * BLOOM_MIP_COUNT);
-  const uint32_t upCount =
-      static_cast<uint32_t>(swapCount * (BLOOM_MIP_COUNT - 1));
-  {
-    std::array<VkDescriptorPoolSize, 2> sizes{};
-    sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    sizes[0].descriptorCount = downCount + upCount;
-    sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    sizes[1].descriptorCount = downCount + upCount;
-    VkDescriptorPoolCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    ci.maxSets = downCount + upCount;
-    ci.poolSizeCount = static_cast<uint32_t>(sizes.size());
-    ci.pPoolSizes = sizes.data();
-    if (vkCreateDescriptorPool(dev, &ci, nullptr, &bloomDescriptorPool) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create bloom descriptor pool");
-  }
-
-  auto allocateBloomSets = [&](std::vector<VkDescriptorSet> &sets,
-                               uint32_t count) {
-    std::vector<VkDescriptorSetLayout> layouts(count, bloomSetLayout);
-    sets.assign(count, VK_NULL_HANDLE);
-    VkDescriptorSetAllocateInfo ai = {};
-    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool = bloomDescriptorPool;
-    ai.descriptorSetCount = count;
-    ai.pSetLayouts = layouts.data();
-    if (vkAllocateDescriptorSets(dev, &ai, sets.data()) != VK_SUCCESS)
-      throw std::runtime_error("Failed to allocate bloom descriptor sets");
-  };
-  allocateBloomSets(bloomDownsampleSets, downCount);
-  allocateBloomSets(bloomUpsampleSets, upCount);
-
-  for (size_t swapIdx = 0; swapIdx < swapCount; ++swapIdx) {
-    for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-      VkDescriptorImageInfo src = {};
-      src.sampler = bloomSampler;
-      src.imageView =
-          (level == 0) ? litViews[swapIdx].get()
-                       : bloomMips[level - 1].views[swapIdx].get();
-      src.imageLayout = (level == 0) ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                     : VK_IMAGE_LAYOUT_GENERAL;
-
-      VkDescriptorImageInfo dst = {};
-      dst.imageView = bloomMips[level].views[swapIdx].get();
-      dst.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-      VkDescriptorSet set =
-          bloomDownsampleSets[swapIdx * BLOOM_MIP_COUNT + level];
-      std::array<VkWriteDescriptorSet, 2> writes{};
-      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[0].dstSet = set;
-      writes[0].dstBinding = 0;
-      writes[0].descriptorCount = 1;
-      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      writes[0].pImageInfo = &src;
-      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[1].dstSet = set;
-      writes[1].dstBinding = 1;
-      writes[1].descriptorCount = 1;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[1].pImageInfo = &dst;
-      vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()),
-                             writes.data(), 0, nullptr);
-    }
-
-    for (uint32_t level = 1; level < BLOOM_MIP_COUNT; ++level) {
-      VkDescriptorImageInfo src = {};
-      src.sampler = bloomSampler;
-      src.imageView = bloomMips[level].views[swapIdx].get();
-      src.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-      VkDescriptorImageInfo dst = {};
-      dst.imageView = bloomMips[level - 1].views[swapIdx].get();
-      dst.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-      VkDescriptorSet set =
-          bloomUpsampleSets[swapIdx * (BLOOM_MIP_COUNT - 1) + (level - 1)];
-      std::array<VkWriteDescriptorSet, 2> writes{};
-      writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[0].dstSet = set;
-      writes[0].dstBinding = 0;
-      writes[0].descriptorCount = 1;
-      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      writes[0].pImageInfo = &src;
-      writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[1].dstSet = set;
-      writes[1].dstBinding = 1;
-      writes[1].descriptorCount = 1;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[1].pImageInfo = &dst;
-      vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()),
-                             writes.data(), 0, nullptr);
-    }
-  }
-
-  auto createComputePipeline = [&](const char *path, VkPipelineLayout layout) {
-    VkShaderModule mod = loadComputeSpv(dev, path);
-    VkPipelineShaderStageCreateInfo stage = {};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = mod;
-    stage.pName = "main";
-    VkComputePipelineCreateInfo ci = {};
-    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage = stage;
-    ci.layout = layout;
-    VkPipeline pipe = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr,
-                                 &pipe) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create bloom compute pipeline");
-    vkDestroyShaderModule(dev, mod, nullptr);
-    return pipe;
-  };
-  bloomDownsamplePipeline =
-      createComputePipeline("Shaders/bloom_downsample.comp.spv",
-                            bloomDownsamplePipelineLayout);
-  bloomUpsamplePipeline =
-      createComputePipeline("Shaders/bloom_upsample.comp.spv",
-                            bloomUpsamplePipelineLayout);
-}
-
-void VulkanRenderer::cleanupBloomResources() {
-  VkDevice dev = device.getLogicalDevice();
-  if (bloomDownsamplePipeline != VK_NULL_HANDLE) {
-    vkDestroyPipeline(dev, bloomDownsamplePipeline, nullptr);
-    bloomDownsamplePipeline = VK_NULL_HANDLE;
-  }
-  if (bloomUpsamplePipeline != VK_NULL_HANDLE) {
-    vkDestroyPipeline(dev, bloomUpsamplePipeline, nullptr);
-    bloomUpsamplePipeline = VK_NULL_HANDLE;
-  }
-  if (bloomDownsamplePipelineLayout != VK_NULL_HANDLE) {
-    vkDestroyPipelineLayout(dev, bloomDownsamplePipelineLayout, nullptr);
-    bloomDownsamplePipelineLayout = VK_NULL_HANDLE;
-  }
-  if (bloomUpsamplePipelineLayout != VK_NULL_HANDLE) {
-    vkDestroyPipelineLayout(dev, bloomUpsamplePipelineLayout, nullptr);
-    bloomUpsamplePipelineLayout = VK_NULL_HANDLE;
-  }
-  if (bloomDescriptorPool != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, bloomDescriptorPool, nullptr);
-    bloomDescriptorPool = VK_NULL_HANDLE;
-  }
-  bloomDownsampleSets.clear();
-  bloomUpsampleSets.clear();
-  if (bloomSetLayout != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(dev, bloomSetLayout, nullptr);
-    bloomSetLayout = VK_NULL_HANDLE;
-  }
-  for (auto &mip : bloomMips) {
-    mip.views.clear();
-    mip.images.clear();
-    mip.extent = {};
-  }
-  if (bloomSampler != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, bloomSampler, nullptr);
-    bloomSampler = VK_NULL_HANDLE;
-  }
-}
-
-void VulkanRenderer::recordBloomPass(VkCommandBuffer cmd,
-                                     uint32_t currentImage) {
-  if ((!imguiEnableBloom && imguiDebugMode != 13) ||
-      bloomDownsamplePipeline == VK_NULL_HANDLE ||
-      bloomUpsamplePipeline == VK_NULL_HANDLE)
-    return;
-
-  vkdbgBeginLabel(cmd, "Bloom Pyramid (downsample + upsample)", 1.0f, 0.55f,
-                  0.2f);
-
-  {
-    VkImageMemoryBarrier b = {};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = litImages[currentImage].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
-  }
-
-  std::array<VkImageMemoryBarrier, BLOOM_MIP_COUNT> toGeneral{};
-  for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-    auto &b = toGeneral[level];
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    b.dstAccessMask =
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = bloomMips[level].images[currentImage].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  }
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, static_cast<uint32_t>(toGeneral.size()),
-                       toGeneral.data());
-
-  auto barrierBloomMip = [&](uint32_t level) {
-    VkImageMemoryBarrier b = {};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    b.dstAccessMask =
-        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = bloomMips[level].images[currentImage].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
-                         0, nullptr, 1, &b);
-  };
-
-  struct BloomDownsamplePC {
-    float srcTexelSize[2];
-    float threshold;
-    float knee;
-    int prefilter;
-  };
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    bloomDownsamplePipeline);
-  for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-    VkExtent2D srcExtent =
-        (level == 0) ? swapchain.getExtent() : bloomMips[level - 1].extent;
-    VkExtent2D dstExtent = bloomMips[level].extent;
-    BloomDownsamplePC pc = {
-        {1.0f / static_cast<float>(srcExtent.width),
-         1.0f / static_cast<float>(srcExtent.height)},
-        imguiBloomThreshold, imguiBloomThreshold * 0.5f,
-        level == 0 ? 1 : 0};
-    VkDescriptorSet set =
-        bloomDownsampleSets[currentImage * BLOOM_MIP_COUNT + level];
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            bloomDownsamplePipelineLayout, 0, 1, &set, 0,
-                            nullptr);
-    vkCmdPushConstants(cmd, bloomDownsamplePipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, (dstExtent.width + 7) / 8,
-                  (dstExtent.height + 7) / 8, 1);
-    barrierBloomMip(level);
-  }
-
-  struct BloomUpsamplePC {
-    float srcTexelSize[2];
-    float radius;
-    float intensity;
-    int finalPass;
-  };
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    bloomUpsamplePipeline);
-  for (int level = static_cast<int>(BLOOM_MIP_COUNT) - 1; level >= 1;
-       --level) {
-    VkExtent2D srcExtent = bloomMips[level].extent;
-    VkExtent2D dstExtent = bloomMips[level - 1].extent;
-    BloomUpsamplePC pc = {
-        {1.0f / static_cast<float>(srcExtent.width),
-         1.0f / static_cast<float>(srcExtent.height)},
-        imguiBloomRadius, imguiBloomIntensity, level == 1 ? 1 : 0};
-    VkDescriptorSet set =
-        bloomUpsampleSets[currentImage * (BLOOM_MIP_COUNT - 1) +
-                          (static_cast<uint32_t>(level) - 1)];
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            bloomUpsamplePipelineLayout, 0, 1, &set, 0,
-                            nullptr);
-    vkCmdPushConstants(cmd, bloomUpsamplePipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, (dstExtent.width + 7) / 8,
-                  (dstExtent.height + 7) / 8, 1);
-    barrierBloomMip(static_cast<uint32_t>(level - 1));
-  }
-
-  std::array<VkImageMemoryBarrier, BLOOM_MIP_COUNT> toRead{};
-  for (uint32_t level = 0; level < BLOOM_MIP_COUNT; ++level) {
-    auto &b = toRead[level];
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = bloomMips[level].images[currentImage].get();
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  }
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
-                       nullptr, static_cast<uint32_t>(toRead.size()),
-                       toRead.data());
-
-  vkdbgEndLabel(cmd);
-}
-
 void VulkanRenderer::createAutoExposureResources() {
   VkDevice dev = device.getLogicalDevice();
   VmaAllocator alloc = device.getAllocator();
@@ -2654,7 +2188,7 @@ void VulkanRenderer::cleanup() {
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
   cleanupSsaoResources();
-  cleanupBloomResources();
+  bloomPass.cleanup();
   cleanupSsgiResources();
   cleanupLitResources();
   cleanupTaaResources();
@@ -2844,7 +2378,9 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   // --- Bloom pyramid (compute) ---
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-  recordBloomPass(cmd, currentImage);
+  bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
+                   imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
+                   imguiBloomIntensity);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
 
   // --- Auto-exposure (compute) ---
@@ -3120,7 +2656,9 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   }
 
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-  recordBloomPass(cmd, currentImage);
+  bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
+                   imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
+                   imguiBloomIntensity);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
 
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);

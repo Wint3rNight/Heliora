@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "BloomPass.h"
 #include "DescriptorManager.h"
 #include "GpuDrivenGBufferPass.h"
 #include "ImGuiLayer.h"
@@ -96,28 +97,6 @@ private:
   std::vector<ImageViewHandle> litViews;
   std::vector<VkFramebuffer> litFramebuffers;
   VkSampler litSampler = VK_NULL_HANDLE;
-
-  // --- Bloom pyramid (HDR post process) ---
-  // Six separately allocated full/half/quarter/... resolution images per swapchain
-  // image. Compute shaders downsample litBuffer into the pyramid, then
-  // upsample additively back to mip 0. The tonemap/TAA pass samples mip 0.
-  static constexpr uint32_t BLOOM_MIP_COUNT = 6;
-  struct BloomMipResources {
-    VkExtent2D extent = {};
-    std::vector<AllocatedImage> images;
-    std::vector<ImageViewHandle> views;
-  };
-  VkFormat bloomFormat = VK_FORMAT_UNDEFINED;
-  std::array<BloomMipResources, BLOOM_MIP_COUNT> bloomMips;
-  VkSampler bloomSampler = VK_NULL_HANDLE;
-  VkDescriptorSetLayout bloomSetLayout = VK_NULL_HANDLE;
-  VkDescriptorPool bloomDescriptorPool = VK_NULL_HANDLE;
-  std::vector<VkDescriptorSet> bloomDownsampleSets;
-  std::vector<VkDescriptorSet> bloomUpsampleSets;
-  VkPipelineLayout bloomDownsamplePipelineLayout = VK_NULL_HANDLE;
-  VkPipelineLayout bloomUpsamplePipelineLayout = VK_NULL_HANDLE;
-  VkPipeline bloomDownsamplePipeline = VK_NULL_HANDLE;
-  VkPipeline bloomUpsamplePipeline = VK_NULL_HANDLE;
 
   // --- SSGI bounce history (HDR, persistent across frames) ---
   // Ring is one larger than the max frames-in-flight so frame N+K never
@@ -240,6 +219,7 @@ private:
   ModelManager modelManager;
   PerformanceMetrics metrics;
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
+  BloomPass bloomPass;
 
   // --- Synchronization ---
   // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
@@ -389,9 +369,6 @@ private:
   void cleanupGBuffer();
   void createLitResources();
   void cleanupLitResources();
-  void createBloomResources();
-  void cleanupBloomResources();
-  void recordBloomPass(VkCommandBuffer cmd, uint32_t currentImage);
   void createSsgiResources();
   void cleanupSsgiResources();
   void createSsaoResources();

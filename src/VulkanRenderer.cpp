@@ -207,15 +207,17 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     swapchain.init(device, window);
 
     // 5. Shadow resources (directional + point)
-    createShadowResources();
+    shadowPass.create(device, renderPassManager.getShadowRenderPass(),
+                      shadowDepthFormat);
 
     // 6. Descriptors
     descriptorManager.init(device.getLogicalDevice(), device.getAllocator(),
                            swapchain.getImageCount());
     descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
     descriptorManager.updateShadowMapDescriptor(
-        device.getLogicalDevice(), csmArrayView.get(),
-        pointShadowCubeView.get(), csmShadowSampler, shadowSampler);
+        device.getLogicalDevice(), shadowPass.csmView(),
+        shadowPass.pointCubeView(), shadowPass.csmSampler(),
+        shadowPass.pointSampler());
 
     // 7. Texture manager (samplers only at this point)
     textureManager.init(device);
@@ -371,8 +373,9 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     sceneUbo.lightCounts =
         glm::ivec4(1, 0, 0x3f, 0); // z = lighting-isolation bit mask
 
-    updateLightSpaceMatrices();
-    updatePointShadowMatrices();
+    shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
+                                        imguiDrawDistance);
+    shadowPass.updatePointShadowMatrices(sceneUbo);
 
     // 14. Default albedo texture
     textureManager.loadTexture("plain.png", device, descriptorManager);
@@ -646,7 +649,9 @@ void VulkanRenderer::draw() {
   // the NEXT frame now that we're about to render content into the history.
   taaHistoryValid = taaEnable;
 
-  updateLightSpaceMatrices();
+  shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
+                                      imguiDrawDistance);
+  shadowPass.updatePointShadowMatrices(sceneUbo);
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Update,
                          elapsedMs(phaseStart));
 
@@ -1392,7 +1397,7 @@ void VulkanRenderer::cleanup() {
   cleanupLitResources();
   cleanupTaaResources();
   cleanupIBL();
-  cleanupShadowResources();
+  shadowPass.cleanup();
 
   descriptorManager.cleanup(device.getLogicalDevice(), device.getAllocator(),
                             swapchain.getImageCount());
@@ -1472,13 +1477,16 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  recordShadowPass(cmd);
+  shadowPass.recordCsm(cmd, rootNode, modelManager, pipeline, descriptorManager,
+                       sceneUbo, imguiShadowFrontFaceCull,
+                       imguiCullShadowCasters);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   vkdbgEndLabel(cmd);
 
   vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  recordPointShadowPass(cmd);
+  shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
+                         descriptorManager, imguiShadowFrontFaceCull);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   vkdbgEndLabel(cmd);
 
@@ -1611,13 +1619,16 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
 
   vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  recordShadowPass(cmd);
+  shadowPass.recordCsm(cmd, rootNode, modelManager, pipeline, descriptorManager,
+                       sceneUbo, imguiShadowFrontFaceCull,
+                       imguiCullShadowCasters);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   vkdbgEndLabel(cmd);
 
   vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  recordPointShadowPass(cmd);
+  shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
+                         descriptorManager, imguiShadowFrontFaceCull);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   vkdbgEndLabel(cmd);
 
@@ -2004,518 +2015,6 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   vkdbgEndLabel(cmd);
 }
 
-// Shadow passes (unchanged)
-
-void VulkanRenderer::recordShadowPass(VkCommandBuffer cmdBuffer) {
-  VkViewport vp = {0,
-                   0,
-                   static_cast<float>(SHADOW_MAP_SIZE),
-                   static_cast<float>(SHADOW_MAP_SIZE),
-                   0,
-                   1};
-  VkRect2D sc = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
-
-  // CSM shadow casters must use the authored mesh. Sponza's walls, roof
-  // caps, and arch inserts are thin occluders; meshoptimizer's reduced LODs
-  // can remove or move exactly the triangles that should block the sun. That
-  // makes the visible G-buffer mesh look intact while the shadow map has
-  // holes, which shows up as hard rectangular "sun through wall" patches on
-  // interior floors/walls. Keep all cascades at LOD0 and spend the shadow
-  // pass cost on correctness.
-  auto cascadeLod = [](int cascade) {
-    (void)cascade;
-    return 0;
-  };
-
-  // Default shadow cull mode is set in the per-cascade loop below; track the
-  // current state here so the per-mesh override only flips on transitions.
-  // OFF state is CULL_NONE rather than BACK_BIT: glTF wall winding is not
-  // guaranteed to face the sun, and a back-cull setup would miss the same
-  // single-sided walls that front-cull does — just on the opposite side.
-  VkCullModeFlags defaultShadowCull = imguiShadowFrontFaceCull
-                                          ? VK_CULL_MODE_FRONT_BIT
-                                          : VK_CULL_MODE_NONE;
-  VkCullModeFlags shadowLastCull = defaultShadowCull;
-
-  auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
-                              const glm::vec4 casterPlanes[6],
-                              int lodIndex) -> void {
-    if (node->getModelId() >= 0) {
-      MeshModel *mdl = modelManager.getModel(node->getModelId());
-      if (mdl) {
-        const glm::mat4 model = node->getGlobalTransform();
-        float maxScale =
-            glm::max(glm::length(glm::vec3(model[0])),
-                     glm::max(glm::length(glm::vec3(model[1])),
-                              glm::length(glm::vec3(model[2]))));
-        for (size_t k = 0; k < mdl->getMeshCount(); k++) {
-          const Mesh *mesh = mdl->getMesh(k);
-          glm::vec3 meshWCenter =
-              glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
-          if (imguiCullShadowCasters &&
-              !sphereInFrustum(casterPlanes, meshWCenter,
-                               mesh->boundingRadius * maxScale))
-            continue;
-
-          // doubleSided foliage: front-face culling discards the lit side and
-          // the only remaining face faces away from the sun, so the leaf
-          // casts no shadow. Use NONE so both sides write depth.
-          VkCullModeFlags wantCull =
-              mesh->getMaterial().doubleSided ? VK_CULL_MODE_NONE
-                                              : defaultShadowCull;
-          if (wantCull != shadowLastCull) {
-            vkCmdSetCullMode(cmdBuffer, wantCull);
-            shadowLastCull = wantCull;
-          }
-          // Phase 7.2: push model + LSM + albedo bindless index per mesh.
-          ShadowPushConstants push{};
-          push.model = model;
-          push.lightSpaceMatrix = lsm;
-          push.albedoIdx =
-              static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
-          uint32_t materialFlags =
-              (mesh->getMaterial().isCloth ? 1u : 0u) |
-              (mesh->getMaterial().alphaMasked ? 2u : 0u);
-          push.materialFlags = materialFlags;
-          push.alphaCutoff255 = static_cast<uint32_t>(
-              glm::clamp(mesh->getMaterial().alphaCutoff, 0.0f, 1.0f) *
-                  255.0f +
-              0.5f);
-          vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
-                             VK_SHADER_STAGE_VERTEX_BIT |
-                                 VK_SHADER_STAGE_FRAGMENT_BIT,
-                             0, sizeof(ShadowPushConstants), &push);
-          int useLod = std::min(lodIndex, mesh->getLodCount() - 1);
-          VkBuffer vb[] = {mesh->getVertexBuffer()};
-          VkDeviceSize off[] = {0};
-          vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
-          vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(useLod), 0,
-                               VK_INDEX_TYPE_UINT32);
-          vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(useLod), 1, 0, 0, 0);
-        }
-      }
-    }
-    for (auto &child : node->getChildren())
-      self(self, child.get(), lsm, casterPlanes, lodIndex);
-  };
-
-  for (int cascade = 0; cascade < NUM_CSM_CASCADES; cascade++) {
-    VkClearValue clearValue = {};
-    clearValue.depthStencil.depth = 1.0f;
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getShadowRenderPass();
-    rpbi.framebuffer = csmFramebuffers[cascade];
-    rpbi.renderArea.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE};
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clearValue;
-
-    char cascadeLabel[32];
-    snprintf(cascadeLabel, sizeof(cascadeLabel), "Cascade %d", cascade);
-    vkdbgBeginLabel(cmdBuffer, cascadeLabel, 1.0f, 0.55f + cascade * 0.1f, 0.1f);
-    vkCmdBeginRenderPass(cmdBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
-    vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
-    // Front-face culling avoids self-shadow acne and (more importantly here)
-    // captures occluders whose only face points away from the sun — the
-    // single-sided thin geometry that Sponza uses for ceilings and arch caps.
-    // doubleSided meshes get overridden to NONE per-draw inside the lambda.
-    vkCmdSetCullMode(cmdBuffer, defaultShadowCull);
-    shadowLastCull = defaultShadowCull;
-    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getShadowPipeline());
-    // Phase 7.2: bind bindless set once per cascade.
-    VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
-    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getShadowLayout(), 0, 1, &bindlessSet,
-                            0, nullptr);
-    glm::vec4 casterPlanes[6];
-    extractFrustumPlanes(sceneUbo.lightSpaceMatrices[cascade], casterPlanes);
-    renderNodeShadow(renderNodeShadow, &rootNode,
-                     sceneUbo.lightSpaceMatrices[cascade], casterPlanes,
-                     cascadeLod(cascade));
-    vkCmdEndRenderPass(cmdBuffer);
-    vkdbgEndLabel(cmdBuffer);
-  }
-}
-
-void VulkanRenderer::recordPointShadowPass(VkCommandBuffer cmdBuffer) {
-  VkClearValue clearValue = {};
-  clearValue.depthStencil.depth = 1.0f;
-
-  for (uint32_t face = 0; face < 6; ++face) {
-    char faceLabel[32];
-    snprintf(faceLabel, sizeof(faceLabel), "Point Shadow Face %u", face);
-    vkdbgBeginLabel(cmdBuffer, faceLabel, 1.0f, 0.65f, 0.2f);
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getShadowRenderPass();
-    rpbi.framebuffer = pointShadowFramebuffers[face];
-    rpbi.renderArea.extent = {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE};
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clearValue;
-
-    vkCmdBeginRenderPass(cmdBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport vp = {0,
-                     0,
-                     static_cast<float>(POINT_SHADOW_MAP_SIZE),
-                     static_cast<float>(POINT_SHADOW_MAP_SIZE),
-                     0,
-                     1};
-    VkRect2D sc = {{0, 0}, {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE}};
-    vkCmdSetViewport(cmdBuffer, 0, 1, &vp);
-    vkCmdSetScissor(cmdBuffer, 0, 1, &sc);
-    VkCullModeFlags defaultPointCull = imguiShadowFrontFaceCull
-                                           ? VK_CULL_MODE_FRONT_BIT
-                                           : VK_CULL_MODE_NONE;
-    vkCmdSetCullMode(cmdBuffer, defaultPointCull);
-    VkCullModeFlags pointLastCull = defaultPointCull;
-    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getShadowPipeline());
-    // Phase 7.2: bind bindless set once per face.
-    VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
-    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getShadowLayout(), 0, 1, &bindlessSet,
-                            0, nullptr);
-
-    auto renderNodeShadow = [&](auto &self, SceneNode *node) -> void {
-      if (node->getModelId() >= 0) {
-        MeshModel *mdl = modelManager.getModel(node->getModelId());
-        if (mdl) {
-          for (size_t k = 0; k < mdl->getMeshCount(); k++) {
-            const Mesh *mesh = mdl->getMesh(k);
-            VkCullModeFlags wantCull =
-                mesh->getMaterial().doubleSided ? VK_CULL_MODE_NONE
-                                                : defaultPointCull;
-            if (wantCull != pointLastCull) {
-              vkCmdSetCullMode(cmdBuffer, wantCull);
-              pointLastCull = wantCull;
-            }
-            // Phase 7.2: push per-mesh with albedo index.
-            ShadowPushConstants push{};
-            push.model = node->getGlobalTransform();
-            push.lightSpaceMatrix = pointShadowMatrices[face];
-            push.albedoIdx =
-                static_cast<uint32_t>(mesh->getMaterial().albedoTextureId);
-            uint32_t materialFlags =
-                (mesh->getMaterial().isCloth ? 1u : 0u) |
-                (mesh->getMaterial().alphaMasked ? 2u : 0u);
-            push.materialFlags = materialFlags;
-            push.alphaCutoff255 = static_cast<uint32_t>(
-                glm::clamp(mesh->getMaterial().alphaCutoff, 0.0f, 1.0f) *
-                    255.0f +
-                0.5f);
-            vkCmdPushConstants(cmdBuffer, pipeline.getShadowLayout(),
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(ShadowPushConstants), &push);
-            int useLod = 0;
-            VkBuffer vb[] = {mesh->getVertexBuffer()};
-            VkDeviceSize off[] = {0};
-            vkCmdBindVertexBuffers(cmdBuffer, 0, 1, vb, off);
-            vkCmdBindIndexBuffer(cmdBuffer, mesh->getIndexBuffer(useLod), 0,
-                                 VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmdBuffer, mesh->getIndexCount(useLod), 1, 0, 0,
-                             0);
-          }
-        }
-      }
-      for (auto &child : node->getChildren())
-        self(self, child.get());
-    };
-    renderNodeShadow(renderNodeShadow, &rootNode);
-    vkCmdEndRenderPass(cmdBuffer);
-    vkdbgEndLabel(cmdBuffer);
-  }
-}
-
-// Light helpers (unchanged)
-
-void VulkanRenderer::updateLightSpaceMatrices() {
-  const float nearPlane = 0.1f;
-  // CSM covers up to imguiCsmFar (clamped to draw distance). Fragments past
-  // this fall through every cascade and the shader's fallback treats them as
-  // lit, so on Crytek-Sponza-scale models this needs to track the actual hall
-  // length, not a tiny default.
-  const float csmFar = std::min(imguiCsmFar, imguiDrawDistance);
-  const float farPlane = csmFar;
-  const float lambda = 0.75f; // blend between log and uniform splits
-
-  // Practical split scheme (Engel 2006)
-  float splits[NUM_CSM_CASCADES];
-  for (int i = 0; i < NUM_CSM_CASCADES; i++) {
-    float p = (i + 1) / float(NUM_CSM_CASCADES);
-    float logSplit = nearPlane * std::pow(farPlane / nearPlane, p);
-    float uniSplit = nearPlane + (farPlane - nearPlane) * p;
-    splits[i] = lambda * logSplit + (1.0f - lambda) * uniSplit;
-  }
-  sceneUbo.cascadeSplits =
-      glm::vec4(splits[0], splits[1], splits[2], splits[3]);
-
-  glm::vec3 lightDir =
-      glm::normalize(glm::vec3(sceneUbo.directionalLight.direction));
-  // When lightDir is near-parallel to world-up, glm::lookAt's basis
-  // degenerates (right = cross(up, -lightDir) → 0 → divide-by-zero NaN that
-  // propagates through every cascade matrix and reads back as fractured
-  // geometry at high noon / midnight). Swap to a horizontal "up" when the
-  // sun is within ~8° of zenith so the orthonormal basis stays defined.
-  glm::vec3 lightUp = (std::abs(lightDir.y) > 0.99f)
-                          ? glm::vec3(0.0f, 0.0f, 1.0f)
-                          : glm::vec3(0.0f, 1.0f, 0.0f);
-  glm::mat4 lightView =
-      glm::lookAt(-lightDir * 100.0f, glm::vec3(0.0f), lightUp);
-  glm::mat4 invCam = glm::inverse(sceneUbo.projection * sceneUbo.view);
-
-  // Helper: convert view-space distance to NDC z
-  auto viewDepthToNdcZ = [&](float d) -> float {
-    glm::vec4 clip = sceneUbo.projection * glm::vec4(0.0f, 0.0f, -d, 1.0f);
-    return clip.z / clip.w;
-  };
-
-  float prevSplit = nearPlane;
-  for (int i = 0; i < NUM_CSM_CASCADES; i++) {
-    float nearNdc = viewDepthToNdcZ(prevSplit);
-    float farNdc = viewDepthToNdcZ(splits[i]);
-
-    // 8 NDC corners of this cascade's frustum slice
-    glm::vec3 corners[8];
-    int k = 0;
-    for (float nx : {-1.0f, 1.0f})
-      for (float ny : {-1.0f, 1.0f})
-        for (float nz : {nearNdc, farNdc}) {
-          glm::vec4 w = invCam * glm::vec4(nx, ny, nz, 1.0f);
-          corners[k++] = glm::vec3(w) / w.w;
-        }
-
-    // Bounding sphere centred on the camera world position. The camera position
-    // is rotation-invariant (it doesn't move when you look left/right), so the
-    // shadow map XY coverage stays constant as the camera rotates. The old
-    // circumcenter (average of corners) shifts with yaw at wide FOV, causing
-    // objects to fall off the edge of the shadow map on rotation.
-    glm::vec3 frustumCenter = glm::vec3(glm::inverse(sceneUbo.view)[3]);
-
-    float sphereRadius = 0.0f;
-    for (auto &c : corners)
-      sphereRadius = glm::max(sphereRadius, glm::length(c - frustumCenter));
-
-    // Convert center to light space and snap to texel grid so the shadow map
-    // does not shimmer as the camera translates.
-    glm::vec3 lsCenter = glm::vec3(lightView * glm::vec4(frustumCenter, 1.0f));
-    float texelSz = 2.0f * sphereRadius / float(SHADOW_MAP_SIZE);
-    if (texelSz > 0.0f) {
-      lsCenter.x = std::floor(lsCenter.x / texelSz) * texelSz;
-      lsCenter.y = std::floor(lsCenter.y / texelSz) * texelSz;
-    }
-
-    glm::vec3 mn(lsCenter.x - sphereRadius, lsCenter.y - sphereRadius,
-                 lsCenter.z - sphereRadius - csmFar);
-    glm::vec3 mx(lsCenter.x + sphereRadius, lsCenter.y + sphereRadius,
-                 lsCenter.z + sphereRadius + csmFar);
-
-    glm::mat4 lightProj = glm::ortho(mn.x, mx.x, mn.y, mx.y, mn.z, mx.z);
-    lightProj[1][1] *= -1.0f;
-    sceneUbo.lightSpaceMatrices[i] = lightProj * lightView;
-
-    prevSplit = splits[i];
-  }
-}
-
-void VulkanRenderer::updatePointShadowMatrices() {
-  pointShadowMatrices.resize(6);
-  glm::vec3 lp = glm::vec3(sceneUbo.pointLights[0].position);
-  float farPlane = sceneUbo.shadowParams.x;
-  glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, farPlane);
-  proj[1][1] *= -1.0f;
-
-  pointShadowMatrices[0] =
-      proj * glm::lookAt(lp, lp + glm::vec3(1, 0, 0), glm::vec3(0, -1, 0));
-  pointShadowMatrices[1] =
-      proj * glm::lookAt(lp, lp + glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0));
-  pointShadowMatrices[2] =
-      proj * glm::lookAt(lp, lp + glm::vec3(0, 1, 0), glm::vec3(0, 0, 1));
-  pointShadowMatrices[3] =
-      proj * glm::lookAt(lp, lp + glm::vec3(0, -1, 0), glm::vec3(0, 0, -1));
-  pointShadowMatrices[4] =
-      proj * glm::lookAt(lp, lp + glm::vec3(0, 0, 1), glm::vec3(0, -1, 0));
-  pointShadowMatrices[5] =
-      proj * glm::lookAt(lp, lp + glm::vec3(0, 0, -1), glm::vec3(0, -1, 0));
-
-  for (size_t i = 0; i < 6; ++i)
-    sceneUbo.pointShadowMatrices[i] = pointShadowMatrices[i];
-}
-
-// Shadow resource creation (unchanged)
-
-void VulkanRenderer::createShadowResources() {
-  VkDevice dev = device.getLogicalDevice();
-
-  // --- CSM: 4-layer depth array ---
-  VkImageCreateInfo imageCreateInfo = {};
-  imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-  imageCreateInfo.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1};
-  imageCreateInfo.mipLevels = 1;
-  imageCreateInfo.arrayLayers = NUM_CSM_CASCADES;
-  imageCreateInfo.format = shadowDepthFormat;
-  imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-  imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  imageCreateInfo.usage =
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-  imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-  VmaAllocationCreateInfo allocCreateInfo = {};
-  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-  VkImage img = VK_NULL_HANDLE;
-  VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &imageCreateInfo, &allocCreateInfo,
-                     &img, &alloc, nullptr) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create CSM depth array image");
-  csmDepthImage = AllocatedImage(device.getAllocator(), img, alloc);
-
-  // Array view (all 4 layers) — used by deferred shader as sampler2DArray
-  VkImageViewCreateInfo arrayViewInfo = {};
-  arrayViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  arrayViewInfo.image = csmDepthImage.get();
-  arrayViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-  arrayViewInfo.format = shadowDepthFormat;
-  arrayViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0,
-                                    NUM_CSM_CASCADES};
-  VkImageView view = VK_NULL_HANDLE;
-  if (vkCreateImageView(dev, &arrayViewInfo, nullptr, &view) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create CSM array view");
-  csmArrayView = ImageViewHandle(dev, view);
-
-  // Per-cascade layer views + framebuffers (one per cascade)
-  csmLayerViews.clear();
-  csmFramebuffers.resize(NUM_CSM_CASCADES, VK_NULL_HANDLE);
-  VkFramebufferCreateInfo fbInfo = {};
-  fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-  fbInfo.renderPass = renderPassManager.getShadowRenderPass();
-  fbInfo.attachmentCount = 1;
-  fbInfo.width = SHADOW_MAP_SIZE;
-  fbInfo.height = SHADOW_MAP_SIZE;
-  fbInfo.layers = 1;
-  for (int i = 0; i < NUM_CSM_CASCADES; i++) {
-    VkImageViewCreateInfo layerViewInfo = arrayViewInfo;
-    layerViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    layerViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1,
-                                      static_cast<uint32_t>(i), 1};
-    VkImageView lv = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev, &layerViewInfo, nullptr, &lv) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create CSM layer view");
-    csmLayerViews.emplace_back(dev, lv);
-    fbInfo.pAttachments = &lv;
-    if (vkCreateFramebuffer(dev, &fbInfo, nullptr, &csmFramebuffers[i]) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create CSM framebuffer");
-  }
-
-  VkSamplerCreateInfo samplerInfo = {};
-  samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  samplerInfo.magFilter = VK_FILTER_LINEAR;
-  samplerInfo.minFilter = VK_FILTER_LINEAR;
-  samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-  samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-  samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-  samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-  samplerInfo.maxLod = 1.0f;
-  samplerInfo.maxAnisotropy = 1.0f;
-  if (vkCreateSampler(dev, &samplerInfo, nullptr, &shadowSampler) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create shadow sampler");
-
-  // Compare-enabled sibling for the CSM array: turns each tap into a
-  // hardware-bilinear-filtered depth comparison instead of a binary one,
-  // killing the stair-step / dithered PCF pattern.
-  VkSamplerCreateInfo csmSamplerInfo = samplerInfo;
-  csmSamplerInfo.compareEnable = VK_TRUE;
-  csmSamplerInfo.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
-  if (vkCreateSampler(dev, &csmSamplerInfo, nullptr, &csmShadowSampler) !=
-      VK_SUCCESS)
-    throw std::runtime_error("Failed to create CSM compare sampler");
-
-  // Point shadow cubemap
-  VkImageCreateInfo cubeInfo = imageCreateInfo;
-  cubeInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-  cubeInfo.extent = {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE, 1};
-  cubeInfo.arrayLayers = 6;
-
-  img = VK_NULL_HANDLE;
-  alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(device.getAllocator(), &cubeInfo, &allocCreateInfo, &img,
-                     &alloc, nullptr) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create point shadow depth cubemap");
-  pointShadowDepthImage = AllocatedImage(device.getAllocator(), img, alloc);
-
-  VkImageViewCreateInfo cubeViewInfo = {};
-  cubeViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  cubeViewInfo.image = pointShadowDepthImage.get();
-  cubeViewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-  cubeViewInfo.format = shadowDepthFormat;
-  cubeViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 6};
-  view = VK_NULL_HANDLE;
-  if (vkCreateImageView(device.getLogicalDevice(), &cubeViewInfo, nullptr,
-                        &view) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create point shadow cubemap view");
-  pointShadowCubeView = ImageViewHandle(device.getLogicalDevice(), view);
-
-  pointShadowFaceViews.clear();
-  pointShadowFramebuffers.resize(6, VK_NULL_HANDLE);
-  for (uint32_t face = 0; face < 6; ++face) {
-    VkImageViewCreateInfo faceViewInfo = {};
-    faceViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    faceViewInfo.image = pointShadowDepthImage.get();
-    faceViewInfo.format = shadowDepthFormat;
-    faceViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    faceViewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, face, 1};
-    VkImageView fv = VK_NULL_HANDLE;
-    if (vkCreateImageView(device.getLogicalDevice(), &faceViewInfo, nullptr,
-                          &fv) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create point shadow face view");
-    pointShadowFaceViews.emplace_back(device.getLogicalDevice(), fv);
-
-    VkFramebufferCreateInfo pfbInfo = fbInfo;
-    pfbInfo.width = POINT_SHADOW_MAP_SIZE;
-    pfbInfo.height = POINT_SHADOW_MAP_SIZE;
-    VkImageView patt = pointShadowFaceViews.back().get();
-    pfbInfo.pAttachments = &patt;
-    if (vkCreateFramebuffer(device.getLogicalDevice(), &pfbInfo, nullptr,
-                            &pointShadowFramebuffers[face]) != VK_SUCCESS)
-      throw std::runtime_error("Failed to create point shadow framebuffer");
-  }
-}
-
-void VulkanRenderer::cleanupShadowResources() {
-  for (VkFramebuffer fb : pointShadowFramebuffers)
-    if (fb != VK_NULL_HANDLE)
-      vkDestroyFramebuffer(device.getLogicalDevice(), fb, nullptr);
-  pointShadowFramebuffers.clear();
-  pointShadowFaceViews.clear();
-  pointShadowCubeView.reset();
-  pointShadowDepthImage.reset();
-
-  for (VkFramebuffer fb : csmFramebuffers)
-    if (fb != VK_NULL_HANDLE)
-      vkDestroyFramebuffer(device.getLogicalDevice(), fb, nullptr);
-  csmFramebuffers.clear();
-  csmLayerViews.clear();
-  csmArrayView.reset();
-  csmDepthImage.reset();
-
-  if (shadowSampler != VK_NULL_HANDLE) {
-    vkDestroySampler(device.getLogicalDevice(), shadowSampler, nullptr);
-    shadowSampler = VK_NULL_HANDLE;
-  }
-  if (csmShadowSampler != VK_NULL_HANDLE) {
-    vkDestroySampler(device.getLogicalDevice(), csmShadowSampler, nullptr);
-    csmShadowSampler = VK_NULL_HANDLE;
-  }
-}
-
 // ImGui integration
 
 void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
@@ -2609,8 +2108,11 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       gpuDrivenGBufferPass.lastFrameUsed(),
       swapchain.getActivePresentMode(),
       [this] { rebuildProjection(); },
-      [this] { updateLightSpaceMatrices(); },
-      [this] { updatePointShadowMatrices(); },
+      [this] {
+        shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
+                                            imguiDrawDistance);
+      },
+      [this] { shadowPass.updatePointShadowMatrices(sceneUbo); },
       [this] { taaHistoryValid = false; },
       [this](bool preferMailbox) {
         swapchain.setPreferMailbox(preferMailbox);

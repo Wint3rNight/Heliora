@@ -22,6 +22,7 @@
 #include "PerformanceMetrics.h"
 #include "RenderPassManager.h"
 #include "SceneNode.h"
+#include "ShadowPass.h"
 #include "SsaoPass.h"
 #include "SsgiPass.h"
 #include "TextureManager.h"
@@ -71,21 +72,6 @@ private:
   SceneNode rootNode;
   SceneUniformBuffer sceneUbo = {};
   VkFormat shadowDepthFormat = VK_FORMAT_UNDEFINED;
-
-  // --- Directional shadow (Cascaded Shadow Maps) ---
-  AllocatedImage csmDepthImage;
-  ImageViewHandle csmArrayView;
-  std::vector<ImageViewHandle> csmLayerViews;
-  std::vector<VkFramebuffer> csmFramebuffers;
-  VkSampler shadowSampler = VK_NULL_HANDLE;       // plain — point shadow cube
-  VkSampler csmShadowSampler = VK_NULL_HANDLE;    // compare-enabled — CSM HW PCF
-
-  // --- Omnidirectional point shadow ---
-  AllocatedImage pointShadowDepthImage;
-  ImageViewHandle pointShadowCubeView;
-  std::vector<ImageViewHandle> pointShadowFaceViews;
-  std::vector<VkFramebuffer> pointShadowFramebuffers;
-  std::vector<glm::mat4> pointShadowMatrices;
 
   // --- G-buffer (per swapchain image) ---
   VkFormat gBufferDepthFormat = VK_FORMAT_UNDEFINED;
@@ -151,6 +137,7 @@ private:
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
+  ShadowPass shadowPass;
   SsaoPass ssaoPass;
   SsgiPass ssgiPass;
   CompositePass compositePass;
@@ -297,8 +284,6 @@ private:
   void cleanupAsyncFrameCommandBuffers();
   void createThreadedCommandResources();
   void cleanupThreadedCommandResources();
-  void createShadowResources();
-  void cleanupShadowResources();
   void createGBuffer();
   void cleanupGBuffer();
   void createLitResources();
@@ -309,9 +294,6 @@ private:
   void cleanupIBL();
   void rebuildProjection();
 
-  void updateLightSpaceMatrices();
-  void updatePointShadowMatrices();
-
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);
   void recordGBufferCommands(uint32_t currentImage);
@@ -321,8 +303,6 @@ private:
   void recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
                          const VkViewport &viewport,
                          const VkRect2D &scissor);
-  void recordShadowPass(VkCommandBuffer cmdBuffer);
-  void recordPointShadowPass(VkCommandBuffer cmdBuffer);
   void recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex);
   void recreateSwapChain();
 };

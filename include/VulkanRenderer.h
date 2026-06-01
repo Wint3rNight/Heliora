@@ -13,6 +13,7 @@
 
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
+#include "CompositePass.h"
 #include "DescriptorManager.h"
 #include "GpuDrivenGBufferPass.h"
 #include "ImGuiLayer.h"
@@ -110,11 +111,6 @@ private:
   // CLAMP_TO_EDGE so reprojected UVs that drift just past the edge fall
   // back gracefully (treated as off-screen by the shader's bounds check).
   VkSampler taaSampler = VK_NULL_HANDLE;
-  // Composite framebuffers — 3 attachments (swap, colorBuffer, history).
-  // Size: taaHistoryViews.size() * swapCount. Index:
-  // historyIndex * swapCount + swapIdx.
-  std::vector<VkFramebuffer> compositeFramebuffers;
-
   bool autoExpEnabled = true;   // ImGui toggle; off -> manual EV only.
 
   // --- IBL resources ---
@@ -157,6 +153,7 @@ private:
   AutoExposurePass autoExposurePass;
   SsaoPass ssaoPass;
   SsgiPass ssgiPass;
+  CompositePass compositePass;
 
   // --- Synchronization ---
   // imageAvailable & drawFences are sized by MAX_FRAMES_DRAWS (frames in
@@ -308,8 +305,6 @@ private:
   void cleanupLitResources();
   void createTaaResources();
   void cleanupTaaResources();
-  void createCompositeFramebuffers();
-  void cleanupCompositeFramebuffers();
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();

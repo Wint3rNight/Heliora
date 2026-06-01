@@ -15,7 +15,7 @@ public:
   VulkanSwapchain &operator=(const VulkanSwapchain &) = delete;
 
   // Composite framebuffers (3 attachments including TAA history)
-  // are owned by VulkanRenderer, not this class. init/recreate only own the
+  // are owned by CompositePass, not this class. init/recreate only own the
   // swapchain images + HDR colorBuffer + per-image command buffers.
   void init(const VulkanDevice &device, GLFWwindow *window);
   void recreate(const VulkanDevice &device, GLFWwindow *window);

@@ -242,7 +242,24 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 8c. Composite framebuffers (3 attachments: swap + colorBuffer + history)
     //     Must be created after TAA history images exist and after the
     //     composition render pass is created.
-    createCompositeFramebuffers();
+    {
+      std::vector<VkImageView> swapViews;
+      std::vector<VkImageView> colorViews;
+      std::vector<VkImageView> historyViews;
+      swapViews.reserve(swapchain.getImageCount());
+      colorViews.reserve(swapchain.getImageCount());
+      historyViews.reserve(taaHistoryViews.size());
+      for (size_t i = 0; i < swapchain.getImageCount(); ++i) {
+        swapViews.push_back(swapchain.getSwapImageView(i));
+        colorViews.push_back(swapchain.getColorBufferView(i));
+      }
+      for (const ImageViewHandle &view : taaHistoryViews)
+        historyViews.push_back(view.get());
+      compositePass.create(device.getLogicalDevice(),
+                           renderPassManager.getRenderPass(),
+                           swapchain.getExtent(), swapViews, colorViews,
+                           historyViews);
+    }
 
     // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
     createGBuffer();
@@ -786,7 +803,7 @@ void VulkanRenderer::recreateSwapChain() {
                                 swapchain.getExtent(), swapchain.getImages());
 
   autoExposurePass.cleanup();
-  cleanupCompositeFramebuffers();
+  compositePass.cleanup();
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
   ssaoPass.cleanup();
@@ -803,7 +820,24 @@ void VulkanRenderer::recreateSwapChain() {
   ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
                   descriptorManager);
   createTaaResources();
-  createCompositeFramebuffers();
+  {
+    std::vector<VkImageView> swapViews;
+    std::vector<VkImageView> colorViews;
+    std::vector<VkImageView> historyViews;
+    swapViews.reserve(swapchain.getImageCount());
+    colorViews.reserve(swapchain.getImageCount());
+    historyViews.reserve(taaHistoryViews.size());
+    for (size_t i = 0; i < swapchain.getImageCount(); ++i) {
+      swapViews.push_back(swapchain.getSwapImageView(i));
+      colorViews.push_back(swapchain.getColorBufferView(i));
+    }
+    for (const ImageViewHandle &view : taaHistoryViews)
+      historyViews.push_back(view.get());
+    compositePass.create(device.getLogicalDevice(),
+                         renderPassManager.getRenderPass(),
+                         swapchain.getExtent(), swapViews, colorViews,
+                         historyViews);
+  }
   createGBuffer();
   gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
                               renderPassManager.getGBufferRenderPass(),
@@ -1214,46 +1248,6 @@ void VulkanRenderer::cleanupTaaResources() {
   }
 }
 
-// Composite framebuffers: historyCount * swapCount entries, indexed by
-// (historyIndex * swapCount + swapIdx). Each binds:
-//   attachment 0 = swap image view (per swapIdx)
-//   attachment 1 = colorBuffer view (per swapIdx)
-//   attachment 2 = TAA history view (per history ring slot)
-void VulkanRenderer::createCompositeFramebuffers() {
-  VkDevice dev = device.getLogicalDevice();
-  size_t swapCount = swapchain.getImageCount();
-  size_t historyCount = taaHistoryViews.size();
-  compositeFramebuffers.assign(historyCount * swapCount, VK_NULL_HANDLE);
-
-  for (size_t historyIndex = 0; historyIndex < historyCount; ++historyIndex) {
-    for (size_t i = 0; i < swapCount; ++i) {
-      std::array<VkImageView, 3> atts = {swapchain.getSwapImageView(i),
-                                         swapchain.getColorBufferView(i),
-                                         taaHistoryViews[historyIndex].get()};
-      VkFramebufferCreateInfo ci = {};
-      ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-      ci.renderPass = renderPassManager.getRenderPass();
-      ci.attachmentCount = static_cast<uint32_t>(atts.size());
-      ci.pAttachments = atts.data();
-      ci.width = swapchain.getExtent().width;
-      ci.height = swapchain.getExtent().height;
-      ci.layers = 1;
-      VkFramebuffer fb = VK_NULL_HANDLE;
-      if (vkCreateFramebuffer(dev, &ci, nullptr, &fb) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create composite framebuffer");
-      compositeFramebuffers[historyIndex * swapCount + i] = fb;
-    }
-  }
-}
-
-void VulkanRenderer::cleanupCompositeFramebuffers() {
-  VkDevice dev = device.getLogicalDevice();
-  for (VkFramebuffer fb : compositeFramebuffers)
-    if (fb != VK_NULL_HANDLE)
-      vkDestroyFramebuffer(dev, fb, nullptr);
-  compositeFramebuffers.clear();
-}
-
 // IBL resource management
 
 void VulkanRenderer::initIBL() {
@@ -1389,7 +1383,7 @@ void VulkanRenderer::cleanup() {
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   autoExposurePass.cleanup();
-  cleanupCompositeFramebuffers();
+  compositePass.cleanup();
   gpuDrivenGBufferPass.cleanup();
   cleanupGBuffer();
   ssaoPass.cleanup();
@@ -1562,66 +1556,18 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                           autoExpEnabled);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
 
-  // --- Composition pass (SSR composite + TAA + ACES tone-mapping) ---
-  {
-    // 3 attachments: swap (clear), colorBuffer (clear), history (DONT_CARE).
-    // Clear values for DONT_CARE attachments are ignored but the array still
-    // needs the right element count.
-    std::array<VkClearValue, 3> clears{};
-    clears[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
-    clears[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
-    clears[2].color = {0.0f, 0.0f, 0.0f, 1.0f};
-
-    // History index selects which TAA history image is THIS frame's write target.
-    // taaFrameCounter is incremented at end-of-draw, so its current value is
-    // the index of the frame we're recording.
-    size_t fbIdx = taaHistoryIndex * swapchain.getImageCount() + currentImage;
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getRenderPass();
-    rpbi.framebuffer = compositeFramebuffers[fbIdx];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
-    rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
-    rpbi.pClearValues = clears.data();
-
-    vkdbgBeginLabel(cmd, "Composition (SSR + ACES Tonemap)", 0.6f, 0.2f, 0.8f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    // Subpass 0: SSR composite (samples litBuffer + G-buffer) → colorBuffer
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getDeferredPipeline());
-    std::array<VkDescriptorSet, 2> deferredSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getDeferredLayout(), 0, 2,
-                            deferredSets.data(), 0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-
-    // Subpass 1: TAA reprojection + ACES + gamma → swapchain (LDR) + history (HDR)
-    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getSecondPipeline());
-    // 3 sets: scene UBO (0), input attachment (1), TAA samplers (2).
-    // TAA set points at the previous history ring slot.
-    std::array<VkDescriptorSet, 3> secondSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getInputSet(currentImage),
-        descriptorManager.getTaaSet(fbIdx)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSecondLayout(), 0,
-                            static_cast<uint32_t>(secondSets.size()),
-                            secondSets.data(), 0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-
-    vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-    vkdbgEndLabel(cmd);
-  }
+  const size_t compositeFbIdx =
+      compositePass.framebufferIndex(taaHistoryIndex, currentImage);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
+  compositePass.record(
+      cmd, currentImage, taaHistoryIndex,
+      descriptorManager.getVPSet(currentImage),
+      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+      descriptorManager.getInputSet(currentImage),
+      descriptorManager.getTaaSet(compositeFbIdx),
+      pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
+      pipeline.getSecondPipeline(), pipeline.getSecondLayout());
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
@@ -1759,56 +1705,18 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
                           autoExpEnabled);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
 
-  // --- Composition pass (SSR composite + TAA + tone-mapping) ---
-  {
-    std::array<VkClearValue, 3> clears{};
-    clears[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
-    clears[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
-    clears[2].color = {0.0f, 0.0f, 0.0f, 1.0f};
-
-    size_t fbIdx = taaHistoryIndex * swapchain.getImageCount() + currentImage;
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getRenderPass();
-    rpbi.framebuffer = compositeFramebuffers[fbIdx];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
-    rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
-    rpbi.pClearValues = clears.data();
-
-    vkdbgBeginLabel(cmd, "Composition (SSR + AgX Tonemap)", 0.6f, 0.2f, 0.8f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getDeferredPipeline());
-    std::array<VkDescriptorSet, 2> deferredSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getDeferredLayout(), 0, 2,
-                            deferredSets.data(), 0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-
-    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getSecondPipeline());
-    std::array<VkDescriptorSet, 3> secondSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getInputSet(currentImage),
-        descriptorManager.getTaaSet(fbIdx)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getSecondLayout(), 0,
-                            static_cast<uint32_t>(secondSets.size()),
-                            secondSets.data(), 0, nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-
-    vkCmdEndRenderPass(cmd);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-    vkdbgEndLabel(cmd);
-  }
+  const size_t compositeFbIdx =
+      compositePass.framebufferIndex(taaHistoryIndex, currentImage);
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
+  compositePass.record(
+      cmd, currentImage, taaHistoryIndex,
+      descriptorManager.getVPSet(currentImage),
+      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+      descriptorManager.getInputSet(currentImage),
+      descriptorManager.getTaaSet(compositeFbIdx),
+      pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
+      pipeline.getSecondPipeline(), pipeline.getSecondLayout());
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);

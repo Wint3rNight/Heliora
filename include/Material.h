@@ -19,5 +19,6 @@ struct Material {
   // the G-buffer or shadow pass, even if their source image has a non-opaque
   // alpha channel for authoring/packing reasons.
   bool alphaMasked = false;
+  bool alphaBlended = false;
   float alphaCutoff = 0.5f;
 };

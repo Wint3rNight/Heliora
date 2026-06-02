@@ -296,6 +296,8 @@ private:
   void createGBuffer();
   void cleanupGBuffer();
   void createLitResources();
+  void createLitFramebuffers();
+  void cleanupLitFramebuffers();
   void cleanupLitResources();
   void createTaaResources();
   void cleanupTaaResources();
@@ -312,6 +314,9 @@ private:
   void recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
                          const VkViewport &viewport,
                          const VkRect2D &scissor);
+  void recordTransparentPass(VkCommandBuffer cmd, uint32_t currentImage,
+                             const VkViewport &viewport,
+                             const VkRect2D &scissor);
   void recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex);
   void recreateSwapChain();
 };

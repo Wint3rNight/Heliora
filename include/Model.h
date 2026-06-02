@@ -22,6 +22,7 @@ struct MaterialTextureNames {
   bool doubleSided = false;
   bool isCloth = false;
   bool alphaMasked = false;
+  bool alphaBlended = false;
   float alphaCutoff = 0.5f;
 };
 

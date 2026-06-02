@@ -19,7 +19,8 @@ public:
   // Creates the lit pass: single subpass that runs full PBR+IBL+SSAO+FXAA
   // and writes the lit HDR color into a sampleable image. SSR is NOT applied
   // here — it samples this image in the next pass.
-  void createLitRenderPass(VkDevice device, VkFormat litFormat);
+  void createLitRenderPass(VkDevice device, VkFormat litFormat,
+                           VkFormat depthFormat);
 
   // Creates the dedicated SSGI pass: single subpass, single color
   // attachment. Runs between G-buffer and lit so lit.frag can sample the

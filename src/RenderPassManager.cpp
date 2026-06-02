@@ -88,51 +88,93 @@ void RenderPassManager::createGBufferRenderPass(VkDevice device,
     throw std::runtime_error("Failed to create G-buffer render pass");
 }
 
-// Lit render pass (1 attachment: litBuffer)
-// Single subpass: PBR + IBL + SSAO + FXAA + fog → litBuffer.
-// finalLayout = SHADER_READ_ONLY_OPTIMAL so the composition pass can sample.
+// Lit render pass.
+// Subpass 0: PBR + IBL + SSAO + FXAA + fog -> litBuffer.
+// Subpass 1: forward transparent materials blended into litBuffer with
+//            read-only G-buffer depth testing.
+// finalLayout = SHADER_READ_ONLY_OPTIMAL so the later passes can sample.
 
 void RenderPassManager::createLitRenderPass(VkDevice device,
-                                            VkFormat litFormat) {
-  VkAttachmentDescription att = {};
-  att.format         = litFormat;
-  att.samples        = VK_SAMPLE_COUNT_1_BIT;
-  att.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  att.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-  att.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-  att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  att.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-  att.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                                            VkFormat litFormat,
+                                            VkFormat depthFormat) {
+  VkAttachmentDescription colorAtt = {};
+  colorAtt.format         = litFormat;
+  colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+  colorAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  colorAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+  colorAtt.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentDescription depthAtt = {};
+  depthAtt.format         = depthFormat;
+  depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+  depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+  depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depthAtt.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
   VkAttachmentReference colorRef = {};
   colorRef.attachment = 0;
   colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-  VkSubpassDescription subpass = {};
-  subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
-  subpass.colorAttachmentCount = 1;
-  subpass.pColorAttachments    = &colorRef;
+  VkAttachmentReference depthRef = {};
+  depthRef.attachment = 1;
+  depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-  std::array<VkSubpassDependency, 2> deps = {};
+  std::array<VkSubpassDescription, 2> subpasses = {};
+  subpasses[0].pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpasses[0].colorAttachmentCount = 1;
+  subpasses[0].pColorAttachments    = &colorRef;
+
+  subpasses[1].pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  subpasses[1].colorAttachmentCount = 1;
+  subpasses[1].pColorAttachments    = &colorRef;
+  subpasses[1].pDepthStencilAttachment = &depthRef;
+
+  std::array<VkSubpassDependency, 4> deps = {};
   deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
   deps[0].dstSubpass    = 0;
   deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
   deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[1].srcSubpass    = 0;
-  deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
-  deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-  deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  deps[1].srcSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[1].dstSubpass    = 1;
+  deps[1].srcStageMask  = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  deps[1].dstStageMask  = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  deps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+  deps[2].srcSubpass    = 0;
+  deps[2].dstSubpass    = 1;
+  deps[2].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[2].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+  deps[3].srcSubpass    = 1;
+  deps[3].dstSubpass    = VK_SUBPASS_EXTERNAL;
+  deps[3].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[3].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[3].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[3].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  std::array<VkAttachmentDescription, 2> attachments = {colorAtt, depthAtt};
 
   VkRenderPassCreateInfo ci = {};
   ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-  ci.attachmentCount = 1;
-  ci.pAttachments    = &att;
-  ci.subpassCount    = 1;
-  ci.pSubpasses      = &subpass;
+  ci.attachmentCount = static_cast<uint32_t>(attachments.size());
+  ci.pAttachments    = attachments.data();
+  ci.subpassCount    = static_cast<uint32_t>(subpasses.size());
+  ci.pSubpasses      = subpasses.data();
   ci.dependencyCount = static_cast<uint32_t>(deps.size());
   ci.pDependencies   = deps.data();
   if (vkCreateRenderPass(device, &ci, nullptr, &litRenderPass) != VK_SUCCESS)

@@ -385,6 +385,8 @@ void ShadowPass::recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
           }
 
           const Material &material = mesh->getMaterial();
+          if (material.alphaBlended)
+            continue;
           VkCullModeFlags wantCull =
               material.doubleSided ? VK_CULL_MODE_NONE : defaultCull;
           if (wantCull != lastCull) {
@@ -506,6 +508,8 @@ void ShadowPass::recordPoint(VkCommandBuffer cmd, SceneNode &rootNode,
                ++meshIndex) {
             const Mesh *mesh = model->getMesh(meshIndex);
             const Material &material = mesh->getMaterial();
+            if (material.alphaBlended)
+              continue;
             VkCullModeFlags wantCull =
                 material.doubleSided ? VK_CULL_MODE_NONE : defaultCull;
             if (wantCull != lastCull) {

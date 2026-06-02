@@ -31,6 +31,16 @@ public:
   }
   VkPipeline getLitPipeline() const { return litPipeline; }
   VkPipelineLayout getLitLayout() const { return litPipelineLayout; }
+  VkPipeline getTransparentPipeline() const { return transparentPipeline; }
+  VkPipelineLayout getTransparentLayout() const {
+    return transparentPipelineLayout;
+  }
+  VkPipeline getTransparentInstancedPipeline() const {
+    return transparentInstancedPipeline;
+  }
+  VkPipelineLayout getTransparentInstancedLayout() const {
+    return transparentInstancedPipelineLayout;
+  }
   VkPipeline getSsgiPipeline() const { return ssgiPipeline; }
   VkPipelineLayout getSsgiLayout() const { return ssgiPipelineLayout; }
   // "Deferred" handle now drives the SSR composite stage (composition subpass 0).
@@ -48,6 +58,10 @@ private:
   VkPipelineLayout instancedPipelineLayout = VK_NULL_HANDLE;
   VkPipeline litPipeline = VK_NULL_HANDLE;
   VkPipelineLayout litPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline transparentPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout transparentPipelineLayout = VK_NULL_HANDLE;
+  VkPipeline transparentInstancedPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout transparentInstancedPipelineLayout = VK_NULL_HANDLE;
   VkPipeline ssgiPipeline = VK_NULL_HANDLE;
   VkPipelineLayout ssgiPipelineLayout = VK_NULL_HANDLE;
   VkPipeline deferredPipeline = VK_NULL_HANDLE;

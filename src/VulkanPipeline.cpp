@@ -384,6 +384,119 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
   vkDestroyShaderModule(device, litFragMod, nullptr);
 
+  // 3a.1. TRANSPARENT FORWARD PIPELINES
+  // Draw alphaMode=BLEND meshes into the HDR lit buffer after deferred
+  // lighting. Subpass 1 loads the G-buffer depth as read-only; these pipelines
+  // depth-test against opaque geometry but do not write depth.
+  {
+    auto tVertCode = readFile("../Shaders/shader.vert.spv");
+    auto tFragCode = readFile("../Shaders/transparent.frag.spv");
+    VkShaderModule tVertMod = createShaderModule(device, tVertCode);
+    VkShaderModule tFragMod = createShaderModule(device, tFragCode);
+
+    VkPipelineShaderStageCreateInfo tStages[2] = {};
+    tStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr,
+                  0, VK_SHADER_STAGE_VERTEX_BIT, tVertMod, "main", nullptr};
+    tStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr,
+                  0, VK_SHADER_STAGE_FRAGMENT_BIT, tFragMod, "main", nullptr};
+
+    VkDescriptorSetLayout transparentLayouts[] = {
+        descriptors.getVPLayout(), descriptors.getBindlessLayout()};
+    VkPipelineLayoutCreateInfo transparentLayoutCI = {};
+    transparentLayoutCI.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    transparentLayoutCI.setLayoutCount = 2;
+    transparentLayoutCI.pSetLayouts = transparentLayouts;
+    transparentLayoutCI.pushConstantRangeCount = 1;
+    transparentLayoutCI.pPushConstantRanges = &pcRange;
+    if (vkCreatePipelineLayout(device, &transparentLayoutCI, nullptr,
+                               &transparentPipelineLayout) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create transparent pipeline layout");
+
+    VkPipelineDepthStencilStateCreateInfo transparentDepth = depthStencil;
+    transparentDepth.depthWriteEnable = VK_FALSE;
+    transparentDepth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+    VkPipelineColorBlendAttachmentState alphaBlend = blendOff;
+    alphaBlend.blendEnable = VK_TRUE;
+    alphaBlend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    alphaBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    alphaBlend.colorBlendOp = VK_BLEND_OP_ADD;
+    alphaBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    alphaBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    alphaBlend.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    VkPipelineColorBlendStateCreateInfo transparentBlend = {};
+    transparentBlend.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    transparentBlend.attachmentCount = 1;
+    transparentBlend.pAttachments = &alphaBlend;
+
+    VkGraphicsPipelineCreateInfo transparentPCI = geoPCI;
+    transparentPCI.pStages = tStages;
+    transparentPCI.pDepthStencilState = &transparentDepth;
+    transparentPCI.pColorBlendState = &transparentBlend;
+    transparentPCI.layout = transparentPipelineLayout;
+    transparentPCI.renderPass = litPass;
+    transparentPCI.subpass = 1;
+    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &transparentPCI,
+                                  nullptr, &transparentPipeline) != VK_SUCCESS)
+      throw std::runtime_error("Failed to create transparent pipeline");
+
+    vkDestroyShaderModule(device, tVertMod, nullptr);
+
+    auto tiVertCode = readFile("../Shaders/shader_instanced.vert.spv");
+    VkShaderModule tiVertMod = createShaderModule(device, tiVertCode);
+    VkPipelineShaderStageCreateInfo tiStages[2] = {};
+    tiStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr,
+                   0, VK_SHADER_STAGE_VERTEX_BIT, tiVertMod, "main", nullptr};
+    tiStages[1] = tStages[1];
+
+    VkVertexInputBindingDescription tiBindings[2] = {};
+    tiBindings[0] = binding;
+    tiBindings[1].binding = 1;
+    tiBindings[1].stride = sizeof(InstanceData);
+    tiBindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+    std::array<VkVertexInputAttributeDescription, 14> tiAttrs = {};
+    for (int i = 0; i < 6; ++i)
+      tiAttrs[i] = attrs[i];
+    for (int i = 0; i < 4; ++i)
+      tiAttrs[6 + i] = {static_cast<uint32_t>(6 + i), 1,
+                        VK_FORMAT_R32G32B32A32_SFLOAT,
+                        static_cast<uint32_t>(i * 16)};
+    for (int i = 0; i < 4; ++i)
+      tiAttrs[10 + i] = {static_cast<uint32_t>(10 + i), 1,
+                         VK_FORMAT_R32G32B32A32_SFLOAT,
+                         static_cast<uint32_t>(64 + i * 16)};
+
+    VkPipelineVertexInputStateCreateInfo tiVI = {};
+    tiVI.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    tiVI.vertexBindingDescriptionCount = 2;
+    tiVI.pVertexBindingDescriptions = tiBindings;
+    tiVI.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(tiAttrs.size());
+    tiVI.pVertexAttributeDescriptions = tiAttrs.data();
+
+    if (vkCreatePipelineLayout(device, &transparentLayoutCI, nullptr,
+                               &transparentInstancedPipelineLayout) !=
+        VK_SUCCESS)
+      throw std::runtime_error(
+          "Failed to create transparent instanced pipeline layout");
+
+    VkGraphicsPipelineCreateInfo tiPCI = transparentPCI;
+    tiPCI.pStages = tiStages;
+    tiPCI.pVertexInputState = &tiVI;
+    tiPCI.layout = transparentInstancedPipelineLayout;
+    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &tiPCI, nullptr,
+                                  &transparentInstancedPipeline) != VK_SUCCESS)
+      throw std::runtime_error(
+          "Failed to create transparent instanced pipeline");
+
+    vkDestroyShaderModule(device, tiVertMod, nullptr);
+    vkDestroyShaderModule(device, tFragMod, nullptr);
+  }
+
   // 3a'. SSGI PIPELINE  (second.vert + ssgi.frag → ssgiBuffer, ssgi pass).
   // Same fullscreen-quad shape as lit; sees the same descriptor sets
   // (VP + G-buffer) so it can sample G-buffer + scene UBO directly.
@@ -536,6 +649,10 @@ void VulkanPipeline::cleanup(VkDevice device) {
   vkDestroyPipelineLayout(device, deferredPipelineLayout, nullptr);
   vkDestroyPipeline(device, ssgiPipeline, nullptr);
   vkDestroyPipelineLayout(device, ssgiPipelineLayout, nullptr);
+  vkDestroyPipeline(device, transparentInstancedPipeline, nullptr);
+  vkDestroyPipelineLayout(device, transparentInstancedPipelineLayout, nullptr);
+  vkDestroyPipeline(device, transparentPipeline, nullptr);
+  vkDestroyPipelineLayout(device, transparentPipelineLayout, nullptr);
   vkDestroyPipeline(device, litPipeline, nullptr);
   vkDestroyPipelineLayout(device, litPipelineLayout, nullptr);
   vkDestroyPipeline(device, shadowPipeline, nullptr);

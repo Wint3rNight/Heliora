@@ -284,7 +284,8 @@ struct ModelPushConstants {
   // shader path-checks against that and falls back to a literal value.
   alignas(16) glm::uvec4 texIdx0; // (albedo, normal, metallic, roughness)
   // texIdx1 = (ao, materialFlags, alphaCutoff255, _)
-  // materialFlags bit 0 = cloth, bit 1 = glTF alphaMode MASK.
+  // materialFlags bit 0 = cloth, bit 1 = glTF alphaMode MASK,
+  // bit 2 = glTF alphaMode BLEND.
   alignas(16) glm::uvec4 texIdx1;
 };
 

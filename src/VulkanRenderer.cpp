@@ -163,7 +163,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 3. Render passes
     renderPassManager.createGBufferRenderPass(
         device.getLogicalDevice(), gb0Fmt, gb1Fmt, gb2Fmt, gBufferDepthFormat);
-    renderPassManager.createLitRenderPass(device.getLogicalDevice(), litFormat);
+    renderPassManager.createLitRenderPass(device.getLogicalDevice(), litFormat,
+                                          gBufferDepthFormat);
     renderPassManager.createSsgiRenderPass(device.getLogicalDevice(), litFormat);
     renderPassManager.createRenderPass(device.getLogicalDevice(),
                                        swapchainFormat, colorFormat,
@@ -237,6 +238,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
     createGBuffer();
+    createLitFramebuffers();
 
     // 9b. TAA descriptor sets (history-prev + depth + colorBuffer-current
     //     + bloom pyramid result).
@@ -789,6 +791,7 @@ void VulkanRenderer::recreateSwapChain() {
   autoExposurePass.cleanup();
   compositePass.cleanup();
   gpuDrivenGBufferPass.cleanup();
+  cleanupLitFramebuffers();
   cleanupGBuffer();
   ssaoPass.cleanup();
   bloomPass.cleanup();
@@ -823,6 +826,7 @@ void VulkanRenderer::recreateSwapChain() {
                          historyViews);
   }
   createGBuffer();
+  createLitFramebuffers();
   gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
                               renderPassManager.getGBufferRenderPass(),
                               swapchain.getExtent(), gBufferDepthViews,
@@ -1164,7 +1168,7 @@ void VulkanRenderer::createLitResources() {
 
   litImages.clear();
   litViews.clear();
-  litFramebuffers.assign(count, VK_NULL_HANDLE);
+  litFramebuffers.clear();
   litImages.reserve(count);
   litViews.reserve(count);
 
@@ -1208,18 +1212,6 @@ void VulkanRenderer::createLitResources() {
          VK_SHARING_MODE_EXCLUSIVE, graphicsFamily});
     renderResources.frame(i).lit = litImages.back().get();
 
-    VkImageView attachment = v;
-    VkFramebufferCreateInfo fbci = {};
-    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbci.renderPass = renderPassManager.getLitRenderPass();
-    fbci.attachmentCount = 1;
-    fbci.pAttachments = &attachment;
-    fbci.width = swapchain.getExtent().width;
-    fbci.height = swapchain.getExtent().height;
-    fbci.layers = 1;
-    if (vkCreateFramebuffer(dev, &fbci, nullptr, &litFramebuffers[i]) !=
-        VK_SUCCESS)
-      throw std::runtime_error("Failed to create lit framebuffer");
   }
 
   // One sampler shared across all swapchain images (linear, clamp).
@@ -1238,12 +1230,42 @@ void VulkanRenderer::createLitResources() {
   }
 }
 
-void VulkanRenderer::cleanupLitResources() {
+void VulkanRenderer::createLitFramebuffers() {
+  VkDevice dev = device.getLogicalDevice();
+  const size_t count = swapchain.getImageCount();
+  if (litViews.size() != count || gBufferDepthViews.size() != count)
+    throw std::runtime_error("Lit framebuffer attachments are not ready");
+
+  cleanupLitFramebuffers();
+  litFramebuffers.assign(count, VK_NULL_HANDLE);
+  for (size_t i = 0; i < count; ++i) {
+    std::array<VkImageView, 2> attachments = {
+        litViews[i].get(), gBufferDepthViews[i].get()};
+    VkFramebufferCreateInfo fbci = {};
+    fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    fbci.renderPass = renderPassManager.getLitRenderPass();
+    fbci.attachmentCount = static_cast<uint32_t>(attachments.size());
+    fbci.pAttachments = attachments.data();
+    fbci.width = swapchain.getExtent().width;
+    fbci.height = swapchain.getExtent().height;
+    fbci.layers = 1;
+    if (vkCreateFramebuffer(dev, &fbci, nullptr, &litFramebuffers[i]) !=
+        VK_SUCCESS)
+      throw std::runtime_error("Failed to create lit framebuffer");
+  }
+}
+
+void VulkanRenderer::cleanupLitFramebuffers() {
   VkDevice dev = device.getLogicalDevice();
   for (VkFramebuffer fb : litFramebuffers)
     if (fb != VK_NULL_HANDLE)
       vkDestroyFramebuffer(dev, fb, nullptr);
   litFramebuffers.clear();
+}
+
+void VulkanRenderer::cleanupLitResources() {
+  VkDevice dev = device.getLogicalDevice();
+  cleanupLitFramebuffers();
   litViews.clear();
   litImages.clear();
   if (litSampler != VK_NULL_HANDLE) {
@@ -1500,6 +1522,7 @@ void VulkanRenderer::cleanup() {
   autoExposurePass.cleanup();
   compositePass.cleanup();
   gpuDrivenGBufferPass.cleanup();
+  cleanupLitFramebuffers();
   cleanupGBuffer();
   ssaoPass.cleanup();
   bloomPass.cleanup();
@@ -1568,7 +1591,8 @@ static glm::uvec4 materialTextureIndices0(const Material &mat) {
 
 static glm::uvec4 materialTextureIndices1(const Material &mat) {
   const uint32_t materialFlags =
-      (mat.isCloth ? 1u : 0u) | (mat.alphaMasked ? 2u : 0u);
+      (mat.isCloth ? 1u : 0u) | (mat.alphaMasked ? 2u : 0u) |
+      (mat.alphaBlended ? 4u : 0u);
   const uint32_t alphaCutoff255 = static_cast<uint32_t>(
       glm::clamp(mat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
   return glm::uvec4(static_cast<uint32_t>(mat.aoTextureId), materialFlags,
@@ -1597,6 +1621,19 @@ static void sortGBufferDrawItemsForState(std::vector<GBufferDrawItem> &items) {
 struct GBufferStateStats {
   uint32_t pipelineBinds = 0;
   uint32_t dynamicStateChanges = 0;
+};
+
+struct TransparentDrawItem {
+  GBufferDrawKind kind = GBufferDrawKind::Mesh;
+  const Mesh *mesh = nullptr;
+  int lod = 0;
+  ModelPushConstants push{};
+  VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
+  VkBuffer instanceBuffer = VK_NULL_HANDLE;
+  const std::vector<InstanceData> *instances = nullptr;
+  uint32_t instanceCount = 1;
+  uint32_t indexCount = 0;
+  float distanceSq = 0.0f;
 };
 
 static GBufferStateStats estimateGBufferStateStats(
@@ -1713,6 +1750,8 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
                             pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
+    recordTransparentPass(cmd, currentImage, viewport, scissor);
     vkCmdEndRenderPass(cmd);
     noteLitFinalLayout(currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
@@ -1874,6 +1913,8 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
                             pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
                             nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
+    recordTransparentPass(cmd, currentImage, viewport, scissor);
     vkCmdEndRenderPass(cmd);
     noteLitFinalLayout(currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
@@ -1957,6 +1998,8 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
               continue;
 
             const Material &mat = mesh->getMaterial();
+            if (mat.alphaBlended)
+              continue;
             GBufferDrawItem item{};
             item.kind = GBufferDrawKind::Mesh;
             item.mesh = mesh;
@@ -2000,6 +2043,8 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     for (size_t k = 0; k < mdl->getMeshCount(); k++) {
       const Mesh *mesh = mdl->getMesh(k);
       const Material &mat = mesh->getMaterial();
+      if (mat.alphaBlended)
+        continue;
       GBufferDrawItem item{};
       item.kind = GBufferDrawKind::Instanced;
       item.mesh = mesh;
@@ -2205,6 +2250,179 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
       imguiGpuDrivenEnabled, imguiHzbCullingEnabled, minGpuDrivenCandidates);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
+  vkdbgEndLabel(cmd);
+}
+
+void VulkanRenderer::recordTransparentPass(VkCommandBuffer cmd,
+                                           uint32_t currentImage,
+                                           const VkViewport &viewport,
+                                           const VkRect2D &scissor) {
+  std::vector<TransparentDrawItem> drawItems;
+  drawItems.reserve(32);
+
+  glm::vec4 frustumPlanes[6];
+  extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
+  const glm::vec3 cameraPos = glm::vec3(sceneUbo.cameraPosition);
+
+  auto appendNode = [&](auto &self, SceneNode *node) -> void {
+    if (node->getModelId() >= 0) {
+      MeshModel *mdl = modelManager.getModel(node->getModelId());
+      if (mdl) {
+        glm::mat4 model = node->getGlobalTransform();
+        glm::vec3 wCenter =
+            glm::vec3(model * glm::vec4(mdl->boundingCenter, 1.0f));
+        float maxScale =
+            glm::max(glm::length(glm::vec3(model[0])),
+                     glm::max(glm::length(glm::vec3(model[1])),
+                              glm::length(glm::vec3(model[2]))));
+        if (sphereInFrustum(frustumPlanes, wCenter,
+                            mdl->boundingRadius * maxScale)) {
+          float camDist = glm::length(wCenter - cameraPos);
+          int lod = (camDist < imguiLodNear)  ? 0
+                    : (camDist < imguiLodFar) ? 1
+                                              : 2;
+
+          ModelPushConstants basePush{};
+          basePush.model = model;
+          basePush.normal = node->getNormalMatrix();
+
+          for (size_t k = 0; k < mdl->getMeshCount(); ++k) {
+            const Mesh *mesh = mdl->getMesh(k);
+            const Material &mat = mesh->getMaterial();
+            if (!mat.alphaBlended)
+              continue;
+
+            glm::vec3 meshWCenter =
+                glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
+            if (!sphereInFrustum(frustumPlanes, meshWCenter,
+                                 mesh->boundingRadius * maxScale))
+              continue;
+
+            TransparentDrawItem item{};
+            item.kind = GBufferDrawKind::Mesh;
+            item.mesh = mesh;
+            item.lod = std::min(lod, mesh->getLodCount() - 1);
+            item.push = basePush;
+            item.push.texIdx0 = materialTextureIndices0(mat);
+            item.push.texIdx1 = materialTextureIndices1(mat);
+            item.cullMode =
+                mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+            item.indexCount =
+                static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+            const glm::vec3 toCamera = meshWCenter - cameraPos;
+            item.distanceSq = glm::dot(toCamera, toCamera);
+            drawItems.push_back(item);
+          }
+        }
+      }
+    }
+    for (auto &child : node->getChildren())
+      self(self, child.get());
+  };
+  appendNode(appendNode, &rootNode);
+
+  for (const InstancedDrawable &drawable : instancedDrawables) {
+    MeshModel *mdl = modelManager.getModel(drawable.modelId);
+    if (!mdl || drawable.instances.empty())
+      continue;
+    if (!sphereInFrustum(frustumPlanes, drawable.groupCenter,
+                         drawable.groupRadius))
+      continue;
+
+    float groupDist = glm::length(drawable.groupCenter - cameraPos);
+    int instLod = (groupDist < imguiLodNear)  ? 0
+                  : (groupDist < imguiLodFar) ? 1
+                                              : 2;
+    for (size_t k = 0; k < mdl->getMeshCount(); ++k) {
+      const Mesh *mesh = mdl->getMesh(k);
+      const Material &mat = mesh->getMaterial();
+      if (!mat.alphaBlended)
+        continue;
+
+      TransparentDrawItem item{};
+      item.kind = GBufferDrawKind::Instanced;
+      item.mesh = mesh;
+      item.lod = std::min(instLod, mesh->getLodCount() - 1);
+      item.push.texIdx0 = materialTextureIndices0(mat);
+      item.push.texIdx1 = materialTextureIndices1(mat);
+      item.cullMode =
+          mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+      item.instanceBuffer = drawable.instanceBuffer.get();
+      item.instances = &drawable.instances;
+      item.instanceCount = static_cast<uint32_t>(drawable.instances.size());
+      item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+      const glm::vec3 toCamera = drawable.groupCenter - cameraPos;
+      item.distanceSq = glm::dot(toCamera, toCamera);
+      drawItems.push_back(item);
+    }
+  }
+
+  if (drawItems.empty())
+    return;
+
+  std::stable_sort(drawItems.begin(), drawItems.end(),
+                   [](const TransparentDrawItem &a,
+                      const TransparentDrawItem &b) {
+                     return a.distanceSq > b.distanceSq;
+                   });
+
+  vkdbgBeginLabel(cmd, "Transparent Forward Pass", 0.1f, 0.65f, 0.9f);
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+  const std::array<VkDescriptorSet, 2> sets = {
+      descriptorManager.getVPSet(currentImage),
+      descriptorManager.getBindlessSet()};
+
+  GBufferDrawKind boundKind = GBufferDrawKind::Mesh;
+  bool pipelineBound = false;
+  VkCullModeFlags lastCull = VK_CULL_MODE_BACK_BIT;
+  bool cullValid = false;
+
+  for (const TransparentDrawItem &item : drawItems) {
+    if (!pipelineBound || boundKind != item.kind) {
+      VkPipeline pipe = item.kind == GBufferDrawKind::Mesh
+                            ? pipeline.getTransparentPipeline()
+                            : pipeline.getTransparentInstancedPipeline();
+      VkPipelineLayout layout = item.kind == GBufferDrawKind::Mesh
+                                    ? pipeline.getTransparentLayout()
+                                    : pipeline.getTransparentInstancedLayout();
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0,
+                              static_cast<uint32_t>(sets.size()), sets.data(),
+                              0, nullptr);
+      boundKind = item.kind;
+      pipelineBound = true;
+      cullValid = false;
+    }
+
+    if (!cullValid || item.cullMode != lastCull) {
+      vkCmdSetCullMode(cmd, item.cullMode);
+      lastCull = item.cullMode;
+      cullValid = true;
+    }
+
+    VkBuffer vb[] = {item.mesh->getVertexBuffer()};
+    VkDeviceSize off[] = {0};
+    vkCmdBindVertexBuffers(cmd, 0, 1, vb, off);
+    if (item.kind == GBufferDrawKind::Instanced) {
+      VkDeviceSize instanceOff = 0;
+      vkCmdBindVertexBuffers(cmd, 1, 1, &item.instanceBuffer, &instanceOff);
+    }
+    vkCmdBindIndexBuffer(cmd, item.mesh->getIndexBuffer(item.lod), 0,
+                         VK_INDEX_TYPE_UINT32);
+
+    VkPipelineLayout layout = item.kind == GBufferDrawKind::Mesh
+                                  ? pipeline.getTransparentLayout()
+                                  : pipeline.getTransparentInstancedLayout();
+    vkCmdPushConstants(cmd, layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(ModelPushConstants), &item.push);
+    vkCmdDrawIndexed(cmd, item.indexCount, item.instanceCount, 0, 0, 0);
+    metrics.recordDrawCall(item.indexCount * item.instanceCount);
+  }
+
   vkdbgEndLabel(cmd);
 }
 

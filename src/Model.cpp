@@ -288,12 +288,16 @@ MeshModel::LoadMaterials(const aiScene *scene) {
       textureList[i].doubleSided = true;
 
     aiString alphaMode;
-    if (mat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS &&
-        toLower(alphaMode.C_Str()) == "mask") {
-      textureList[i].alphaMasked = true;
-      float cutoff = 0.5f;
-      if (mat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff) == AI_SUCCESS)
-        textureList[i].alphaCutoff = std::clamp(cutoff, 0.0f, 1.0f);
+    if (mat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS) {
+      const std::string mode = toLower(alphaMode.C_Str());
+      if (mode == "mask") {
+        textureList[i].alphaMasked = true;
+        float cutoff = 0.5f;
+        if (mat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff) == AI_SUCCESS)
+          textureList[i].alphaCutoff = std::clamp(cutoff, 0.0f, 1.0f);
+      } else if (mode == "blend") {
+        textureList[i].alphaBlended = true;
+      }
     }
 
     // Cloth flag — check the material's own name first, since glTF v2

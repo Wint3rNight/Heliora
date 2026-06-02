@@ -72,6 +72,7 @@ int ModelManager::loadModel(const std::string &modelFile,
     materials[i].doubleSided = textureNames[i].doubleSided;
     materials[i].isCloth     = textureNames[i].isCloth;
     materials[i].alphaMasked = textureNames[i].alphaMasked;
+    materials[i].alphaBlended = textureNames[i].alphaBlended;
     materials[i].alphaCutoff = textureNames[i].alphaCutoff;
   }
 

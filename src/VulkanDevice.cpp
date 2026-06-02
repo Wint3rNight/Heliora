@@ -65,6 +65,21 @@ inline void populateDebugMessengerCreateInfo(
                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
   createInfo.pfnUserCallback = debugCallback; // Point to our callback above
 }
+
+bool deviceSupportsExtension(VkPhysicalDevice device,
+                             const char *extensionName) {
+  uint32_t extensionCount = 0;
+  vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+                                       nullptr);
+  std::vector<VkExtensionProperties> extensions(extensionCount);
+  vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+                                       extensions.data());
+  for (const auto &extension : extensions) {
+    if (strcmp(extensionName, extension.extensionName) == 0)
+      return true;
+  }
+  return false;
+}
 } // namespace
 
 #include <cstdio>
@@ -252,10 +267,15 @@ void VulkanDevice::createLogicalDevice() {
       queueCreateInfos.size()); // number of queue create infos
   deviceCreateInfo.pQueueCreateInfos =
       queueCreateInfos.data(); // list of queue create infos
+  std::vector<const char *> enabledExtensions = deviceExtensions;
+  memoryBudgetEnabled = deviceSupportsExtension(
+      mainDevice.physicalDevice, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+  if (memoryBudgetEnabled)
+    enabledExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
   deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(
-      deviceExtensions.size()); // number of device extensions to enable
+      enabledExtensions.size()); // number of device extensions to enable
   deviceCreateInfo.ppEnabledExtensionNames =
-      deviceExtensions.data(); // list of enabled device extensions
+      enabledExtensions.data(); // list of enabled device extensions
 
   // Physical-device features. Switched from the legacy `pEnabledFeatures`
   // single-struct form to `VkPhysicalDeviceFeatures2` + a pNext chain so we
@@ -325,6 +345,12 @@ void VulkanDevice::createLogicalDevice() {
                  "graphics family {}",
                  indices.computeFamily);
   }
+  if (memoryBudgetEnabled) {
+    spdlog::info("VK_EXT_memory_budget enabled for VMA budget reporting");
+  } else {
+    spdlog::info("VK_EXT_memory_budget unavailable; VMA will use estimated "
+                 "memory budgets");
+  }
 }
 
 // --- Phase 7.1: debug-utils function pointer loader ---
@@ -380,6 +406,8 @@ void VulkanDevice::createVmaAllocator() {
   allocatorInfo.device = mainDevice.logicalDevice;
   allocatorInfo.instance = instance;
   allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+  if (memoryBudgetEnabled)
+    allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 
   if (vmaCreateAllocator(&allocatorInfo, &allocator) != VK_SUCCESS) {
     spdlog::critical("Failed to create VMA Allocator");

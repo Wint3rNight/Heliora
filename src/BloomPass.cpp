@@ -51,7 +51,8 @@ VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
 
 void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
                        size_t swapCount,
-                       const std::vector<ImageViewHandle> &litViews) {
+                       const std::vector<ImageViewHandle> &litViews,
+                       VkPipelineCache pipelineCache) {
   cleanup();
   device = &newDevice;
   renderExtent = extent;
@@ -81,6 +82,7 @@ void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
 
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
     for (size_t i = 0; i < swapCount; ++i) {
       VkImageCreateInfo ci{};
@@ -313,7 +315,7 @@ void BloomPass::create(VulkanDevice &newDevice, VkExtent2D extent,
     ci.stage = stage;
     ci.layout = layout;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr,
+    if (vkCreateComputePipelines(dev, pipelineCache, 1, &ci, nullptr,
                                  &pipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create bloom compute pipeline");
     vkDestroyShaderModule(dev, module, nullptr);
@@ -363,7 +365,7 @@ void BloomPass::cleanup() {
   device = nullptr;
 }
 
-void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
+bool BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
                        const std::vector<AllocatedImage> &litImages,
                        bool enabled, int debugMode, float threshold,
                        float radius, float intensity) {
@@ -371,7 +373,7 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
       downsamplePipeline == VK_NULL_HANDLE ||
       upsamplePipeline == VK_NULL_HANDLE || currentImage >= litImages.size() ||
       currentImage >= mips[0].images.size())
-    return;
+    return false;
 
   vkdbgBeginLabel(cmd, "Bloom Pyramid (downsample + upsample)", 1.0f, 0.55f,
                   0.2f);
@@ -462,7 +464,8 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, (dstExtent.width + 7) / 8,
                   (dstExtent.height + 7) / 8, 1);
-    barrierBloomMip(static_cast<uint32_t>(level - 1));
+    if (level > 1)
+      barrierBloomMip(static_cast<uint32_t>(level - 1));
   }
 
   std::array<VkImageMemoryBarrier, kMipCount> toRead{};
@@ -483,6 +486,7 @@ void BloomPass::record(VkCommandBuffer cmd, uint32_t currentImage,
                        static_cast<uint32_t>(toRead.size()), toRead.data());
 
   vkdbgEndLabel(cmd);
+  return true;
 }
 
 std::vector<VkImageView> BloomPass::mip0Views() const {

@@ -36,7 +36,8 @@ VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
 
 void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
                       size_t swapCount,
-                      const DescriptorManager &descriptorManager) {
+                      const DescriptorManager &descriptorManager,
+                      VkPipelineCache pipelineCache) {
   cleanup();
   device = &newDevice;
   renderExtent = extent;
@@ -63,6 +64,7 @@ void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
 
   VmaAllocationCreateInfo allocCI{};
   allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  allocCI.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   for (size_t i = 0; i < swapCount; ++i) {
     VkImageCreateInfo imageCI{};
@@ -185,7 +187,7 @@ void SsaoPass::create(VulkanDevice &newDevice, VkExtent2D extent,
   pipelineCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipelineCI.stage = stageCI;
   pipelineCI.layout = pipelineLayout;
-  if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipelineCI, nullptr,
+  if (vkCreateComputePipelines(dev, pipelineCache, 1, &pipelineCI, nullptr,
                                &pipeline) != VK_SUCCESS) {
     vkDestroyShaderModule(dev, shader, nullptr);
     throw std::runtime_error("Failed to create SSAO compute pipeline");

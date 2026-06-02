@@ -36,7 +36,8 @@ public:
   void create(VulkanDevice &device, ModelManager &modelManager,
               const DescriptorManager &descriptorManager,
               VkRenderPass gBufferRenderPass, VkExtent2D extent,
-              const std::vector<ImageViewHandle> &gBufferDepthViews);
+              const std::vector<ImageViewHandle> &gBufferDepthViews,
+              VkPipelineCache pipelineCache);
   void cleanup();
 
   void registerModelGeometry(int modelId, ModelManager &modelManager);
@@ -87,7 +88,10 @@ private:
   };
 
   bool ensureBuffer(AllocatedBuffer &buffer, VkDeviceSize &capacity,
-                    VkDeviceSize requiredSize, VkBufferUsageFlags usage);
+                    VkDeviceSize requiredSize, VkBufferUsageFlags usage,
+                    VmaMemoryUsage memoryUsage = VMA_MEMORY_USAGE_AUTO,
+                    VmaAllocationCreateFlags memoryFlags =
+                        RENDER_UPLOAD_ALLOCATION_FLAGS);
   const GeometryRange *findGeometry(const Mesh *mesh, int lod) const;
   void registerModelGeometryInternal(int modelId, ModelManager &modelManager);
   void uploadStaticGeometry();

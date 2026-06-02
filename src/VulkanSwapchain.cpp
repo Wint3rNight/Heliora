@@ -278,6 +278,7 @@ AllocatedImage VulkanSwapchain::createImage(VmaAllocator allocator,
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   VkImage img = VK_NULL_HANDLE;
   VmaAllocation alloc = VK_NULL_HANDLE;

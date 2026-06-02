@@ -3,31 +3,7 @@
 #include <cstddef>
 
 #include <array>
-#include <fstream>
-#include <spdlog/spdlog.h>
 #include <stdexcept>
-
-// Helper: load pipeline cache from disk
-static VkPipelineCache createPipelineCache(VkDevice device) {
-  VkPipelineCacheCreateInfo ci = {};
-  ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-
-  std::vector<char> data;
-  std::ifstream f("pipeline_cache.bin", std::ios::ate | std::ios::binary);
-  if (f.is_open()) {
-    data.resize((size_t)f.tellg());
-    f.seekg(0);
-    f.read(data.data(), data.size());
-    f.close();
-    ci.initialDataSize = data.size();
-    ci.pInitialData = data.data();
-    spdlog::info("Loaded pipeline cache ({} bytes)", data.size());
-  }
-
-  VkPipelineCache cache = VK_NULL_HANDLE;
-  vkCreatePipelineCache(device, &ci, nullptr, &cache);
-  return cache;
-}
 
 // ---------------------------------------------------------------------------
 void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
@@ -36,9 +12,8 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
                                      VkRenderPass shadowPassRP,
                                      VkRenderPass ssgiPass,
                                      VkExtent2D extent,
+                                     VkPipelineCache pipelineCache,
                                      const DescriptorManager &descriptors) {
-  pipelineCache = createPipelineCache(device);
-
   // ---- Common vertex input: full Vertex struct (6 attrs) ----
   VkVertexInputBindingDescription binding = {};
   binding.binding = 0;
@@ -555,24 +530,6 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
 // ---------------------------------------------------------------------------
 void VulkanPipeline::cleanup(VkDevice device) {
-  if (pipelineCache != VK_NULL_HANDLE) {
-    size_t sz = 0;
-    if (vkGetPipelineCacheData(device, pipelineCache, &sz, nullptr) ==
-            VK_SUCCESS &&
-        sz > 0) {
-      std::vector<char> data(sz);
-      if (vkGetPipelineCacheData(device, pipelineCache, &sz, data.data()) ==
-          VK_SUCCESS) {
-        std::ofstream f("pipeline_cache.bin", std::ios::binary);
-        if (f.is_open()) {
-          f.write(data.data(), sz);
-          spdlog::info("Saved pipeline cache ({} bytes)", sz);
-        }
-      }
-    }
-    vkDestroyPipelineCache(device, pipelineCache, nullptr);
-  }
-
   vkDestroyPipeline(device, secondPipeline, nullptr);
   vkDestroyPipelineLayout(device, secondPipelineLayout, nullptr);
   vkDestroyPipeline(device, deferredPipeline, nullptr);

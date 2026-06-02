@@ -53,17 +53,17 @@ VkShaderModule createLocalShaderModule(VkDevice device,
 bool GpuDrivenGBufferPass::ensureBuffer(AllocatedBuffer &buffer,
                                         VkDeviceSize &capacity,
                                         VkDeviceSize requiredSize,
-                                        VkBufferUsageFlags usage) {
+                                        VkBufferUsageFlags usage,
+                                        VmaMemoryUsage memoryUsage,
+                                        VmaAllocationCreateFlags memoryFlags) {
   if (requiredSize == 0)
     requiredSize = 4;
   if (buffer && capacity >= requiredSize)
     return false;
 
   buffer.reset();
-  createBuffer(device->getAllocator(), requiredSize, usage,
-               VMA_MEMORY_USAGE_AUTO,
-               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-               &buffer);
+  createBuffer(device->getAllocator(), requiredSize, usage, memoryUsage,
+               memoryFlags, &buffer);
   capacity = requiredSize;
   return true;
 }
@@ -87,20 +87,38 @@ void GpuDrivenGBufferPass::uploadStaticGeometry() {
       static_cast<VkDeviceSize>(staticIndices.size() * sizeof(uint32_t));
 
   ensureBuffer(staticVertexBuffer, staticVertexBufferSize, vertexBytes,
-               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+               RENDER_DEVICE_ALLOCATION_FLAGS);
   ensureBuffer(staticIndexBuffer, staticIndexBufferSize, indexBytes,
-               VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+               VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+               RENDER_DEVICE_ALLOCATION_FLAGS);
 
+  AllocatedBuffer vertexStaging;
+  createBuffer(device->getAllocator(), vertexBytes,
+               VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
+               RENDER_UPLOAD_ALLOCATION_FLAGS, &vertexStaging);
   void *mapped = nullptr;
-  vmaMapMemory(device->getAllocator(), staticVertexBuffer.getAllocation(),
-               &mapped);
+  vmaMapMemory(device->getAllocator(), vertexStaging.getAllocation(), &mapped);
   memcpy(mapped, staticVertices.data(), static_cast<size_t>(vertexBytes));
-  vmaUnmapMemory(device->getAllocator(), staticVertexBuffer.getAllocation());
+  vmaUnmapMemory(device->getAllocator(), vertexStaging.getAllocation());
+  copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
+             device->getGraphicsCommandPool(), vertexStaging.get(),
+             staticVertexBuffer.get(), vertexBytes);
 
-  vmaMapMemory(device->getAllocator(), staticIndexBuffer.getAllocation(),
-               &mapped);
+  AllocatedBuffer indexStaging;
+  createBuffer(device->getAllocator(), indexBytes,
+               VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
+               RENDER_UPLOAD_ALLOCATION_FLAGS, &indexStaging);
+  vmaMapMemory(device->getAllocator(), indexStaging.getAllocation(), &mapped);
   memcpy(mapped, staticIndices.data(), static_cast<size_t>(indexBytes));
-  vmaUnmapMemory(device->getAllocator(), staticIndexBuffer.getAllocation());
+  vmaUnmapMemory(device->getAllocator(), indexStaging.getAllocation());
+  copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
+             device->getGraphicsCommandPool(), indexStaging.get(),
+             staticIndexBuffer.get(), indexBytes);
 }
 
 void GpuDrivenGBufferPass::registerModelGeometry(int modelId,
@@ -203,7 +221,8 @@ void GpuDrivenGBufferPass::create(
     VulkanDevice &newDevice, ModelManager &modelManager,
     const DescriptorManager &descriptorManager,
     VkRenderPass gBufferRenderPass, VkExtent2D extent,
-    const std::vector<ImageViewHandle> &gBufferDepthViews) {
+    const std::vector<ImageViewHandle> &gBufferDepthViews,
+    VkPipelineCache pipelineCache) {
   device = &newDevice;
   renderExtent = extent;
   VkDevice dev = device->getLogicalDevice();
@@ -282,6 +301,7 @@ void GpuDrivenGBufferPass::create(
 
   VmaAllocationCreateInfo hzbAlloc{};
   hzbAlloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  hzbAlloc.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
   for (size_t i = 0; i < swapCount; ++i) {
     VkImageCreateInfo imageCI{};
     imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -424,21 +444,27 @@ void GpuDrivenGBufferPass::create(
     ensureBuffer(frame.indirectBuffer, frame.indirectBufferSize,
                  sizeof(VkDrawIndexedIndirectCommand),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                 VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                 RENDER_DEVICE_ALLOCATION_FLAGS);
     ensureBuffer(frame.noCullIndirectBuffer, frame.noCullIndirectBufferSize,
                  sizeof(VkDrawIndexedIndirectCommand),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                 VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                 RENDER_DEVICE_ALLOCATION_FLAGS);
     createBuffer(device->getAllocator(), sizeof(uint32_t),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                 VMA_MEMORY_USAGE_AUTO, 0, &frame.countBuffer);
+                 VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                 RENDER_DEVICE_ALLOCATION_FLAGS, &frame.countBuffer);
     createBuffer(device->getAllocator(), sizeof(uint32_t),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                 VMA_MEMORY_USAGE_AUTO, 0, &frame.noCullCountBuffer);
+                 VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                 RENDER_DEVICE_ALLOCATION_FLAGS, &frame.noCullCountBuffer);
     createBuffer(device->getAllocator(), sizeof(GpuDrivenFrustumData),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                  VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
@@ -501,7 +527,7 @@ void GpuDrivenGBufferPass::create(
     pipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeInfo.stage = stage;
     pipeInfo.layout = cullPipelineLayout;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipeInfo, nullptr,
+    if (vkCreateComputePipelines(dev, pipelineCache, 1, &pipeInfo, nullptr,
                                  &cullPipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create GPU cull pipeline");
     vkDestroyShaderModule(dev, compMod, nullptr);
@@ -528,7 +554,7 @@ void GpuDrivenGBufferPass::create(
     pipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeInfo.stage = stage;
     pipeInfo.layout = hzbBuildPipelineLayout;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipeInfo, nullptr,
+    if (vkCreateComputePipelines(dev, pipelineCache, 1, &pipeInfo, nullptr,
                                  &hzbBuildPipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create HZB build pipeline");
     vkDestroyShaderModule(dev, compMod, nullptr);
@@ -648,12 +674,12 @@ void GpuDrivenGBufferPass::create(
     pipeInfo.layout = gBufferPipelineLayout;
     pipeInfo.renderPass = gBufferRenderPass;
     pipeInfo.subpass = 0;
-    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &pipeInfo, nullptr,
+    if (vkCreateGraphicsPipelines(dev, pipelineCache, 1, &pipeInfo, nullptr,
                                   &gBufferPipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create GPU-driven G-buffer pipeline");
 
     raster.cullMode = VK_CULL_MODE_NONE;
-    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &pipeInfo, nullptr,
+    if (vkCreateGraphicsPipelines(dev, pipelineCache, 1, &pipeInfo, nullptr,
                                   &gBufferNoCullPipeline) != VK_SUCCESS)
       throw std::runtime_error(
           "Failed to create no-cull GPU-driven G-buffer pipeline");
@@ -857,13 +883,17 @@ bool GpuDrivenGBufferPass::prepareFrame(
   if (ensureBuffer(frame.indirectBuffer, frame.indirectBufferSize,
                    indirectBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
+                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                   RENDER_DEVICE_ALLOCATION_FLAGS)) {
     frame.descriptorDirty = true;
   }
   if (ensureBuffer(frame.noCullIndirectBuffer,
                    frame.noCullIndirectBufferSize, indirectBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) {
+                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                   RENDER_DEVICE_ALLOCATION_FLAGS)) {
     frame.descriptorDirty = true;
   }
 

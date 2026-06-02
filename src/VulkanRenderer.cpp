@@ -135,6 +135,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
   try {
     // 1. Device
     device.init(window);
+    pipelineCache.init(device.getLogicalDevice());
 
     // 2. Determine formats
     VkFormat swapchainFormat = swapchain.queryImageFormat(device);
@@ -191,13 +192,13 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         shadowPass.pointSampler());
 
     // 7. Texture manager (samplers only at this point)
-    textureManager.init(device);
+    textureManager.init(device, pipelineCache.get());
 
     // 8. Lit-buffer resources (created BEFORE G-buffer set update so that
     //    recreateGBufferSets has the lit views to bind).
     createLitResources();
     bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                     litViews);
+                     litViews, pipelineCache.get());
 
     // 8a. SSGI bounce-buffer images + framebuffers. Sampled by lit.frag,
     //     so the G-buffer descriptor set (set 1) gets a 6th binding
@@ -206,7 +207,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                     renderPassManager.getSsgiRenderPass(),
                     MAX_FRAMES_DRAWS + 1);
     ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                    descriptorManager);
+                    descriptorManager, pipelineCache.get());
 
     // 8b. TAA history images. Format matches litFormat so they live in the
     //     same HDR-precision domain.
@@ -270,10 +271,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         renderPassManager.getLitRenderPass(), renderPassManager.getRenderPass(),
         renderPassManager.getShadowRenderPass(),
         renderPassManager.getSsgiRenderPass(), swapchain.getExtent(),
-        descriptorManager);
+        pipelineCache.get(), descriptorManager);
     gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
                                 renderPassManager.getGBufferRenderPass(),
-                                swapchain.getExtent(), gBufferDepthViews);
+                                swapchain.getExtent(), gBufferDepthViews,
+                                pipelineCache.get());
 
     // 10. IBL resources (requires textureManager and descriptorManager)
     initIBL();
@@ -281,7 +283,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 10b. Auto-exposure compute resources. Must come after createLitResources()
     //      (binds litViews) and after swapchain init (knows image count).
     autoExposurePass.create(device, swapchain.getExtent(), litViews,
-                            litSampler);
+                            litSampler, pipelineCache.get());
 
     // 11. Synchronization
     createSynchronization();
@@ -673,6 +675,7 @@ void VulkanRenderer::draw() {
   gbufferSubmit.pCommandBuffers = &gbufferCmd;
   gbufferSubmit.signalSemaphoreCount = 1;
   gbufferSubmit.pSignalSemaphores = &timeline;
+  metrics.recordQueueSubmit();
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &gbufferSubmit,
                     VK_NULL_HANDLE) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit G-buffer command buffer");
@@ -695,6 +698,7 @@ void VulkanRenderer::draw() {
   ssaoSubmit.pCommandBuffers = &ssaoCmd;
   ssaoSubmit.signalSemaphoreCount = 1;
   ssaoSubmit.pSignalSemaphores = &timeline;
+  metrics.recordQueueSubmit();
   if (vkQueueSubmit(device.getComputeQueue(), 1, &ssaoSubmit,
                     VK_NULL_HANDLE) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit SSAO compute command buffer");
@@ -704,6 +708,7 @@ void VulkanRenderer::draw() {
   shadowSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   shadowSubmit.commandBufferCount = 1;
   shadowSubmit.pCommandBuffers = &shadowCmd;
+  metrics.recordQueueSubmit();
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &shadowSubmit,
                     VK_NULL_HANDLE) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit shadow command buffer");
@@ -729,6 +734,7 @@ void VulkanRenderer::draw() {
   // renderFinished is indexed by acquired swap-image, not by frame-in-flight,
   // so the presentation engine's wait binds to the right semaphore.
   postSubmit.pSignalSemaphores = &renderFinished[imageIndex];
+  metrics.recordQueueSubmit();
   if (vkQueueSubmit(device.getGraphicsQueue(), 1, &postSubmit,
                     drawFences[currentFrame]) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit post command buffer");
@@ -791,12 +797,12 @@ void VulkanRenderer::recreateSwapChain() {
   cleanupTaaResources();
   createLitResources();
   bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                   litViews);
+                   litViews, pipelineCache.get());
   ssgiPass.create(device, swapchain.getExtent(), litFormat,
                   renderPassManager.getSsgiRenderPass(),
                   MAX_FRAMES_DRAWS + 1);
   ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                  descriptorManager);
+                  descriptorManager, pipelineCache.get());
   createTaaResources();
   {
     std::vector<VkImageView> swapViews;
@@ -819,9 +825,11 @@ void VulkanRenderer::recreateSwapChain() {
   createGBuffer();
   gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
                               renderPassManager.getGBufferRenderPass(),
-                              swapchain.getExtent(), gBufferDepthViews);
+                              swapchain.getExtent(), gBufferDepthViews,
+                              pipelineCache.get());
   // Recreate auto-exposure AFTER lit (descriptors reference litViews).
-  autoExposurePass.create(device, swapchain.getExtent(), litViews, litSampler);
+  autoExposurePass.create(device, swapchain.getExtent(), litViews, litSampler,
+                          pipelineCache.get());
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
   frameImageInFlight.assign(MAX_FRAMES_DRAWS,
@@ -984,6 +992,7 @@ void VulkanRenderer::createGBuffer() {
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   auto makeColorImg = [&](AllocatedImage &img, ImageViewHandle &view,
                           VkFormat fmt) {
@@ -1161,6 +1170,7 @@ void VulkanRenderer::createLitResources() {
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   for (size_t i = 0; i < count; ++i) {
     VkImageCreateInfo ci = {};
@@ -1259,6 +1269,7 @@ void VulkanRenderer::createTaaResources() {
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   for (size_t i = 0; i < historyCount; ++i) {
     VkImageCreateInfo ci = {};
@@ -1517,6 +1528,7 @@ void VulkanRenderer::cleanup() {
   cleanupThreadedCommandResources();
 
   pipeline.cleanup(device.getLogicalDevice());
+  pipelineCache.cleanup(device.getLogicalDevice());
   renderPassManager.cleanup(device.getLogicalDevice());
   metrics.cleanup(device.getLogicalDevice());
   device.cleanup();
@@ -1580,6 +1592,47 @@ static void sortGBufferDrawItemsForState(std::vector<GBufferDrawItem> &items) {
     items[i].materialId = static_cast<uint32_t>(i);
     items[i].transformId = static_cast<uint32_t>(i);
   }
+}
+
+struct GBufferStateStats {
+  uint32_t pipelineBinds = 0;
+  uint32_t dynamicStateChanges = 0;
+};
+
+static GBufferStateStats estimateGBufferStateStats(
+    const std::vector<GBufferDrawItem> &items, uint32_t partitionCount) {
+  GBufferStateStats stats{};
+  partitionCount = std::max(1u, partitionCount);
+
+  for (uint32_t partition = 0; partition < partitionCount; ++partition) {
+    const size_t begin =
+        (items.size() * size_t(partition)) / size_t(partitionCount);
+    const size_t end =
+        (items.size() * size_t(partition + 1)) / size_t(partitionCount);
+
+    GBufferDrawKind boundKind = GBufferDrawKind::Mesh;
+    bool pipelineBound = false;
+    VkCullModeFlags lastCull = VK_CULL_MODE_BACK_BIT;
+    bool cullValid = false;
+
+    for (size_t i = begin; i < end; ++i) {
+      const GBufferDrawItem &item = items[i];
+      if (!pipelineBound || boundKind != item.kind) {
+        stats.pipelineBinds++;
+        boundKind = item.kind;
+        pipelineBound = true;
+        cullValid = false;
+      }
+
+      if (!cullValid || item.cullMode != lastCull) {
+        stats.dynamicStateChanges++;
+        lastCull = item.cullMode;
+        cullValid = true;
+      }
+    }
+  }
+
+  return stats;
 }
 
 void VulkanRenderer::recordCommands(uint32_t currentImage) {
@@ -1668,9 +1721,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   // --- Bloom pyramid (compute) ---
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-  bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
-                   imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
-                   imguiBloomIntensity);
+  const bool bloomRecorded =
+      bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
+                       imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
+                       imguiBloomIntensity);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
 
   // --- Auto-exposure (compute) ---
@@ -1680,7 +1734,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   // reads to drive eye adaptation.
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
   autoExposurePass.record(cmd, currentImage, currentFrame, litImages,
-                          autoExpEnabled);
+                          autoExpEnabled, bloomRecorded);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
 
   const size_t compositeFbIdx =
@@ -1827,14 +1881,15 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   }
 
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-  bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
-                   imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
-                   imguiBloomIntensity);
+  const bool bloomRecorded =
+      bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
+                       imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
+                       imguiBloomIntensity);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
 
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
   autoExposurePass.record(cmd, currentImage, currentFrame, litImages,
-                          autoExpEnabled);
+                          autoExpEnabled, bloomRecorded);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
 
   const size_t compositeFbIdx =
@@ -2055,7 +2110,8 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   };
 
   const bool canRecordThreaded =
-      commandThreadPool && threadedCommandWorkerCount > 0 &&
+      imguiThreadedGBufferEnabled && commandThreadPool &&
+      threadedCommandWorkerCount > 0 &&
       currentFrame < static_cast<int>(threadedCommandFrames.size()) &&
       !threadedCommandFrames[currentFrame].empty() && !drawItems.empty();
 
@@ -2063,6 +2119,8 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       currentImage, imguiGpuDrivenEnabled, minGpuDrivenCandidates);
 
   if (useGpuDriven) {
+    metrics.recordPipelineBind(3);      // cull compute + two G-buffer pipelines
+    metrics.recordDynamicStateChange(2); // viewport + scissor
     gpuDrivenGBufferPass.recordIndirectGBuffer(
         cmd, currentImage, rpbi, viewport, scissor, vpSet, bindlessSet);
     noteGBufferFinalLayouts(currentImage);
@@ -2076,6 +2134,10 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   }
 
   if (!canRecordThreaded) {
+    const GBufferStateStats stateStats =
+        estimateGBufferStateStats(drawItems, 1);
+    metrics.recordPipelineBind(stateStats.pipelineBinds);
+    metrics.recordDynamicStateChange(stateStats.dynamicStateChanges);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     recordDrawCommands(cmd, 0, drawItems.size());
     vkCmdEndRenderPass(cmd);
@@ -2092,6 +2154,10 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   auto &frameResources = threadedCommandFrames[currentFrame];
   const uint32_t workerCount = std::min<uint32_t>(
       threadedCommandWorkerCount, static_cast<uint32_t>(drawItems.size()));
+  const GBufferStateStats stateStats =
+      estimateGBufferStateStats(drawItems, workerCount);
+  metrics.recordPipelineBind(stateStats.pipelineBinds);
+  metrics.recordDynamicStateChange(stateStats.dynamicStateChanges);
   std::vector<VkCommandBuffer> secondaries(workerCount, VK_NULL_HANDLE);
 
   for (uint32_t i = 0; i < workerCount; ++i) {
@@ -2228,11 +2294,13 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiGpuDrivenEnabled,
       imguiHzbCullingEnabled,
       imguiGpuDrivenMinCandidates,
+      imguiThreadedGBufferEnabled,
       autoExpEnabled,
       autoExposurePass.adaptedValue(),
       gpuDrivenGBufferPass.candidateCount(),
       gpuDrivenGBufferPass.meshCount(),
       gpuDrivenGBufferPass.lastFrameUsed(),
+      threadedCommandWorkerCount,
       swapchain.getActivePresentMode(),
       [this] { rebuildProjection(); },
       [this] {

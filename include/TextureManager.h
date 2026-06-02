@@ -18,7 +18,7 @@ public:
   TextureManager(const TextureManager &) = delete;
   TextureManager &operator=(const TextureManager &) = delete;
 
-  void init(const VulkanDevice &device);
+  void init(const VulkanDevice &device, VkPipelineCache pipelineCache);
   void cleanup(VkDevice logicalDevice, VmaAllocator allocator);
 
   int loadTexture(const std::string &filename, const VulkanDevice &device,
@@ -84,7 +84,8 @@ private:
   VkDescriptorSetLayout computeSetLayout   = VK_NULL_HANDLE;
   VkDescriptorPool      computePool        = VK_NULL_HANDLE;
 
-  void createComputePipelines(const VulkanDevice &device);
+  void createComputePipelines(const VulkanDevice &device,
+                              VkPipelineCache pipelineCache);
   void destroyComputePipelines(VkDevice device);
   int  dispatchIrradianceCompute(int srcImageIndex, const VulkanDevice &device);
   int  dispatchPrefilterCompute(int srcImageIndex, const VulkanDevice &device);

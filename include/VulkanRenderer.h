@@ -30,6 +30,7 @@
 #include "Utilities.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
+#include "VulkanPipelineCache.h"
 #include "VulkanSwapchain.h"
 
 struct InstancedDrawable {
@@ -116,6 +117,7 @@ private:
   bool imguiGpuDrivenEnabled = true;
   bool imguiHzbCullingEnabled = true;
   int imguiGpuDrivenMinCandidates = 256;
+  bool imguiThreadedGBufferEnabled = false;
 
   // --- Multi-threaded command recording (Phase 7.4) ---
   struct ThreadCommandFrameResources {
@@ -132,6 +134,7 @@ private:
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;
   VulkanPipeline pipeline;
+  VulkanPipelineCache pipelineCache;
   TextureManager textureManager;
   ModelManager modelManager;
   PerformanceMetrics metrics;

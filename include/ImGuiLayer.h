@@ -60,12 +60,14 @@ struct DebugUiContext {
   bool &gpuDrivenEnabled;
   bool &hzbCullingEnabled;
   int &gpuDrivenMinCandidates;
+  bool &threadedGBufferEnabled;
   bool &autoExposureEnabled;
 
   float autoExposureAdaptedValue = 1.0f;
   uint32_t gpuDrivenCandidateCount = 0;
   uint32_t gpuDrivenMeshCount = 0;
   bool gpuDrivenLastFrameUsed = false;
+  uint32_t threadedGBufferWorkers = 0;
   VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
 
   std::function<void()> onProjectionChanged;

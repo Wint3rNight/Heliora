@@ -156,6 +156,10 @@ const int MAX_SPOT_LIGHTS = 2;
 const uint32_t SHADOW_MAP_SIZE = 2048;
 const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
 constexpr int NUM_CSM_CASCADES = 4;
+constexpr VmaAllocationCreateFlags RENDER_DEVICE_ALLOCATION_FLAGS =
+    VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+constexpr VmaAllocationCreateFlags RENDER_UPLOAD_ALLOCATION_FLAGS =
+    VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
 const std::vector<const char *> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,

@@ -238,10 +238,11 @@ static VkShaderModule loadSpv(VkDevice device, const std::string &relPath) {
 // Public
 // ---------------------------------------------------------------------------
 
-void TextureManager::init(const VulkanDevice &device) {
+void TextureManager::init(const VulkanDevice &device,
+                          VkPipelineCache pipelineCache) {
   createTextureSampler(device.getLogicalDevice(), device.getPhysicalDevice());
   createSkyboxSampler(device.getLogicalDevice(), device.getPhysicalDevice());
-  createComputePipelines(device);
+  createComputePipelines(device, pipelineCache);
 }
 
 void TextureManager::cleanup(VkDevice logicalDevice,
@@ -504,7 +505,8 @@ void TextureManager::createSkyboxSampler(VkDevice device,
 // Private – compute pipeline
 // ---------------------------------------------------------------------------
 
-void TextureManager::createComputePipelines(const VulkanDevice &device) {
+void TextureManager::createComputePipelines(const VulkanDevice &device,
+                                            VkPipelineCache pipelineCache) {
   VkDevice dev = device.getLogicalDevice();
 
   std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
@@ -566,7 +568,7 @@ void TextureManager::createComputePipelines(const VulkanDevice &device) {
     pCI.stage = stageCI;
     pCI.layout = computeLayout;
     VkPipeline pipeline;
-    if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pCI, nullptr,
+    if (vkCreateComputePipelines(dev, pipelineCache, 1, &pCI, nullptr,
                                  &pipeline) != VK_SUCCESS)
       throw std::runtime_error("Failed to create compute pipeline");
     return pipeline;

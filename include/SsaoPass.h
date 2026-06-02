@@ -10,7 +10,8 @@
 class SsaoPass {
 public:
   void create(VulkanDevice &device, VkExtent2D extent, size_t swapCount,
-              const DescriptorManager &descriptorManager);
+              const DescriptorManager &descriptorManager,
+              VkPipelineCache pipelineCache);
   void cleanup();
 
   void recordCommands(VkCommandBuffer cmd, uint32_t currentImage,

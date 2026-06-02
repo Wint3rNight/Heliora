@@ -50,7 +50,8 @@ VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
 
 void AutoExposurePass::create(VulkanDevice &newDevice, VkExtent2D extent,
                               const std::vector<ImageViewHandle> &litViews,
-                              VkSampler litSampler) {
+                              VkSampler litSampler,
+                              VkPipelineCache pipelineCache) {
   cleanup();
   device = &newDevice;
   renderExtent = extent;
@@ -279,7 +280,7 @@ void AutoExposurePass::create(VulkanDevice &newDevice, VkExtent2D extent,
       ci.stage = stage;
       ci.layout = layout;
       VkPipeline pipeline = VK_NULL_HANDLE;
-      if (vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr,
+      if (vkCreateComputePipelines(dev, pipelineCache, 1, &ci, nullptr,
                                    &pipeline) != VK_SUCCESS)
         throw std::runtime_error("Failed to create autoExp compute pipeline");
       return pipeline;
@@ -330,7 +331,7 @@ void AutoExposurePass::cleanup() {
 void AutoExposurePass::record(VkCommandBuffer cmd, uint32_t currentImage,
                               int currentFrame,
                               const std::vector<AllocatedImage> &litImages,
-                              bool enabled) {
+                              bool enabled, bool litInputReadyForCompute) {
   if (!enabled || histogramPipeline == VK_NULL_HANDLE ||
       exposurePipeline == VK_NULL_HANDLE || currentImage >= histogramSets.size() ||
       currentImage >= litImages.size() ||
@@ -344,7 +345,7 @@ void AutoExposurePass::record(VkCommandBuffer cmd, uint32_t currentImage,
   vkdbgBeginLabel(cmd, "Auto-Exposure (histogram + reduce)", 0.95f, 0.85f,
                   0.2f);
 
-  {
+  if (!litInputReadyForCompute) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;

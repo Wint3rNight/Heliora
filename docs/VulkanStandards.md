@@ -7,6 +7,17 @@ full engine rewrite.
 ## Resource Ownership
 
 - GPU memory goes through VMA via `AllocatedBuffer` and `AllocatedImage`.
+- Enable `VK_EXT_memory_budget` when the GPU supports it and create VMA with
+  `VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT`; otherwise let VMA use estimated
+  budgets so device selection does not reject otherwise valid GPUs.
+- Large frame/render targets should use
+  `VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT` with
+  `VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE`.
+- Static GPU geometry and GPU-written indirect/count buffers should be
+  device-preferred. Upload static data through staging instead of keeping
+  persistent static arenas host-visible.
+- Host-visible allocations are for staging, per-frame upload buffers, and
+  readback buffers.
 - Pass-local images, views, samplers, descriptor pools, pipelines, and
   framebuffers are destroyed by the pass or subsystem that creates them.
 - Frame-sized render targets are registered in `RenderResources` so layout,
@@ -28,14 +39,24 @@ full engine rewrite.
   command buffers should use compute/transfer/all-command stages only.
 - Keep read-after-write barriers explicit even when old and new layouts are the
   same; same-layout does not mean no dependency is needed.
+- Bloom and HZB intentionally keep per-mip compute dependency barriers where the
+  next dispatch samples the previous dispatch output. Remove only barriers that
+  have no later consumer.
 
 ## Queue Submits
 
 - The current high-level submit shape is G-buffer, async SSAO, shadow, and post.
+- A RenderDoc capture on the RTX 3050 Laptop GPU verified the intended 4-submit
+  shape: graphics G-buffer signals the async timeline, compute SSAO waits on
+  that signal, shadow work is submitted on graphics while SSAO runs, and the
+  post submit waits for SSAO before sampling it.
 - Extra submits are only worth keeping if GPU captures show real overlap or
-  latency benefit.
+  latency benefit. Do not merge the shadow and post submits if that would make
+  shadow work wait for async SSAO and destroy the overlap.
 - CPU timing alone is not enough for queue-submit decisions; use GPU captures
   and per-pass timestamps.
+- The performance overlay reports per-frame submit count so submit changes are
+  visible during A/B runs.
 
 ## Descriptors
 
@@ -45,12 +66,25 @@ full engine rewrite.
 - Prefer per-frame descriptor sets for frame-varying resources.
 - Bindless texture descriptors may use update-after-bind because the bindless
   layout is explicitly created for that policy.
+- Non-bindless descriptor writes should stay in startup/recreate paths or in
+  per-swap-image dirty updates after that image's in-flight fence has completed.
 
 ## Pipelines And Draw Order
 
-- Keep using the pipeline cache.
+- Keep using the shared `VulkanPipelineCache` for graphics and compute pipeline
+  creation.
 - Sort opaque G-buffer draw items by pipeline/material/cull mode where
   correctness allows it.
+- Keep A/B switches for costly command-recording strategies until captures prove
+  the faster path.
+- RenderDoc confirms the threaded CPU G-buffer path records secondary command
+  buffers in parallel. Keep the toggle until CPU timing proves it is faster than
+  single-threaded primary recording for the target scene.
+- Threaded CPU G-buffer recording is opt-in by default. The captured 37-draw
+  Sponza view proved correctness, not a performance win.
+- GPU-driven G-buffer should report its cull compute pipeline plus the two
+  indirect graphics pipeline binds so overlay stats remain comparable with the
+  CPU path.
 - Pipeline bind reduction must be measured; do not trade major code complexity
   for unproven wins.
 - Hot shader reload should recreate affected development pipelines only, while

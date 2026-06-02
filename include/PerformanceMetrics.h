@@ -59,6 +59,9 @@ public:
   void endPassTimestamp(VkCommandBuffer cmd, GpuPass pass);
 
   void recordDrawCall(uint32_t indexCount);
+  void recordQueueSubmit(uint32_t count = 1);
+  void recordPipelineBind(uint32_t count = 1);
+  void recordDynamicStateChange(uint32_t count = 1);
   void recordCpuPhase(CpuPhase phase, double milliseconds);
   void endFrame();
 
@@ -70,6 +73,11 @@ public:
   double getAverageFps() const;
   uint32_t getLastDrawCallCount() const;
   uint32_t getLastTriangleCount() const;
+  uint32_t getLastQueueSubmitCount() const { return lastQueueSubmits; }
+  uint32_t getLastPipelineBindCount() const { return lastPipelineBinds; }
+  uint32_t getLastDynamicStateChangeCount() const {
+    return lastDynamicStateChanges;
+  }
   double getLastGpuTimeMs() const; // total GPU time (sum of all passes)
   double getAverageGpuTimeMs() const;
   double getPassGpuTimeMs(GpuPass pass) const;
@@ -110,6 +118,9 @@ private:
 
   uint32_t currentDrawCalls = 0, currentTriangles = 0;
   uint32_t lastDrawCalls = 0, lastTriangles = 0;
+  uint32_t currentQueueSubmits = 0, lastQueueSubmits = 0;
+  uint32_t currentPipelineBinds = 0, lastPipelineBinds = 0;
+  uint32_t currentDynamicStateChanges = 0, lastDynamicStateChanges = 0;
 
   // GPU timing — each frame-in-flight owns NUM_GPU_PASSES * 2 query slots.
   // Results are read only after that frame slot's fence has completed, so the

@@ -52,6 +52,7 @@ private:
   VkCommandPool graphicsCommandPool = VK_NULL_HANDLE;
   VkCommandPool computeCommandPool = VK_NULL_HANDLE;
   VmaAllocator allocator = VK_NULL_HANDLE;
+  bool memoryBudgetEnabled = false;
 
   GLFWwindow *window = nullptr;
 

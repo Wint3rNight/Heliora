@@ -12,10 +12,11 @@ public:
   static constexpr uint32_t kMipCount = 6;
 
   void create(VulkanDevice &device, VkExtent2D extent, size_t swapCount,
-              const std::vector<ImageViewHandle> &litViews);
+              const std::vector<ImageViewHandle> &litViews,
+              VkPipelineCache pipelineCache);
   void cleanup();
 
-  void record(VkCommandBuffer cmd, uint32_t currentImage,
+  bool record(VkCommandBuffer cmd, uint32_t currentImage,
               const std::vector<AllocatedImage> &litImages, bool enabled,
               int debugMode, float threshold, float radius, float intensity);
 

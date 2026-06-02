@@ -56,6 +56,9 @@ void PerformanceMetrics::beginFrame() {
   frameStart = Clock::now();
   currentDrawCalls = 0;
   currentTriangles = 0;
+  currentQueueSubmits = 0;
+  currentPipelineBinds = 0;
+  currentDynamicStateChanges = 0;
 }
 
 void PerformanceMetrics::collectGpuResults(VkDevice device,
@@ -130,6 +133,18 @@ void PerformanceMetrics::recordDrawCall(uint32_t indexCount) {
   currentTriangles += indexCount / 3;
 }
 
+void PerformanceMetrics::recordQueueSubmit(uint32_t count) {
+  currentQueueSubmits += count;
+}
+
+void PerformanceMetrics::recordPipelineBind(uint32_t count) {
+  currentPipelineBinds += count;
+}
+
+void PerformanceMetrics::recordDynamicStateChange(uint32_t count) {
+  currentDynamicStateChanges += count;
+}
+
 void PerformanceMetrics::recordCpuPhase(CpuPhase phase, double milliseconds) {
   int idx = static_cast<int>(phase);
   if (idx < 0 || idx >= NUM_CPU_PHASES)
@@ -160,16 +175,21 @@ void PerformanceMetrics::endFrame() {
 
   lastDrawCalls = currentDrawCalls;
   lastTriangles = currentTriangles;
+  lastQueueSubmits = currentQueueSubmits;
+  lastPipelineBinds = currentPipelineBinds;
+  lastDynamicStateChanges = currentDynamicStateChanges;
 
   // Periodic one-line snapshot — useful when shutdown is killed by timeout
   // (so the full report in printReport() may never run).
   if (totalFrames > 0 && totalFrames % 120 == 0) {
     spdlog::info("[perf] frame={} avg={:.2f}ms fps={:.1f} draws={} tris={}k "
+                 "submits={} binds={} dynState={} "
                  "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} ssgi={:.2f} "
                  "lit={:.2f} bloom={:.2f} autoExp={:.2f} comp={:.2f} "
                  "imgui={:.2f}",
                  totalFrames, getAverageFrameTimeMs(), getAverageFps(),
-                 lastDrawCalls, lastTriangles / 1000,
+                 lastDrawCalls, lastTriangles / 1000, lastQueueSubmits,
+                 lastPipelineBinds, lastDynamicStateChanges,
                  lastPassGpuMs[(int)GpuPass::Shadow],
                  lastPassGpuMs[(int)GpuPass::PointShadow],
                  lastPassGpuMs[(int)GpuPass::GBuffer],
@@ -314,6 +334,9 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║  Avg FPS:             {:>17.1f}     ║", getAverageFps());
   spdlog::info("║  Draw Calls/Frame:    {:>20}  ║", lastDrawCalls);
   spdlog::info("║  Triangles/Frame:     {:>20}  ║", lastTriangles);
+  spdlog::info("║  Queue Submits/Frame: {:>20}  ║", lastQueueSubmits);
+  spdlog::info("║  Pipeline Binds/Frame:{:>20}  ║", lastPipelineBinds);
+  spdlog::info("║  Dyn State/Frame:     {:>20}  ║", lastDynamicStateChanges);
   spdlog::info("╠══════════════════════════════════════════════╣");
   if (gpuTimingAvailable) {
     spdlog::info("║  GPU Pass Timing (last / avg):               ║");

@@ -19,7 +19,7 @@ public:
   void createPipelines(VkDevice device, VkRenderPass gBufferPass,
                        VkRenderPass litPass, VkRenderPass compositionPass,
                        VkRenderPass shadowPass, VkRenderPass ssgiPass,
-                       VkExtent2D extent,
+                       VkExtent2D extent, VkPipelineCache pipelineCache,
                        const DescriptorManager &descriptors);
   void cleanup(VkDevice device);
 
@@ -56,7 +56,6 @@ private:
   VkPipelineLayout secondPipelineLayout = VK_NULL_HANDLE;
   VkPipeline shadowPipeline = VK_NULL_HANDLE;
   VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
-  VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 
   VkShaderModule createShaderModule(VkDevice device,
                                     const std::vector<char> &code);

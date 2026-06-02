@@ -65,6 +65,7 @@ void ShadowPass::create(VulkanDevice &newDevice, VkRenderPass newRenderPass,
 
   VmaAllocationCreateInfo allocCI{};
   allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  allocCI.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   VkImage image = VK_NULL_HANDLE;
   VmaAllocation allocation = VK_NULL_HANDLE;

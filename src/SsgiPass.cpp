@@ -27,6 +27,7 @@ void SsgiPass::create(VulkanDevice &newDevice, VkExtent2D fullExtent,
 
   VmaAllocationCreateInfo allocCI{};
   allocCI.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  allocCI.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
 
   for (size_t i = 0; i < historyCount; ++i) {
     VkImageCreateInfo imageCI{};

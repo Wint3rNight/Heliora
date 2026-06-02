@@ -145,6 +145,10 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
               ui.metrics.getAverageCpuPhaseTotalMs());
   ImGui::Text("Draws: %u  |  Tris: %uk", ui.metrics.getLastDrawCallCount(),
               ui.metrics.getLastTriangleCount() / 1000);
+  ImGui::Text("Submits: %u | GBuf binds: %u | dyn: %u",
+              ui.metrics.getLastQueueSubmitCount(),
+              ui.metrics.getLastPipelineBindCount(),
+              ui.metrics.getLastDynamicStateChangeCount());
   auto vram = PerformanceMetrics::queryVram(ui.allocator);
   ImGui::Text("VRAM: %llu MiB / %llu MiB",
               static_cast<unsigned long long>(vram.usedBytes >> 20),
@@ -270,6 +274,9 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
               ui.gpuDrivenCandidateCount, ui.gpuDrivenMeshCount);
   ImGui::Text("GPU path: %s",
               ui.gpuDrivenLastFrameUsed ? "indirect" : "direct fallback");
+  ImGui::Checkbox("Threaded CPU G-buffer", &ui.threadedGBufferEnabled);
+  ImGui::SameLine();
+  ImGui::Text("%u worker(s)", ui.threadedGBufferWorkers);
   if (ImGui::Checkbox("Uncapped present", &ui.preferMailboxPresent) &&
       ui.onPresentModeChanged) {
     ui.onPresentModeChanged(ui.preferMailboxPresent);

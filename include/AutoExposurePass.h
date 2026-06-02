@@ -11,11 +11,12 @@ class AutoExposurePass {
 public:
   void create(VulkanDevice &device, VkExtent2D extent,
               const std::vector<ImageViewHandle> &litViews,
-              VkSampler litSampler);
+              VkSampler litSampler, VkPipelineCache pipelineCache);
   void cleanup();
 
   void record(VkCommandBuffer cmd, uint32_t currentImage, int currentFrame,
-              const std::vector<AllocatedImage> &litImages, bool enabled);
+              const std::vector<AllocatedImage> &litImages, bool enabled,
+              bool litInputReadyForCompute);
 
   float updateExposureScale(int currentFrame, bool enabled, float exposureEV);
   float adaptedValue() const { return adaptedExposure; }

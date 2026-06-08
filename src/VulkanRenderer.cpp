@@ -26,6 +26,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 class CommandThreadPool {
@@ -2433,6 +2434,80 @@ void VulkanRenderer::setImGuiCameraInfo(glm::vec3 pos, float speed) {
   imguiCameraSpeed = speed;
 }
 
+void VulkanRenderer::setCameraPresetCallback(CameraPresetCallback callback) {
+  cameraPresetCallback = std::move(callback);
+}
+
+void VulkanRenderer::applySponzaReferencePreset() {
+  const glm::vec3 cameraPosition(-274.0f, 46.0f, -128.0f);
+  constexpr float cameraYaw = 25.0f;
+  constexpr float cameraPitch = 3.0f;
+  constexpr float cameraSpeed = 15.0f;
+
+  imguiCameraPos = cameraPosition;
+  imguiCameraSpeed = cameraSpeed;
+  if (cameraPresetCallback)
+    cameraPresetCallback(cameraPosition, cameraYaw, cameraPitch, cameraSpeed);
+
+  imguiCameraFov = 65.0f;
+  imguiDrawDistance = 8000.0f;
+  imguiLodNear = 15.0f;
+  imguiLodFar = 45.0f;
+  imguiPointShadowFar = 40.0f;
+  imguiCsmFar = 2000.0f;
+
+  imguiDebugMode = 0;
+  imguiUseGeomNormalOnly = false;
+  imguiShadowFrontFaceCull = false;
+  imguiCullShadowCasters = false;
+
+  imguiSpecAAVariance = 1.25f;
+  imguiSpecAAThreshold = 1.0f;
+  imguiIblRoughnessFloor = 0.45f;
+  imguiMinSurfaceRoughness = 0.45f;
+  imguiSkyOcclusionFloor = 0.55f;
+  imguiIblIntensity = 1.0f;
+  imguiExposureEV = 0.0f;
+  autoExpEnabled = true;
+  autoExposurePass.resetAdaptation();
+
+  imguiSsgiIntensity = 0.6f;
+  imguiSsgiSamples = 8;
+  imguiEnableSunDirect = true;
+  imguiEnablePointLights = true;
+  imguiEnableSpotLights = true;
+  imguiEnableIblAmbient = true;
+  imguiEnableSsgiBounce = true;
+  imguiEnableBloom = true;
+  imguiBloomThreshold = 1.2f;
+  imguiBloomIntensity = 0.08f;
+  imguiBloomRadius = 1.1f;
+  imguiSsrEnabled = false;
+  imguiTaaEnabled = true;
+  imguiResponsiveTaa = true;
+  imguiSharpness = 0.08f;
+
+  imguiDayNightEnable = false;
+  imguiDayNightHour = 12.0f;
+  sceneUbo.directionalLight.direction =
+      glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
+  sceneUbo.directionalLight.colorIntensity =
+      glm::vec4(1.0f, 0.93f, 0.78f, 2.35f);
+  sceneUbo.debugMode = imguiDebugMode;
+  sceneUbo.shadowParams.x = imguiPointShadowFar;
+  sceneUbo.fogParams.x = imguiFogDensity;
+  sceneUbo.fogParams.z = imguiFogClamp;
+
+  rebuildProjection();
+  shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
+                                      imguiDrawDistance);
+  shadowPass.updatePointShadowMatrices(sceneUbo);
+  taaFrameCounter = 0;
+  taaHistoryValid = false;
+  taaHasLastCamera = false;
+  cameraMovedThisFrame = true;
+}
+
 void VulkanRenderer::rebuildProjection() {
   float aspect = static_cast<float>(swapchain.getExtent().width) /
                  static_cast<float>(swapchain.getExtent().height);
@@ -2527,6 +2602,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       },
       [this] { shadowPass.updatePointShadowMatrices(sceneUbo); },
       [this] { taaHistoryValid = false; },
+      [this] { applySponzaReferencePreset(); },
       [this](bool preferMailbox) {
         swapchain.setPreferMailbox(preferMailbox);
         framebufferResized = true;

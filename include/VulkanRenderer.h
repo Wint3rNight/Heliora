@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -49,6 +50,10 @@ class VulkanRenderer {
 public:
   VulkanRenderer();
 
+  using CameraPresetCallback =
+      std::function<void(glm::vec3 position, float yaw, float pitch,
+                         float speed)>;
+
   int init(GLFWwindow *newWindow);
   void draw();
   int createMeshModel(const std::string &modelFile);
@@ -62,6 +67,7 @@ public:
   void setImGuiCameraInfo(glm::vec3 pos, float speed);
   void setFov(float fovDegrees);
   void setDrawDistance(float dist);
+  void setCameraPresetCallback(CameraPresetCallback callback);
   float getCameraSpeed() const { return imguiCameraSpeed; }
   bool imguiWantsMouse() const { return imguiLayer.wantsMouse(); }
 
@@ -176,6 +182,7 @@ private:
 
   // --- ImGui ---
   ImGuiLayer imguiLayer;
+  CameraPresetCallback cameraPresetCallback;
   glm::vec3 imguiCameraPos = {};
   float imguiCameraSpeed = 15.0f;
   float imguiCameraFov = 45.0f;
@@ -263,6 +270,8 @@ private:
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)
   bool imguiUseGeomNormalOnly = false;     // P2 diag: bypass normal-map sampling
+
+  void applySponzaReferencePreset();
 
   // --- TAA state ---
   // Frame counter drives the Halton index and temporal history ring slots.

@@ -20,6 +20,7 @@ public:
 
   float updateExposureScale(int currentFrame, bool enabled, float exposureEV);
   float adaptedValue() const { return adaptedExposure; }
+  void resetAdaptation(float exposureScale = 1.0f);
 
 private:
   static constexpr float kMinLogLum = -10.0f;

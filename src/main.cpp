@@ -59,6 +59,11 @@ int main() {
   }
 
   camera.MovementSpeed = 15.0f;
+  vulkanRenderer.setCameraPresetCallback(
+      [](glm::vec3 position, float yaw, float pitch, float speed) {
+        camera.SetPose(position, yaw, pitch);
+        camera.MovementSpeed = speed;
+      });
   bool cameraMode = true;  // Tab toggles between camera fly-through and ImGui
   bool prevTabPressed = false;
   glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);

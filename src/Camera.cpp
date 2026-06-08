@@ -71,6 +71,17 @@ void Camera::ProcessMouseScroll(float yoffset) {
     Zoom = 45.0f;
 }
 
+void Camera::SetPose(const glm::vec3 &position, float yaw, float pitch) {
+  Position = position;
+  Yaw = yaw;
+  Pitch = pitch;
+  if (Pitch > 89.0f)
+    Pitch = 89.0f;
+  if (Pitch < -89.0f)
+    Pitch = -89.0f;
+  updateCameraVectors();
+}
+
 // calculates the front vector from the Camera's (updated) Euler Angles
 void Camera::updateCameraVectors() {
   // calculate the new Front vector

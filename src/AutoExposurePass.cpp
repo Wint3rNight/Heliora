@@ -429,3 +429,8 @@ float AutoExposurePass::updateExposureScale(int currentFrame, bool enabled,
 
   return adaptedExposure * std::exp2(exposureEV);
 }
+
+void AutoExposurePass::resetAdaptation(float exposureScale) {
+  adaptedExposure = std::clamp(exposureScale, 0.5f, 2.5f);
+  hasLastUpdate = false;
+}

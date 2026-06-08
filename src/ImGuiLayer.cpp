@@ -156,7 +156,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::End();
 
   ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 120), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 145), ImGuiCond_Always);
   ImGui::Begin("Camera", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
@@ -169,9 +169,11 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   if (ImGui::SliderFloat("Draw Dist", &ui.drawDistance, 100.0f, 20000.0f) &&
       ui.onProjectionChanged)
     ui.onProjectionChanged();
+  if (ImGui::Button("Sponza Reference Look") && ui.onSponzaReferencePreset)
+    ui.onSponzaReferencePreset();
   ImGui::End();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 450), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 475), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
   ImGui::Begin("Lighting", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -231,7 +233,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   }
   ImGui::End();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 690), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 715), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 95), ImGuiCond_Always);
   ImGui::Begin("Debug Views", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -246,7 +248,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::Checkbox("Use geometric normal only", &ui.useGeomNormalOnly);
   ImGui::End();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 770), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(10, 795), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_Always);
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |

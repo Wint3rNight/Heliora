@@ -5,6 +5,7 @@
 #include <imgui_impl_vulkan.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -234,7 +235,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::End();
 
   ImGui::SetNextWindowPos(ImVec2(10, 715), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 95), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 205), ImGuiCond_Always);
   ImGui::Begin("Debug Views", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
@@ -246,10 +247,35 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   if (ImGui::Combo("G-Buffer", &ui.debugMode, debugModes, 14))
     ui.sceneUbo.debugMode = ui.debugMode;
   ImGui::Checkbox("Use geometric normal only", &ui.useGeomNormalOnly);
+  ImGui::BeginDisabled(ui.useGeomNormalOnly);
+  ImGui::SliderFloat("Normal strength", &ui.normalStrength, 0.0f, 1.5f,
+                     "%.2f");
+  ImGui::EndDisabled();
+  const MaterialProbeResult &probe = ui.materialProbe;
+  if (probe.aoClothDepthValid.w > 0.5f) {
+    const float normalLen =
+        std::sqrt(probe.normalRoughness.x * probe.normalRoughness.x +
+                  probe.normalRoughness.y * probe.normalRoughness.y +
+                  probe.normalRoughness.z * probe.normalRoughness.z);
+    ImGui::SeparatorText("Material Probe");
+    ImGui::Text("Alb %.2f %.2f %.2f | M %.2f", probe.albedoMetallic.x,
+                probe.albedoMetallic.y, probe.albedoMetallic.z,
+                probe.albedoMetallic.w);
+    ImGui::Text("Rough %.2f | AO %.2f | Cloth %.0f",
+                probe.normalRoughness.w, probe.aoClothDepthValid.x,
+                probe.aoClothDepthValid.y);
+    ImGui::Text("N len %.2f | var %.3f | dev %.3f", normalLen,
+                probe.geomVarianceFinal.y, probe.geomVarianceFinal.x);
+  } else {
+    ImGui::TextDisabled("Material Probe: no surface");
+  }
   ImGui::End();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 795), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_Always);
+  const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+  const float sceneControlsX = std::max(10.0f, displaySize.x - 350.0f);
+  const float sceneControlsH = std::max(360.0f, displaySize.y - 20.0f);
+  ImGui::SetNextWindowPos(ImVec2(sceneControlsX, 10), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, sceneControlsH), ImGuiCond_Always);
   ImGui::Begin("Scene Controls", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);

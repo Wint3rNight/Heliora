@@ -56,6 +56,7 @@ struct DebugUiContext {
   bool &dayNightEnable;
   float &dayNightSpeed;
   float &dayNightHour;
+  float &normalStrength;
   bool &useGeomNormalOnly;
   bool &gpuDrivenEnabled;
   bool &hzbCullingEnabled;
@@ -64,6 +65,7 @@ struct DebugUiContext {
   bool &autoExposureEnabled;
 
   float autoExposureAdaptedValue = 1.0f;
+  MaterialProbeResult materialProbe = {};
   uint32_t gpuDrivenCandidateCount = 0;
   uint32_t gpuDrivenMeshCount = 0;
   bool gpuDrivenLastFrameUsed = false;

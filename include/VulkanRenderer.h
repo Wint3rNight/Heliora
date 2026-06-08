@@ -18,6 +18,7 @@
 #include "DescriptorManager.h"
 #include "GpuDrivenGBufferPass.h"
 #include "ImGuiLayer.h"
+#include "MaterialProbePass.h"
 #include "Model.h"
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
@@ -146,6 +147,7 @@ private:
   PerformanceMetrics metrics;
   RenderResources renderResources;
   GpuDrivenGBufferPass gpuDrivenGBufferPass;
+  MaterialProbePass materialProbePass;
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
   ShadowPass shadowPass;
@@ -194,7 +196,7 @@ private:
   float imguiFogDensity = 0.0f;
   float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
-  float imguiSpecAAVariance = 1.25f;       // tunable
+  float imguiSpecAAVariance = 1.60f;       // tunable
   // Karis-style spec-AA threshold cap. 0.18 (the plan's KAPPA) leaves
   // visible per-pixel sparkle on Sponza's dense cloth weave / foliage at
   // glancing angles. Bumping to 0.5 lets the kernel saturate more, folding
@@ -205,7 +207,7 @@ private:
   // direct-light highlights. Keeping it moderately high prevents the
   // environment map's bright texels from reading as rectangular local lights
   // on glossy indoor floors.
-  float imguiIblRoughnessFloor = 0.45f;    // tunable
+  float imguiIblRoughnessFloor = 0.65f;    // tunable
   bool imguiShadowFrontFaceCull = false;   // off → CULL_NONE in shadow pass.
                                            // Front-face cull silently drops
                                            // any single-sided wall whose only
@@ -233,7 +235,7 @@ private:
   // produces the wet-floor banner reflection and stone-pillar glitter.
   // 0 = disabled (use authored roughness); ~0.35–0.5 is the Sponza sweet
   // spot. Metals (metallic > 0.5) are untouched so trim still reads glossy.
-  float imguiMinSurfaceRoughness = 0.35f;
+  float imguiMinSurfaceRoughness = 0.60f;
   // Sky-occlusion proxy floor — bottom of the IBL multiplier in shadowed
   // pixels. 0.30 = old conservative ("dead-black interior"), 0.55 = new
   // default ("warm interior"), 1.0 = unbounded (full sky everywhere).
@@ -269,9 +271,13 @@ private:
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)
+  float imguiNormalStrength = 0.55f;       // Sponza normals are over-sharp at 1.0
   bool imguiUseGeomNormalOnly = false;     // P2 diag: bypass normal-map sampling
+  MaterialProbeResult materialProbeResult = {};
+  glm::uvec2 materialProbePixel = glm::uvec2(0);
 
   void applySponzaReferencePreset();
+  void updateMaterialProbePixel();
 
   // --- TAA state ---
   // Frame counter drives the Halton index and temporal history ring slots.

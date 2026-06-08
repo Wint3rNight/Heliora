@@ -55,11 +55,23 @@ void main() {
     roughness = max(roughness, nonMetalFloor);
     float ao = texture(textures[nonuniformEXT(fragTexIdx1.x)], fragTex).r;
 
-    vec3 normalSample = texture(textures[nonuniformEXT(fragTexIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    float normalStrength = clamp(scene.qualityToggles2.y, 0.0, 1.5);
+    vec3 normalTex = texture(textures[nonuniformEXT(fragTexIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    vec3 normalSample = normalize(vec3(normalTex.xy * normalStrength,
+                                       max(normalTex.z, 0.001)));
     vec3 worldNormal = normalize(fragTBN * normalSample);
     vec3 geomNormal  = normalize(fragTBN[2]);
-    if (scene.qualityToggles2.y > 0.5)
-        worldNormal = geomNormal;
+
+    float normalVariance =
+        dot(dFdx(normalSample), dFdx(normalSample)) +
+        dot(dFdy(normalSample), dFdy(normalSample));
+    float normalDeviation = 1.0 - clamp(normalSample.z, 0.0, 1.0);
+    float normalRoughnessBoost =
+        (1.0 - step(0.5, metallic)) *
+        clamp(normalVariance * 0.20 + normalDeviation * 0.10, 0.0, 0.35);
+    float alphaRoughness = roughness * roughness;
+    roughness = sqrt(clamp(alphaRoughness + normalRoughnessBoost,
+                           0.04 * 0.04, 1.0));
 
     float clothBit = float((fragTexIdx1.y & 1u));
 

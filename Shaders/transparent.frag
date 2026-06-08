@@ -70,7 +70,8 @@ vec3 FresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 radiance,
-                  vec3 F0, float metallic, float roughness) {
+                  vec3 F0, float metallic, float roughness,
+                  float clothFactor) {
     vec3 H = normalize(V + L);
     float NoL = max(dot(N, L), 0.0);
     float NoV = max(dot(N, V), 0.0);
@@ -81,6 +82,7 @@ vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 radiance,
     float G = GeometrySmith(N, V, L, roughness);
     vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
     vec3 specular = (D * G * F) / max(4.0 * NoV * NoL, 0.001);
+    specular *= mix(1.0, 0.12, clothFactor);
     vec3 diffuse = (1.0 - F) * (1.0 - metallic) * albedo / 3.14159265;
     return (diffuse + specular) * radiance * NoL;
 }
@@ -98,25 +100,44 @@ void main() {
     roughness = max(roughness, nonMetalFloor);
     float ao = texture(textures[nonuniformEXT(push.texIdx1.x)], fragTex).r;
 
-    vec3 normalSample = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    float normalStrength = clamp(scene.qualityToggles2.y, 0.0, 1.5);
+    vec3 normalTex = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    vec3 normalSample = normalize(vec3(normalTex.xy * normalStrength,
+                                       max(normalTex.z, 0.001)));
     vec3 N = normalize(fragTBN * normalSample);
     vec3 geomN = normalize(fragTBN[2]);
-    if (scene.qualityToggles2.y > 0.5)
-        N = geomN;
 
-    bool cloth = (push.texIdx1.y & 1u) != 0u;
-    if (cloth)
-        roughness = max(roughness, 0.75);
+    float normalVariance =
+        dot(dFdx(normalSample), dFdx(normalSample)) +
+        dot(dFdy(normalSample), dFdy(normalSample));
+    float normalDeviation = 1.0 - clamp(normalSample.z, 0.0, 1.0);
+    float normalRoughnessBoost =
+        (1.0 - step(0.5, metallic)) *
+        clamp(normalVariance * 0.20 + normalDeviation * 0.10, 0.0, 0.35);
+    float alphaRoughness = roughness * roughness;
+    roughness = sqrt(clamp(alphaRoughness + normalRoughnessBoost,
+                           0.04 * 0.04, 1.0));
+
+    float materialCloth = ((push.texIdx1.y & 1u) != 0u) ? 1.0 : 0.0;
+    float saturation = max(max(albedo.r, albedo.g), albedo.b) -
+                       min(min(albedo.r, albedo.g), albedo.b);
+    float nonMetal = 1.0 - smoothstep(0.10, 0.20, metallic);
+    float roughBand = smoothstep(0.30, 0.55, roughness);
+    float chromaFactor = smoothstep(0.15, 0.40, saturation);
+    float clothFactor = max(materialCloth, nonMetal * roughBand * chromaFactor);
+    float clothSuppression = clothFactor * nonMetal;
+    roughness = mix(roughness, max(roughness, 0.90), clothSuppression);
 
     vec3 V = normalize(scene.cameraPosition.xyz - fragWorldPos);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    F0 = mix(F0, vec3(0.018), clothSuppression);
     vec3 color = vec3(0.0);
 
     vec3 sunL = normalize(-scene.directionalLight.direction.xyz);
     vec3 sunRadiance = scene.directionalLight.colorIntensity.rgb *
                        scene.directionalLight.colorIntensity.a;
     color += cookTorrance(albedo, N, V, sunL, sunRadiance, F0, metallic,
-                          roughness);
+                          roughness, clothFactor);
 
     for (int i = 0; i < min(scene.lightCounts.x, 4); ++i) {
         vec3 toLight = scene.pointLights[i].position.xyz - fragWorldPos;
@@ -126,7 +147,7 @@ void main() {
         vec3 radiance = scene.pointLights[i].colorIntensity.rgb *
                         scene.pointLights[i].colorIntensity.a * attenuation;
         color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
-                              roughness);
+                              roughness, clothFactor);
     }
 
     for (int i = 0; i < min(scene.lightCounts.y, 2); ++i) {
@@ -141,7 +162,7 @@ void main() {
         vec3 radiance = scene.spotLights[i].colorIntensity.rgb *
                         scene.spotLights[i].colorIntensity.a * attenuation;
         color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
-                              roughness);
+                              roughness, clothFactor);
     }
 
     vec3 ambient = albedo * ao * scene.qualityToggles2.w * 0.08;

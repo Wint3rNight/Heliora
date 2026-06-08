@@ -35,9 +35,8 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     // x = sRGB albedo decode
     // y = specular AA enable, z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
     vec4 qualityToggles;
-    // x = mipmap sampling enable (P7)
-    // y = correlated Smith G enable (P3)
-    // z = Vogel-disk PCF enable (P5b)
+    // x = exposure multiplier, y = normal strength, z = min roughness,
+    // w = ambient intensity
     vec4 qualityToggles2;
     // TAA state (consumed by second.frag — present here only to keep std140
     // offsets identical across all shaders that bind set=0,binding=0).
@@ -319,6 +318,12 @@ vec3 FresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
            pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+float specularOcclusion(float NoV, float ao, float roughness) {
+    float exponent = exp2(-16.0 * roughness - 1.0);
+    return clamp(pow(clamp(NoV + ao, 0.0, 1.0), exponent) - 1.0 + ao,
+                 0.0, 1.0);
+}
+
 // Charlie sheen distribution (Estevez & Kulla 2017 / Filament §4.12).
 // Inverted-Beckmann–like lobe that peaks at grazing — characteristic of
 // fabric / cloth. Independent of GGX so we add it as a separate term on
@@ -361,13 +366,12 @@ vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
     // lobe that peaks at grazing — characteristic fabric appearance.
     // clothFactor in [0..1] from a G-buffer heuristic (computed in main).
     if (clothFactor > 0.001) {
-        specular *= mix(1.0, 0.35, clothFactor);
+        specular *= mix(1.0, 0.12, clothFactor);
         float Dc   = D_Charlie(NoH, roughness);
         float Vc   = V_Ashikhmin(NoV, NoL);
-        // Sheen color = albedo * 0.5 (rough Filament-ish energy heuristic).
-        // Real Filament uses an LUT for energy compensation; this is the
-        // cheap one-liner that's good enough at our quality bar.
-        vec3 sheen = albedo * 0.5 * Dc * Vc * clothFactor;
+        // Keep sheen subtle. The old 0.5 multiplier made Sponza banners read
+        // like satin/plastic under direct sun instead of matte fabric.
+        vec3 sheen = albedo * 0.08 * Dc * Vc * clothFactor;
         specular  += sheen;
     }
 
@@ -681,12 +685,21 @@ void main() {
     float heuristic    = nonMetal * roughBand * chromaFactor;
 
     float clothFactor  = max(materialCloth, heuristic);
+    float clothSuppression = clothFactor * nonMetal;
+    roughness = mix(roughness, max(roughness, 0.88), clothSuppression);
+    roughnessForIBL = mix(roughnessForIBL, max(roughnessForIBL, 0.92),
+                          clothSuppression);
+    F0 = mix(F0, vec3(0.018), clothSuppression);
+
     // Global cubemap specular is not locally visible. On rough dielectrics
     // such as Sponza stone/cloth it reads as hard rectangular env-map shapes,
     // even in real sun. Keep metals and genuinely glossy materials, but route
     // rough non-metals through diffuse IBL/SSGI/direct specular only until a
     // proper local reflection-probe/specular-occlusion system exists.
     float roughDielectricIbl = nonMetal * smoothstep(0.30, 0.45, roughnessForIBL);
+    float roughDielectricDirect =
+        nonMetal * smoothstep(0.50, 0.78, roughness) * (1.0 - clothSuppression);
+    F0 = mix(F0, vec3(0.025), 0.65 * roughDielectricDirect);
 
     // SSAO is produced by a Phase 7.5 async compute pass that runs after the
     // G-buffer submit and overlaps with shadow-map rendering on graphics.
@@ -818,9 +831,13 @@ void main() {
                                       clamp(iblSunVisibility, 0.0, 1.0));
     float skyOccSpec    = specVisibility * specVisibility;
     float materialOcc   = clamp(ao * ssaoFactor, 0.0, 1.0);
+    float NoVForOcc     = max(dot(worldN, V), 0.0);
+    float specOcc       =
+        specularOcclusion(NoVForOcc, materialOcc, roughnessForIBL);
+    specOcc *= mix(1.0, 0.20, clothSuppression);
     vec3 ambient = enableIblAmbient
                    ? (diffuseIBL * skyOccDiffuse * materialOcc +
-                      specularIBL * skyOccSpec * materialOcc * materialOcc) *
+                      specularIBL * skyOccSpec * specOcc) *
                      scene.qualityToggles2.w
                    : vec3(0.0);
 

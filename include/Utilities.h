@@ -240,17 +240,18 @@ struct SceneUniformBuffer {
   // the chunky pattern in the floor close-up. The new defaults make the
   // AA kernel saturate on milder gradients and let it widen nearly to
   // matte where the noise is dense.
-  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.45f, 0.55f, 1.25f, 1.0f);
+  alignas(16) glm::vec4 qualityToggles = glm::vec4(0.65f, 0.55f, 1.60f, 1.0f);
   // x = exposure linear multiplier (= exp2(EV stops); applied in second.frag
   //     before ACES tonemap; 1.0 = neutral).
-  // y = "use geometric normal only" diagnostic (1 = bypass normal-map).
+  // y = normal-map strength for material shaders (0 = geometric normal only,
+  //     1 = authored strength, >1 exaggerates normals for diagnostics).
   // z = minimum surface roughness floor — applied in shader.frag (g-buffer
   //     write) for NON-METALLIC surfaces. Kills wet-floor banner reflections
   //     and stone-column sparkle by raising the authored roughness floor.
   //     0 = disabled. Typical: 0.35–0.5 for Sponza floors.
   // w = ambient intensity (drives IBL + skybox dimming so night doesn't
   //     reflect baked daylight off every glossy surface).
-  alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f);
+  alignas(16) glm::vec4 qualityToggles2 = glm::vec4(1.0f, 0.55f, 0.60f, 1.0f);
   // TAA state. Populated by VulkanRenderer each frame.
   //   prevViewProj: previous frame's jittered projection*view. Reprojection
   //     samples history where the surface actually landed in the previous
@@ -267,6 +268,17 @@ struct SceneUniformBuffer {
   alignas(16) glm::mat4 prevViewProj = glm::mat4(1.0f);
   alignas(16) glm::vec4 taaParams = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
   alignas(16) glm::vec4 viewportSize = glm::vec4(0.0f);
+};
+
+struct MaterialProbePushConstants {
+  alignas(8) glm::uvec2 pixel = glm::uvec2(0);
+};
+
+struct MaterialProbeResult {
+  alignas(16) glm::vec4 albedoMetallic = glm::vec4(0.0f);
+  alignas(16) glm::vec4 normalRoughness = glm::vec4(0.0f);
+  alignas(16) glm::vec4 aoClothDepthValid = glm::vec4(0.0f);
+  alignas(16) glm::vec4 geomVarianceFinal = glm::vec4(0.0f);
 };
 
 const int IBL_PREFILTER_MIPS = 5;

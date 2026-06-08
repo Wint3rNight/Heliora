@@ -279,6 +279,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                                 renderPassManager.getGBufferRenderPass(),
                                 swapchain.getExtent(), gBufferDepthViews,
                                 pipelineCache.get());
+    materialProbePass.create(device, MAX_FRAMES_DRAWS, descriptorManager,
+                             pipelineCache.get());
 
     // 10. IBL resources (requires textureManager and descriptorManager)
     initIBL();
@@ -405,6 +407,33 @@ void VulkanRenderer::updateCameraView(const glm::mat4 &viewMatrix,
 
 void VulkanRenderer::notifyResize() { framebufferResized = true; }
 
+void VulkanRenderer::updateMaterialProbePixel() {
+  double cursorX = 0.0;
+  double cursorY = 0.0;
+  glfwGetCursorPos(window, &cursorX, &cursorY);
+
+  int fbWidth = 0;
+  int fbHeight = 0;
+  glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+  VkExtent2D extent = swapchain.getExtent();
+  if (fbWidth <= 0 || fbHeight <= 0 || extent.width == 0 ||
+      extent.height == 0) {
+    materialProbePixel = glm::uvec2(extent.width, extent.height);
+    return;
+  }
+
+  const double scaledX = cursorX * double(extent.width) / double(fbWidth);
+  const double scaledY = cursorY * double(extent.height) / double(fbHeight);
+  if (scaledX < 0.0 || scaledY < 0.0 || scaledX >= double(extent.width) ||
+      scaledY >= double(extent.height)) {
+    materialProbePixel = glm::uvec2(extent.width, extent.height);
+    return;
+  }
+
+  materialProbePixel =
+      glm::uvec2(static_cast<uint32_t>(scaledX), static_cast<uint32_t>(scaledY));
+}
+
 // Draw
 
 void VulkanRenderer::draw() {
@@ -428,6 +457,7 @@ void VulkanRenderer::draw() {
   // reusing this frame slot's fence, acquire semaphore, query range, and
   // exposure result buffer. It is idle time, not active CPU renderer cost.
   metrics.collectGpuResults(logicalDevice, currentFrame);
+  materialProbeResult = materialProbePass.read(currentFrame);
 
   // Check resize BEFORE acquiring — a successful acquire signals
   // imageAvailable, and returning early without consuming it would leave it
@@ -537,7 +567,8 @@ void VulkanRenderer::draw() {
     sceneUbo.qualityToggles2.w = imguiIblIntensity;
   }
 
-  sceneUbo.qualityToggles2.y = imguiUseGeomNormalOnly ? 1.0f : 0.0f;
+  sceneUbo.qualityToggles2.y =
+      imguiUseGeomNormalOnly ? 0.0f : imguiNormalStrength;
   sceneUbo.qualityToggles2.x =
       autoExposurePass.updateExposureScale(currentFrame, autoExpEnabled,
                                            imguiExposureEV);
@@ -628,6 +659,7 @@ void VulkanRenderer::draw() {
   shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
                                       imguiDrawDistance);
   shadowPass.updatePointShadowMatrices(sceneUbo);
+  updateMaterialProbePixel();
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Update,
                          elapsedMs(phaseStart));
 
@@ -718,7 +750,8 @@ void VulkanRenderer::draw() {
   }
 
   uint64_t renderFinishedSignalValue = 0; // binary signal, ignored
-  VkPipelineStageFlags postWaitStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  VkPipelineStageFlags postWaitStage =
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
   VkTimelineSemaphoreSubmitInfo postTimelineInfo = {};
   postTimelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
   postTimelineInfo.waitSemaphoreValueCount = 1;
@@ -1523,6 +1556,7 @@ void VulkanRenderer::cleanup() {
   autoExposurePass.cleanup();
   compositePass.cleanup();
   gpuDrivenGBufferPass.cleanup();
+  materialProbePass.cleanup();
   cleanupLitFramebuffers();
   cleanupGBuffer();
   ssaoPass.cleanup();
@@ -1876,6 +1910,12 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
   uint32_t taaHistoryIndex =
       static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
+
+  materialProbePass.record(
+      cmd, static_cast<uint32_t>(currentFrame),
+      descriptorManager.getVPSet(currentImage),
+      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
+      materialProbePixel);
 
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
   ssgiPass.record(cmd, ssgiHistoryIndex,
@@ -2461,10 +2501,10 @@ void VulkanRenderer::applySponzaReferencePreset() {
   imguiShadowFrontFaceCull = false;
   imguiCullShadowCasters = false;
 
-  imguiSpecAAVariance = 1.25f;
+  imguiSpecAAVariance = 1.60f;
   imguiSpecAAThreshold = 1.0f;
-  imguiIblRoughnessFloor = 0.45f;
-  imguiMinSurfaceRoughness = 0.45f;
+  imguiIblRoughnessFloor = 0.65f;
+  imguiMinSurfaceRoughness = 0.60f;
   imguiSkyOcclusionFloor = 0.55f;
   imguiIblIntensity = 1.0f;
   imguiExposureEV = 0.0f;
@@ -2489,6 +2529,8 @@ void VulkanRenderer::applySponzaReferencePreset() {
 
   imguiDayNightEnable = false;
   imguiDayNightHour = 12.0f;
+  imguiNormalStrength = 0.55f;
+  imguiUseGeomNormalOnly = false;
   sceneUbo.directionalLight.direction =
       glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
   sceneUbo.directionalLight.colorIntensity =
@@ -2583,6 +2625,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiDayNightEnable,
       imguiDayNightSpeed,
       imguiDayNightHour,
+      imguiNormalStrength,
       imguiUseGeomNormalOnly,
       imguiGpuDrivenEnabled,
       imguiHzbCullingEnabled,
@@ -2590,6 +2633,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiThreadedGBufferEnabled,
       autoExpEnabled,
       autoExposurePass.adaptedValue(),
+      materialProbeResult,
       gpuDrivenGBufferPass.candidateCount(),
       gpuDrivenGBufferPass.meshCount(),
       gpuDrivenGBufferPass.lastFrameUsed(),

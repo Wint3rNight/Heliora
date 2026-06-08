@@ -1,0 +1,114 @@
+#version 450
+
+struct DirectionalLight {
+    vec4 direction;
+    vec4 colorIntensity;
+};
+struct PointLight {
+    vec4 position;
+    vec4 colorIntensity;
+};
+struct SpotLight {
+    vec4 position;
+    vec4 direction;
+    vec4 colorIntensity;
+    vec4 cutoffAngles;
+};
+
+layout(set = 0, binding = 0) uniform SceneUniformBuffer {
+    mat4 projection;
+    mat4 view;
+    mat4 lightSpaceMatrices[4];
+    mat4 pointShadowMatrices[6];
+    vec4 cameraPosition;
+    vec4 cascadeSplits;
+    DirectionalLight directionalLight;
+    PointLight pointLights[4];
+    SpotLight spotLights[2];
+    ivec4 lightCounts;
+    vec4 shadowParams;
+    mat4 invProj;
+    mat4 invView;
+    vec4 fogParams;
+    int debugMode;
+    vec4 qualityToggles;
+    vec4 qualityToggles2;
+    mat4 prevViewProj;
+    vec4 taaParams;
+    vec4 viewportSize;
+} scene;
+
+layout(set = 1, binding = 0) uniform sampler2D gBuffer0Sampler;
+layout(set = 1, binding = 1) uniform sampler2D gBuffer1Sampler;
+layout(set = 1, binding = 2) uniform sampler2D gBuffer2Sampler;
+layout(set = 1, binding = 3) uniform sampler2D gBufferDepthSampler;
+
+layout(std430, set = 2, binding = 0) buffer ProbeOut {
+    vec4 albedoMetallic;
+    vec4 normalRoughness;
+    vec4 aoClothDepthValid;
+    vec4 geomVarianceFinal;
+} probe;
+
+layout(push_constant) uniform ProbePC {
+    uvec2 pixel;
+} pc;
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+vec3 decodeOct(vec2 encoded) {
+    vec2 e = encoded * 2.0 - 1.0;
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        vec2 wrap = (1.0 - abs(n.yx)) *
+                    vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                         n.y >= 0.0 ? 1.0 : -1.0);
+        n.xy = wrap;
+    }
+    return normalize(n);
+}
+
+void writeInvalid(uvec2 pixel) {
+    probe.albedoMetallic = vec4(0.0);
+    probe.normalRoughness = vec4(0.0);
+    probe.aoClothDepthValid = vec4(0.0, 0.0, 1.0, 0.0);
+    probe.geomVarianceFinal = vec4(float(pixel.x), float(pixel.y), 0.0, 0.0);
+}
+
+void main() {
+    ivec2 size = textureSize(gBuffer0Sampler, 0);
+    if (pc.pixel.x >= uint(size.x) || pc.pixel.y >= uint(size.y)) {
+        writeInvalid(pc.pixel);
+        return;
+    }
+
+    ivec2 p = ivec2(pc.pixel);
+    float depth = texelFetch(gBufferDepthSampler, p, 0).r;
+    if (depth >= 0.9999) {
+        writeInvalid(pc.pixel);
+        return;
+    }
+
+    vec4 g0 = texelFetch(gBuffer0Sampler, p, 0);
+    vec4 g1 = texelFetch(gBuffer1Sampler, p, 0);
+    vec4 g2 = texelFetch(gBuffer2Sampler, p, 0);
+
+    vec3 n = normalize(g1.xyz);
+    ivec2 px = ivec2(clamp(p.x + 1, 0, size.x - 1), p.y);
+    ivec2 nx = ivec2(clamp(p.x - 1, 0, size.x - 1), p.y);
+    ivec2 py = ivec2(p.x, clamp(p.y + 1, 0, size.y - 1));
+    ivec2 ny = ivec2(p.x, clamp(p.y - 1, 0, size.y - 1));
+    vec3 dndx = normalize(texelFetch(gBuffer1Sampler, px, 0).xyz) -
+                normalize(texelFetch(gBuffer1Sampler, nx, 0).xyz);
+    vec3 dndy = normalize(texelFetch(gBuffer1Sampler, py, 0).xyz) -
+                normalize(texelFetch(gBuffer1Sampler, ny, 0).xyz);
+    float normalVariance = dot(dndx, dndx) + dot(dndy, dndy);
+    vec3 geomN = decodeOct(g2.ba);
+    float geomDeviation = 1.0 - clamp(dot(n, geomN), 0.0, 1.0);
+
+    probe.albedoMetallic = vec4(g0.rgb, g0.a);
+    probe.normalRoughness = vec4(g1.xyz, g1.a);
+    probe.aoClothDepthValid = vec4(g2.r, g2.g, depth, 1.0);
+    probe.geomVarianceFinal =
+        vec4(geomDeviation, normalVariance, g1.a, float(p.x));
+}

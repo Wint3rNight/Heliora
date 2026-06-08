@@ -6,8 +6,8 @@ layout(location = 1) in vec2 fragTex;
 layout(location = 2) in vec3 fragWorldPos;
 layout(location = 3) in mat3 fragTBN;
 
-// Scene UBO — only qualityToggles is consumed here. Full struct must match
-// the lit pass so std140 offsets line up.
+// Scene UBO — material tuning uses qualityToggles/qualityToggles2. Full
+// struct must match the lit pass so std140 offsets line up.
 struct DirectionalLight { vec4 direction; vec4 colorIntensity; };
 struct PointLight       { vec4 position;  vec4 colorIntensity; };
 struct SpotLight {
@@ -29,8 +29,8 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 invView;
     vec4 fogParams;
     int  debugMode;
-    vec4 qualityToggles;  // x = sRGB albedo decode
-    vec4 qualityToggles2; // x = mipmap sampling enable
+    vec4 qualityToggles;
+    vec4 qualityToggles2; // y = normal strength, z = non-metal roughness floor
     mat4 prevViewProj;
     vec4 taaParams;
     vec4 viewportSize;
@@ -81,14 +81,26 @@ void main() {
     roughness = max(roughness, nonMetalFloor);
     float ao = texture(textures[nonuniformEXT(push.texIdx1.x)], fragTex).r;
 
-    vec3 normalSample = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    float normalStrength = clamp(scene.qualityToggles2.y, 0.0, 1.5);
+    vec3 normalTex = texture(textures[nonuniformEXT(push.texIdx0.y)], fragTex).rgb * 2.0 - 1.0;
+    vec3 normalSample = normalize(vec3(normalTex.xy * normalStrength,
+                                       max(normalTex.z, 0.001)));
     vec3 worldNormal = normalize(fragTBN * normalSample);
     vec3 geomNormal  = normalize(fragTBN[2]);   // interpolated vertex normal
-    // P2 diagnostic: when qualityToggles2.y > 0.5, replace normal-map result
-    // with the geometric (interpolated TBN basis Z) normal. Used to isolate
-    // whether floor dither is normal-map driven.
-    if (scene.qualityToggles2.y > 0.5)
-        worldNormal = geomNormal;
+
+    // Toksvig-style safety net: strong normal-map deviation and high local
+    // normal variance imply unresolved microfacets. Fold that into roughness
+    // for non-metals so stone/cloth stop producing wet, crawling highlights.
+    float normalVariance =
+        dot(dFdx(normalSample), dFdx(normalSample)) +
+        dot(dFdy(normalSample), dFdy(normalSample));
+    float normalDeviation = 1.0 - clamp(normalSample.z, 0.0, 1.0);
+    float normalRoughnessBoost =
+        (1.0 - step(0.5, metallic)) *
+        clamp(normalVariance * 0.20 + normalDeviation * 0.10, 0.0, 0.35);
+    float alphaRoughness = roughness * roughness;
+    roughness = sqrt(clamp(alphaRoughness + normalRoughnessBoost,
+                           0.04 * 0.04, 1.0));
 
     // texIdx1.y is a packed material-flag bitfield (bit 0 = isCloth).
     // Bake the cloth bit into gBuffer2.g so the deferred lit pass can drive

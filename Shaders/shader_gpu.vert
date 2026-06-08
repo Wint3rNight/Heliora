@@ -43,6 +43,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
   mat4 prevViewProj;
   vec4 taaParams;
   vec4 viewportSize;
+  vec4 visualToggles;
 } scene;
 
 struct TransformRecord {

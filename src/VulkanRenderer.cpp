@@ -345,6 +345,9 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     sceneUbo.shadowParams = glm::vec4(imguiPointShadowFar, imguiSsgiIntensity,
                                       imguiSharpness,
                                       imguiSsrEnabled ? 1.0f : 0.0f);
+    sceneUbo.visualToggles =
+        glm::vec4(imguiEdgeAA, imguiAlphaDither, imguiShadowSoftness,
+                  imguiContactGrounding);
     sceneUbo.fogParams =
         glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp,
                   static_cast<float>(std::clamp(imguiSsgiSamples, 4, 12)));
@@ -594,6 +597,9 @@ void VulkanRenderer::draw() {
       imguiEnableSsgiBounce ? imguiSsgiIntensity : 0.0f;
   sceneUbo.shadowParams.z    = imguiSharpness;
   sceneUbo.shadowParams.w    = imguiSsrEnabled ? 1.0f : 0.0f;
+  sceneUbo.visualToggles =
+      glm::vec4(imguiEdgeAA, imguiAlphaDither, imguiShadowSoftness,
+                imguiContactGrounding);
 
   // --- TAA per-frame state ---
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
@@ -2526,6 +2532,10 @@ void VulkanRenderer::applySponzaReferencePreset() {
   imguiTaaEnabled = true;
   imguiResponsiveTaa = true;
   imguiSharpness = 0.08f;
+  imguiEdgeAA = 0.40f;
+  imguiAlphaDither = 0.55f;
+  imguiShadowSoftness = 1.35f;
+  imguiContactGrounding = 0.55f;
 
   imguiDayNightEnable = false;
   imguiDayNightHour = 12.0f;
@@ -2622,6 +2632,10 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiResponsiveTaa,
       imguiPreferMailboxPresent,
       imguiSharpness,
+      imguiEdgeAA,
+      imguiAlphaDither,
+      imguiShadowSoftness,
+      imguiContactGrounding,
       imguiDayNightEnable,
       imguiDayNightSpeed,
       imguiDayNightHour,

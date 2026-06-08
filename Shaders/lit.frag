@@ -43,6 +43,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 prevViewProj;
     vec4 taaParams;
     vec4 viewportSize;
+    vec4 visualToggles;
 } scene;
 
 layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;
@@ -164,7 +165,8 @@ float sampleCascade(int cascade, vec3 worldPos, vec3 N, vec3 L) {
     // Sponza. Temporal rotation plus TAA still average the remaining PCF
     // noise while halving the shadow-map samples taken per lit pixel.
     const int SAMPLES = 16;
-    float radius = (1.5 + float(cascade) * 0.5);
+    float shadowSoftness = clamp(scene.visualToggles.z, 0.5, 2.5);
+    float radius = (1.5 + float(cascade) * 0.5) * shadowSoftness;
     // Per-frame temporal rotation of the Vogel disk so the PCF noise
     // pattern is no longer screen-space-stable. Without this, the dithered
     // shadow penumbra is the same pixel-for-pixel each frame and TAA
@@ -261,7 +263,8 @@ float pointShadowFactor(vec3 worldPos, vec3 lightPos) {
     vec3 B  = cross(L, T);
 
     const int   SAMPLES = 16;
-    const float RADIUS  = 0.06;  // world-space-ish; cubemap depth is in
+    float shadowSoftness = clamp(scene.visualToggles.z, 0.5, 2.5);
+    float radius  = 0.06 * shadowSoftness;  // world-space-ish; cubemap depth is in
                                  // world units so this stays scale-stable
     float temporalSeed = fract(scene.taaParams.x * 9311.0 +
                                scene.taaParams.y * 7919.0);
@@ -271,7 +274,7 @@ float pointShadowFactor(vec3 worldPos, vec3 lightPos) {
     float shadow = 0.0;
     const float bias = 0.004;
     for (int i = 0; i < SAMPLES; ++i) {
-        vec2 v = vogelDisk(i, SAMPLES, phi) * RADIUS;
+        vec2 v = vogelDisk(i, SAMPLES, phi) * radius;
         vec3 sampleDir = frag2Light + T * v.x + B * v.y;
         float d = texture(pointShadowMap, sampleDir).r;
         shadow += depth - bias > d ? 1.0 : 0.0;
@@ -704,6 +707,9 @@ void main() {
     // SSAO is produced by a Phase 7.5 async compute pass that runs after the
     // G-buffer submit and overlaps with shadow-map rendering on graphics.
     float ssaoFactor = texture(ssaoSampler, uv).r;
+    float contactStrength = clamp(scene.visualToggles.w, 0.0, 1.0);
+    float contactOcc =
+        pow(max(ssaoFactor, 0.001), 1.0 + contactStrength * 0.75);
 
     // IBL ambient (diffuse irradiance + specular prefiltered)
     vec3 kS_ibl = FresnelSchlickRoughness(max(dot(worldN, V), 0.0), F0, roughnessForIBL);
@@ -792,6 +798,7 @@ void main() {
     vec3 directLight = enableSunDirect
                        ? (1.0 - sunShadow) * sunDirectUnshadowed
                        : vec3(0.0);
+    directLight *= mix(1.0, contactOcc, contactStrength * 0.25);
 
     // Ambient (IBL diffuse + specular) is scaled by qualityToggles2.w.
     // The prefilter + irradiance cubemaps are baked once from the daytime
@@ -830,7 +837,7 @@ void main() {
     float specVisibility = smoothstep(0.35, 0.90,
                                       clamp(iblSunVisibility, 0.0, 1.0));
     float skyOccSpec    = specVisibility * specVisibility;
-    float materialOcc   = clamp(ao * ssaoFactor, 0.0, 1.0);
+    float materialOcc   = clamp(ao * contactOcc, 0.0, 1.0);
     float NoVForOcc     = max(dot(worldN, V), 0.0);
     float specOcc       =
         specularOcclusion(NoVForOcc, materialOcc, roughnessForIBL);
@@ -897,7 +904,7 @@ void main() {
         }
         ssgiIrradiance = (bilWSum > 1e-5) ? (bilSum / bilWSum)
                                           : texture(ssgiSampler, uv).rgb;
-        ssgiBounce = ssgiIrradiance * kD_ibl * albedo * ao * ssaoFactor *
+        ssgiBounce = ssgiIrradiance * kD_ibl * albedo * ao * contactOcc *
                      ssgiFade;
     }
     ambient += ssgiBounce;

@@ -34,6 +34,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 prevViewProj;
     vec4 taaParams;
     vec4 viewportSize;
+    vec4 visualToggles;
 } scene;
 
 // CSM shadow map (set 0 binding 1) — declared so per-SSGI-sample shadow

@@ -34,6 +34,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 prevViewProj;
     vec4 taaParams;
     vec4 viewportSize;
+    vec4 visualToggles;
 } scene;
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
@@ -42,11 +43,25 @@ layout(location = 0) out vec4 gBuffer0;
 layout(location = 1) out vec4 gBuffer1;
 layout(location = 2) out vec4 gBuffer2;
 
+float interleavedGradientNoise(vec2 p) {
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(p, magic.xy)));
+}
+
+bool alphaTestPass(float alpha, float cutoff) {
+    float strength = clamp(scene.visualToggles.y, 0.0, 1.0);
+    float width = max(fwidth(alpha) * mix(0.5, 2.0, strength), 1.0 / 255.0);
+    vec2 jitterPx = scene.taaParams.xy * scene.viewportSize.xy * 0.5;
+    float noise = interleavedGradientNoise(gl_FragCoord.xy + jitterPx * 37.0);
+    float threshold = cutoff + (noise - 0.5) * width * strength;
+    return alpha >= threshold;
+}
+
 void main() {
     vec4 albedoSample = texture(textures[nonuniformEXT(fragTexIdx0.x)], fragTex);
     bool alphaMasked = (fragTexIdx1.y & 2u) != 0u;
     float alphaCutoff = float(fragTexIdx1.z) / 255.0;
-    if (alphaMasked && albedoSample.a < alphaCutoff) discard;
+    if (alphaMasked && !alphaTestPass(albedoSample.a, alphaCutoff)) discard;
 
     vec3 albedo = pow(albedoSample.rgb, vec3(2.2)) * fragCol;
     float metallic = texture(textures[nonuniformEXT(fragTexIdx0.z)], fragTex).b;

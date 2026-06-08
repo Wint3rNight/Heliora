@@ -268,6 +268,10 @@ struct SceneUniformBuffer {
   alignas(16) glm::mat4 prevViewProj = glm::mat4(1.0f);
   alignas(16) glm::vec4 taaParams = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
   alignas(16) glm::vec4 viewportSize = glm::vec4(0.0f);
+  // Visual cleanup controls for the Sponza realism pass.
+  // x = post edge-AA strength, y = alpha-test dither strength,
+  // z = CSM/point shadow softness multiplier, w = contact grounding strength.
+  alignas(16) glm::vec4 visualToggles = glm::vec4(0.35f, 0.45f, 1.25f, 0.45f);
 };
 
 struct MaterialProbePushConstants {

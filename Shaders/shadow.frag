@@ -21,11 +21,19 @@ layout(push_constant) uniform ShadowPush {
   uint alphaCutoff255;
 } pushShadow;
 
+float interleavedGradientNoise(vec2 p) {
+  vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+  return fract(magic.z * fract(dot(p, magic.xy)));
+}
+
 void main() {
   bool alphaMasked = (pushShadow.materialFlags & 2u) != 0u;
   if (alphaMasked) {
     float a = texture(textures[nonuniformEXT(pushShadow.albedoIdx)], fragUV).a;
     float cutoff = float(pushShadow.alphaCutoff255) / 255.0;
-    if (a < cutoff) discard;
+    float width = max(fwidth(a) * 1.35, 1.0 / 255.0);
+    float threshold =
+        cutoff + (interleavedGradientNoise(gl_FragCoord.xy) - 0.5) * width * 0.45;
+    if (a < threshold) discard;
   }
 }

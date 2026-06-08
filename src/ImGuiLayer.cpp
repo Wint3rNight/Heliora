@@ -342,7 +342,14 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::Checkbox("SSR reflections", &ui.ssrEnabled);
   ImGui::Checkbox("TAA", &ui.taaEnabled);
   ImGui::Checkbox("Responsive TAA", &ui.responsiveTaa);
+  ImGui::SeparatorText("Edge / Alpha / Shadow");
   ImGui::SliderFloat("Sharpness", &ui.sharpness, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Edge AA", &ui.edgeAA, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Alpha dither", &ui.alphaDither, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Shadow softness", &ui.shadowSoftness, 0.5f, 2.5f,
+                     "%.2f");
+  ImGui::SliderFloat("Contact grounding", &ui.contactGrounding, 0.0f, 1.0f,
+                     "%.2f");
   ImGui::Separator();
   ImGui::Checkbox("Day/night cycle", &ui.dayNightEnable);
   ImGui::SliderFloat("Sim hour", &ui.dayNightHour, 0.0f, 24.0f, "%.2f h");

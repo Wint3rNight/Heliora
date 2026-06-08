@@ -53,6 +53,10 @@ struct DebugUiContext {
   bool &responsiveTaa;
   bool &preferMailboxPresent;
   float &sharpness;
+  float &edgeAA;
+  float &alphaDither;
+  float &shadowSoftness;
+  float &contactGrounding;
   bool &dayNightEnable;
   float &dayNightSpeed;
   float &dayNightHour;

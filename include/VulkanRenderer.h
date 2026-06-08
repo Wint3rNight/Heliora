@@ -268,6 +268,10 @@ private:
   // without exaggerating noise. Push back toward 0.3–0.4 only if the
   // image looks too soft after the noise-reduction pass.
   float imguiSharpness = 0.10f;
+  float imguiEdgeAA = 0.35f;              // post/TAA edge cleanup
+  float imguiAlphaDither = 0.45f;         // alpha-test cutout stabilization
+  float imguiShadowSoftness = 1.25f;      // PCF radius multiplier
+  float imguiContactGrounding = 0.45f;    // SSAO contact-strength multiplier
   bool imguiDayNightEnable = false;        // day/night animation
   float imguiDayNightSpeed = 60.0f;        // sim-hours per real-second
   float imguiDayNightHour = 12.0f;         // current sim-hour [0..24)

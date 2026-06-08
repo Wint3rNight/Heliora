@@ -37,6 +37,7 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 prevViewProj;     // JITTERED prev VP — multiply world pos to get prev jittered NDC
     vec4 taaParams;        // (jitter.x, jitter.y, taaEnable, historyValid) in NDC units
     vec4 viewportSize;     // (w, h, 1/w, 1/h)
+    vec4 visualToggles;    // x=edge AA, y=alpha dither, z=shadow softness, w=contact
 } scene;
 
 // Set 1: input attachment (colorBuffer from subpass 0) — zero-overhead center read.
@@ -95,6 +96,10 @@ vec3 tonemapAndEncode(vec3 hdr) {
     return agx(hdr);
 }
 
+float luma(vec3 c) {
+    return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
 // AMD CAS-style contrast-adaptive sharpening, simplified.
 // Sample center + 4-cross neighbors in DISPLAY space (post-AgX). Compute
 // the laplacian (center vs average of neighbors) and add a fraction back
@@ -112,10 +117,12 @@ vec3 applySharpen(vec3 center, ivec2 px) {
     float strength = scene.shadowParams.z;
     if (strength < 0.001) return center;
 
-    vec3 n = texelFetch(currentTex, px + ivec2( 0, -1), 0).rgb;
-    vec3 s = texelFetch(currentTex, px + ivec2( 0,  1), 0).rgb;
-    vec3 e = texelFetch(currentTex, px + ivec2( 1,  0), 0).rgb;
-    vec3 w = texelFetch(currentTex, px + ivec2(-1,  0), 0).rgb;
+    ivec2 size = textureSize(currentTex, 0);
+    ivec2 maxPx = size - ivec2(1);
+    vec3 n = texelFetch(currentTex, clamp(px + ivec2( 0, -1), ivec2(0), maxPx), 0).rgb;
+    vec3 s = texelFetch(currentTex, clamp(px + ivec2( 0,  1), ivec2(0), maxPx), 0).rgb;
+    vec3 e = texelFetch(currentTex, clamp(px + ivec2( 1,  0), ivec2(0), maxPx), 0).rgb;
+    vec3 w = texelFetch(currentTex, clamp(px + ivec2(-1,  0), ivec2(0), maxPx), 0).rgb;
 
     // Tonemap the neighbors so we sharpen in the same perceptual space as
     // the center. Apply the same exposure pre-mult to keep things aligned.
@@ -133,11 +140,47 @@ vec3 applySharpen(vec3 center, ivec2 px) {
     return clamp(center + lap * strength, vec3(0.0), vec3(1.0));
 }
 
+vec3 applyEdgeAA(vec3 center, ivec2 px) {
+    float strength = clamp(scene.visualToggles.x, 0.0, 1.0);
+    if (strength < 0.001) return center;
+
+    ivec2 size = textureSize(currentTex, 0);
+    ivec2 maxPx = size - ivec2(1);
+    ivec2 pC = clamp(px, ivec2(0), maxPx);
+    ivec2 pN = clamp(px + ivec2( 0, -1), ivec2(0), maxPx);
+    ivec2 pS = clamp(px + ivec2( 0,  1), ivec2(0), maxPx);
+    ivec2 pE = clamp(px + ivec2( 1,  0), ivec2(0), maxPx);
+    ivec2 pW = clamp(px + ivec2(-1,  0), ivec2(0), maxPx);
+
+    float ex = scene.qualityToggles2.x;
+    vec3 n = agx(texelFetch(currentTex, pN, 0).rgb * ex);
+    vec3 s = agx(texelFetch(currentTex, pS, 0).rgb * ex);
+    vec3 e = agx(texelFetch(currentTex, pE, 0).rgb * ex);
+    vec3 w = agx(texelFetch(currentTex, pW, 0).rgb * ex);
+
+    float lc = luma(center);
+    float range = max(max(abs(luma(n) - lc), abs(luma(s) - lc)),
+                      max(abs(luma(e) - lc), abs(luma(w) - lc)));
+
+    float dC = texelFetch(depthTex, pC, 0).r;
+    float depthRange = max(max(abs(texelFetch(depthTex, pN, 0).r - dC),
+                               abs(texelFetch(depthTex, pS, 0).r - dC)),
+                           max(abs(texelFetch(depthTex, pE, 0).r - dC),
+                               abs(texelFetch(depthTex, pW, 0).r - dC)));
+
+    float lumaEdge = smoothstep(0.08, 0.35, range) * 0.35;
+    float depthEdge = smoothstep(0.0002, 0.006, depthRange);
+    float edge = max(lumaEdge, depthEdge);
+    vec3 avg = (n + s + e + w) * 0.25;
+    return mix(center, avg, edge * strength * 0.35);
+}
+
 // Combined "send-to-display" path: tonemap then optionally sharpen. Only
 // the swap-chain output is sharpened; the history image stays HDR linear
 // so TAA reprojection math doesn't fight a post-tonemap perceptual signal.
 vec3 finalEncode(vec3 hdr) {
     vec3 tm = tonemapAndEncode(hdr);
+    tm = applyEdgeAA(tm, ivec2(gl_FragCoord.xy));
     return applySharpen(tm, ivec2(gl_FragCoord.xy));
 }
 

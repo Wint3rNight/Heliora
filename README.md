@@ -156,7 +156,7 @@ The renderer is built around a deferred pipeline:
 
 5. Bloom and auto-exposure
 
-   A compute bloom pyramid (downsample with Karis average, tent upsample) and a luminance-histogram auto-exposure pass run on the lit buffer.
+   A compute bloom pyramid (box-filtered downsample, tent upsample) and a luminance-histogram auto-exposure pass run on the lit buffer.
 
 6. Composition pass
 

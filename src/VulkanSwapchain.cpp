@@ -46,6 +46,17 @@ void VulkanSwapchain::recreate(const VulkanDevice &device, GLFWwindow *window) {
   vkResetCommandPool(device.getLogicalDevice(), device.getGraphicsCommandPool(),
                      0);
 
+  // Free the previous per-image primaries — pool reset returns them to the
+  // initial state but does NOT free them, so reallocating without this leaks
+  // imageCount command buffers per recreation.
+  if (!commandBuffers.empty()) {
+    vkFreeCommandBuffers(device.getLogicalDevice(),
+                         device.getGraphicsCommandPool(),
+                         static_cast<uint32_t>(commandBuffers.size()),
+                         commandBuffers.data());
+    commandBuffers.clear();
+  }
+
   cleanupSwapChain(device.getLogicalDevice(), device.getAllocator());
   createSwapChain(device, window);
   createColorBufferImage(device);

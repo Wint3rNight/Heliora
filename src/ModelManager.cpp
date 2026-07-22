@@ -79,7 +79,7 @@ int ModelManager::loadModel(const std::string &modelFile,
   std::vector<Mesh> modelMeshes = MeshModel::LoadNode(
       device.getAllocator(), device.getLogicalDevice(),
       device.getGraphicsQueue(), device.getGraphicsCommandPool(),
-      scene->mRootNode, scene, materials);
+      scene->mRootNode, scene, materials, aiMatrix4x4());
 
   MeshModel meshModel = MeshModel(std::move(modelMeshes));
   models.push_back(std::move(meshModel));

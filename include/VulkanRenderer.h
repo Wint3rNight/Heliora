@@ -24,6 +24,7 @@
 #include "PerformanceMetrics.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
+#include "Scene.h"
 #include "SceneNode.h"
 #include "ShadowPass.h"
 #include "SsaoPass.h"
@@ -58,6 +59,24 @@ public:
   int init(GLFWwindow *newWindow);
   void draw();
   int createMeshModel(const std::string &modelFile);
+
+  // --- Scene management ---
+  // Scans `directory` for *.scene files (also checked under ../ because the
+  // binary runs from build/). Call once after init(), before loadSceneAt().
+  void discoverScenes(const std::string &directory = "Resources/Scenes");
+  bool hasScenes() const { return !availableScenes.empty(); }
+  // Immediate load: waits for the device to go idle, clears the scene graph
+  // and instanced drawables, then builds the described scene. Models are
+  // cached by path, so returning to a scene reuses its GPU geometry.
+  void loadScene(const SceneDescription &desc);
+  void loadSceneAt(int index);
+  // Deferred load, safe to call from UI callbacks that run mid-record; the
+  // switch happens at the top of the next draw().
+  void requestSceneLoad(int index);
+  // Advances node animations and recomputes global transforms. Call once per
+  // frame before draw() with the elapsed time in seconds.
+  void updateScene(float timeSeconds);
+
   SceneNode &getRootNode();
   void updateCameraView(const glm::mat4 &viewMatrix,
                         const glm::vec3 &cameraPosition);
@@ -80,6 +99,13 @@ private:
 
   SceneNode rootNode;
   SceneUniformBuffer sceneUbo = {};
+
+  // --- Scene library ---
+  std::vector<SceneDescription> availableScenes;
+  std::vector<std::string> availableSceneNames; // display names for ImGui
+  int activeSceneIndex = -1;
+  int pendingSceneIndex = -1;   // set by the UI, applied at next draw()
+  std::string activeEnvironmentHdr; // HDRI backing the current sky/IBL
   VkFormat shadowDepthFormat = VK_FORMAT_UNDEFINED;
 
   // --- G-buffer (per swapchain image) ---
@@ -188,7 +214,9 @@ private:
   glm::vec3 imguiCameraPos = {};
   float imguiCameraSpeed = 15.0f;
   float imguiCameraFov = 45.0f;
-  float imguiDrawDistance = 8000.0f;
+  // Metric world since node-transform baking: Sponza is ~30 m long, so a
+  // 200 m far plane covers everything with depth precision to spare.
+  float imguiDrawDistance = 200.0f;
   float imguiLodNear = 15.0f;
   float imguiLodFar = 45.0f;
   float imguiPointShadowFar = 40.0f;
@@ -223,7 +251,7 @@ private:
                                            // culling can remove off-slice
                                            // occluders that still cast into
                                            // the cascade.
-  float imguiCsmFar = 2000.0f;             // cascade far plane
+  float imguiCsmFar = 80.0f;               // cascade far plane (metric world)
   float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
   // Exposure stops applied BEFORE the ACES tonemap in second.frag. ACES has
   // a steep toe — without a pre-scale, midtones get crushed to black on

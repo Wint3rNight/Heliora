@@ -85,7 +85,12 @@ bool aabbOccludedByHzb(vec3 bmin, vec3 bmax) {
     uvMin = clamp(uvMin, vec2(0.0), vec2(1.0));
     uvMax = clamp(uvMax, vec2(0.0), vec2(1.0));
     vec2 pixelSize = max((uvMax - uvMin) * frustum.hzbParams.xy, vec2(1.0));
-    float mip = clamp(ceil(log2(max(pixelSize.x, pixelSize.y))) - 1.0,
+    // No "-1": at ceil(log2) the AABB footprint spans <= 1 texel per axis,
+    // so the 4 corner taps cover every texel it straddles. One level lower
+    // left a 2-texel span whose unaligned middle texel none of the 4 corners
+    // hit — a missed farther depth there under-reported maxDepth and culled
+    // visible meshes (view-dependent popping).
+    float mip = clamp(ceil(log2(max(pixelSize.x, pixelSize.y))),
                       0.0, max(frustum.hzbParams.z - 1.0, 0.0));
 
     vec2 center = (uvMin + uvMax) * 0.5;

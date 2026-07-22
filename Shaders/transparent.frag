@@ -144,7 +144,9 @@ void main() {
         vec3 toLight = scene.pointLights[i].position.xyz - fragWorldPos;
         float dist = length(toLight);
         vec3 L = toLight / max(dist, 0.001);
-        float attenuation = 1.0 / max(dist * dist, 1.0);
+        // Same curve as lit.frag — a different falloff makes glass pop
+        // brighter/darker than the opaque surface right behind it.
+        float attenuation = 1.0 / (1.0 + 0.1 * dist * dist);
         vec3 radiance = scene.pointLights[i].colorIntensity.rgb *
                         scene.pointLights[i].colorIntensity.a * attenuation;
         color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
@@ -159,7 +161,8 @@ void main() {
         float inner = scene.spotLights[i].cutoffAngles.x;
         float outer = scene.spotLights[i].cutoffAngles.y;
         float spot = clamp((theta - outer) / max(inner - outer, 0.001), 0.0, 1.0);
-        float attenuation = spot / max(dist * dist, 1.0);
+        // Same curve as lit.frag (see point-light loop above).
+        float attenuation = spot / (1.0 + 0.1 * dist * dist);
         vec3 radiance = scene.spotLights[i].colorIntensity.rgb *
                         scene.spotLights[i].colorIntensity.a * attenuation;
         color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
@@ -169,10 +172,17 @@ void main() {
     vec3 ambient = albedo * ao * scene.qualityToggles2.w * 0.08;
     color += ambient;
 
+    // Height-fog parity with lit.frag's applyHeightFog: same height factor,
+    // same fog color, no extra ambient multiplier. The old form used the
+    // falloff param as a post-multiplier and a different fog color, so
+    // transparent surfaces visibly detached from the fogged opaques behind
+    // them at any fog density.
     float viewDist = length(scene.cameraPosition.xyz - fragWorldPos);
-    float fog = 1.0 - exp(-scene.fogParams.x * viewDist);
-    fog = clamp(fog * scene.fogParams.y, 0.0, scene.fogParams.z);
-    color = mix(color, vec3(0.55, 0.62, 0.66) * scene.qualityToggles2.w, fog);
+    float heightFactor = exp(-scene.fogParams.y *
+                             max(scene.cameraPosition.y, 0.0));
+    float fog = (1.0 - exp(-scene.fogParams.x * viewDist)) * heightFactor;
+    fog = clamp(fog, 0.0, scene.fogParams.z);
+    color = mix(color, vec3(0.55, 0.62, 0.72), fog);
 
     outColor = vec4(min(color, vec3(12.0)), alpha);
 }

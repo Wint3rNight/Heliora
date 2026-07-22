@@ -11,22 +11,8 @@
 #include <stdexcept>
 
 namespace {
-struct GpuDrivenMeshRecord {
-  glm::vec4 aabbMin;
-  glm::vec4 aabbMax;
-  glm::uvec4 draw;
-  glm::uvec4 flags;
-};
-
 static_assert(sizeof(GpuDrivenMeshRecord) == 64,
               "GPU-driven mesh records must stay std430-friendly");
-
-struct GpuDrivenTransformRecord {
-  glm::mat4 model;
-  glm::mat4 normal;
-  glm::uvec4 texIdx0;
-  glm::uvec4 texIdx1;
-};
 
 struct GpuDrivenFrustumData {
   glm::vec4 planes[6];
@@ -61,20 +47,26 @@ bool GpuDrivenGBufferPass::ensureBuffer(AllocatedBuffer &buffer,
   if (buffer && capacity >= requiredSize)
     return false;
 
+  // Grow with 1.5x headroom: exact-fit sizing destroyed and reallocated the
+  // buffer (and re-wrote the descriptor set) every time the draw count grew
+  // past its previous maximum by even one element.
+  VkDeviceSize newCapacity =
+      std::max(requiredSize, capacity + capacity / 2);
   buffer.reset();
-  createBuffer(device->getAllocator(), requiredSize, usage, memoryUsage,
+  createBuffer(device->getAllocator(), newCapacity, usage, memoryUsage,
                memoryFlags, &buffer);
-  capacity = requiredSize;
+  capacity = newCapacity;
   return true;
 }
 
 const GpuDrivenGBufferPass::GeometryRange *
 GpuDrivenGBufferPass::findGeometry(const Mesh *mesh, int lod) const {
-  for (const GeometryRange &range : geometryRanges) {
-    if (range.mesh == mesh && range.lod == lod)
-      return &range;
-  }
-  return nullptr;
+  // O(1) lookup — the previous linear scan was O(drawItems × ranges) per
+  // frame. Key packs (mesh pointer, lod); lod is always < 8.
+  auto it = geometryRangeLookup.find(geometryKey(mesh, lod));
+  if (it == geometryRangeLookup.end())
+    return nullptr;
+  return &geometryRanges[it->second];
 }
 
 void GpuDrivenGBufferPass::uploadStaticGeometry() {
@@ -101,10 +93,8 @@ void GpuDrivenGBufferPass::uploadStaticGeometry() {
   createBuffer(device->getAllocator(), vertexBytes,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                RENDER_UPLOAD_ALLOCATION_FLAGS, &vertexStaging);
-  void *mapped = nullptr;
-  vmaMapMemory(device->getAllocator(), vertexStaging.getAllocation(), &mapped);
-  memcpy(mapped, staticVertices.data(), static_cast<size_t>(vertexBytes));
-  vmaUnmapMemory(device->getAllocator(), vertexStaging.getAllocation());
+  uploadToAllocation(device->getAllocator(), vertexStaging.getAllocation(),
+                     staticVertices.data(), vertexBytes);
   copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
              device->getGraphicsCommandPool(), vertexStaging.get(),
              staticVertexBuffer.get(), vertexBytes);
@@ -113,9 +103,8 @@ void GpuDrivenGBufferPass::uploadStaticGeometry() {
   createBuffer(device->getAllocator(), indexBytes,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                RENDER_UPLOAD_ALLOCATION_FLAGS, &indexStaging);
-  vmaMapMemory(device->getAllocator(), indexStaging.getAllocation(), &mapped);
-  memcpy(mapped, staticIndices.data(), static_cast<size_t>(indexBytes));
-  vmaUnmapMemory(device->getAllocator(), indexStaging.getAllocation());
+  uploadToAllocation(device->getAllocator(), indexStaging.getAllocation(),
+                     staticIndices.data(), indexBytes);
   copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
              device->getGraphicsCommandPool(), indexStaging.get(),
              staticIndexBuffer.get(), indexBytes);
@@ -184,6 +173,7 @@ void GpuDrivenGBufferPass::registerModelGeometryInternal(
       range.indexCount = static_cast<uint32_t>(indices.size());
       range.vertexOffset = vertexOffset;
       staticIndices.insert(staticIndices.end(), indices.begin(), indices.end());
+      geometryRangeLookup[geometryKey(mesh, lod)] = geometryRanges.size();
       geometryRanges.push_back(range);
       changed = true;
     }
@@ -210,11 +200,8 @@ void GpuDrivenGBufferPass::uploadMeshRecords(FrameResources &frame,
     frame.descriptorDirty = true;
   }
 
-  void *mapped = nullptr;
-  vmaMapMemory(device->getAllocator(), frame.meshBuffer.getAllocation(),
-               &mapped);
-  memcpy(mapped, records, static_cast<size_t>(bytes));
-  vmaUnmapMemory(device->getAllocator(), frame.meshBuffer.getAllocation());
+  uploadToAllocation(device->getAllocator(), frame.meshBuffer.getAllocation(),
+                     records, bytes);
 }
 
 void GpuDrivenGBufferPass::create(
@@ -750,6 +737,7 @@ void GpuDrivenGBufferPass::cleanup() {
   staticVertices.clear();
   staticIndices.clear();
   geometryRanges.clear();
+  geometryRangeLookup.clear();
   renderExtent = {};
   hzbExtent = {};
   hzbMipCount = 0;
@@ -829,9 +817,13 @@ bool GpuDrivenGBufferPass::prepareFrame(
   }
 
   FrameResources &frame = frames[imageIndex];
-  std::vector<GpuDrivenMeshRecord> meshRecords;
-  std::vector<GpuDrivenTransformRecord> transforms;
+  // Persistent scratch: cleared, not reallocated, every frame.
+  std::vector<GpuDrivenMeshRecord> &meshRecords = frameMeshRecords;
+  std::vector<GpuDrivenTransformRecord> &transforms = frameTransforms;
+  meshRecords.clear();
+  transforms.clear();
   meshRecords.reserve(drawItems.size());
+  transforms.reserve(drawItems.size());
 
   for (const GBufferDrawItem &item : drawItems) {
     const GeometryRange *range = findGeometry(item.mesh, item.lod);
@@ -901,10 +893,8 @@ bool GpuDrivenGBufferPass::prepareFrame(
                     VkDeviceSize bytes) {
     if (bytes == 0 || src == nullptr)
       return;
-    void *mapped = nullptr;
-    vmaMapMemory(device->getAllocator(), buffer.getAllocation(), &mapped);
-    memcpy(mapped, src, static_cast<size_t>(bytes));
-    vmaUnmapMemory(device->getAllocator(), buffer.getAllocation());
+    uploadToAllocation(device->getAllocator(), buffer.getAllocation(), src,
+                       bytes);
   };
   upload(frame.transformBuffer, transforms.data(), transformBytes);
 

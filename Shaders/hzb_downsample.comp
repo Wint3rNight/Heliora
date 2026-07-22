@@ -13,10 +13,19 @@ void main() {
 
     ivec2 srcSize = textureSize(srcDepth, 0);
     ivec2 base = dstCoord * 2;
+    // Conservative max-reduction: with an odd source extent the standard 2x2
+    // kernel never reads the last source row/column (e.g. 135 -> 67 leaves
+    // row 134 unread), losing depth maxima and enabling false occlusion
+    // culls. The last destination texel on an odd axis consumes 3 taps.
+    ivec2 taps = ivec2(2);
+    if (srcSize.x > dstSize.x * 2 && dstCoord.x == dstSize.x - 1)
+        taps.x = 3;
+    if (srcSize.y > dstSize.y * 2 && dstCoord.y == dstSize.y - 1)
+        taps.y = 3;
     float d = 0.0;
-    for (int y = 0; y < 2; ++y) {
-        for (int x = 0; x < 2; ++x) {
-            ivec2 p = clamp(base + ivec2(x, y), ivec2(0), srcSize - ivec2(1));
+    for (int y = 0; y < taps.y; ++y) {
+        for (int x = 0; x < taps.x; ++x) {
+            ivec2 p = min(base + ivec2(x, y), srcSize - ivec2(1));
             d = max(d, texelFetch(srcDepth, p, 0).r);
         }
     }

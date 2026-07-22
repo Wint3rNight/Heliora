@@ -260,7 +260,10 @@ void main() {
     // The SSGI target is half-resolution. Map each low-res output pixel back
     // to normalized full-screen UVs, then sample the full-res G-buffer there.
     vec2 outSize = vec2(textureSize(ssgiHistoryPrev, 0));
-    vec2 uv      = (gl_FragCoord.xy + vec2(0.5)) / outSize;
+    // gl_FragCoord.xy is already at the pixel CENTER (px + 0.5); adding
+    // another 0.5 shifted every G-buffer read one full-res pixel down-right
+    // of the pixel being shaded, misregistering the whole SSGI output.
+    vec2 uv      = gl_FragCoord.xy / outSize;
 
     float depth = texture(gBufferDepthSampler, uv).r;
     if (depth >= 0.9999) {

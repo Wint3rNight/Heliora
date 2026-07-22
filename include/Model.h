@@ -109,16 +109,22 @@ public:
   float     boundingRadius = 0.0f;
 
   static std::vector<MaterialTextureNames> LoadMaterials(const aiScene *scene);
+  // Bakes the accumulated node transform into vertex data so assets load at
+  // their authored scale/orientation (glTF worlds are metric). Without this,
+  // Sponza's root 0.008 scale and DamagedHelmet's +90° X rotation were
+  // silently dropped and the world ran at raw asset units.
   static std::vector<Mesh> LoadNode(VmaAllocator allocator,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiNode *node, const aiScene *scene,
-                                    const std::vector<Material> &materials);
+                                    const std::vector<Material> &materials,
+                                    const aiMatrix4x4 &parentTransform);
   static std::vector<Mesh> LoadMesh(VmaAllocator allocator,
                                     VkDevice newDevice, VkQueue transferQueue,
                                     VkCommandPool transferCommandPool,
                                     aiMesh *mesh, const aiScene *scene,
-                                    const std::vector<Material> &materials);
+                                    const std::vector<Material> &materials,
+                                    const aiMatrix4x4 &transform);
 
   ~MeshModel();
 

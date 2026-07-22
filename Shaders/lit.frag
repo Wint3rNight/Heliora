@@ -32,8 +32,8 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     mat4 invView;
     vec4 fogParams; // x=density, y=falloff, z=clampMax
     int debugMode;
-    // x = sRGB albedo decode
-    // y = specular AA enable, z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
+    // x = IBL roughness floor, y = sky-occlusion floor,
+    // z = SPEC_AA_VARIANCE, w = SPEC_AA_THRESHOLD
     vec4 qualityToggles;
     // x = exposure multiplier, y = normal strength, z = min roughness,
     // w = ambient intensity
@@ -51,7 +51,8 @@ layout(set = 0, binding = 2) uniform samplerCube pointShadowMap;
 layout(set = 0, binding = 3) uniform samplerCube irradianceMap;
 layout(set = 0, binding = 4) uniform samplerCube prefilteredEnvMap;
 layout(set = 0, binding = 5) uniform sampler2D brdfLUT;
-layout(set = 0, binding = 6) uniform sampler2D ssaoNoise;
+// binding 6 (ssaoNoise) is only consumed by the async SSAO compute pass now;
+// this shader reads the SSAO result via ssaoSampler.
 layout(set = 0, binding = 7) uniform samplerCube skyboxCubemap;
 
 // ---- Set 1: G-buffer samplers ----
@@ -70,20 +71,6 @@ layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
 const int IBL_PREFILTER_MIPS = 5;
-
-// Hemisphere kernel in view space. The first 8 taps are used in the lit pass;
-// the remaining entries are kept so the std140 shader layout and old tuning
-// values stay easy to compare while profiling.
-const vec3 ssaoKernel[16] = vec3[16](
-    vec3( 0.5381,  0.1856, -0.1495), vec3( 0.1379,  0.2486,  0.4430),
-    vec3( 0.3371,  0.5679, -0.0057), vec3(-0.6999, -0.0451, -0.0019),
-    vec3( 0.0689, -0.1598, -0.8547), vec3( 0.0560,  0.0069, -0.1843),
-    vec3(-0.0146,  0.1402,  0.0762), vec3( 0.0100, -0.1924, -0.0344),
-    vec3(-0.3577, -0.5301, -0.4358), vec3(-0.3169,  0.1063,  0.0158),
-    vec3( 0.0103, -0.5869,  0.0046), vec3(-0.0897, -0.4940,  0.3287),
-    vec3( 0.7119, -0.0154, -0.0918), vec3(-0.0533,  0.0596, -0.5411),
-    vec3( 0.0352, -0.0631,  0.5460), vec3(-0.4776,  0.2847, -0.0271)
-);
 
 // ---- Position reconstruction ----
 vec3 reconstructViewPos(vec2 uv, float depth) {
@@ -247,10 +234,17 @@ int pointShadowFace(vec3 dir) {
 // gives the same smooth penumbra as the directional-light path.
 float pointShadowFactor(vec3 worldPos, vec3 lightPos) {
     vec3 frag2Light = worldPos - lightPos;
-    int face = pointShadowFace(frag2Light);
-    vec4 lsPos = scene.pointShadowMatrices[face] * vec4(worldPos, 1.0);
-    float depth = lsPos.z / lsPos.w;
-    if (depth > 1.0) return 0.0;
+    // The cubemap stores gl_FragCoord.z from a perspective(90°, 0.1, far)
+    // face projection — NON-linear NDC depth. Comparing NDC values with a
+    // fixed bias makes the effective world-space bias grow with distance²
+    // (shadows detach, then vanish at range). Linearize the stored depth
+    // and compare distances along the face's principal axis instead; that
+    // axis distance is exactly what the face projection encodes.
+    const float pointNear = 0.1;
+    float pointFar = max(scene.shadowParams.x, pointNear + 0.01);
+    vec3 absF = abs(frag2Light);
+    float axisDist = max(absF.x, max(absF.y, absF.z));
+    if (axisDist > pointFar) return 0.0;
 
     // Build a tangent frame around the light direction so the Vogel disk
     // taps lie on a plane through that direction. We sample the cubemap
@@ -272,12 +266,15 @@ float pointShadowFactor(vec3 worldPos, vec3 lightPos) {
                 * 6.2831853;
 
     float shadow = 0.0;
-    const float bias = 0.004;
+    // World-space bias: 3 cm base + 0.8 cm per meter of light distance.
+    float bias = 0.03 + 0.008 * axisDist;
     for (int i = 0; i < SAMPLES; ++i) {
         vec2 v = vogelDisk(i, SAMPLES, phi) * radius;
         vec3 sampleDir = frag2Light + T * v.x + B * v.y;
-        float d = texture(pointShadowMap, sampleDir).r;
-        shadow += depth - bias > d ? 1.0 : 0.0;
+        float dNdc = texture(pointShadowMap, sampleDir).r;
+        float dLinear =
+            pointNear * pointFar / (pointFar - dNdc * (pointFar - pointNear));
+        shadow += axisDist - bias > dLinear ? 1.0 : 0.0;
     }
     return shadow / float(SAMPLES);
 }
@@ -379,161 +376,6 @@ vec3 cookTorrance(vec3 albedo, vec3 N, vec3 V, vec3 L, vec3 F0,
     }
 
     return (kD * albedo / PI + specular) * lightColor * intensity * NoL;
-}
-
-// ---- SSAO ----
-float computeSSAO(vec2 uv, vec3 viewPos, vec3 viewNormal) {
-    vec2 noiseScale = vec2(textureSize(gBuffer0Sampler, 0)) / 4.0;
-    // Per-frame shift of the 4×4 SSAO noise tile so the rotation pattern
-    // becomes screen-space-UNSTABLE across frames. TAA's history blend
-    // then averages out the noise pattern that was previously a fixed
-    // 4×4 tile baked into every frame. Without this, the noise pattern
-    // is the same every frame and TAA accumulates the same dither.
-    vec2 temporalOffset = vec2(fract(scene.taaParams.x * 7919.0),
-                               fract(scene.taaParams.y * 9311.0));
-    vec3 randomVec  = normalize(
-        texture(ssaoNoise, uv * noiseScale + temporalOffset).rgb * 2.0 - 1.0);
-    vec3 tangent    = normalize(randomVec - viewNormal * dot(randomVec, viewNormal));
-    vec3 bitangent  = cross(viewNormal, tangent);
-    mat3 TBN        = mat3(tangent, bitangent, viewNormal);
-
-    float occlusion = 0.0;
-    const float radius = 1.0;
-    const float bias   = 0.03;
-
-    const int SSAO_SAMPLES = 8;
-    for (int i = 0; i < SSAO_SAMPLES; ++i) {
-        vec3 samplePos = viewPos + TBN * ssaoKernel[i] * radius;
-
-        vec4 offset = scene.projection * vec4(samplePos, 1.0);
-        offset.xy  /= offset.w;
-        offset.xy   = offset.xy * 0.5 + 0.5;
-        // No y-flip: projection's [1][1] *= -1 already aligns NDC with
-        // Vulkan's screen-down convention, so this UV matches gl_FragCoord/H.
-
-        if (offset.x < 0.0 || offset.x > 1.0 ||
-            offset.y < 0.0 || offset.y > 1.0) continue;
-
-        float sampleDepth = texture(gBufferDepthSampler, offset.xy).r;
-        vec4  sNdc        = vec4(offset.xy * 2.0 - 1.0, sampleDepth, 1.0);
-        vec4  sViewCl     = scene.invProj * sNdc;
-        float sLinearZ    = sViewCl.z / sViewCl.w;
-
-        float rangeCheck = smoothstep(0.0, 1.0, radius / abs(viewPos.z - sLinearZ));
-        occlusion += (sLinearZ >= samplePos.z + bias ? 1.0 : 0.0) * rangeCheck;
-    }
-    return 1.0 - (occlusion / float(SSAO_SAMPLES));
-}
-
-// ---- Screen-Space Global Illumination (one-bounce diffuse) ---------------
-// Cheap single-frame SSGI: at each pixel, sample N neighbors in a screen-
-// space disc, estimate each neighbor's sun-direct contribution from its
-// own (albedo, normal), and weight by receiver cosine. The result is the
-// incoming bounced irradiance from nearby sunlit surfaces — the missing
-// term that made our shadowed interiors read as flat sky-irradiance only.
-//
-// Not full GI: single-bounce, sun-direct emitter estimate only (skips
-// indirect-from-indirect), screen-space (misses off-screen contributions).
-// But for indoor Sponza shots it adds the warm "stone bouncing into floor"
-// look that no amount of IBL tuning can reproduce.
-//
-// Tunables ride on `shadowParams.y` (intensity). Radius/tolerance live as
-// compile-time constants — the previous shadowParams.z/.w plumbing
-// collided with the sharpening slider already mapped to .z.
-vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
-    if (scene.shadowParams.y < 0.001) return vec3(0.0);
-
-    vec2 texelSize = 1.0 / vec2(textureSize(gBuffer0Sampler, 0));
-    vec3 sunDir   = normalize(-scene.directionalLight.direction.xyz);
-    vec3 sunColor = scene.directionalLight.colorIntensity.rgb *
-                    scene.directionalLight.colorIntensity.a;
-
-    // 32 samples × 8-frame Halton TAA accumulation = effectively 256-tap.
-    // Radius dropped 28 → 18 px: at 28 px on a 1080p frame, a floor pixel
-    // gathers samples spanning several meters of world space; near-coplanar
-    // floor samples dominate the disc and the few that hit walls/columns
-    // arrive with high variance, producing the "floor stipple" symptom.
-    // Tightening to 18 px keeps the contributor set local enough that the
-    // form-factor weighting actually washes out the variance.
-    const int   SSGI_SAMPLES = 32;
-    const float SSGI_RADIUS_PX = 18.0;
-    const float SSGI_DEPTH_TOL = 0.12;
-
-    float temporalSeed = fract(scene.taaParams.x * 9311.0 +
-                               scene.taaParams.y * 7919.0);
-    float phi          = (interleavedGradientNoise(gl_FragCoord.xy) + temporalSeed)
-                         * 6.2831853;
-
-    vec3  bounce = vec3(0.0);
-    float totalW = 0.0;
-
-    for (int i = 0; i < SSGI_SAMPLES; ++i) {
-        vec2 off = vogelDisk(i, SSGI_SAMPLES, phi) * SSGI_RADIUS_PX * texelSize;
-        vec2 sUV = uv + off;
-        if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) continue;
-
-        float sDepth = texture(gBufferDepthSampler, sUV).r;
-        if (sDepth >= 0.9999) continue;            // sky
-
-        vec3 sN = texture(gBuffer1Sampler, sUV).xyz;
-        if (dot(sN, sN) < 0.1) continue;           // empty / unwritten
-        sN = normalize(sN);
-
-        vec3 sViewPos = reconstructViewPos(sUV, sDepth);
-        float sViewZ  = -sViewPos.z;
-        if (abs(sViewZ - viewZ) > SSGI_DEPTH_TOL * viewZ) continue;
-
-        vec3 sWorldPos = (scene.invView * vec4(sViewPos, 1.0)).xyz;
-        vec3 dir       = sWorldPos - worldPos;
-        float dist2    = dot(dir, dir);
-        if (dist2 < 1e-4) continue;
-        dir *= inversesqrt(dist2);
-
-        // Receiver cosine: how the center patch "sees" the neighbor patch.
-        // Threshold raised 0.01 → 0.08 — near-coplanar samples (floor
-        // sampling itself at grazing) carry vanishing geometric weight but
-        // were previously slipping through and dominating the sum when one
-        // such sample happened to be sun-lit. Killing the bottom of the
-        // hemisphere is what stops the floor-stipple O2 symptom.
-        float cosRecv = max(dot(worldN, dir), 0.0);
-        if (cosRecv < 0.08) continue;
-
-        // Emitter cosine: a sample only radiates back along directions in
-        // *its* front hemisphere — a wall edge-on to the receiver radiates
-        // tangentially, not toward us. Was missing entirely; without it, a
-        // bright back-face hit on a thin wall (one-pixel grazing sample)
-        // contributes full irradiance.
-        float cosEmit = max(-dot(sN, dir), 0.0);
-        if (cosEmit < 0.05) continue;
-
-        // Inverse-square distance falloff. Bias by 0.25 m² so that
-        // sub-meter neighbors don't singularly dominate (1/dist² blows up
-        // at dist→0, which is exactly the high-variance close-neighbor
-        // case). Beyond ~1.5 m the bias is negligible.
-        float falloff = 1.0 / (dist2 + 0.25);
-
-        vec3  sAlbedo = texture(gBuffer0Sampler, sUV).rgb;
-        float sNoL    = max(dot(sN, sunDir), 0.0);
-        vec3  sLit    = sAlbedo * sunColor * sNoL;
-        // Per-sample firefly clamp. Tightened 6.0 → 2.5 to keep SSGI's
-        // residual grain invisible once auto-exposure starts multiplying.
-        // Typical sunlit-plaster emitter sits around 1.0–2.0 linear, so
-        // 2.5 is a tight but non-cropping ceiling for healthy bounce.
-        // Any sample > 2.5 in HDR is almost certainly a normal-map sub-
-        // pixel spec glint and contributes more noise than signal.
-        sLit = min(sLit, vec3(2.5));
-
-        float w = cosRecv * cosEmit * falloff;
-        bounce += sLit * w;
-        totalW += w;
-    }
-
-    // Weighted-average emitter radiance × intensity slider. The form-factor
-    // terms (cosRecv, cosEmit, 1/r²) cancel out in numerator/denominator,
-    // leaving an "average sun-lit color of valid neighbors weighted by
-    // geometric importance" — which is what the eye reads as bounce.
-    if (totalW < 1e-4) return vec3(0.0);
-    return bounce / totalW * scene.shadowParams.y;
 }
 
 // ---- FXAA (edge anti-aliasing using G-buffer depth + albedo) ----
@@ -880,6 +722,11 @@ void main() {
         vec3  bilSum  = vec3(0.0);
         float bilWSum = 0.0;
         float centerViewZ = -viewPos.z;
+        // Linear view-Z from raw 0..1 depth needs only two projection
+        // constants: viewDist = P32 / (d + P22). This replaces a full
+        // invProj mat4 reconstruction per tap (17 taps per lit pixel).
+        float projA = scene.projection[2][2];
+        float projB = scene.projection[3][2];
         for (int k = 0; k < 17; ++k) {
             vec2  sUV  = uv + vec2(OFFSETS[k]) * ssgiTexel;
             if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0)
@@ -890,7 +737,7 @@ void main() {
             vec3  sN   = texture(gBuffer1Sampler, sUV).xyz;
             if (dot(sN, sN) < 0.1) continue;
             sN = normalize(sN);
-            float sViewZ = -reconstructViewPos(sUV, sD).z;
+            float sViewZ = projB / (sD + projA);
             // Depth weight: use reconstructed view-Z, not non-linear depth.
             float dz = abs(sViewZ - centerViewZ) / max(centerViewZ, 1e-3);
             float wD = exp(-dz * 24.0);

@@ -11,10 +11,13 @@
 
 
 void DescriptorManager::init(VkDevice device, VmaAllocator allocator,
-                             size_t swapchainImageCount) {
+                             size_t swapchainImageCount,
+                             const uint32_t *sharedQueueFamilies,
+                             uint32_t sharedQueueFamilyCount) {
   createDescriptorSetLayout(device);
   createPushConstantRange();
-  createUniformBuffers(allocator, swapchainImageCount);
+  createUniformBuffers(allocator, swapchainImageCount, sharedQueueFamilies,
+                       sharedQueueFamilyCount);
   createDescriptorPool(device, swapchainImageCount);
   createDescriptorSets(device, swapchainImageCount);
 }
@@ -47,10 +50,8 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
 
 void DescriptorManager::updateUniformBuffer(VmaAllocator allocator, size_t idx,
                                             const void *data, size_t size) {
-  void *mapped;
-  vmaMapMemory(allocator, vpUniformBuffers[idx].getAllocation(), &mapped);
-  memcpy(mapped, data, size);
-  vmaUnmapMemory(allocator, vpUniformBuffers[idx].getAllocation());
+  uploadToAllocation(allocator, vpUniformBuffers[idx].getAllocation(), data,
+                     size);
 }
 
 int DescriptorManager::createTextureDescriptor(
@@ -532,20 +533,26 @@ void DescriptorManager::createPushConstantRange() {
 // Uniform buffer creation
 
 void DescriptorManager::createUniformBuffers(VmaAllocator allocator,
-                                             size_t count) {
+                                             size_t count,
+                                             const uint32_t *sharedQueueFamilies,
+                                             uint32_t sharedQueueFamilyCount) {
   vpUniformBuffers.resize(count);
   for (size_t i = 0; i < count; ++i) {
     createBuffer(allocator, sizeof(SceneUniformBuffer),
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                  VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                      VMA_ALLOCATION_CREATE_MAPPED_BIT,
-                 &vpUniformBuffers[i]);
+                 &vpUniformBuffers[i], sharedQueueFamilies,
+                 sharedQueueFamilyCount);
   }
 }
 
 // Descriptor pool creation
 
-void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
+// Pools whose size scales with the swapchain image count. Split out so a
+// swapchain recreation that changes the image count (present-mode toggles
+// commonly change minImageCount) can rebuild exactly these.
+void DescriptorManager::createCountSizedPools(VkDevice device, size_t count) {
   // VP pool: 1 UBO + 7 samplers per frame
   VkDescriptorPoolSize vpSizes[2] = {};
   vpSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -561,21 +568,6 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
   if (vkCreateDescriptorPool(device, &vpCI, nullptr, &descriptorPool) !=
       VK_SUCCESS)
     throw std::runtime_error("Failed to create VP descriptor pool");
-
-  // Material sampler pool: 5 samplers per material, up to MAX_OBJECTS
-  VkDescriptorPoolSize samplerSize = {};
-  samplerSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  samplerSize.descriptorCount = MAX_OBJECTS * 5;
-
-  VkDescriptorPoolCreateInfo samplerCI = {};
-  samplerCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  samplerCI.maxSets = MAX_OBJECTS;
-  samplerCI.poolSizeCount = 1;
-  samplerCI.pPoolSizes = &samplerSize;
-  if (vkCreateDescriptorPool(device, &samplerCI, nullptr,
-                             &samplerDescriptorPool) != VK_SUCCESS)
-    throw std::runtime_error(
-        "Failed to create material sampler descriptor pool");
 
   // G-buffer sampler pool: 7 samplers per frame, one set per SSGI history slot.
   //   gb0 / gb1 / gb2 / depth / lit (SSR comp) / ssgi / ssao
@@ -608,6 +600,53 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
       VK_SUCCESS)
     throw std::runtime_error(
         "Failed to create input attachment descriptor pool");
+}
+
+bool DescriptorManager::recreatePerImageResources(
+    VkDevice device, VmaAllocator allocator, size_t newCount,
+    const uint32_t *sharedQueueFamilies, uint32_t sharedQueueFamilyCount) {
+  if (newCount == vpUniformBuffers.size())
+    return false;
+
+  // The swapchain image count changed. Everything indexed by the acquired
+  // image (scene UBOs, VP sets) and every count-sized pool must be rebuilt,
+  // otherwise vkAcquireNextImageKHR can hand back indices past the arrays.
+  // Caller holds vkDeviceWaitIdle. The bindless and material pools are
+  // count-independent and keep their sets.
+  vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+  vkDestroyDescriptorPool(device, gBufferDescriptorPool, nullptr);
+  vkDestroyDescriptorPool(device, inputDescriptorPool, nullptr);
+  descriptorPool = VK_NULL_HANDLE;
+  gBufferDescriptorPool = VK_NULL_HANDLE;
+  inputDescriptorPool = VK_NULL_HANDLE;
+
+  vpUniformBuffers.clear();
+  createUniformBuffers(allocator, newCount, sharedQueueFamilies,
+                       sharedQueueFamilyCount);
+  createCountSizedPools(device, newCount);
+  createVpDescriptorSets(device, newCount);
+  // The VP sets' sampler bindings (shadow maps, IBL, noise, skybox) must be
+  // re-written by the caller — this class doesn't own those views.
+  return true;
+}
+
+void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
+  createCountSizedPools(device, count);
+
+  // Material sampler pool: 5 samplers per material, up to MAX_OBJECTS
+  VkDescriptorPoolSize samplerSize = {};
+  samplerSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  samplerSize.descriptorCount = MAX_OBJECTS * 5;
+
+  VkDescriptorPoolCreateInfo samplerCI = {};
+  samplerCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  samplerCI.maxSets = MAX_OBJECTS;
+  samplerCI.poolSizeCount = 1;
+  samplerCI.pPoolSizes = &samplerSize;
+  if (vkCreateDescriptorPool(device, &samplerCI, nullptr,
+                             &samplerDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error(
+        "Failed to create material sampler descriptor pool");
 
   // Phase 7.2: Bindless texture array pool. A single set with up to
   // MAX_BINDLESS_TEXTURES combined-image-sampler descriptors. The
@@ -629,7 +668,7 @@ void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
 
 // Descriptor set creation
 
-void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
+void DescriptorManager::createVpDescriptorSets(VkDevice device, size_t count) {
   descriptorSets.resize(count);
   std::vector<VkDescriptorSetLayout> layouts(count, descriptorSetLayout);
 
@@ -657,6 +696,10 @@ void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
     write.pBufferInfo = &bufInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
+}
+
+void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
+  createVpDescriptorSets(device, count);
 
   // Phase 7.2: Allocate the single global bindless descriptor set.
   // VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT lets us specify
@@ -716,6 +759,14 @@ void DescriptorManager::createInputDescriptorSets(
 void DescriptorManager::registerBindlessTexture(VkDevice device, uint32_t index,
                                                 VkImageView view,
                                                 VkSampler sampler) {
+  // Runtime scene switching can keep loading unique textures; writing past
+  // the variable-count binding is undefined behavior, so fail loudly.
+  if (index >= MAX_BINDLESS_TEXTURES) {
+    throw std::runtime_error(
+        "Bindless texture slot overflow: index " + std::to_string(index) +
+        " >= MAX_BINDLESS_TEXTURES (" + std::to_string(MAX_BINDLESS_TEXTURES) +
+        ")");
+  }
   VkDescriptorImageInfo imgInfo = {};
   imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   imgInfo.imageView = view;

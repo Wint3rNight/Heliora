@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <fstream>
 #define GLFW_INCLUDE_VULKAN
 #include "vk_mem_alloc.h"
@@ -158,8 +159,11 @@ const uint32_t POINT_SHADOW_MAP_SIZE = 1024;
 constexpr int NUM_CSM_CASCADES = 4;
 constexpr VmaAllocationCreateFlags RENDER_DEVICE_ALLOCATION_FLAGS =
     VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+// MAPPED_BIT keeps upload-side allocations persistently mapped so
+// uploadToAllocation() takes its no-map fast path; VMA unmaps on destroy.
 constexpr VmaAllocationCreateFlags RENDER_UPLOAD_ALLOCATION_FLAGS =
-    VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+    VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
 const std::vector<const char *> deviceExtensions = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -290,8 +294,10 @@ const int IBL_PREFILTER_MIPS = 5;
 // Push constants for the G-buffer pass. Used by both shader.vert and
 // shader.frag — vertex needs the matrices, fragment needs the bindless
 // texture indices (5 maps × uint32 = 20 bytes packed into one ivec4 + uint).
-// Total = 128 (matrices) + 32 (indices) = 160 bytes, well under the 256-byte
-// guaranteed maxPushConstantsSize.
+// Total = 128 (matrices) + 32 (indices) = 160 bytes. CAUTION: Vulkan only
+// guarantees maxPushConstantsSize = 128; this relies on desktop drivers
+// exposing 256. Shrinking this below 128 (move texture indices into a
+// per-draw SSBO) is tracked as a portability TODO.
 struct ModelPushConstants {
   alignas(16) glm::mat4 model;
   alignas(16) glm::mat4 normal;
@@ -388,17 +394,27 @@ static uint32_t findMemoryTypeIndex(
   throw std::runtime_error("Failed to find suitable memory type!");
 }
 
+// Optional queue-family list enables VK_SHARING_MODE_CONCURRENT — required
+// for resources read by the dedicated compute queue without queue-family
+// ownership transfer barriers (e.g. the scene UBO sampled by async SSAO).
 static void createBuffer(VmaAllocator allocator, VkDeviceSize bufferSize,
                          VkBufferUsageFlags bufferUsage,
                          VmaMemoryUsage memoryUsage,
                          VmaAllocationCreateFlags memoryFlags,
-                         AllocatedBuffer *outBuffer) {
+                         AllocatedBuffer *outBuffer,
+                         const uint32_t *queueFamilies = nullptr,
+                         uint32_t queueFamilyCount = 0) {
   VkBufferCreateInfo bufferInfo = {};
   bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferInfo.size = bufferSize;   // size of buffer in bytes
   bufferInfo.usage = bufferUsage; // type of buffer we want to create
-  bufferInfo.sharingMode =
-      VK_SHARING_MODE_EXCLUSIVE; // buffer is shared between multiple
+  if (queueFamilies != nullptr && queueFamilyCount > 1) {
+    bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    bufferInfo.queueFamilyIndexCount = queueFamilyCount;
+    bufferInfo.pQueueFamilyIndices = queueFamilies;
+  } else {
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
 
   VmaAllocationCreateInfo allocInfo = {};
   allocInfo.usage = memoryUsage;
@@ -412,6 +428,30 @@ static void createBuffer(VmaAllocator allocator, VkDeviceSize bufferSize,
     throw std::runtime_error("failed to create VMA buffer!");
   }
   *outBuffer = AllocatedBuffer(allocator, buffer, allocation);
+}
+
+// Copies CPU data into a host-visible allocation and flushes the written
+// range. VMA's map/unmap does NOT flush, and HOST_ACCESS_SEQUENTIAL_WRITE
+// may legally land in non-coherent memory; the flush is a no-op on coherent
+// heaps. Persistently mapped allocations (VMA_ALLOCATION_CREATE_MAPPED_BIT)
+// skip the map/unmap round trip entirely.
+static void uploadToAllocation(VmaAllocator allocator, VmaAllocation allocation,
+                               const void *data, VkDeviceSize size,
+                               VkDeviceSize offset = 0) {
+  VmaAllocationInfo info = {};
+  vmaGetAllocationInfo(allocator, allocation, &info);
+  if (info.pMappedData != nullptr) {
+    memcpy(static_cast<char *>(info.pMappedData) + offset, data,
+           static_cast<size_t>(size));
+  } else {
+    void *mapped = nullptr;
+    if (vmaMapMemory(allocator, allocation, &mapped) != VK_SUCCESS)
+      throw std::runtime_error("failed to map allocation for upload");
+    memcpy(static_cast<char *>(mapped) + offset, data,
+           static_cast<size_t>(size));
+    vmaUnmapMemory(allocator, allocation);
+  }
+  vmaFlushAllocation(allocator, allocation, offset, size);
 }
 
 static VkCommandBuffer beginCommandBuffer(VkDevice device,

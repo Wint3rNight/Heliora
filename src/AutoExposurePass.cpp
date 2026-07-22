@@ -98,6 +98,7 @@ void AutoExposurePass::create(VulkanDevice &newDevice, VkExtent2D extent,
     }
 
     *reinterpret_cast<float *>(rawInfo.pMappedData) = 1.0f;
+    vmaFlushAllocation(allocator, rawAllocation, 0, sizeof(float));
     resultBuffers.emplace_back(allocator, rawBuffer, rawAllocation);
     resultMapped.push_back(rawInfo.pMappedData);
   }
@@ -415,6 +416,11 @@ float AutoExposurePass::updateExposureScale(int currentFrame, bool enabled,
 
   if (enabled && currentFrame >= 0 &&
       currentFrame < static_cast<int>(resultMapped.size())) {
+    // GPU-written readback: invalidate before the host read in case the
+    // heap is host-visible but not host-coherent (no-op on coherent heaps).
+    vmaInvalidateAllocation(device->getAllocator(),
+                            resultBuffers[currentFrame].getAllocation(), 0,
+                            sizeof(float));
     float target =
         *reinterpret_cast<const float *>(resultMapped[currentFrame]);
     if (!std::isfinite(target) || target <= 0.0f)

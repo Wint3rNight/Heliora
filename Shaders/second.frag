@@ -113,24 +113,9 @@ float luma(vec3 c) {
 // vec4 and we're out of qualityToggles slots).
 //
 // 0 = identity, 0.5 = light sharpen, 1.0 = strong sharpen / starts ringing.
-vec3 applySharpen(vec3 center, ivec2 px) {
+vec3 applySharpen(vec3 center, vec3 n, vec3 s, vec3 e, vec3 w) {
     float strength = scene.shadowParams.z;
     if (strength < 0.001) return center;
-
-    ivec2 size = textureSize(currentTex, 0);
-    ivec2 maxPx = size - ivec2(1);
-    vec3 n = texelFetch(currentTex, clamp(px + ivec2( 0, -1), ivec2(0), maxPx), 0).rgb;
-    vec3 s = texelFetch(currentTex, clamp(px + ivec2( 0,  1), ivec2(0), maxPx), 0).rgb;
-    vec3 e = texelFetch(currentTex, clamp(px + ivec2( 1,  0), ivec2(0), maxPx), 0).rgb;
-    vec3 w = texelFetch(currentTex, clamp(px + ivec2(-1,  0), ivec2(0), maxPx), 0).rgb;
-
-    // Tonemap the neighbors so we sharpen in the same perceptual space as
-    // the center. Apply the same exposure pre-mult to keep things aligned.
-    float ex = scene.qualityToggles2.x;
-    n = agx(n * ex);
-    s = agx(s * ex);
-    e = agx(e * ex);
-    w = agx(w * ex);
 
     vec3 avg = 0.25 * (n + s + e + w);
     vec3 lap = center - avg;            // positive on bright detail
@@ -140,23 +125,16 @@ vec3 applySharpen(vec3 center, ivec2 px) {
     return clamp(center + lap * strength, vec3(0.0), vec3(1.0));
 }
 
-vec3 applyEdgeAA(vec3 center, ivec2 px) {
+vec3 applyEdgeAA(vec3 center, vec3 n, vec3 s, vec3 e, vec3 w, ivec2 px) {
     float strength = clamp(scene.visualToggles.x, 0.0, 1.0);
     if (strength < 0.001) return center;
 
-    ivec2 size = textureSize(currentTex, 0);
-    ivec2 maxPx = size - ivec2(1);
+    ivec2 maxPx = textureSize(currentTex, 0) - ivec2(1);
     ivec2 pC = clamp(px, ivec2(0), maxPx);
     ivec2 pN = clamp(px + ivec2( 0, -1), ivec2(0), maxPx);
     ivec2 pS = clamp(px + ivec2( 0,  1), ivec2(0), maxPx);
     ivec2 pE = clamp(px + ivec2( 1,  0), ivec2(0), maxPx);
     ivec2 pW = clamp(px + ivec2(-1,  0), ivec2(0), maxPx);
-
-    float ex = scene.qualityToggles2.x;
-    vec3 n = agx(texelFetch(currentTex, pN, 0).rgb * ex);
-    vec3 s = agx(texelFetch(currentTex, pS, 0).rgb * ex);
-    vec3 e = agx(texelFetch(currentTex, pE, 0).rgb * ex);
-    vec3 w = agx(texelFetch(currentTex, pW, 0).rgb * ex);
 
     float lc = luma(center);
     float range = max(max(abs(luma(n) - lc), abs(luma(s) - lc)),
@@ -175,13 +153,38 @@ vec3 applyEdgeAA(vec3 center, ivec2 px) {
     return mix(center, avg, edge * strength * 0.35);
 }
 
-// Combined "send-to-display" path: tonemap then optionally sharpen. Only
-// the swap-chain output is sharpened; the history image stays HDR linear
-// so TAA reprojection math doesn't fight a post-tonemap perceptual signal.
-vec3 finalEncode(vec3 hdr) {
+// Display-space value of a cross neighbor: bloom composited (matching what
+// the center pixel received before tonemap), then exposure + AgX. The TAA
+// history blend can't be cheaply replicated per neighbor; that residual
+// mismatch is a fraction of one frame's contribution and is accepted.
+vec3 neighborDisplay(ivec2 p, bool enableBloom) {
+    ivec2 maxPx = textureSize(currentTex, 0) - ivec2(1);
+    p = clamp(p, ivec2(0), maxPx);
+    vec3 hdr = texelFetch(currentTex, p, 0).rgb;
+    if (enableBloom)
+        hdr += texture(bloomTex, (vec2(p) + 0.5) * scene.viewportSize.zw).rgb;
+    return agx(hdr * scene.qualityToggles2.x);
+}
+
+// Combined "send-to-display" path: tonemap then optionally edge-AA and
+// sharpen. Only the swap-chain output is filtered; the history image stays
+// HDR linear so TAA reprojection doesn't fight a post-tonemap signal.
+// The 4-cross is fetched/encoded ONCE and shared by both filters — the old
+// per-helper fetches also skipped bloom, so edge detection and the sharpen
+// laplacian compared against a signal the center didn't match and produced
+// halos on bloom-bright edges.
+vec3 finalEncode(vec3 hdr, bool enableBloom) {
     vec3 tm = tonemapAndEncode(hdr);
-    tm = applyEdgeAA(tm, ivec2(gl_FragCoord.xy));
-    return applySharpen(tm, ivec2(gl_FragCoord.xy));
+    if (clamp(scene.visualToggles.x, 0.0, 1.0) < 0.001 &&
+        scene.shadowParams.z < 0.001)
+        return tm;
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec3 n = neighborDisplay(px + ivec2( 0, -1), enableBloom);
+    vec3 s = neighborDisplay(px + ivec2( 0,  1), enableBloom);
+    vec3 e = neighborDisplay(px + ivec2( 1,  0), enableBloom);
+    vec3 w = neighborDisplay(px + ivec2(-1,  0), enableBloom);
+    vec3 tmAA = applyEdgeAA(tm, n, s, e, w, px);
+    return applySharpen(tmAA, n, s, e, w);
 }
 
 // YCoCg conversion (Karis 2014). Better for AABB clamping than RGB because
@@ -274,7 +277,7 @@ void main() {
 
     if (!taaEnable || !historyValid) {
         outHistory = vec4(current, 1.0);
-        outSwap    = vec4(finalEncode(current), 1.0);
+        outSwap    = vec4(finalEncode(current, enableBloom), 1.0);
         return;
     }
 
@@ -291,7 +294,7 @@ void main() {
         vec4 prevClip = scene.prevViewProj * vec4(worldPos, 1.0);
         if (abs(prevClip.w) < 1e-6) {
             outHistory = vec4(current, 1.0);
-            outSwap    = vec4(finalEncode(current), 1.0);
+            outSwap    = vec4(finalEncode(current, enableBloom), 1.0);
             return;
         }
         vec2 prevNDC = prevClip.xy / prevClip.w;
@@ -301,7 +304,7 @@ void main() {
     // Off-screen reject.
     if (any(lessThan(prevUV, vec2(0.0))) || any(greaterThan(prevUV, vec2(1.0)))) {
         outHistory = vec4(current, 1.0);
-        outSwap    = vec4(finalEncode(current), 1.0);
+        outSwap    = vec4(finalEncode(current, enableBloom), 1.0);
         return;
     }
 
@@ -322,7 +325,7 @@ void main() {
     if (depthAtPrevUV < 0.9999 &&
         abs(viewZCur - viewZPrev) > max(0.1 * viewZCur, 0.05)) {
         outHistory = vec4(current, 1.0);
-        outSwap    = vec4(finalEncode(current), 1.0);
+        outSwap    = vec4(finalEncode(current, enableBloom), 1.0);
         return;
     }
 
@@ -344,9 +347,12 @@ void main() {
     vec3 ycMax = vec3(-1e30);
     float lumaSum  = 0.0;
     float lumaSum2 = 0.0;
+    ivec2 taaMaxPx = textureSize(currentTex, 0) - ivec2(1);
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
-        ivec2 nPx = px + ivec2(dx, dy);
+        // Clamp: texelFetch outside the image is undefined; at the viewport
+        // border an out-of-bounds tap fed garbage into the YCoCg AABB.
+        ivec2 nPx = clamp(px + ivec2(dx, dy), ivec2(0), taaMaxPx);
         vec2 nUv = (vec2(nPx) + vec2(0.5)) * scene.viewportSize.zw;
         vec3 n  = texelFetch(currentTex, nPx, 0).rgb;
         if (enableBloom) {
@@ -387,5 +393,5 @@ void main() {
     vec3 blended = mix(current, history, historyWeight);
 
     outHistory = vec4(blended, 1.0);
-    outSwap    = vec4(finalEncode(blended), 1.0);
+    outSwap    = vec4(finalEncode(blended, enableBloom), 1.0);
 }

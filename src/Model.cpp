@@ -2,6 +2,7 @@
 #include <assimp/GltfMaterial.h>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <glm/glm.hpp>
 #include <iterator>
@@ -91,10 +92,8 @@ void Mesh::addLod(VmaAllocator newAllocator, VkDevice newDevice,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &stagingBuffer);
 
-  void *data;
-  vmaMapMemory(newAllocator, stagingBuffer.getAllocation(), &data);
-  memcpy(data, indices->data(), static_cast<size_t>(bufferSize));
-  vmaUnmapMemory(newAllocator, stagingBuffer.getAllocation());
+  uploadToAllocation(newAllocator, stagingBuffer.getAllocation(),
+                     indices->data(), bufferSize);
 
   AllocatedBuffer lodBuf;
   createBuffer(newAllocator, bufferSize,
@@ -132,10 +131,8 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &stagingBuffer);
 
-  void *data;
-  vmaMapMemory(allocator, stagingBuffer.getAllocation(), &data);
-  memcpy(data, vertices->data(), (size_t)bufferSize);
-  vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
+  uploadToAllocation(allocator, stagingBuffer.getAllocation(),
+                     vertices->data(), bufferSize);
 
   createBuffer(allocator, bufferSize,
                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -157,10 +154,8 @@ void Mesh::createIndexBuffer(VkQueue transferQueue,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &stagingBuffer);
 
-  void *data;
-  vmaMapMemory(allocator, stagingBuffer.getAllocation(), &data);
-  memcpy(data, indices->data(), (size_t)bufferSize);
-  vmaUnmapMemory(allocator, stagingBuffer.getAllocation());
+  uploadToAllocation(allocator, stagingBuffer.getAllocation(),
+                     indices->data(), bufferSize);
 
   createBuffer(allocator, bufferSize,
                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -389,13 +384,20 @@ std::vector<Mesh> MeshModel::LoadNode(VmaAllocator allocator,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiNode *node, const aiScene *scene,
-                                      const std::vector<Material> &materials) {
+                                      const std::vector<Material> &materials,
+                                      const aiMatrix4x4 &parentTransform) {
+  // Accumulate the node hierarchy transform and bake it into the vertex
+  // data. glTF assets are authored in meters with real node transforms
+  // (Sponza's root carries a 0.008 scale, DamagedHelmet a +90° X rotation);
+  // dropping them loads assets at arbitrary raw units and orientations.
+  const aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+
   std::vector<Mesh> meshList;
   for (size_t i = 0; i < node->mNumMeshes; i++) {
     aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
     std::vector<Mesh> newMeshes =
         LoadMesh(allocator, newDevice, transferQueue, transferCommandPool, mesh,
-                 scene, materials);
+                 scene, materials, globalTransform);
     meshList.insert(meshList.end(), std::make_move_iterator(newMeshes.begin()),
                     std::make_move_iterator(newMeshes.end()));
   }
@@ -403,7 +405,7 @@ std::vector<Mesh> MeshModel::LoadNode(VmaAllocator allocator,
   for (size_t i = 0; i < node->mNumChildren; i++) {
     std::vector<Mesh> newList =
         LoadNode(allocator, newDevice, transferQueue, transferCommandPool,
-                 node->mChildren[i], scene, materials);
+                 node->mChildren[i], scene, materials, globalTransform);
     meshList.insert(meshList.end(), std::make_move_iterator(newList.begin()),
                     std::make_move_iterator(newList.end()));
   }
@@ -414,14 +416,29 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
                                       VkDevice newDevice, VkQueue transferQueue,
                                       VkCommandPool transferCommandPool,
                                       aiMesh *mesh, const aiScene *scene,
-                                      const std::vector<Material> &materials) {
+                                      const std::vector<Material> &materials,
+                                      const aiMatrix4x4 &transform) {
   std::vector<Vertex> vertices;
   std::vector<uint32_t> indices;
   vertices.resize(mesh->mNumVertices);
 
+  // Direction vectors need the inverse-transpose for non-uniform scale;
+  // tangent frames transform with the plain linear part.
+  aiMatrix3x3 linear(transform);
+  aiMatrix3x3 normalMat = linear;
+  normalMat.Inverse().Transpose();
+
+  auto safeNormal = [](const aiVector3D &v, const glm::vec3 &fallback) {
+    float len2 = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (len2 < 1e-12f)
+      return fallback;
+    float inv = 1.0f / std::sqrt(len2);
+    return glm::vec3(v.x * inv, v.y * inv, v.z * inv);
+  };
+
   for (size_t i = 0; i < mesh->mNumVertices; i++) {
-    vertices[i].pos = {mesh->mVertices[i].x, mesh->mVertices[i].y,
-                       mesh->mVertices[i].z};
+    const aiVector3D pos = transform * mesh->mVertices[i];
+    vertices[i].pos = {pos.x, pos.y, pos.z};
     if (mesh->mTextureCoords[0]) {
       vertices[i].tex = {mesh->mTextureCoords[0][i].x,
                          mesh->mTextureCoords[0][i].y};
@@ -430,16 +447,16 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
     }
     vertices[i].col = {1.0f, 1.0f, 1.0f};
     if (mesh->HasNormals()) {
-      vertices[i].normal = {mesh->mNormals[i].x, mesh->mNormals[i].y,
-                            mesh->mNormals[i].z};
+      vertices[i].normal =
+          safeNormal(normalMat * mesh->mNormals[i], {0.0f, 1.0f, 0.0f});
     } else {
       vertices[i].normal = {0.0f, 1.0f, 0.0f};
     }
     if (mesh->HasTangentsAndBitangents()) {
-      vertices[i].tangent = {mesh->mTangents[i].x, mesh->mTangents[i].y,
-                             mesh->mTangents[i].z};
-      vertices[i].bitangent = {mesh->mBitangents[i].x, mesh->mBitangents[i].y,
-                               mesh->mBitangents[i].z};
+      vertices[i].tangent =
+          safeNormal(linear * mesh->mTangents[i], {1.0f, 0.0f, 0.0f});
+      vertices[i].bitangent =
+          safeNormal(linear * mesh->mBitangents[i], {0.0f, 0.0f, 1.0f});
     } else {
       vertices[i].tangent = {1.0f, 0.0f, 0.0f};
       vertices[i].bitangent = {0.0f, 0.0f, 1.0f};

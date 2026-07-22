@@ -15,8 +15,21 @@ public:
   DescriptorManager(const DescriptorManager &) = delete;
   DescriptorManager &operator=(const DescriptorManager &) = delete;
 
+  // sharedQueueFamilies/count: when the async-SSAO compute queue lives in a
+  // dedicated family, the scene UBOs it samples must be created with
+  // CONCURRENT sharing across {graphics, compute}.
   void init(VkDevice device, VmaAllocator allocator,
-            size_t swapchainImageCount);
+            size_t swapchainImageCount,
+            const uint32_t *sharedQueueFamilies = nullptr,
+            uint32_t sharedQueueFamilyCount = 0);
+  // Rebuilds the per-swap-image scene UBOs, VP descriptor sets, and every
+  // count-sized pool when the swapchain image count changes on recreation.
+  // Returns true if a rebuild happened — the caller must then re-issue the
+  // shadow-map and IBL sampler writes into the fresh VP sets.
+  bool recreatePerImageResources(VkDevice device, VmaAllocator allocator,
+                                 size_t newCount,
+                                 const uint32_t *sharedQueueFamilies = nullptr,
+                                 uint32_t sharedQueueFamilyCount = 0);
   void cleanup(VkDevice device, VmaAllocator allocator,
                size_t swapchainImageCount);
 
@@ -167,9 +180,13 @@ private:
   // --- Creation helpers ---
   void createDescriptorSetLayout(VkDevice device);
   void createPushConstantRange();
-  void createUniformBuffers(VmaAllocator allocator, size_t swapchainImageCount);
+  void createUniformBuffers(VmaAllocator allocator, size_t swapchainImageCount,
+                            const uint32_t *sharedQueueFamilies = nullptr,
+                            uint32_t sharedQueueFamilyCount = 0);
   void createDescriptorPool(VkDevice device, size_t swapchainImageCount);
+  void createCountSizedPools(VkDevice device, size_t swapchainImageCount);
   void createDescriptorSets(VkDevice device, size_t swapchainImageCount);
+  void createVpDescriptorSets(VkDevice device, size_t swapchainImageCount);
   void createInputDescriptorSets(VkDevice device,
                                  const VulkanSwapchain &swapchain);
 };

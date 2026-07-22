@@ -448,7 +448,8 @@ int TextureManager::createSsaoNoiseTexture(const VulkanDevice &device) {
     pixels[i * 4 + 2] = 0;
     pixels[i * 4 + 3] = 255;
   }
-  return createTextureImageFromPixels(cacheKey, pixels.data(), 4, 4, device);
+  return createTextureImageFromPixels(cacheKey, pixels.data(), 4, 4, device,
+                                      /*shareWithCompute=*/true);
 }
 
 // ---------------------------------------------------------------------------
@@ -897,7 +898,8 @@ int TextureManager::createTextureImage(const std::string &filename,
 int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
                                                  const unsigned char *pixels,
                                                  int width, int height,
-                                                 const VulkanDevice &device) {
+                                                 const VulkanDevice &device,
+                                                 bool shareWithCompute) {
   // Mipmap chain: floor(log2(max(w,h))) + 1 levels. 1x1 textures (the flat
   // fallback colors) collapse to a single mip.
   const uint32_t mipLevels =
@@ -962,6 +964,8 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
     std::memcpy(static_cast<char *>(mapped) + regions[m].bufferOffset,
                 mipPixels[m].data(), mipPixels[m].size());
   vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
+  vmaFlushAllocation(device.getAllocator(), staging.getAllocation(), 0,
+                     VK_WHOLE_SIZE);
 
   VkImageCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -974,7 +978,20 @@ int TextureManager::createTextureImageFromPixels(const std::string &cacheKey,
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
-  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  // Textures read by the dedicated compute queue (e.g. the SSAO noise tile)
+  // need CONCURRENT sharing — EXCLUSIVE resources read on another family
+  // without an ownership transfer have formally undefined contents.
+  QueueFamilyIndices families = device.getQueueFamilies();
+  uint32_t sharedFamilies[2] = {
+      static_cast<uint32_t>(families.graphicsFamily),
+      static_cast<uint32_t>(families.computeFamily)};
+  if (shareWithCompute && device.hasDedicatedComputeQueue()) {
+    ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    ci.queueFamilyIndexCount = 2;
+    ci.pQueueFamilyIndices = sharedFamilies;
+  } else {
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
 
   VmaAllocationCreateInfo aci = {};
   aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -1138,10 +1155,8 @@ int TextureManager::createHdrCubemap(const std::string &filename,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &staging);
-  void *mapped;
-  vmaMapMemory(device.getAllocator(), staging.getAllocation(), &mapped);
-  memcpy(mapped, cubemap.data(), static_cast<size_t>(imageSize));
-  vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
+  uploadToAllocation(device.getAllocator(), staging.getAllocation(),
+                     cubemap.data(), imageSize);
 
   VkImageCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;

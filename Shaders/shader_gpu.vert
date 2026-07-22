@@ -70,10 +70,12 @@ void main() {
   vec3 worldNormal = normalize(mat3(tr.normal) * normal);
   vec3 worldTangent = normalize(mat3(tr.model) * tangent);
   worldTangent = normalize(worldTangent - dot(worldTangent, worldNormal) * worldNormal);
-  vec3 worldBitangent = normalize(mat3(tr.model) * bitangent);
-  if (length(worldBitangent) < 0.001) {
-    worldBitangent = normalize(cross(worldNormal, worldTangent));
-  }
+  // Degenerate-input test must run BEFORE normalize: normalize(0) is NaN
+  // and NaN < eps is false, so a post-normalize guard can never fire.
+  vec3 worldBitangent = mat3(tr.model) * bitangent;
+  if (dot(worldBitangent, worldBitangent) < 1e-8)
+    worldBitangent = cross(worldNormal, worldTangent);
+  worldBitangent = normalize(worldBitangent);
 
   gl_Position = scene.projection * scene.view * worldPosition;
   fragCol = col;

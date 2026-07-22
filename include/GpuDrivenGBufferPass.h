@@ -6,13 +6,30 @@
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
+#include <cstdint>
 #include <glm/glm.hpp>
+#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
 
 enum class GBufferDrawKind {
   Mesh,
   Instanced,
+};
+
+// GPU-visible records consumed by gpu_cull.comp (std430 SSBO layouts).
+struct GpuDrivenMeshRecord {
+  glm::vec4 aabbMin;
+  glm::vec4 aabbMax;
+  glm::uvec4 draw;
+  glm::uvec4 flags;
+};
+
+struct GpuDrivenTransformRecord {
+  glm::mat4 model;
+  glm::mat4 normal;
+  glm::uvec4 texIdx0;
+  glm::uvec4 texIdx1;
 };
 
 struct GBufferDrawItem {
@@ -113,7 +130,17 @@ private:
   std::vector<Vertex> staticVertices;
   std::vector<uint32_t> staticIndices;
   std::vector<GeometryRange> geometryRanges;
+  // (mesh pointer, lod) → index into geometryRanges. lod < 8 always, so it
+  // packs into the pointer's low bits (allocations are ≥ 8-byte aligned).
+  static uint64_t geometryKey(const Mesh *mesh, int lod) {
+    return (reinterpret_cast<uint64_t>(mesh) << 3) |
+           static_cast<uint64_t>(lod & 7);
+  }
+  std::unordered_map<uint64_t, size_t> geometryRangeLookup;
   std::vector<int> registeredModelIds;
+  // Persistent per-frame scratch (avoids re-allocating every frame).
+  std::vector<GpuDrivenMeshRecord> frameMeshRecords;
+  std::vector<GpuDrivenTransformRecord> frameTransforms;
 
   std::vector<AllocatedImage> hzbImages;
   std::vector<ImageViewHandle> hzbViews;

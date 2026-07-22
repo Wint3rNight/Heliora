@@ -10,6 +10,8 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <glm/gtc/constants.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cfloat>
@@ -184,9 +186,19 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     shadowPass.create(device, renderPassManager.getShadowRenderPass(),
                       shadowDepthFormat);
 
-    // 6. Descriptors
+    // 6. Descriptors. The scene UBO is sampled by the async SSAO dispatch on
+    // the dedicated compute queue (when one exists), so it needs CONCURRENT
+    // graphics+compute sharing — EXCLUSIVE reads across families without an
+    // ownership transfer are formally undefined.
+    QueueFamilyIndices queueFamilies = device.getQueueFamilies();
+    uint32_t sharedUboFamilies[2] = {
+        static_cast<uint32_t>(queueFamilies.graphicsFamily),
+        static_cast<uint32_t>(queueFamilies.computeFamily)};
+    const bool shareUboWithCompute = device.hasDedicatedComputeQueue();
     descriptorManager.init(device.getLogicalDevice(), device.getAllocator(),
-                           swapchain.getImageCount());
+                           swapchain.getImageCount(),
+                           shareUboWithCompute ? sharedUboFamilies : nullptr,
+                           shareUboWithCompute ? 2u : 0u);
     descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
     descriptorManager.updateShadowMapDescriptor(
         device.getLogicalDevice(), shadowPass.csmView(),
@@ -382,6 +394,101 @@ int VulkanRenderer::createMeshModel(const std::string &modelFile) {
   return modelId;
 }
 
+void VulkanRenderer::discoverScenes(const std::string &directory) {
+  availableScenes = SceneIO::discover(directory);
+  availableSceneNames.clear();
+  availableSceneNames.reserve(availableScenes.size());
+  for (const SceneDescription &scene : availableScenes)
+    availableSceneNames.push_back(scene.name);
+  spdlog::info("Discovered {} scene file(s) in {}", availableScenes.size(),
+               directory);
+}
+
+void VulkanRenderer::loadScene(const SceneDescription &desc) {
+  // Rare, user-triggered operation: a full idle wait is the simple and safe
+  // way to retire every in-flight frame before instance buffers and the
+  // scene graph are torn down.
+  vkDeviceWaitIdle(device.getLogicalDevice());
+
+  rootNode.clearChildren();
+  instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
+
+  for (const SceneModelEntry &entry : desc.models) {
+    try {
+      int modelId = createMeshModel(entry.path);
+      auto node = std::make_unique<SceneNode>();
+      node->setModelId(modelId);
+      node->setTransform(entry.transform);
+      node->setAnimation(entry.animation);
+      rootNode.addChild(std::move(node));
+    } catch (const std::exception &e) {
+      spdlog::error("Scene '{}': failed to load model '{}': {}", desc.name,
+                    entry.path, e.what());
+    }
+  }
+
+  for (const SceneRingEntry &ring : desc.rings) {
+    if (ring.count <= 0)
+      continue;
+    try {
+      int modelId = createMeshModel(ring.path);
+      std::vector<glm::mat4> transforms;
+      transforms.reserve(static_cast<size_t>(ring.count));
+      for (int i = 0; i < ring.count; i++) {
+        float angle = glm::two_pi<float>() * static_cast<float>(i) /
+                      static_cast<float>(ring.count);
+        glm::vec3 pos(ring.radius * std::cos(angle), ring.height,
+                      ring.radius * std::sin(angle));
+        glm::mat4 t = glm::translate(glm::mat4(1.0f), pos);
+        t = glm::rotate(t, angle, glm::vec3(0.0f, 1.0f, 0.0f));
+        t = glm::scale(t, glm::vec3(ring.scale));
+        transforms.push_back(t);
+      }
+      addInstancedModel(modelId, transforms);
+    } catch (const std::exception &e) {
+      spdlog::error("Scene '{}': failed to load ring model '{}': {}", desc.name,
+                    ring.path, e.what());
+    }
+  }
+
+  rootNode.update(glm::mat4(1.0f), 0.0f);
+
+  if (!desc.environmentHdr.empty() &&
+      desc.environmentHdr != activeEnvironmentHdr) {
+    spdlog::warn("Scene '{}' requests environment '{}', but runtime HDRI "
+                 "switching is not implemented yet; keeping the current sky.",
+                 desc.name, desc.environmentHdr);
+  }
+
+  if (cameraPresetCallback)
+    cameraPresetCallback(desc.camera.position, desc.camera.yaw,
+                         desc.camera.pitch, desc.camera.speed);
+
+  // The new scene shares no image history with the old one.
+  taaHistoryValid = false;
+
+  spdlog::info("Loaded scene '{}' ({} model(s), {} instanced ring(s))",
+               desc.name, desc.models.size(), desc.rings.size());
+}
+
+void VulkanRenderer::loadSceneAt(int index) {
+  if (index < 0 || index >= static_cast<int>(availableScenes.size())) {
+    spdlog::error("loadSceneAt: index {} out of range ({} scenes)", index,
+                  availableScenes.size());
+    return;
+  }
+  loadScene(availableScenes[index]);
+  activeSceneIndex = index;
+}
+
+void VulkanRenderer::requestSceneLoad(int index) {
+  pendingSceneIndex = index;
+}
+
+void VulkanRenderer::updateScene(float timeSeconds) {
+  rootNode.update(glm::mat4(1.0f), timeSeconds);
+}
+
 SceneNode &VulkanRenderer::getRootNode() { return rootNode; }
 
 void VulkanRenderer::updateCameraView(const glm::mat4 &viewMatrix,
@@ -441,6 +548,15 @@ void VulkanRenderer::updateMaterialProbePixel() {
 
 void VulkanRenderer::draw() {
   VkDevice logicalDevice = device.getLogicalDevice();
+
+  // Apply a UI-requested scene switch before any of this frame's work
+  // starts. loadSceneAt() waits for device idle, so nothing recorded or
+  // submitted this frame can reference torn-down scene resources.
+  if (pendingSceneIndex >= 0) {
+    int requested = pendingSceneIndex;
+    pendingSceneIndex = -1;
+    loadSceneAt(requested);
+  }
 
   metrics.beginFrame();
 
@@ -824,6 +940,33 @@ void VulkanRenderer::recreateSwapChain() {
   swapchain.recreate(device, window);
   registerSwapchainResources();
 
+  // Present-mode toggles commonly change minImageCount; every per-image
+  // descriptor resource must track the new count or acquired indices run
+  // past the init-time arrays.
+  {
+    QueueFamilyIndices queueFamilies = device.getQueueFamilies();
+    uint32_t sharedUboFamilies[2] = {
+        static_cast<uint32_t>(queueFamilies.graphicsFamily),
+        static_cast<uint32_t>(queueFamilies.computeFamily)};
+    const bool shareUbo = device.hasDedicatedComputeQueue();
+    if (descriptorManager.recreatePerImageResources(
+            device.getLogicalDevice(), device.getAllocator(),
+            swapchain.getImageCount(), shareUbo ? sharedUboFamilies : nullptr,
+            shareUbo ? 2u : 0u)) {
+      descriptorManager.updateShadowMapDescriptor(
+          device.getLogicalDevice(), shadowPass.csmView(),
+          shadowPass.pointCubeView(), shadowPass.csmSampler(),
+          shadowPass.pointSampler());
+      descriptorManager.updateIblDescriptors(
+          device.getLogicalDevice(),
+          textureManager.getImageView(irradianceImageIndex), iblSampler,
+          textureManager.getImageView(prefilteredEnvImageIndex),
+          textureManager.getImageView(brdfLutImageIndex),
+          textureManager.getImageView(ssaoNoiseImageIndex), ssaoNoiseSampler,
+          textureManager.getImageView(iblSkyboxImageIndex));
+    }
+  }
+
   imguiLayer.createFramebuffers(device.getLogicalDevice(),
                                 renderPassManager.getImGuiRenderPass(),
                                 swapchain.getExtent(), swapchain.getImages());
@@ -936,10 +1079,13 @@ void VulkanRenderer::registerSwapchainResources() {
           : VK_SHARING_MODE_EXCLUSIVE;
 
   for (size_t i = 0; i < count; ++i) {
+    // Freshly created swapchain images are in UNDEFINED, not PRESENT_SRC —
+    // they have never been presented. Registering PRESENT_SRC would make a
+    // future RenderResources::transition() emit an invalid oldLayout.
     renderResources.registerImage(
         {"swapchain[" + std::to_string(i) + "]", swapchain.getSwapImage(i),
          swapchain.getImageFormat(), VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
-         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, swapSharing, graphicsFamily});
+         VK_IMAGE_LAYOUT_UNDEFINED, swapSharing, graphicsFamily});
     renderResources.registerImage(
         {"compositeColor[" + std::to_string(i) + "]",
          swapchain.getColorBufferImage(i), swapchain.getColorBufferFormat(),
@@ -1462,8 +1608,9 @@ void VulkanRenderer::initIBL() {
 
   spdlog::info(
       "IBL: loading skybox and generating irradiance / prefiltered maps...");
-  iblSkyboxImageIndex = textureManager.loadSkybox(
-      "Resources/HDRIs/kloppenheim_02_1k.hdr", device, descriptorManager);
+  activeEnvironmentHdr = "Resources/HDRIs/kloppenheim_02_1k.hdr";
+  iblSkyboxImageIndex =
+      textureManager.loadSkybox(activeEnvironmentHdr, device, descriptorManager);
   irradianceImageIndex =
       textureManager.createIrradianceMap(iblSkyboxImageIndex, device);
   prefilteredEnvImageIndex =
@@ -1539,12 +1686,9 @@ void VulkanRenderer::addInstancedModel(
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &drawable.instanceBuffer);
 
-  void *data;
-  vmaMapMemory(device.getAllocator(), drawable.instanceBuffer.getAllocation(),
-               &data);
-  memcpy(data, drawable.instances.data(), static_cast<size_t>(bufferSize));
-  vmaUnmapMemory(device.getAllocator(),
-                 drawable.instanceBuffer.getAllocation());
+  uploadToAllocation(device.getAllocator(),
+                     drawable.instanceBuffer.getAllocation(),
+                     drawable.instances.data(), bufferSize);
 
   instancedDrawables.push_back(std::move(drawable));
 }
@@ -2485,10 +2629,13 @@ void VulkanRenderer::setCameraPresetCallback(CameraPresetCallback callback) {
 }
 
 void VulkanRenderer::applySponzaReferencePreset() {
-  const glm::vec3 cameraPosition(-274.0f, 46.0f, -128.0f);
+  // The saved raw-unit pose (-274, 46, -128) predates baked node transforms;
+  // the world is metric now (Sponza root scale 0.008), so the same framing
+  // is the old position times 0.008.
+  const glm::vec3 cameraPosition(-2.19f, 0.37f, -1.02f);
   constexpr float cameraYaw = 25.0f;
   constexpr float cameraPitch = 3.0f;
-  constexpr float cameraSpeed = 15.0f;
+  constexpr float cameraSpeed = 5.0f;
 
   imguiCameraPos = cameraPosition;
   imguiCameraSpeed = cameraSpeed;
@@ -2496,11 +2643,11 @@ void VulkanRenderer::applySponzaReferencePreset() {
     cameraPresetCallback(cameraPosition, cameraYaw, cameraPitch, cameraSpeed);
 
   imguiCameraFov = 65.0f;
-  imguiDrawDistance = 8000.0f;
+  imguiDrawDistance = 200.0f;
   imguiLodNear = 15.0f;
   imguiLodFar = 45.0f;
   imguiPointShadowFar = 40.0f;
-  imguiCsmFar = 2000.0f;
+  imguiCsmFar = 80.0f;
 
   imguiDebugMode = 0;
   imguiUseGeomNormalOnly = false;
@@ -2646,6 +2793,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiGpuDrivenMinCandidates,
       imguiThreadedGBufferEnabled,
       autoExpEnabled,
+      &availableSceneNames,
+      activeSceneIndex,
       autoExposurePass.adaptedValue(),
       materialProbeResult,
       gpuDrivenGBufferPass.candidateCount(),
@@ -2664,7 +2813,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       [this](bool preferMailbox) {
         swapchain.setPreferMailbox(preferMailbox);
         framebufferResized = true;
-      }};
+      },
+      [this](int index) { requestSceneLoad(index); }};
 
   imguiLayer.record(cmd, renderPassManager.getImGuiRenderPass(),
                     swapchain.getExtent(), imageIndex, ui);

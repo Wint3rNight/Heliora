@@ -50,12 +50,12 @@ flowchart TD
         NOISE --> LIT
         SKY --> LIT
 
-        LIT --> |"Cook-Torrance PBR\n+ CSM/point shadows\n+ IBL ambient\n+ SSAO\n+ bloom bright-pass\n+ FXAA edge smoothing\n+ height fog\n+ skybox background"| LITBUF["Lit HDR buffer\n(R16G16B16A16_SFLOAT)"]
+        LIT --> |"Cook-Torrance PBR\n+ CSM/point shadows\n+ IBL ambient\n+ SSAO (async compute)\n+ SSGI one-bounce fill\n+ height fog\n+ skybox background"| LITBUF["Lit HDR buffer\n(R16G16B16A16_SFLOAT)"]
 
         subgraph COMP ["Pass 5 · Composition (2 subpasses)"]
             LITBUF --> SSR["Subpass 0: SSR composite\n(ray-march lit buffer +\nG-buffer depth/normals,\nbinary-search refinement,\nFresnel-weighted blend)"]
             SSR --> COLBUF["Intermediate color buffer"]
-            COLBUF --> TONE["Subpass 1: ACES tonemap\n+ gamma correction\n(input attachment read)"]
+            COLBUF --> TONE["Subpass 1: TAA resolve\n+ AgX tonemap\n(input attachment read)"]
         end
 
         TONE --> SWAP["Swapchain image"]
@@ -81,10 +81,16 @@ flowchart TD
 - GPU compute shaders for IBL precomputation.
 - Cascaded shadow maps for directional light shadows.
 - Omnidirectional point light shadows through a depth cubemap.
-- Screen-space ambient occlusion.
+- Screen-space ambient occlusion, computed async on a dedicated compute queue.
+- Screen-space one-bounce global illumination (SSGI) with temporal history.
 - Screen-space reflections in a separate composite pass.
-- Approximate bloom and FXAA-style edge smoothing.
-- ACES filmic tone mapping and gamma correction before presenting.
+- Compute bloom pyramid (downsample/upsample) with histogram-based auto-exposure.
+- Temporal anti-aliasing: jittered projection, YCoCg neighborhood clamp, Catmull-Rom history resampling.
+- AgX tonemapping, plus optional post edge AA and CAS-style sharpening.
+- Forward transparent pass for glTF `alphaMode=BLEND` materials, sorted back-to-front over the deferred result.
+- GPU-driven rendering path: compute frustum + HZB occlusion culling feeding indirect draws.
+- Bindless material textures via `VK_EXT_descriptor_indexing`.
+- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes.
 - Exponential height fog.
 - ImGui runtime overlay with:
   - FPS and frame-time graph,
@@ -114,7 +120,10 @@ The project used to be closer to a typical single-file Vulkan experiment. The cu
 | `DescriptorManager` | Uniform buffers, material texture sets, G-buffer descriptors, input attachments, IBL descriptors |
 | `TextureManager` | Texture loading, fallback textures, HDR cubemap creation, compute IBL resources, texture deduplication |
 | `ModelManager` / `Model` | Assimp loading, mesh buffers, material extraction, bounding spheres, generated LOD buffers |
-| `SceneNode` | Transform hierarchy and model placement |
+| `SceneNode` | Transform hierarchy, model placement, per-node animation |
+| `Scene` | Scene-file parsing (`Resources/Scenes/*.scene`), runtime scene switching |
+| `RenderResources` | Per-swap-image render-target registry, tracked image layouts and transitions |
+| Pass modules | `GpuDrivenGBufferPass`, `ShadowPass`, `BloomPass`, `AutoExposurePass`, `SsaoPass`, `SsgiPass`, `CompositePass`, `ImGuiLayer` — each owns its resources, pipelines, and command recording |
 | `InputManager` | GLFW input state, mouse delta tracking, resize events |
 | `PerformanceMetrics` | CPU frame time, Vulkan timestamp queries, draw/triangle counts, VRAM budget |
 
@@ -137,15 +146,23 @@ The renderer is built around a deferred pipeline:
    - `GB2`: `R8G8B8A8_UNORM` - ambient occlusion
    - depth: sampled later for position reconstruction
 
-3. Lit pass
+3. SSAO and SSGI passes
 
-   A fullscreen triangle reads the G-buffer and runs the main lighting shader. This pass handles PBR direct lighting, CSM shadows, point shadows, IBL, SSAO, bloom, FXAA, skybox background, and height fog. The result is written to an HDR lit buffer.
+   SSAO runs as a compute dispatch on the dedicated compute queue, overlapping the graphics work. SSGI gathers a one-bounce diffuse fill at half resolution with a temporal history ring.
 
-4. Composition pass
+4. Lit pass
 
-   Screen-space reflections sample the lit buffer and G-buffer depth/normal data. After SSR, the renderer applies ACES tone mapping and gamma correction into the swapchain image.
+   A fullscreen triangle reads the G-buffer and runs the main lighting shader. This pass handles PBR direct lighting, CSM shadows, point shadows, IBL, the SSAO/SSGI results, skybox background, and height fog. The result is written to an HDR lit buffer, then the forward transparent pass blends `alphaMode=BLEND` geometry on top.
 
-5. ImGui pass
+5. Bloom and auto-exposure
+
+   A compute bloom pyramid (downsample with Karis average, tent upsample) and a luminance-histogram auto-exposure pass run on the lit buffer.
+
+6. Composition pass
+
+   Screen-space reflections sample the lit buffer and G-buffer depth/normal data. The second subpass then resolves TAA against the history buffer and applies AgX tonemapping (plus optional edge AA / sharpening) into the swapchain image.
+
+7. ImGui pass
 
    The UI is drawn over the final image using a separate render pass that loads the swapchain image instead of clearing it.
 
@@ -168,33 +185,30 @@ This project is not only about getting pixels on screen. A lot of the work is ab
 
 ## Benchmark Snapshot
 
-The renderer prints a benchmark report on shutdown. This is a recent run of the current Sponza + instanced DamagedHelmet scene at the default 1920x1080 window size.
-
-These numbers are a snapshot from my machine rather than a universal benchmark claim, but they are useful because they show what the renderer is spending time on.
+The renderer logs per-pass GPU timings live and prints a benchmark report on shutdown. This snapshot is the current Sponza scene at 1920x1080 on an RTX 3050 mobile — from a **Debug build with validation layers enabled**, so the absolute numbers are conservative. A Release-build comparison table is on the roadmap (Phase 9).
 
 | Metric | Value |
 | --- | ---: |
-| Total frames sampled | 783 |
-| Average frame time | 4.04 ms |
-| Minimum frame time | 3.80 ms |
-| Maximum frame time | 10.21 ms |
-| Average FPS | 247.7 |
-| Draw calls per frame | 43 |
-| Triangles per frame | 1,024,608 |
-| VRAM used | 934.4 MiB |
-| VRAM budget | 3276.8 MiB |
+| Average frame time | 10.6 ms |
+| Average FPS | ~94 |
+| Draw calls per frame | 38–53 (GPU-culled, view-dependent) |
+| Triangles per frame | ~1.13 M |
 
-GPU pass timing from the last sampled frame:
+GPU pass timing (same run):
 
 | Pass | Time |
 | --- | ---: |
-| Cascaded shadow maps | 0.435 ms |
-| Point shadow cubemap | 0.140 ms |
-| G-buffer | 4.112 ms |
-| Deferred PBR / composition | 1.528 ms |
-| Total GPU time | 6.216 ms |
+| Cascaded shadow maps | 0.52 ms |
+| Point shadow cubemap | 1.17 ms |
+| G-buffer (GPU-driven) | 1.5 ms |
+| SSGI | 2.65 ms |
+| Deferred lit | 2.7 ms |
+| Bloom pyramid | 0.67 ms |
+| Auto-exposure | 0.11 ms |
+| SSR / TAA / tonemap composite | 0.51 ms |
+| ImGui | 0.06 ms |
 
-The G-buffer pass is currently the heaviest stage, which makes sense for this scene: Sponza has many textured submeshes, the renderer is pushing over a million triangles per frame, and this pass owns the actual geometry submission. The shutdown report also saved a `pipeline_cache.bin` file of 130,161 bytes, so subsequent runs can reuse pipeline cache data instead of starting completely cold.
+The frame is now dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — culling and LOD selection moved to the GPU, so the G-buffer pass stays cheap even with the scene fully in view.
 
 ## Controls
 
@@ -267,6 +281,7 @@ include/                 Public headers for renderer systems
 src/                     C++ implementation
 Shaders/                 GLSL shaders and compiled SPIR-V
 Resources/Models/        Demo glTF assets
+Resources/Scenes/        Data-driven scene files (runtime-switchable)
 Resources/HDRIs/         HDR environment maps
 Resources/LUTs/          BRDF LUT
 Resources/Textures/      PBR texture sets
@@ -281,24 +296,24 @@ This is an active renderer project, not a packaged engine. The current focus is 
 
 Working well:
 
-- Modular Vulkan renderer structure
-- Deferred PBR scene rendering
-- glTF model and material loading
-- Sponza + helmet demo scene
-- IBL, shadows, SSAO, SSR, fog, bloom, FXAA
+- Modular Vulkan renderer structure with per-pass modules
+- Deferred PBR scene rendering with a forward transparent pass
+- glTF model and material loading; scene files with runtime switching and animated nodes
+- IBL, CSM + point shadows, SSAO, SSGI, SSR, fog, bloom pyramid, auto-exposure
+- TAA + AgX tonemapping, post edge AA, sharpening
+- Bindless material textures, GPU-driven culling (frustum + HZB occlusion) with indirect draws
+- Async compute SSAO on a dedicated queue
 - ImGui debugging and profiling overlay
-- Culling, LODs, instancing, pipeline cache, VMA resource management
+- LODs, instancing, pipeline cache, VMA resource management
 
 Still on the roadmap:
 
 - Screenshot/video capture for portfolio output
-- Bindless descriptors
-- Temporal anti-aliasing and motion vectors
-- Multi-threaded command buffer recording
-- Async compute for overlapping work
-- GPU-driven indirect rendering and compute culling
-- Optional hardware ray-traced shadows/reflections
 - Hot shader reload
+- Skeletal animation
+- Multi-threaded command buffer recording (opt-in path exists for the CPU G-buffer)
+- Volumetric lighting, GPU particles
+- Optional hardware ray-traced shadows/reflections or VXGI
 
 ## Assets And Credits
 

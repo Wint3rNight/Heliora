@@ -45,10 +45,12 @@ VulkanRenderer
 # Build Directories
 mds/
 build/
+build-release/
 cmake-build-debug/
 cmake-build-release/
 bin/
 obj/
+docs/
 
 # CMake generated files
 CMakeCache.txt

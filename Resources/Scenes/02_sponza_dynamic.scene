@@ -1,0 +1,30 @@
+# Dynamic-object showcase: animated transforms flow through the per-frame
+# draw-item build, so they work on both the CPU and GPU-driven paths.
+name = Sponza - Dynamic Objects
+environment = Resources/HDRIs/kloppenheim_02_1k.hdr
+
+[camera]
+position = 6 2.5 0
+yaw = 180
+pitch = -8
+speed = 10
+
+[model]
+path = Resources/Models/Sponza/glTF/Sponza.gltf
+
+# FlightHelmet centerpiece on a slow turntable spin.
+[model]
+path = Resources/Models/FlightHelmet/glTF/FlightHelmet.gltf
+position = 0 0.35 0
+scale = 4
+spin = 0 25 0
+
+# DamagedHelmet patrolling the courtyard with a gentle bob.
+[model]
+path = Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf
+position = 0 1.8 0
+orbit_radius = 4
+orbit_speed = 30
+bob_amplitude = 0.35
+bob_frequency = 0.4
+spin = 0 90 0

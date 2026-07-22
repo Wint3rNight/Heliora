@@ -2,12 +2,8 @@
 #include "InputManager.h"
 #include "VulkanRenderer.h"
 #include <GLFW/glfw3.h>
-#include <cmath>
-#include <glm/ext/matrix_transform.hpp>
-#include <glm/gtc/constants.hpp>
 #include <iostream>
 #include <stdexcept>
-#include <vector>
 
 GLFWwindow *window;
 VulkanRenderer vulkanRenderer;
@@ -51,7 +47,7 @@ void initWindow(const std::string &wName = "Vulkan Renderer",
   inputManager.init(window);
 }
 
-int main() {
+int main(int argc, char **argv) {
   initWindow("Vulkan Renderer", 1920, 1080);
 
   if (vulkanRenderer.init(window) == EXIT_FAILURE) {
@@ -68,35 +64,43 @@ int main() {
   bool prevTabPressed = false;
   glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-  int sponzaId = vulkanRenderer.createMeshModel(
-      "Resources/Models/Sponza/glTF/Sponza.gltf");
-  auto sponzaNode = std::make_unique<SceneNode>();
-  sponzaNode->setModelId(sponzaId);
-  vulkanRenderer.getRootNode().addChild(std::move(sponzaNode));
-
-  // 8 helmets arranged in a circle, rendered with one instanced draw call
-  // per mesh. Set N higher (e.g. 64 in a multi-ring layout) to stress-test.
-  int helmetId = vulkanRenderer.createMeshModel(
-      "Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf");
-  {
-    const int N = 64;
-    const float radius = 5.0f;
-    const float yPos = 1.5f;
-    std::vector<glm::mat4> helmetTransforms;
-    helmetTransforms.reserve(N);
-    for (int i = 0; i < N; i++) {
-      float angle =
-          glm::two_pi<float>() * static_cast<float>(i) / static_cast<float>(N);
-      glm::vec3 pos(radius * std::cos(angle), yPos, radius * std::sin(angle));
-      glm::mat4 t = glm::translate(glm::mat4(1.0f), pos);
-      t = glm::rotate(t, angle, glm::vec3(0.0f, 1.0f, 0.0f));
-      helmetTransforms.push_back(t);
+  // Scenes are data-driven: Resources/Scenes/*.scene files describe models,
+  // transforms, animations, instanced rings, and the camera pose. The ImGui
+  // Camera panel exposes a scene picker for runtime switching. An optional
+  // CLI argument selects the startup scene: an index into the discovered
+  // list, or a path to a .scene file.
+  vulkanRenderer.discoverScenes("Resources/Scenes");
+  bool sceneLoaded = false;
+  if (argc > 1) {
+    const std::string arg = argv[1];
+    try {
+      if (!arg.empty() &&
+          arg.find_first_not_of("0123456789") == std::string::npos) {
+        vulkanRenderer.loadSceneAt(std::stoi(arg));
+      } else {
+        vulkanRenderer.loadScene(SceneIO::loadFromFile(arg));
+      }
+      sceneLoaded = true;
+    } catch (const std::exception &e) {
+      std::cerr << "Failed to load requested scene '" << arg
+                << "': " << e.what() << std::endl;
     }
-    vulkanRenderer.addInstancedModel(helmetId, helmetTransforms);
   }
-
-  // Initialize global transforms
-  vulkanRenderer.getRootNode().update(glm::mat4(1.0f));
+  if (!sceneLoaded && vulkanRenderer.hasScenes()) {
+    vulkanRenderer.loadSceneAt(0);
+  } else if (!sceneLoaded) {
+    // No scene files found — fall back to the classic built-in setup.
+    SceneDescription fallback;
+    fallback.name = "Sponza (built-in fallback)";
+    SceneModelEntry sponza;
+    sponza.path = "Resources/Models/Sponza/glTF/Sponza.gltf";
+    fallback.models.push_back(sponza);
+    SceneRingEntry ring;
+    ring.path = "Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf";
+    ring.count = 64;
+    fallback.rings.push_back(ring);
+    vulkanRenderer.loadScene(fallback);
+  }
 
   while (!inputManager.shouldClose()) {
     float currentFrame = glfwGetTime();
@@ -131,7 +135,8 @@ int main() {
       inputManager.resetResizedFlag();
     }
 
-    vulkanRenderer.getRootNode().update(glm::mat4(1.0f));
+    // Advances node animations (dynamic objects) and global transforms.
+    vulkanRenderer.updateScene(currentFrame);
 
     vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
 

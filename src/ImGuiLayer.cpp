@@ -157,10 +157,29 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::End();
 
   ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 145), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(340, 175), ImGuiCond_Always);
   ImGui::Begin("Camera", nullptr,
                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoCollapse);
+  if (ui.sceneNames && !ui.sceneNames->empty()) {
+    const std::vector<std::string> &names = *ui.sceneNames;
+    int count = static_cast<int>(names.size());
+    int selected = ui.activeSceneIndex;
+    const char *preview = (selected >= 0 && selected < count)
+                              ? names[selected].c_str()
+                              : "<select scene>";
+    if (ImGui::BeginCombo("Scene", preview)) {
+      for (int i = 0; i < count; i++) {
+        bool isSelected = (i == selected);
+        if (ImGui::Selectable(names[i].c_str(), isSelected) && !isSelected &&
+            ui.onSceneSelected)
+          ui.onSceneSelected(i);
+        if (isSelected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+  }
   ImGui::Text("Pos: (%.1f, %.1f, %.1f)", ui.cameraPos.x, ui.cameraPos.y,
               ui.cameraPos.z);
   ImGui::SliderFloat("Speed", &ui.cameraSpeed, 0.5f, 50.0f);

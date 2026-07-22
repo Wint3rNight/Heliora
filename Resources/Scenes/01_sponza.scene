@@ -1,0 +1,18 @@
+# The classic demo scene: Sponza with the 64-helmet instanced stress ring.
+name = Sponza Courtyard
+environment = Resources/HDRIs/kloppenheim_02_1k.hdr
+
+[camera]
+position = 0 2 0
+yaw = -90
+pitch = 0
+speed = 15
+
+[model]
+path = Resources/Models/Sponza/glTF/Sponza.gltf
+
+[ring]
+path = Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf
+count = 64
+radius = 5
+height = 1.5

@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "PerformanceMetrics.h"
@@ -68,6 +69,12 @@ struct DebugUiContext {
   bool &threadedGBufferEnabled;
   bool &autoExposureEnabled;
 
+  // Scene picker: display names of discovered .scene files and the active
+  // selection. Selection changes go through onSceneSelected, which defers
+  // the actual switch to the top of the next frame.
+  const std::vector<std::string> *sceneNames = nullptr;
+  int activeSceneIndex = -1;
+
   float autoExposureAdaptedValue = 1.0f;
   MaterialProbeResult materialProbe = {};
   uint32_t gpuDrivenCandidateCount = 0;
@@ -82,6 +89,7 @@ struct DebugUiContext {
   std::function<void()> onTaaHistoryInvalidated;
   std::function<void()> onSponzaReferencePreset;
   std::function<void(bool)> onPresentModeChanged;
+  std::function<void(int)> onSceneSelected;
 };
 
 class ImGuiLayer {

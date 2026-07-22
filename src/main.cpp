@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
       });
   bool cameraMode = true;  // Tab toggles between camera fly-through and ImGui
   bool prevTabPressed = false;
+  bool prevF1Pressed = false; // F1 toggles HUD-free screenshot mode
   glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
   // Scenes are data-driven: Resources/Scenes/*.scene files describe models,
@@ -122,6 +123,12 @@ int main(int argc, char **argv) {
                        cameraMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
     }
     prevTabPressed = tabNow;
+
+    // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
+    bool f1Now = inputManager.isKeyPressed(GLFW_KEY_F1);
+    if (f1Now && !prevF1Pressed)
+      vulkanRenderer.toggleUiVisibility();
+    prevF1Pressed = f1Now;
 
     // Mouse drives camera only in camera mode
     glm::vec2 mouseDelta = inputManager.getMouseDelta();

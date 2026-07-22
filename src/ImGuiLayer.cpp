@@ -97,6 +97,8 @@ bool ImGuiLayer::wantsMouse() const {
 }
 
 void ImGuiLayer::buildUi(DebugUiContext &ui) {
+  if (!visible)
+    return; // F1 screenshot mode: no windows -> empty draw list this frame
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_Always);
   ImGui::Begin("Performance", nullptr,

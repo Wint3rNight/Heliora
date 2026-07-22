@@ -185,30 +185,31 @@ This project is not only about getting pixels on screen. A lot of the work is ab
 
 ## Benchmark Snapshot
 
-The renderer logs per-pass GPU timings live and prints a benchmark report on shutdown. This snapshot is the current Sponza scene at 1920x1080 on an RTX 3050 mobile — from a **Debug build with validation layers enabled**, so the absolute numbers are conservative. A Release-build comparison table is on the roadmap (Phase 9).
+The renderer logs per-pass GPU timings live and prints a benchmark report on shutdown. This snapshot is the current Sponza scene at 1920x1080 on an RTX 3050 mobile (4 GiB), **Release build**, steady state over 2,500+ frames.
 
 | Metric | Value |
 | --- | ---: |
-| Average frame time | 10.6 ms |
-| Average FPS | ~94 |
-| Draw calls per frame | 38–53 (GPU-culled, view-dependent) |
+| Average frame time | 11.4 ms |
+| Average FPS | ~88 |
+| Draw calls per frame | 38 (GPU-culled, indirect) |
 | Triangles per frame | ~1.13 M |
+| Steady-state VRAM | ~1.2 GiB |
 
 GPU pass timing (same run):
 
 | Pass | Time |
 | --- | ---: |
 | Cascaded shadow maps | 0.52 ms |
-| Point shadow cubemap | 1.17 ms |
+| Point shadow cubemap | 1.19 ms |
 | G-buffer (GPU-driven) | 1.5 ms |
-| SSGI | 2.65 ms |
-| Deferred lit | 2.7 ms |
-| Bloom pyramid | 0.67 ms |
-| Auto-exposure | 0.11 ms |
-| SSR / TAA / tonemap composite | 0.51 ms |
+| SSGI | 3.1 ms |
+| Deferred lit | 3.0 ms |
+| Bloom pyramid | 0.70 ms |
+| Auto-exposure | 0.13 ms |
+| SSR / TAA / tonemap composite | 0.54 ms |
 | ImGui | 0.06 ms |
 
-The frame is now dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — culling and LOD selection moved to the GPU, so the G-buffer pass stays cheap even with the scene fully in view.
+Two things worth noting. The frame is dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — culling and LOD selection run on the GPU, so the G-buffer pass stays cheap even with the scene fully in view. And a Debug build with validation layers runs within ~8% of Release: the renderer is thoroughly GPU-bound, so CPU-side build flags barely move the frame time.
 
 ## Controls
 
@@ -217,6 +218,7 @@ The frame is now dominated by the screen-space lighting passes (SSGI + deferred 
 | `W`, `A`, `S`, `D` | Move the camera |
 | Mouse | Look around in camera mode |
 | `Tab` | Toggle between camera mode and UI mode |
+| `F1` | Toggle HUD-free screenshot mode (hides all panels) |
 | `Esc` | Close the application |
 
 In UI mode, the ImGui panels expose camera settings, lighting, fog, LOD distances, point shadow range, G-buffer debug views, and live performance metrics.

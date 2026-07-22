@@ -108,8 +108,15 @@ public:
 
   bool wantsMouse() const;
 
+  // Screenshot mode: hides every panel (empty ImGui draw list) so captures
+  // are HUD-free. Rendering itself is unaffected.
+  void toggleVisibility() { visible = !visible; }
+  bool isVisible() const { return visible; }
+
 private:
   void buildUi(DebugUiContext &ui);
+
+  bool visible = true;
 
   std::vector<VkFramebuffer> framebuffers;
   float frameTimeGraphData[128] = {};

@@ -90,6 +90,7 @@ public:
   void setCameraPresetCallback(CameraPresetCallback callback);
   float getCameraSpeed() const { return imguiCameraSpeed; }
   bool imguiWantsMouse() const { return imguiLayer.wantsMouse(); }
+  void toggleUiVisibility() { imguiLayer.toggleVisibility(); }
 
   ~VulkanRenderer();
 

@@ -33,7 +33,7 @@ flowchart TD
         end
 
         subgraph SUB2 ["Submit 2 · async compute queue"]
-            SSAO["SSAO compute\n(overlaps the shadow submit)"]
+            SSAO["SSAO compute\n(can overlap the shadow submit)"]
         end
 
         subgraph SUB3 ["Submit 3 · graphics queue"]
@@ -62,7 +62,7 @@ flowchart TD
     C --> GB
 ```
 
-Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit overlaps the shadow submit on the graphics queue, and the post submit waits on both.
+Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit doesn't wait on the shadow submit, so the two can overlap, and the post submit waits on both.
 
 ## Feature Set
 
@@ -140,12 +140,12 @@ The renderer is built around a deferred pipeline:
 
    - `GB0`: `R16G16B16A16_SFLOAT` - albedo RGB + metallic
    - `GB1`: `R16G16B16A16_SFLOAT` - world normal RGB + roughness
-   - `GB2`: `R8G8B8A8_UNORM` - ambient occlusion
+   - `GB2`: `R8G8B8A8_UNORM` - ambient occlusion, cloth flag, octahedral geometric normal
    - depth: sampled later for position reconstruction
 
 3. SSAO and SSGI passes
 
-   SSAO runs as a compute dispatch on the dedicated compute queue, overlapping the graphics work. SSGI gathers a one-bounce diffuse fill at half resolution with a temporal history ring.
+   SSAO runs as a compute dispatch on the dedicated compute queue, so it can overlap the graphics work. SSGI gathers a one-bounce diffuse fill at half resolution with a temporal history ring.
 
 4. Lit pass
 
@@ -175,8 +175,8 @@ This project is not only about getting pixels on screen. A lot of the work is ab
 - Frustum culling: models and submeshes are skipped before draw submission when their bounding sphere is outside the camera frustum.
 - Dynamic LODs: each mesh gets simplified index buffers at load time using meshoptimizer, and LOD is selected by camera distance.
 - Instancing: repeated helmet meshes use an instance buffer and `VK_VERTEX_INPUT_RATE_INSTANCE`.
-- Reduced descriptor churn: the G-buffer path binds the scene descriptor once and only rebinds material descriptors when the material changes.
-- Shadow LODs: far cascades and point-shadow passes use lower LODs where silhouette detail is less noticeable.
+- Bindless materials: the G-buffer path binds the scene set and the bindless texture set once per pipeline, with no per-material rebinds.
+- Shadow passes render LOD0, since reduced LODs can drop Sponza's thin shadow casters.
 - Timestamp profiling: GPU timestamps measure shadow, point shadow, G-buffer, and deferred/composition costs separately.
 - RenderDoc labels: debug labels mark major passes and cascade/face work so captures are easier to read.
 
@@ -188,8 +188,8 @@ The renderer logs per-pass GPU timings live and prints a benchmark report on shu
 | --- | ---: |
 | Average frame time | 11.4 ms |
 | Average FPS | ~88 |
-| Draw calls per frame | 38 in the benchmark view (frustum + occlusion culled, indirect; varies with camera) |
-| Triangles per frame | ~1.13 M |
+| G-buffer draws per frame | 38 in the benchmark view (after frustum culling; varies with camera) |
+| G-buffer triangles per frame | ~1.13 M |
 | Steady-state VRAM | ~1.2 GiB |
 
 GPU pass timing (same run):
@@ -198,7 +198,7 @@ GPU pass timing (same run):
 | --- | ---: |
 | Cascaded shadow maps | 0.52 ms |
 | Point shadow cubemap | 1.19 ms |
-| G-buffer (GPU-driven) | 1.5 ms |
+| G-buffer | 1.5 ms |
 | SSGI | 3.1 ms |
 | Deferred lit | 3.0 ms |
 | Bloom pyramid | 0.70 ms |
@@ -206,7 +206,7 @@ GPU pass timing (same run):
 | SSR / TAA / tonemap composite | 0.54 ms |
 | ImGui | 0.06 ms |
 
-Two things worth noting. The frame is dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — culling and LOD selection run on the GPU, so the G-buffer pass stays cheap even with the scene fully in view. And a same-day Debug-with-validation run measured within ~1 ms of this Release run (well inside thermal run-to-run variance on a laptop GPU): the renderer is thoroughly GPU-bound, so CPU-side build flags barely move the frame time.
+Two things worth noting. The frame is dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — frustum culling and LOD selection keep the G-buffer pass cheap even with the scene fully in view. And a same-day Debug-with-validation run measured within ~1 ms of this Release run (well inside thermal run-to-run variance on a laptop GPU): the renderer is thoroughly GPU-bound, so CPU-side build flags barely move the frame time.
 
 ## Controls
 
@@ -254,10 +254,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Run it from the repository root so relative resource paths resolve correctly:
+Run it from the build directory, since shaders load from `../Shaders`:
 
 ```bash
-./build/VulkanRenderer
+cd build && ./VulkanRenderer
 ```
 
 The project currently assumes an X11 GLFW platform in `src/main.cpp`, so Linux/X11 is the path of least resistance right now. Other platforms should be possible, but they are not the focus of the current setup.

@@ -222,7 +222,7 @@ In UI mode, the ImGui panels expose camera settings, lighting, fog, LOD distance
 
 ## Requirements
 
-- C++17 compiler
+- C++20 compiler
 - CMake 3.16 or newer
 - Vulkan SDK / Vulkan loader and headers
 - GLFW

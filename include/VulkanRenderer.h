@@ -181,6 +181,10 @@ private:
   BloomPass bloomPass;
   AutoExposurePass autoExposurePass;
   ShadowPass shadowPass;
+  // The point-shadow cube is created UNDEFINED and only its render pass moves
+  // it to the layout lit.frag's binding expects, so it must render at least
+  // once even if no shadowed point light is active (see recordShadowCommands).
+  bool pointShadowMapInitialized = false;
   SsaoPass ssaoPass;
   SsgiPass ssgiPass;
   CompositePass compositePass;
@@ -291,7 +295,7 @@ private:
   float imguiBloomIntensity = 0.12f;
   float imguiBloomRadius = 1.25f;
   bool imguiSsrEnabled = false;            // off by default: avoids rough Sponza SSR leaks
-  bool imguiTaaEnabled = false;
+  bool imguiTaaEnabled = true;             // SSAO/SSGI/PCF noise relies on TAA to average out
   bool imguiResponsiveTaa = true;          // drop history while camera moves
   bool imguiPreferMailboxPresent = true;   // on = MAILBOX / uncapped present
   // CAS-style sharpening strength. Dropped 0.4 → 0.10 — the previous 0.4

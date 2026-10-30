@@ -35,7 +35,6 @@ public:
 
   // --- Layout accessors ---
   VkDescriptorSetLayout getVPLayout() const { return descriptorSetLayout; }
-  VkDescriptorSetLayout getSamplerLayout() const { return samplerSetLayout; }
   VkDescriptorSetLayout getBindlessLayout() const { return bindlessSetLayout; }
   VkDescriptorSetLayout getGBufferLayout() const { return gBufferSetLayout; }
   VkDescriptorSetLayout getInputLayout() const { return inputSetLayout; }
@@ -45,9 +44,6 @@ public:
 
   // --- Set accessors ---
   VkDescriptorSet getVPSet(size_t i) const { return descriptorSets[i]; }
-  VkDescriptorSet getSamplerSet(size_t i) const {
-    return samplerDescriptorSets[i];
-  }
   // Phase 7.2 — single global bindless texture array set. Contains up to
   // MAX_BINDLESS_TEXTURES combined-image-samplers at binding 0. Flagged
   // UPDATE_AFTER_BIND so textures can be registered after the set is bound.
@@ -65,11 +61,6 @@ public:
   void updateUniformBuffer(VmaAllocator allocator, size_t imageIndex,
                            const void *data, size_t size);
 
-  // Creates a 5-texture PBR material descriptor set (legacy, pre-bindless).
-  int createTextureDescriptor(VkDevice device, VkImageView albedo,
-                              VkImageView normal, VkImageView metallic,
-                              VkImageView roughness, VkImageView ao,
-                              VkSampler sampler);
 
   // Phase 7.2 — write a single texture into the global bindless array at
   // `index`. The set is flagged UPDATE_AFTER_BIND so this can be called
@@ -140,8 +131,6 @@ private:
   // --- Layouts ---
   VkDescriptorSetLayout descriptorSetLayout =
       VK_NULL_HANDLE; // VP / scene (set 0)
-  VkDescriptorSetLayout samplerSetLayout =
-      VK_NULL_HANDLE; // 5 PBR textures (set 1, geometry) — legacy
   VkDescriptorSetLayout bindlessSetLayout =
       VK_NULL_HANDLE; // Phase 7.2: N-texture bindless array (set 1, geometry)
   VkDescriptorSetLayout gBufferSetLayout =
@@ -156,7 +145,6 @@ private:
 
   // --- Pools ---
   VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-  VkDescriptorPool samplerDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool bindlessDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool gBufferDescriptorPool = VK_NULL_HANDLE;
   VkDescriptorPool inputDescriptorPool = VK_NULL_HANDLE;
@@ -165,7 +153,6 @@ private:
 
   // --- Sets ---
   std::vector<VkDescriptorSet> descriptorSets;        // one per swapchain image
-  std::vector<VkDescriptorSet> samplerDescriptorSets; // one per loaded material (legacy)
   VkDescriptorSet bindlessDescriptorSet = VK_NULL_HANDLE; // Phase 7.2: single global set
   std::vector<VkDescriptorSet> gBufferDescriptorSets; // historyCount * swapCount
   // Set by recreateGBufferSets so getGBufferSet(historyIndex, i) can index.

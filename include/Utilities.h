@@ -151,7 +151,6 @@ private:
 };
 
 const int MAX_FRAMES_DRAWS = 2;
-const int MAX_OBJECTS = 40;
 const int MAX_POINT_LIGHTS = 4;
 const int MAX_SPOT_LIGHTS = 2;
 const uint32_t SHADOW_MAP_SIZE = 2048;

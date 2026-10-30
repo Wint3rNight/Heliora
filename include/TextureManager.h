@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include "Material.h"
@@ -21,6 +22,7 @@ public:
   void init(const VulkanDevice &device, VkPipelineCache pipelineCache);
   void cleanup(VkDevice logicalDevice, VmaAllocator allocator);
 
+  // Loads one albedo texture as a material and returns its texture index.
   int loadTexture(const std::string &filename, const VulkanDevice &device,
                   DescriptorManager &descriptorManager);
 
@@ -56,7 +58,8 @@ private:
   std::vector<ImageViewHandle> textureImageViews;
 
   std::unordered_map<std::string, int> textureMap;
-  std::unordered_map<std::string, int> materialMap;
+  // Materials whose textures are already registered in the bindless array.
+  std::unordered_set<std::string> registeredMaterials;
   std::unordered_map<std::string, int> skyboxMap;
 
   void createTextureSampler(VkDevice logicalDevice, VkPhysicalDevice physicalDevice);

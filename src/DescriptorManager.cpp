@@ -32,7 +32,6 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
   vkDestroyDescriptorPool(device, gBufferDescriptorPool, nullptr);
   if (bindlessDescriptorPool != VK_NULL_HANDLE)
     vkDestroyDescriptorPool(device, bindlessDescriptorPool, nullptr);
-  vkDestroyDescriptorPool(device, samplerDescriptorPool, nullptr);
   vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
   if (ssgiPrevSetLayout != VK_NULL_HANDLE)
@@ -42,7 +41,6 @@ void DescriptorManager::cleanup(VkDevice device, VmaAllocator /*allocator*/,
   vkDestroyDescriptorSetLayout(device, gBufferSetLayout, nullptr);
   if (bindlessSetLayout != VK_NULL_HANDLE)
     vkDestroyDescriptorSetLayout(device, bindlessSetLayout, nullptr);
-  vkDestroyDescriptorSetLayout(device, samplerSetLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
   vpUniformBuffers.clear();
@@ -52,42 +50,6 @@ void DescriptorManager::updateUniformBuffer(VmaAllocator allocator, size_t idx,
                                             const void *data, size_t size) {
   uploadToAllocation(allocator, vpUniformBuffers[idx].getAllocation(), data,
                      size);
-}
-
-int DescriptorManager::createTextureDescriptor(
-    VkDevice device, VkImageView albedo, VkImageView normal,
-    VkImageView metallic, VkImageView roughness, VkImageView ao,
-    VkSampler sampler) {
-  VkDescriptorSet set;
-  VkDescriptorSetAllocateInfo allocInfo = {};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = samplerDescriptorPool;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &samplerSetLayout;
-  if (vkAllocateDescriptorSets(device, &allocInfo, &set) != VK_SUCCESS)
-    throw std::runtime_error("Failed to allocate PBR material descriptor set");
-
-  VkDescriptorImageInfo imgs[5] = {};
-  VkImageView views[5] = {albedo, normal, metallic, roughness, ao};
-  for (int i = 0; i < 5; ++i) {
-    imgs[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgs[i].imageView = views[i];
-    imgs[i].sampler = sampler;
-  }
-
-  VkWriteDescriptorSet writes[5] = {};
-  for (int i = 0; i < 5; ++i) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = set;
-    writes[i].dstBinding = static_cast<uint32_t>(i);
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[i].descriptorCount = 1;
-    writes[i].pImageInfo = &imgs[i];
-  }
-  vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
-
-  samplerDescriptorSets.push_back(set);
-  return static_cast<int>(samplerDescriptorSets.size() - 1);
 }
 
 void DescriptorManager::updateShadowMapDescriptor(VkDevice device,
@@ -385,26 +347,6 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
       VK_SUCCESS)
     throw std::runtime_error("Failed to create VP descriptor set layout");
 
-  // --- PBR material sampler layout (set 1, geometry pass): 5 bindings ---
-  // Legacy: kept for the shadow pipeline which still uses per-material
-  // descriptor sets. The G-buffer pass now uses the bindless layout below.
-  VkDescriptorSetLayoutBinding samplerBindings[5] = {};
-  for (int i = 0; i < 5; ++i) {
-    samplerBindings[i].binding = static_cast<uint32_t>(i);
-    samplerBindings[i].descriptorType =
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerBindings[i].descriptorCount = 1;
-    samplerBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-  }
-  VkDescriptorSetLayoutCreateInfo samplerCI = {};
-  samplerCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  samplerCI.bindingCount = 5;
-  samplerCI.pBindings = samplerBindings;
-  if (vkCreateDescriptorSetLayout(device, &samplerCI, nullptr,
-                                  &samplerSetLayout) != VK_SUCCESS)
-    throw std::runtime_error(
-        "Failed to create PBR sampler descriptor set layout");
-
   // --- Phase 7.2: Bindless texture array layout (set 1, geometry pass) ---
   // Single binding 0 with MAX_BINDLESS_TEXTURES combined-image-samplers.
   // Flags enable:
@@ -633,20 +575,6 @@ bool DescriptorManager::recreatePerImageResources(
 void DescriptorManager::createDescriptorPool(VkDevice device, size_t count) {
   createCountSizedPools(device, count);
 
-  // Material sampler pool: 5 samplers per material, up to MAX_OBJECTS
-  VkDescriptorPoolSize samplerSize = {};
-  samplerSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  samplerSize.descriptorCount = MAX_OBJECTS * 5;
-
-  VkDescriptorPoolCreateInfo samplerCI = {};
-  samplerCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  samplerCI.maxSets = MAX_OBJECTS;
-  samplerCI.poolSizeCount = 1;
-  samplerCI.pPoolSizes = &samplerSize;
-  if (vkCreateDescriptorPool(device, &samplerCI, nullptr,
-                             &samplerDescriptorPool) != VK_SUCCESS)
-    throw std::runtime_error(
-        "Failed to create material sampler descriptor pool");
 
   // Phase 7.2: Bindless texture array pool. A single set with up to
   // MAX_BINDLESS_TEXTURES combined-image-sampler descriptors. The

@@ -2030,10 +2030,19 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   vkdbgEndLabel(cmd);
 
+  // Only point light 0 casts a shadow, and lit.frag samples the cube only
+  // when point lights are enabled and counted, so skip the six-face render
+  // otherwise (about 1.2 ms per frame). The timestamps stay so the overlay
+  // reads ~0 ms instead of a missing query.
+  const bool pointShadowNeeded =
+      imguiEnablePointLights && sceneUbo.lightCounts.x > 0;
   vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
-                         descriptorManager, imguiShadowFrontFaceCull);
+  if (pointShadowNeeded || !pointShadowMapInitialized) {
+    shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
+                           descriptorManager, imguiShadowFrontFaceCull);
+    pointShadowMapInitialized = true;
+  }
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   vkdbgEndLabel(cmd);
 

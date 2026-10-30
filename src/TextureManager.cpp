@@ -251,7 +251,7 @@ void TextureManager::cleanup(VkDevice logicalDevice,
   textureImageViews.clear();
   textureImages.clear();
   textureMap.clear();
-  materialMap.clear();
+  registeredMaterials.clear();
   skyboxMap.clear();
   if (skyboxSampler != VK_NULL_HANDLE) {
     vkDestroySampler(logicalDevice, skyboxSampler, nullptr);
@@ -267,7 +267,7 @@ int TextureManager::loadTexture(const std::string &filename,
                                 const VulkanDevice &device,
                                 DescriptorManager &descriptorManager) {
   return loadMaterial(filename, "", "", "", "", device, descriptorManager)
-      .descriptorSetId;
+      .albedoTextureId;
 }
 
 Material TextureManager::loadMaterial(const std::string &albedoFilename,
@@ -293,7 +293,7 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
                                          : normalizeTextureKey(aoFilename);
 
   // Directory-qualified like the texture cache: equal bare names from two
-  // different models must not alias each other's material descriptors.
+  // different models must not alias each other's textures.
   std::string materialKey = modelBaseDirectory + "|" + albedoKey + "|" +
                             normalKey + "|" + metallicKey + "|" +
                             roughnessKey + "|" + aoKey;
@@ -306,24 +306,17 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
     return getOrCreateTexture(key, device);
   };
 
-  auto matIt = materialMap.find(materialKey);
-  if (matIt != materialMap.end()) {
-    Material cached;
-    cached.descriptorSetId = matIt->second;
-    cached.albedoTextureId = resolveTex(albedoKey, 255, 255, 255, 255);
-    cached.normalTextureId = resolveTex(normalKey, 128, 128, 255, 255);
-    cached.metallicTextureId = resolveTex(metallicKey, 0, 0, 0, 255);
-    cached.roughnessTextureId = resolveTex(roughnessKey, 255, 255, 255, 255);
-    cached.aoTextureId = resolveTex(aoKey, 255, 255, 255, 255);
-    return cached;
-  }
-
   Material mat;
   mat.albedoTextureId = resolveTex(albedoKey, 255, 255, 255, 255);
   mat.normalTextureId = resolveTex(normalKey, 128, 128, 255, 255);
   mat.metallicTextureId = resolveTex(metallicKey, 0, 0, 0, 255);
   mat.roughnessTextureId = resolveTex(roughnessKey, 255, 255, 255, 255);
   mat.aoTextureId = resolveTex(aoKey, 255, 255, 255, 255);
+
+  // The textures are cached above, so a repeated material only skips the
+  // bindless writes below.
+  if (!registeredMaterials.insert(materialKey).second)
+    return mat;
 
   // Phase 7.2: register each texture into the global bindless array.
   // The bindless index == the raw texture image index in textureImages[].
@@ -340,16 +333,6 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
   regBindless(mat.metallicTextureId);
   regBindless(mat.roughnessTextureId);
   regBindless(mat.aoTextureId);
-
-  // Legacy: still allocate a per-material descriptor set for any code paths
-  // that haven't been converted yet.
-  mat.descriptorSetId = descriptorManager.createTextureDescriptor(
-      device.getLogicalDevice(), textureImageViews[mat.albedoTextureId].get(),
-      textureImageViews[mat.normalTextureId].get(),
-      textureImageViews[mat.metallicTextureId].get(),
-      textureImageViews[mat.roughnessTextureId].get(),
-      textureImageViews[mat.aoTextureId].get(), textureSampler);
-  materialMap[materialKey] = mat.descriptorSetId;
   return mat;
 }
 

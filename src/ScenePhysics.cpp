@@ -15,6 +15,12 @@ PhysicsBodyDesc bodyDescFor(const SceneModelEntry &entry) {
   desc.motion = *entry.body;
   desc.position = entry.transform.position;
   desc.rotation = rotationFromDegrees(entry.transform.rotationDeg);
+  if (entry.mass)
+    desc.mass = *entry.mass;
+  if (entry.friction)
+    desc.friction = *entry.friction;
+  if (entry.restitution)
+    desc.restitution = *entry.restitution;
   switch (*entry.shape) {
   case PrimitiveShape::Box:
     desc.shape = PhysicsShape::Box;

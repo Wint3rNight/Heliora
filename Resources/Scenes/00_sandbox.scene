@@ -1,5 +1,6 @@
 # The physics sandbox. Every shape here is generated in code, no model files.
-# body = static never moves, dynamic is moved by physics.
+# body = static never moves, dynamic is moved by physics. mass (kg),
+# friction and restitution (bounciness, 0 to 1) are optional.
 name = Sandbox
 environment = Resources/HDRIs/kloppenheim_02_1k.hdr
 
@@ -43,6 +44,7 @@ position = -2.6 6 0.3
 rotation = 25 10 35
 color = 0.8 0.55 0.3
 body = dynamic
+mass = 400   # a heavy one, about the weight of a 1 m crate of sand
 
 # A plank lying flat, and a low wall
 [model]
@@ -66,6 +68,7 @@ radius = 0.5
 position = 1.6 4 -2
 color = 0.75 0.15 0.15
 body = dynamic
+restitution = 0.6
 
 [model]
 shape = sphere
@@ -73,6 +76,7 @@ radius = 0.25
 position = 1 6 2
 color = 0.15 0.35 0.75
 body = dynamic
+restitution = 0.8
 
 # Capsules at roughly character size. The standing one won't stay standing.
 [model]
@@ -91,4 +95,14 @@ height = 1.0
 position = 2.8 0.2 2
 rotation = 0 0 90
 color = 0.85 0.8 0.3
+body = dynamic
+
+# A wall of 24 bricks to knock over: 6 wide, 4 high, centred on x = -1
+[grid]
+shape = box
+size = 0.5 0.3 0.25
+count = 6 4 1
+spacing = 0.52 0.31 1
+position = -1 0.15 3
+color = 0.6 0.25 0.2
 body = dynamic

@@ -15,6 +15,7 @@
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "CompositePass.h"
+#include "DebugLinePass.h"
 #include "DescriptorManager.h"
 #include "FixedStepClock.h"
 #include "GpuDrivenGBufferPass.h"
@@ -84,6 +85,12 @@ public:
   // bodies that moved to their interpolated poses. Call once per frame
   // before updateScene() with the frame time in seconds.
   void stepPhysics(float frameSeconds);
+  // F2: wireframes of the physics shapes over the frame.
+  void togglePhysicsDebug() {
+    physicsPanel.showWireframes = !physicsPanel.showWireframes;
+  }
+  // F: throws a ball from the camera along direction.
+  void throwBall(glm::vec3 from, glm::vec3 direction);
   // Advances node animations and recomputes global transforms. Call once per
   // frame before draw() with the elapsed time in seconds.
   void updateScene(float timeSeconds);
@@ -119,6 +126,19 @@ private:
   std::unique_ptr<PhysicsWorld> physics;
   FixedStepClock physicsClock;
   std::vector<SceneNode *> physicsNodes;
+  DebugLinePass debugLinePass;
+  PhysicsPanel physicsPanel;
+  // Sums for the [physics] log line, printed every 120 frames.
+  struct PhysicsLogWindow {
+    int frames = 0;
+    int steps = 0;
+    double stepMs = 0.0; // inside Jolt's update
+    double poseMs = 0.0; // copying moved poses into nodes
+  } physicsLog;
+  int ballModelId = -1; // made at scene load, so throwing never builds a mesh
+  static SceneModelEntry thrownBallEntry();
+  // The camera's near plane, shared by the projection and the debug lines.
+  static constexpr float kCameraNear = 1.0f;
 
   // --- Scene library ---
   std::vector<SceneDescription> availableScenes;

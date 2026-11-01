@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <format>
 
 #include <assimp/Importer.hpp>
@@ -280,6 +281,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
       descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
                                         depthViews, colorViews, bloomViews,
                                         taaSampler);
+      debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
+                           pipelineCache.get());
+      debugLinePass.setDepthViews(device.getLogicalDevice(), depthViews,
+                                  taaSampler);
     }
 
     // 10. Pipeline (needs all 5 render passes + descriptor layouts)
@@ -457,32 +462,58 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   // way to retire every in-flight frame before instance buffers and the
   // scene graph are torn down.
   vkDeviceWaitIdle(device.getLogicalDevice());
+  const auto loadStart = std::chrono::steady_clock::now();
 
   // Physics first: physicsNodes points into the tree cleared below.
+  // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
   physicsNodes.clear();
-  physics = std::make_unique<PhysicsWorld>();
+  PhysicsWorld::Config physicsConfig;
+  if (const char *threads = std::getenv("HELIORA_PHYSICS_THREADS"))
+    physicsConfig.workerThreads =
+        static_cast<uint32_t>(std::max(0, std::atoi(threads)));
+  physics = std::make_unique<PhysicsWorld>(physicsConfig);
   physicsClock = FixedStepClock();
+  physicsPanel.thrownBalls = 0;
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
+  // A node for the entry, plus a physics body if it has one.
+  auto addNode = [&](const SceneModelEntry &entry, int modelId) {
+    auto node = std::make_unique<SceneNode>();
+    node->setModelId(modelId);
+    node->setTransform(entry.transform);
+    node->setAnimation(entry.animation);
+    if (entry.body) {
+      PhysicsBodyDesc body = bodyDescFor(entry);
+      body.userData = physicsNodes.size();
+      if (physics->addBody(body).isValid())
+        physicsNodes.push_back(node.get());
+    }
+    rootNode.addChild(std::move(node));
+  };
+  auto modelFor = [&](const SceneModelEntry &entry) {
+    return entry.shape ? createPrimitiveModel(entry)
+                       : createMeshModel(entry.path);
+  };
+
   for (const SceneModelEntry &entry : desc.models) {
     try {
-      int modelId = entry.shape ? createPrimitiveModel(entry)
-                                : createMeshModel(entry.path);
-      auto node = std::make_unique<SceneNode>();
-      node->setModelId(modelId);
-      node->setTransform(entry.transform);
-      node->setAnimation(entry.animation);
-      if (entry.body) {
-        PhysicsBodyDesc body = bodyDescFor(entry);
-        body.userData = physicsNodes.size();
-        if (physics->addBody(body).isValid())
-          physicsNodes.push_back(node.get());
-      }
-      rootNode.addChild(std::move(node));
+      addNode(entry, modelFor(entry));
     } catch (const std::exception &e) {
       spdlog::error("Scene '{}': failed to load model '{}': {}", desc.name,
                     entry.shape ? "generated shape" : entry.path, e.what());
+    }
+  }
+  // Every copy in a grid shares one model, so it's made once.
+  for (const SceneGridEntry &grid : desc.grids) {
+    try {
+      const int modelId = modelFor(grid.model);
+      for (const SceneModelEntry &copy : expandGrid(grid))
+        addNode(copy, modelId);
+    } catch (const std::exception &e) {
+      spdlog::error("Scene '{}': failed to load grid model '{}': {}",
+                    desc.name, grid.model.shape ? "generated shape" : grid.model.path,
+                    e.what());
     }
   }
 
@@ -513,6 +544,14 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   // Bodies went in one by one, which leaves Jolt's broad phase tree
   // unbalanced.
   physics->optimizeBroadPhase();
+  // The thrown ball's mesh is made here, while the GPU is idle: building it
+  // mid-session would mean a GPU upload in the middle of the frame loop.
+  try {
+    ballModelId = createPrimitiveModel(thrownBallEntry());
+  } catch (const std::exception &e) {
+    ballModelId = -1;
+    spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
+  }
   rootNode.update(glm::mat4(1.0f), 0.0f);
 
   if (!desc.environmentHdr.empty() &&
@@ -535,10 +574,14 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   taaHistoryValid = false;
   gpuDrivenGBufferPass.invalidateHzb();
 
-  spdlog::info("Loaded scene '{}' ({} model(s), {} instanced ring(s), {} "
-               "physics bodies)",
-               desc.name, desc.models.size(), desc.rings.size(),
-               physicsNodes.size());
+  spdlog::info("Loaded scene '{}' ({} model(s), {} grid(s), {} instanced "
+               "ring(s), {} physics bodies, {} Jolt workers) in {:.0f} ms",
+               desc.name, desc.models.size(), desc.grids.size(),
+               desc.rings.size(), physicsNodes.size(),
+               physicsConfig.workerThreads,
+               std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - loadStart)
+                   .count());
 }
 
 bool VulkanRenderer::loadSceneAt(int index) {
@@ -559,20 +602,85 @@ void VulkanRenderer::requestSceneLoad(int index) {
 void VulkanRenderer::stepPhysics(float frameSeconds) {
   if (!physics)
     return;
+  if (physicsPanel.resetRequested) {
+    physicsPanel.resetRequested = false;
+    requestSceneLoad(activeSceneIndex); // happens at the top of draw()
+  }
   const auto start = std::chrono::steady_clock::now();
-  const int steps = physicsClock.advance(frameSeconds);
+  int steps;
+  float alpha;
+  if (physicsPanel.paused) {
+    // Paused: only the Step button advances, and the latest step is drawn
+    // as is.
+    steps = physicsPanel.stepRequested ? 1 : 0;
+    physicsPanel.stepRequested = false;
+    alpha = 1.0f;
+  } else {
+    steps = physicsClock.advance(frameSeconds);
+    alpha = physicsClock.alpha();
+  }
   for (int i = 0; i < steps; ++i)
     physics->step(static_cast<float>(physicsClock.stepSeconds()));
+  const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
-  for (const PhysicsMovedPose &moved :
-       physics->movedPoses(physicsClock.alpha()))
+  for (const PhysicsMovedPose &moved : physics->movedPoses(alpha))
     physicsNodes[moved.userData]->setPose(moved.pose.position,
                                           moved.pose.rotation);
+  const auto posed = std::chrono::steady_clock::now();
+
+  using Ms = std::chrono::duration<double, std::milli>;
+  physicsLog.frames++;
+  physicsLog.steps += steps;
+  physicsLog.stepMs += Ms(stepped - start).count();
+  physicsLog.poseMs += Ms(posed - stepped).count();
+  if (physicsLog.frames == 120) {
+    spdlog::info("[physics] bodies={} awake={} steps={} step={:.3f}ms "
+                 "poses={:.3f}ms/frame dropped={}",
+                 physics->bodyCount(), physics->activeBodyCount(),
+                 physicsLog.steps,
+                 physicsLog.steps ? physicsLog.stepMs / physicsLog.steps : 0.0,
+                 physicsLog.poseMs / physicsLog.frames,
+                 physics->droppedContactSteps());
+    physicsLog = {};
+  }
+  physicsPanel.bodies = physics->bodyCount();
+  physicsPanel.awakeBodies = physics->activeBodyCount();
+  physicsPanel.droppedContactSteps = physics->droppedContactSteps();
   metrics.recordCpuPhase(
       PerformanceMetrics::CpuPhase::Physics,
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start)
           .count());
+}
+
+SceneModelEntry VulkanRenderer::thrownBallEntry() {
+  SceneModelEntry ball;
+  ball.shape = PrimitiveShape::Sphere;
+  ball.radius = 0.2f;
+  ball.color = glm::vec3(0.9f, 0.9f, 0.95f);
+  ball.body = PhysicsMotion::Dynamic;
+  ball.mass = 5.0f;
+  ball.restitution = 0.3f;
+  return ball;
+}
+
+void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
+  if (!physics || ballModelId < 0)
+    return;
+  SceneModelEntry ball = thrownBallEntry();
+  // A metre ahead of the camera, so it doesn't start inside the near plane.
+  ball.transform.position = from + direction * 1.0f;
+  auto node = std::make_unique<SceneNode>();
+  node->setModelId(ballModelId);
+  node->setTransform(ball.transform);
+  PhysicsBodyDesc body = bodyDescFor(ball);
+  body.linearVelocity = direction * 25.0f; // m/s, a hard throw
+  body.userData = physicsNodes.size();
+  if (!physics->addBody(body).isValid())
+    return; // world full; PhysicsWorld already logged it
+  physicsNodes.push_back(node.get());
+  rootNode.addChild(std::move(node));
+  ++physicsPanel.thrownBalls;
 }
 
 void VulkanRenderer::updateScene(float timeSeconds) {
@@ -1150,6 +1258,8 @@ void VulkanRenderer::recreateSwapChain() {
     descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
                                       depthViews, colorViews, bloomViews,
                                       taaSampler);
+    debugLinePass.setDepthViews(device.getLogicalDevice(), depthViews,
+                                taaSampler);
   }
 
   createAsyncFrameCommandBuffers();
@@ -1791,6 +1901,7 @@ void VulkanRenderer::cleanup() {
   renderResources.clear();
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
   imguiLayer.cleanup(device.getLogicalDevice());
+  debugLinePass.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   autoExposurePass.cleanup();
@@ -2814,7 +2925,7 @@ void VulkanRenderer::rebuildProjection() {
   // leaves the rest of the hall z-fighting. 1m is below any meaningful
   // first-person clip distance at this scale.
   sceneUbo.projection = glm::perspective(glm::radians(imguiCameraFov), aspect,
-                                         1.0f, imguiDrawDistance);
+                                         kCameraNear, imguiDrawDistance);
   sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
   // Capture the un-jittered baseline — draw() will copy this into
@@ -2914,9 +3025,23 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
         framebufferResized = true;
       },
       [this](int index) { requestSceneLoad(index); }};
+  ui.physics = &physicsPanel;
 
-  imguiLayer.record(cmd, renderPassManager.getImGuiRenderPass(),
-                    swapchain.getExtent(), imageIndex, ui);
+  // Physics wireframes go in the ImGui pass, under the panels. The list is
+  // only built while F2 is on.
+  const bool drawPhysicsLines = physicsPanel.showWireframes && physics;
+  if (drawPhysicsLines)
+    debugLinePass.upload(
+        device, imageIndex,
+        physics->debugLines(glm::vec3(sceneUbo.cameraPosition)));
+  imguiLayer.record(
+      cmd, renderPassManager.getImGuiRenderPass(), swapchain.getExtent(),
+      imageIndex, ui, [&](VkCommandBuffer c) {
+        if (drawPhysicsLines)
+          debugLinePass.record(c, imageIndex, swapchain.getExtent(),
+                               taaBaseProjection * sceneUbo.view, kCameraNear,
+                               imguiDrawDistance);
+      });
   if (imageIndex < renderResources.frameCount()) {
     renderResources.noteLayout(renderResources.frame(imageIndex).swapchainImage,
                                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,

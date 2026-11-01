@@ -13,6 +13,19 @@
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
+// The Physics panel. The panel sets the requests, the renderer acts on them
+// and fills in the counts every frame.
+struct PhysicsPanel {
+  bool paused = false;
+  bool stepRequested = false;  // one step while paused
+  bool resetRequested = false; // reload the scene
+  bool showWireframes = false; // also F2
+  uint32_t bodies = 0;
+  uint32_t awakeBodies = 0;
+  uint32_t droppedContactSteps = 0;
+  uint32_t thrownBalls = 0;
+};
+
 struct DebugUiContext {
   PerformanceMetrics &metrics;
   VmaAllocator allocator = VK_NULL_HANDLE;
@@ -90,6 +103,8 @@ struct DebugUiContext {
   std::function<void()> onSponzaReferencePreset;
   std::function<void(bool)> onPresentModeChanged;
   std::function<void(int)> onSceneSelected;
+
+  PhysicsPanel *physics = nullptr; // no panel when null
 };
 
 class ImGuiLayer {
@@ -103,8 +118,11 @@ public:
                           const std::vector<SwapChainImage> &images);
   void cleanupFramebuffers(VkDevice device);
 
+  // beforeUi draws inside the same render pass, under the panels (debug
+  // lines use it).
   void record(VkCommandBuffer cmd, VkRenderPass renderPass, VkExtent2D extent,
-              uint32_t imageIndex, DebugUiContext &ui);
+              uint32_t imageIndex, DebugUiContext &ui,
+              const std::function<void(VkCommandBuffer)> &beforeUi = {});
 
   bool wantsMouse() const;
 

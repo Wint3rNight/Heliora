@@ -2,6 +2,7 @@
 #include "InputManager.h"
 #include "VulkanRenderer.h"
 #include <GLFW/glfw3.h>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 
@@ -60,6 +61,11 @@ int main(int argc, char **argv) {
   if (vulkanRenderer.init(window) == EXIT_FAILURE) {
     return EXIT_FAILURE;
   }
+
+  // HELIORA_PHYSICS_DEBUG=1 starts with the physics wireframes on (same as
+  // F2), for runs nobody is pressing keys in.
+  if (std::getenv("HELIORA_PHYSICS_DEBUG"))
+    vulkanRenderer.togglePhysicsDebug();
 
   camera.MovementSpeed = 15.0f;
   vulkanRenderer.setCameraPresetCallback(
@@ -137,6 +143,13 @@ int main(int argc, char **argv) {
     // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
     if (inputManager.wasKeyJustPressed(GLFW_KEY_F1))
       vulkanRenderer.toggleUiVisibility();
+    // F2 shows the physics shapes as wireframes.
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_F2))
+      vulkanRenderer.togglePhysicsDebug();
+    // F throws a ball where the camera looks (camera mode only, so typing
+    // in a panel doesn't throw).
+    if (cameraMode && inputManager.wasKeyJustPressed(GLFW_KEY_F))
+      vulkanRenderer.throwBall(camera.Position, camera.Front);
 
     // Mouse drives camera only in camera mode
     glm::vec2 mouseDelta = inputManager.getMouseDelta();

@@ -296,6 +296,36 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   }
   ImGui::End();
 
+  if (ui.physics) {
+    PhysicsPanel &physics = *ui.physics;
+    ImGui::SetNextWindowPos(ImVec2(360, 10), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(300, 150), ImGuiCond_Always);
+    ImGui::Begin("Physics", nullptr,
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse);
+    ImGui::Text("Bodies: %u | awake: %u", physics.bodies,
+                physics.awakeBodies);
+    ImGui::Text("Step time: %.3f ms",
+                ui.metrics.getCpuPhaseTimeMs(
+                    PerformanceMetrics::CpuPhase::Physics));
+    if (physics.droppedContactSteps > 0)
+      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+                         "Dropped contacts in %u steps",
+                         physics.droppedContactSteps);
+    ImGui::Checkbox("Pause", &physics.paused);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!physics.paused);
+    if (ImGui::Button("Step"))
+      physics.stepRequested = true;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Reset scene"))
+      physics.resetRequested = true;
+    ImGui::Checkbox("Wireframes (F2)", &physics.showWireframes);
+    ImGui::Text("F throws a ball (%u thrown)", physics.thrownBalls);
+    ImGui::End();
+  }
+
   const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
   const float sceneControlsX = std::max(10.0f, displaySize.x - 350.0f);
   const float sceneControlsH = std::max(360.0f, displaySize.y - 20.0f);
@@ -385,7 +415,8 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
 
 void ImGuiLayer::record(VkCommandBuffer cmd, VkRenderPass renderPass,
                         VkExtent2D extent, uint32_t imageIndex,
-                        DebugUiContext &ui) {
+                        DebugUiContext &ui,
+                        const std::function<void(VkCommandBuffer)> &beforeUi) {
   if (!initialized)
     return;
   if (imageIndex >= framebuffers.size())
@@ -408,6 +439,8 @@ void ImGuiLayer::record(VkCommandBuffer cmd, VkRenderPass renderPass,
   rpbi.clearValueCount = 1;
   rpbi.pClearValues = &clear;
   vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+  if (beforeUi)
+    beforeUi(cmd);
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
   vkCmdEndRenderPass(cmd);
 }

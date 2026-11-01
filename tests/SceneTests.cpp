@@ -134,3 +134,67 @@ TEST(scene_body_cannot_be_animated) {
   CHECK(errorOf("[model]\nshape = box\nbody = dynamic\nspin = 0 45 0\n")
             .find("anim") != std::string::npos);
 }
+
+TEST(scene_parses_mass_friction_and_restitution) {
+  const SceneDescription scene = parseText("[model]\nshape = sphere\nbody = dynamic\n"
+                                           "mass = 5\nfriction = 0.6\nrestitution = 0.4\n");
+  const SceneModelEntry &ball = scene.models.front();
+  CHECK(ball.mass == 5.0f);
+  CHECK(ball.friction == 0.6f);
+  CHECK(ball.restitution == 0.4f);
+}
+
+TEST(scene_physics_keys_need_a_body) {
+  CHECK(errorOf("[model]\nshape = box\nmass = 2\n").find("body") !=
+        std::string::npos);
+}
+
+TEST(scene_rejects_impossible_physics_values) {
+  auto mentions = [](const std::string &error, const char *word) {
+    return error.find(word) != std::string::npos;
+  };
+  const std::string box = "[model]\nshape = box\nbody = dynamic\n";
+  CHECK(mentions(errorOf(box + "mass = 0\n"), "'mass' must"));
+  CHECK(mentions(errorOf(box + "friction = -1\n"), "'friction' must"));
+  CHECK(mentions(errorOf(box + "restitution = 1.5\n"), "'restitution' must"));
+}
+
+TEST(scene_parses_a_grid) {
+  const SceneDescription scene =
+      parseText("[grid]\nshape = box\nbody = dynamic\ncolor = 0.5\n"
+                "count = 3 2 4\nspacing = 1.5 1 2\nposition = 10 0.5 0\n");
+  CHECK(scene.models.empty());
+  CHECK(scene.grids.size() == 1);
+  const SceneGridEntry &grid = scene.grids.front();
+  CHECK(grid.count == glm::ivec3(3, 2, 4));
+  CHECK(grid.spacing == glm::vec3(1.5f, 1.0f, 2.0f));
+  CHECK(grid.model.shape == PrimitiveShape::Box);
+  CHECK(grid.model.body == PhysicsMotion::Dynamic);
+}
+
+TEST(grid_copies_are_centred_on_x_and_z_and_stack_up) {
+  SceneGridEntry grid;
+  grid.model.shape = PrimitiveShape::Box;
+  grid.model.transform.position = glm::vec3(10.0f, 0.5f, 0.0f);
+  grid.count = glm::ivec3(3, 2, 4);
+  grid.spacing = glm::vec3(1.5f, 1.0f, 2.0f);
+
+  const std::vector<SceneModelEntry> copies = expandGrid(grid);
+  CHECK(copies.size() == 24);
+  glm::vec3 lo(1e9f), hi(-1e9f);
+  for (const SceneModelEntry &copy : copies) {
+    lo = glm::min(lo, copy.transform.position);
+    hi = glm::max(hi, copy.transform.position);
+  }
+  // x: 3 copies 1.5 apart around 10; y: from 0.5 up; z: 4 copies 2 apart around 0.
+  CHECK(lo == glm::vec3(8.5f, 0.5f, -3.0f));
+  CHECK(hi == glm::vec3(11.5f, 1.5f, 3.0f));
+}
+
+TEST(scene_grid_rejects_bad_counts_and_needs_a_model) {
+  CHECK(errorOf("[grid]\nshape = box\ncount = 0 1 1\n").find("count") !=
+        std::string::npos);
+  CHECK(errorOf("[grid]\ncount = 2 2 2\n").find("shape") != std::string::npos);
+  CHECK(errorOf("[grid]\nshape = box\nspacing = 1 0 1\n").find("spacing") !=
+        std::string::npos);
+}

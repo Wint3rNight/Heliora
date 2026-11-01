@@ -87,6 +87,15 @@ void checkModel(const SceneModelEntry &model, int headerLine) {
   if (model.body && model.shape == PrimitiveShape::Plane &&
       *model.body != PhysicsMotion::Static)
     fail("a plane's body must be static");
+  if (!model.body && (model.mass || model.friction || model.restitution))
+    fail("'mass', 'friction' and 'restitution' need a 'body'");
+  if (model.mass && *model.mass <= 0.0f)
+    fail("'mass' must be more than 0");
+  if (model.friction && *model.friction < 0.0f)
+    fail("'friction' must be 0 or more");
+  if (model.restitution &&
+      (*model.restitution < 0.0f || *model.restitution > 1.0f))
+    fail("'restitution' must be between 0 and 1");
   if (!model.shape)
     return;
   switch (*model.shape) {
@@ -120,6 +129,50 @@ float parseFloat(const std::string &value, int lineNumber) {
   }
 }
 
+// Keys shared by [model] and [grid]. False if the key isn't one of them.
+bool parseModelKey(SceneModelEntry &model, const std::string &key,
+                   const std::string &value, int lineNumber) {
+  if (key == "path")
+    model.path = value;
+  else if (key == "shape")
+    model.shape = parseShape(value, lineNumber);
+  else if (key == "size")
+    model.size = parseVec3(value, lineNumber);
+  else if (key == "radius")
+    model.radius = parseFloat(value, lineNumber);
+  else if (key == "height")
+    model.height = parseFloat(value, lineNumber);
+  else if (key == "color")
+    model.color = parseVec3(value, lineNumber);
+  else if (key == "body")
+    model.body = parseBody(value, lineNumber);
+  else if (key == "mass")
+    model.mass = parseFloat(value, lineNumber);
+  else if (key == "friction")
+    model.friction = parseFloat(value, lineNumber);
+  else if (key == "restitution")
+    model.restitution = parseFloat(value, lineNumber);
+  else if (key == "position")
+    model.transform.position = parseVec3(value, lineNumber);
+  else if (key == "rotation")
+    model.transform.rotationDeg = parseVec3(value, lineNumber);
+  else if (key == "scale")
+    model.transform.scale = parseFloat(value, lineNumber);
+  else if (key == "spin")
+    model.animation.spinDegPerSec = parseVec3(value, lineNumber);
+  else if (key == "orbit_speed")
+    model.animation.orbitDegPerSec = parseFloat(value, lineNumber);
+  else if (key == "orbit_radius")
+    model.animation.orbitRadius = parseFloat(value, lineNumber);
+  else if (key == "bob_amplitude")
+    model.animation.bobAmplitude = parseFloat(value, lineNumber);
+  else if (key == "bob_frequency")
+    model.animation.bobFrequency = parseFloat(value, lineNumber);
+  else
+    return false;
+  return true;
+}
+
 } // namespace
 
 glm::quat rotationFromDegrees(glm::vec3 degrees) {
@@ -127,6 +180,24 @@ glm::quat rotationFromDegrees(glm::vec3 degrees) {
   return glm::angleAxis(r.y, glm::vec3(0, 1, 0)) *
          glm::angleAxis(r.x, glm::vec3(1, 0, 0)) *
          glm::angleAxis(r.z, glm::vec3(0, 0, 1));
+}
+
+std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid) {
+  std::vector<SceneModelEntry> copies;
+  copies.reserve(size_t(grid.count.x) * grid.count.y * grid.count.z);
+  const glm::vec3 base = grid.model.transform.position;
+  // Centred on x and z: copy i sits (i - (n - 1) / 2) spacings from base.
+  const glm::vec2 half = (glm::vec2(grid.count.x, grid.count.z) - 1.0f) * 0.5f;
+  for (int z = 0; z < grid.count.z; ++z)
+    for (int y = 0; y < grid.count.y; ++y)
+      for (int x = 0; x < grid.count.x; ++x) {
+        SceneModelEntry copy = grid.model;
+        copy.transform.position =
+            base + glm::vec3((x - half.x) * grid.spacing.x, y * grid.spacing.y,
+                             (z - half.y) * grid.spacing.z);
+        copies.push_back(copy);
+      }
+  return copies;
 }
 
 namespace SceneIO {
@@ -144,9 +215,10 @@ SceneDescription parse(std::istream &file, const std::string &path) {
   SceneDescription scene;
   scene.name = std::filesystem::path(path).stem().string();
 
-  enum class Section { Global, Camera, Model, Ring };
+  enum class Section { Global, Camera, Model, Grid, Ring };
   Section section = Section::Global;
   std::vector<int> modelLines; // header line of each [model], for errors
+  std::vector<int> gridLines;  // and of each [grid]
 
   std::string line;
   int lineNumber = 0;
@@ -173,6 +245,10 @@ SceneDescription parse(std::istream &file, const std::string &path) {
         section = Section::Model;
         scene.models.emplace_back();
         modelLines.push_back(lineNumber);
+      } else if (name == "grid") {
+        section = Section::Grid;
+        scene.grids.emplace_back();
+        gridLines.push_back(lineNumber);
       } else if (name == "ring") {
         section = Section::Ring;
         scene.rings.emplace_back();
@@ -221,42 +297,29 @@ SceneDescription parse(std::istream &file, const std::string &path) {
                                  ": unknown camera key '" + key + "'");
       break;
 
-    case Section::Model: {
-      SceneModelEntry &model = scene.models.back();
-      if (key == "path")
-        model.path = value;
-      else if (key == "shape")
-        model.shape = parseShape(value, lineNumber);
-      else if (key == "size")
-        model.size = parseVec3(value, lineNumber);
-      else if (key == "radius")
-        model.radius = parseFloat(value, lineNumber);
-      else if (key == "height")
-        model.height = parseFloat(value, lineNumber);
-      else if (key == "color")
-        model.color = parseVec3(value, lineNumber);
-      else if (key == "body")
-        model.body = parseBody(value, lineNumber);
-      else if (key == "position")
-        model.transform.position = parseVec3(value, lineNumber);
-      else if (key == "rotation")
-        model.transform.rotationDeg = parseVec3(value, lineNumber);
-      else if (key == "scale")
-        model.transform.scale = parseFloat(value, lineNumber);
-      else if (key == "spin")
-        model.animation.spinDegPerSec = parseVec3(value, lineNumber);
-      else if (key == "orbit_speed")
-        model.animation.orbitDegPerSec = parseFloat(value, lineNumber);
-      else if (key == "orbit_radius")
-        model.animation.orbitRadius = parseFloat(value, lineNumber);
-      else if (key == "bob_amplitude")
-        model.animation.bobAmplitude = parseFloat(value, lineNumber);
-      else if (key == "bob_frequency")
-        model.animation.bobFrequency = parseFloat(value, lineNumber);
-      else
+    case Section::Model:
+      if (!parseModelKey(scene.models.back(), key, value, lineNumber))
         throw std::runtime_error("scene parse error, line " +
                                  std::to_string(lineNumber) +
                                  ": unknown model key '" + key + "'");
+      break;
+
+    case Section::Grid: {
+      SceneGridEntry &grid = scene.grids.back();
+      if (key == "count") {
+        const glm::vec3 count = parseVec3(value, lineNumber);
+        grid.count = glm::ivec3(glm::round(count));
+        if (glm::any(glm::notEqual(glm::vec3(grid.count), count)))
+          throw std::runtime_error("scene parse error, line " +
+                                   std::to_string(lineNumber) +
+                                   ": 'count' takes whole numbers");
+      } else if (key == "spacing") {
+        grid.spacing = parseVec3(value, lineNumber);
+      } else if (!parseModelKey(grid.model, key, value, lineNumber)) {
+        throw std::runtime_error("scene parse error, line " +
+                                 std::to_string(lineNumber) +
+                                 ": unknown grid key '" + key + "'");
+      }
       break;
     }
 
@@ -283,6 +346,18 @@ SceneDescription parse(std::istream &file, const std::string &path) {
 
   for (size_t i = 0; i < scene.models.size(); ++i)
     checkModel(scene.models[i], modelLines[i]);
+  for (size_t i = 0; i < scene.grids.size(); ++i) {
+    const SceneGridEntry &grid = scene.grids[i];
+    checkModel(grid.model, gridLines[i]);
+    const std::string where =
+        "scene parse error, [grid] at line " + std::to_string(gridLines[i]);
+    if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))))
+      throw std::runtime_error(where +
+                               ": 'count' must be at least 1 on every axis");
+    if (glm::any(glm::lessThanEqual(grid.spacing, glm::vec3(0.0f))))
+      throw std::runtime_error(where +
+                               ": 'spacing' must be positive on every axis");
+  }
   for (const SceneRingEntry &ring : scene.rings)
     if (ring.path.empty())
       throw std::runtime_error("scene file " + path +

@@ -36,7 +36,8 @@ struct PhysicsBodyDesc {
   float restitution = 0.0f;    // bounciness, 0 to 1
   glm::vec3 position{0.0f};
   glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-  uint64_t userData = 0; // ours, handed back by movedPoses()
+  glm::vec3 linearVelocity{0.0f}; // m/s at the start, for thrown things
+  uint64_t userData = 0;           // ours, handed back by movedPoses()
 };
 
 struct PhysicsPose {
@@ -47,6 +48,12 @@ struct PhysicsPose {
 struct PhysicsMovedPose {
   uint64_t userData;
   PhysicsPose pose;
+};
+
+// One end of a debug line, laid out to go straight into a vertex buffer.
+struct PhysicsDebugVertex {
+  glm::vec3 position;
+  uint32_t color; // RGBA8
 };
 
 // Pose between two physics steps, alpha 0 to 1.
@@ -66,7 +73,11 @@ public:
     // constructor checks it against maxContactConstraints.
     uint32_t tempAllocatorBytes = 32u * 1024u * 1024u;
     // The main thread helps while it waits, so a step uses workerThreads + 1.
-    uint32_t workerThreads = 4;
+    // 6 was the fastest of 2, 4 and 6 on the 6-core laptop: 5,000 awake
+    // boxes step in 3.55 ms, against 4.25 ms with 4 and 6.2 ms with 2
+    // (2026-11-01). Nothing else runs during the step, so the extra threads
+    // cost the renderer nothing yet.
+    uint32_t workerThreads = 6;
   };
 
   PhysicsWorld();
@@ -101,6 +112,12 @@ public:
 
   uint32_t bodyCount() const;
   uint32_t activeBodyCount() const;
+  // Wireframes of every body's collision shape, as Jolt sees it, in pairs of
+  // end points. Coloured by state: awake and asleep differ. Jolt draws the
+  // latest step, so a moving body's wireframe can lead its mesh by up to one
+  // step. Builds the list on every call; only call it when drawing it.
+  const std::vector<PhysicsDebugVertex> &debugLines(glm::vec3 cameraPosition);
+
   // Steps where Jolt dropped contacts because a Config limit was too small.
   // Bodies sink into each other when that happens, so this should stay 0.
   uint32_t droppedContactSteps() const;

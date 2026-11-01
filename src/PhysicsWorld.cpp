@@ -14,6 +14,9 @@
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+#ifdef JPH_DEBUG_RENDERER
+#include <Jolt/Renderer/DebugRendererSimple.h>
+#endif
 
 #include <spdlog/spdlog.h>
 
@@ -21,7 +24,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <tuple>
 #include <stdexcept>
 #include <string>
 
@@ -156,6 +161,23 @@ JPH::ShapeRefC makeShape(const PhysicsBodyDesc &desc) {
   return new JPH::BoxShape(toJolt(h), convexRadius);
 }
 
+#ifdef JPH_DEBUG_RENDERER
+// Collects Jolt's debug drawing as line end points. Triangles arrive as
+// their three edges (DebugRendererSimple does that), text is dropped.
+class LineCollector final : public JPH::DebugRendererSimple {
+public:
+  std::vector<PhysicsDebugVertex> vertices;
+
+  void DrawLine(JPH::RVec3Arg from, JPH::RVec3Arg to,
+                JPH::ColorArg color) override {
+    vertices.push_back({toGlm(from), color.GetUInt32()});
+    vertices.push_back({toGlm(to), color.GetUInt32()});
+  }
+  void DrawText3D(JPH::RVec3Arg, const std::string_view &, JPH::ColorArg,
+                  float) override {}
+};
+#endif
+
 } // namespace
 
 PhysicsPose blendPoses(const PhysicsPose &from, const PhysicsPose &to,
@@ -196,6 +218,19 @@ struct PhysicsWorld::Impl {
   uint32_t stepCount = 0;
   std::vector<PhysicsBodyId> moved;
   std::vector<PhysicsMovedPose> movedPoseBuffer; // what movedPoses() returns
+
+#ifdef JPH_DEBUG_RENDERER
+  // Made on first use. Jolt keeps one debug renderer per process, and it
+  // goes before the system it draws.
+  std::unique_ptr<LineCollector> debugRenderer;
+#endif
+  std::vector<PhysicsDebugVertex> noLines; // when Jolt has no debug renderer
+
+  // Bodies with the same shape and size share one Jolt shape: a grid of
+  // 5,000 boxes holds one box shape, not 5,000. Keyed by shape and up to
+  // three sizes.
+  std::map<std::tuple<PhysicsShape, float, float, float>, JPH::ShapeRefC>
+      shapes;
 
   uint32_t droppedContactSteps = 0;
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
@@ -287,11 +322,25 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
     motion = JPH::EMotionType::Kinematic;
   const bool isStatic = motion == JPH::EMotionType::Static;
 
+  std::tuple<PhysicsShape, float, float, float> key{desc.shape, 0.0f, 0.0f,
+                                                    0.0f};
+  if (desc.shape == PhysicsShape::Box)
+    key = {desc.shape, desc.halfExtents.x, desc.halfExtents.y,
+           desc.halfExtents.z};
+  else if (desc.shape == PhysicsShape::Sphere)
+    key = {desc.shape, desc.radius, 0.0f, 0.0f};
+  else
+    key = {desc.shape, desc.radius, desc.halfHeight, 0.0f};
+  JPH::ShapeRefC &shape = impl->shapes[key];
+  if (shape == nullptr)
+    shape = makeShape(desc);
+
   JPH::BodyCreationSettings settings(
-      makeShape(desc), toJoltPosition(desc.position), toJolt(desc.rotation),
+      shape, toJoltPosition(desc.position), toJolt(desc.rotation),
       motion, isStatic ? Layers::NonMoving : Layers::Moving);
   settings.mFriction = desc.friction;
   settings.mRestitution = desc.restitution;
+  settings.mLinearVelocity = toJolt(desc.linearVelocity);
   if (motion == JPH::EMotionType::Dynamic && desc.mass > 0.0f) {
     settings.mOverrideMassProperties =
         JPH::EOverrideMassProperties::CalculateInertia;
@@ -398,4 +447,24 @@ uint32_t PhysicsWorld::activeBodyCount() const {
 
 uint32_t PhysicsWorld::droppedContactSteps() const {
   return impl->droppedContactSteps;
+}
+
+const std::vector<PhysicsDebugVertex> &
+PhysicsWorld::debugLines(glm::vec3 cameraPosition) {
+#ifdef JPH_DEBUG_RENDERER
+  if (!impl->debugRenderer)
+    impl->debugRenderer = std::make_unique<LineCollector>();
+  LineCollector &lines = *impl->debugRenderer;
+  lines.vertices.clear();
+  // Jolt picks a shape's level of detail by distance to the camera.
+  lines.SetCameraPos(toJoltPosition(cameraPosition));
+  JPH::BodyManager::DrawSettings settings;
+  settings.mDrawShape = true;
+  settings.mDrawShapeColor = JPH::BodyManager::EShapeColor::SleepColor;
+  impl->system.DrawBodies(settings, &lines);
+  return lines.vertices;
+#else
+  (void)cameraPosition;
+  return impl->noLines;
+#endif
 }

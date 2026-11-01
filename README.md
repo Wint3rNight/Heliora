@@ -87,7 +87,8 @@ Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit d
 - Forward transparent pass for glTF `alphaMode=BLEND` materials, sorted back-to-front over the deferred result.
 - GPU-driven rendering path: compute frustum + HZB occlusion culling feeding indirect draws.
 - Bindless material textures via `VK_EXT_descriptor_indexing`.
-- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); a shape with `body = static | dynamic | kinematic` becomes a Jolt rigid body, stepped at a fixed 60 Hz and interpolated for rendering.
+- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); a shape with `body = static | dynamic | kinematic` becomes a Jolt rigid body (optional `mass`, `friction`, `restitution`), stepped at a fixed 60 Hz and interpolated for rendering. A `[grid]` block places many copies of one model.
+- Physics debugging: a Physics panel (pause, single step, reset, body and awake counts, step time), wireframes of every collision shape (`F2`), and throwing balls from the camera (`F`). Stress scenes with 1,000 and 5,000 boxes (`90_stress_1k.scene`, `91_stress_5k.scene`).
 - Exponential height fog.
 - ImGui runtime overlay with:
   - FPS and frame-time graph,
@@ -218,6 +219,8 @@ Two things worth noting. The frame is dominated by the screen-space lighting pas
 | Mouse | Look around in camera mode |
 | `Tab` | Toggle between camera mode and UI mode |
 | `F1` | Toggle HUD-free screenshot mode (hides all panels) |
+| `F2` | Show physics collision shapes as wireframes |
+| `F` | Throw a ball from the camera (camera mode) |
 | `Esc` | Close the application |
 
 In UI mode, the ImGui panels expose camera settings, lighting, fog, LOD distances, point shadow range, G-buffer debug views, and live performance metrics.

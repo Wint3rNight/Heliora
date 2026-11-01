@@ -244,6 +244,39 @@ TEST(moved_poses_carry_user_data_and_blend) {
   }
 }
 
+TEST(debug_lines_outline_a_body) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.motion = PhysicsMotion::Static;
+  box.halfExtents = glm::vec3(1.0f, 2.0f, 3.0f);
+  box.position = glm::vec3(10.0f, 0.0f, 0.0f);
+  world.addBody(box);
+
+  const std::vector<PhysicsDebugVertex> &lines =
+      world.debugLines(glm::vec3(0.0f, 5.0f, 20.0f));
+  CHECK(!lines.empty());
+  CHECK(lines.size() % 2 == 0); // pairs of end points
+  int outside = 0;
+  for (const PhysicsDebugVertex &v : lines)
+    if (glm::any(glm::greaterThan(glm::abs(v.position - box.position),
+                                  box.halfExtents + 0.01f)))
+      ++outside;
+  CHECK(outside == 0);
+}
+
+TEST(body_starts_with_its_velocity) {
+  PhysicsWorld world;
+  PhysicsBodyDesc ball;
+  ball.shape = PhysicsShape::Sphere;
+  ball.radius = 0.2f;
+  ball.linearVelocity = glm::vec3(20.0f, 0.0f, 0.0f);
+  const PhysicsBodyId id = world.addBody(ball);
+  world.step(kStep);
+
+  // 20 m/s for one step; gravity only pulls it down, so x is all velocity.
+  CHECK_NEAR(world.pose(id).position.x, 20.0 * kStep, 1e-3);
+}
+
 TEST(too_small_limits_are_reported) {
   // Room for only 4 contacts: the heap needs far more, and Jolt silently
   // drops the rest unless step() reports it.

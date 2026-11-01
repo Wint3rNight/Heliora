@@ -52,6 +52,10 @@ struct SceneModelEntry {
   // Set for shapes that take part in physics. The collider is the shape
   // itself; a plane becomes a static slab under its surface.
   std::optional<PhysicsMotion> body;
+  // Only with a body. Unset keeps PhysicsBodyDesc's defaults.
+  std::optional<float> mass;        // kg
+  std::optional<float> friction;    // 0 and up
+  std::optional<float> restitution; // bounciness, 0 to 1
   NodeTransform transform;
   NodeAnimation animation;
 };
@@ -66,6 +70,18 @@ struct SceneRingEntry {
   float scale = 1.0f;
 };
 
+// Many copies of one model, laid out in a grid: centred on the model's
+// position in x and z, stacking upwards from it in y. Each copy keeps the
+// model's rotation.
+struct SceneGridEntry {
+  SceneModelEntry model;
+  glm::ivec3 count = glm::ivec3(1);
+  glm::vec3 spacing = glm::vec3(1.0f); // centre to centre
+};
+
+// One SceneModelEntry per copy of the grid.
+std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid);
+
 struct SceneCameraPose {
   glm::vec3 position = glm::vec3(0.0f, 2.0f, 0.0f);
   float yaw = -90.0f;
@@ -79,13 +95,14 @@ struct SceneDescription {
   std::string environmentHdr; // HDRI path; empty = keep the current sky/IBL
   SceneCameraPose camera;
   std::vector<SceneModelEntry> models;
+  std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;
 };
 
 namespace SceneIO {
 
 // Parses a .scene file (INI-style: `key = value` lines under [camera],
-// [model], and [ring] sections; `#` starts a comment). Throws
+// [model], [grid] and [ring] sections; `#` starts a comment). Throws
 // std::runtime_error with a line number on malformed input.
 SceneDescription loadFromFile(const std::string &path);
 

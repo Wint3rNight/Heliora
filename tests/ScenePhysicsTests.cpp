@@ -100,3 +100,20 @@ TEST(scene_box_falls_onto_the_plane) {
   CHECK(onlyTheBoxMoved);
   CHECK_NEAR(node.getGlobalTransform()[3].y, 0.5, 0.025);
 }
+
+TEST(body_desc_takes_mass_friction_and_restitution) {
+  SceneModelEntry ball = entry(PrimitiveShape::Sphere, PhysicsMotion::Dynamic);
+  ball.mass = 5.0f;
+  ball.friction = 0.6f;
+  ball.restitution = 0.4f;
+  const PhysicsBodyDesc desc = bodyDescFor(ball);
+  CHECK(desc.mass == 5.0f);
+  CHECK(desc.friction == 0.6f);
+  CHECK(desc.restitution == 0.4f);
+
+  // Unset keys keep PhysicsBodyDesc's defaults.
+  const PhysicsBodyDesc plain =
+      bodyDescFor(entry(PrimitiveShape::Box, PhysicsMotion::Dynamic));
+  CHECK(plain.mass == PhysicsBodyDesc{}.mass);
+  CHECK(plain.friction == PhysicsBodyDesc{}.friction);
+}

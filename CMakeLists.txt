@@ -75,9 +75,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
   set(GENERATE_DEBUG_SYMBOLS OFF)
 endif()
-# No link-time optimization until it's measured. Its link step runs a lot of
-# compiler processes at once, and this machine's RAM doesn't like that.
-set(INTERPROCEDURAL_OPTIMIZATION OFF)
+# Link-time optimization for Jolt, off by default: its link step runs several
+# compiler processes at once, which this machine's RAM doesn't like. With
+# Makefiles and --parallel 2 gcc keeps it to two. Jolt's objects then need LTO
+# on our side as well to link.
+option(HELIORA_JOLT_LTO "Build Jolt (and the game) with link-time optimization" OFF)
+set(INTERPROCEDURAL_OPTIMIZATION ${HELIORA_JOLT_LTO})
+if(HELIORA_JOLT_LTO)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 # Jolt adds -mavx2 -mfma (PUBLIC) to everything that links it, so the game
 # needs a CPU with AVX2 and FMA.
 FetchContent_Declare(
@@ -111,6 +117,10 @@ set(HELIORA_CORE_SOURCES
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
+# PhysicsWorld.cpp subclasses Jolt's debug renderer, and Jolt is built with
+# -fno-rtti, so it has no typeinfo for that base class to link against.
+set_source_files_properties(src/PhysicsWorld.cpp PROPERTIES
+        COMPILE_OPTIONS -fno-rtti)
 target_include_directories(heliora_core PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )

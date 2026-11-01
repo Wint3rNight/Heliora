@@ -1,0 +1,26 @@
+# Physics stress test: 1,000 boxes in tilted columns that collapse into a heap.
+# For measuring (next.md step 1.1, step 10), not for looking at.
+name = Stress 1k boxes
+environment = Resources/HDRIs/kloppenheim_02_1k.hdr
+
+[camera]
+position = 0 18 30
+yaw = -90
+pitch = -30
+speed = 15
+
+[model]
+shape = plane
+size = 120 1 120
+color = 0.45
+body = static
+
+[grid]
+shape = box
+size = 1 1 1
+count = 10 10 10
+spacing = 1.2 1.05 1.2
+position = 0 0.6 0
+rotation = 8 15 6
+color = 0.8 0.55 0.3
+body = dynamic

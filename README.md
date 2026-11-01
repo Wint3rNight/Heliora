@@ -4,7 +4,7 @@ A modular Vulkan renderer focused on the rendering architecture itself: deferred
 
 ## What It Renders
 
-Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is a physics sandbox (Jolt rigid bodies) built from shapes generated in code (boxes, spheres, capsules, a ground plane), with no model files; Crytek Sponza with a 64-helmet instanced ring is next in the list, and a third scene showcases animated objects (a turntable FlightHelmet and a patrolling DamagedHelmet). A fly camera and the ImGui overlay handle runtime tuning.
+Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is a physics sandbox (Jolt rigid bodies) built from shapes generated in code (boxes, spheres, capsules, a ground plane), with no model files. Two stress scenes drop 1,000 and 5,000 boxes to measure physics and draw cost. A fly camera and the ImGui overlay handle runtime tuning.
 
 At a high level, one frame looks like this:
 
@@ -175,15 +175,15 @@ This project is not only about getting pixels on screen. A lot of the work is ab
 - GPU-side IBL precomputation: irradiance and prefilter maps are generated with compute shaders instead of slow startup CPU loops.
 - Frustum culling: models and submeshes are skipped before draw submission when their bounding sphere is outside the camera frustum.
 - Dynamic LODs: each mesh gets simplified index buffers at load time using meshoptimizer, and LOD is selected by camera distance.
-- Instancing: repeated helmet meshes use an instance buffer and `VK_VERTEX_INPUT_RATE_INSTANCE`.
+- Instancing: repeated meshes in a scene's `[ring]` use an instance buffer and `VK_VERTEX_INPUT_RATE_INSTANCE`.
 - Bindless materials: the G-buffer path binds the scene set and the bindless texture set once per pipeline, with no per-material rebinds.
-- Shadow passes render LOD0, since reduced LODs can drop Sponza's thin shadow casters.
+- Shadow passes render LOD0, since reduced LODs can drop thin shadow casters.
 - Timestamp profiling: GPU timestamps measure shadow, point shadow, G-buffer, and deferred/composition costs separately.
 - RenderDoc labels: debug labels mark major passes and cascade/face work so captures are easier to read.
 
 ## Benchmark Snapshot
 
-The renderer logs per-pass GPU timings live and prints a benchmark report on shutdown. This snapshot is the current Sponza scene at 1920x1080 on an RTX 3050 mobile (4 GiB), **Release build**, steady state over 2,500+ frames.
+The renderer logs per-pass GPU timings live and prints a benchmark report on shutdown. This snapshot was taken on the Crytek Sponza scene, the renderer's test scene until it was removed on 2026-11-01 to make room for the game's own assets. Measured at 1920x1080 on an RTX 3050 mobile (4 GiB), **Release build**, steady state over 2,500+ frames.
 
 | Metric | Value |
 | --- | ---: |
@@ -207,7 +207,7 @@ GPU pass timing (same run):
 | SSR / TAA / tonemap composite | 0.54 ms |
 | ImGui | 0.06 ms |
 
-The shadow number above is too low: until a fix on 2026-11-01, the three near cascades never held any geometry (their depth range sat behind the light), so the shadow pass mostly drew nothing and every shadow came from the coarsest cascade. With the fix the cascaded shadow pass takes about 2.2 ms in Sponza. The table gets re-measured with the next benchmark run.
+The shadow number above is too low: until a fix on 2026-11-01, the three near cascades never held any geometry (their depth range sat behind the light), so the shadow pass mostly drew nothing and every shadow came from the coarsest cascade. With the fix the cascaded shadow pass took about 2.2 ms in Sponza. A new snapshot comes once the game has real models to measure.
 
 Two things worth noting. The frame is dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — frustum culling and LOD selection keep the G-buffer pass cheap even with the scene fully in view. And a same-day Debug-with-validation run measured within ~1 ms of this Release run (well inside thermal run-to-run variance on a laptop GPU): the renderer is thoroughly GPU-bound, so CPU-side build flags barely move the frame time.
 
@@ -330,11 +330,11 @@ Still on the roadmap:
 
 This repository includes third-party assets and libraries for testing the renderer:
 
-- Khronos glTF sample-style assets such as Sponza, DamagedHelmet, and FlightHelmet. See the license files inside `Resources/Models/`.
-- HDRI and PBR texture resources under `Resources/`. Check the included source/license metadata where present.
+- The Kloppenheim 02 HDRI from Poly Haven (`Resources/HDRIs/`).
+- The Inter font (SIL Open Font License, `Resources/Fonts/Inter-LICENSE.txt`).
 - Dear ImGui, meshoptimizer, Jolt Physics, stb, Vulkan Memory Allocator, GLFW, GLM, Assimp, and spdlog are used by the renderer or build.
 
-The assets are here to make the renderer exercise real material, lighting, and scale problems. The renderer code is the main project.
+Earlier versions shipped Crytek Sponza, DamagedHelmet and FlightHelmet as test scenes; they are still in the git history.
 
 ## Why This Project Matters To Me
 

@@ -101,7 +101,7 @@ TEST(scene_shipped_files_still_parse) {
       CHECK(false);
     }
   }
-  CHECK(files >= 3); // the two Sponza scenes and the sandbox
+  CHECK(files >= 3); // the sandbox and the two stress scenes
 }
 
 TEST(scene_parses_a_body) {

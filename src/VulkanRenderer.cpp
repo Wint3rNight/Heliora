@@ -2838,85 +2838,6 @@ void VulkanRenderer::setCameraPresetCallback(CameraPresetCallback callback) {
   cameraPresetCallback = std::move(callback);
 }
 
-void VulkanRenderer::applySponzaReferencePreset() {
-  // The saved raw-unit pose (-274, 46, -128) predates baked node transforms;
-  // the world is metric now (Sponza root scale 0.008), so the same framing
-  // is the old position times 0.008.
-  const glm::vec3 cameraPosition(-2.19f, 0.37f, -1.02f);
-  constexpr float cameraYaw = 25.0f;
-  constexpr float cameraPitch = 3.0f;
-  constexpr float cameraSpeed = 5.0f;
-
-  imguiCameraPos = cameraPosition;
-  imguiCameraSpeed = cameraSpeed;
-  if (cameraPresetCallback)
-    cameraPresetCallback(cameraPosition, cameraYaw, cameraPitch, cameraSpeed);
-
-  imguiCameraFov = 65.0f;
-  imguiDrawDistance = 200.0f;
-  imguiLodNear = 15.0f;
-  imguiLodFar = 45.0f;
-  imguiPointShadowFar = 40.0f;
-  imguiCsmFar = 80.0f;
-
-  imguiDebugMode = 0;
-  imguiUseGeomNormalOnly = false;
-  imguiShadowFrontFaceCull = false;
-  imguiCullShadowCasters = false;
-
-  imguiSpecAAVariance = 1.60f;
-  imguiSpecAAThreshold = 1.0f;
-  imguiIblRoughnessFloor = 0.65f;
-  imguiMinSurfaceRoughness = 0.60f;
-  imguiSkyOcclusionFloor = 0.55f;
-  imguiIblIntensity = 1.0f;
-  imguiExposureEV = 0.0f;
-  autoExpEnabled = true;
-  autoExposurePass.resetAdaptation();
-
-  imguiSsgiIntensity = 0.6f;
-  imguiSsgiSamples = 8;
-  imguiEnableSunDirect = true;
-  imguiEnablePointLights = true;
-  imguiEnableSpotLights = true;
-  imguiEnableIblAmbient = true;
-  imguiEnableSsgiBounce = true;
-  imguiEnableBloom = true;
-  imguiBloomThreshold = 1.2f;
-  imguiBloomIntensity = 0.08f;
-  imguiBloomRadius = 1.1f;
-  imguiSsrEnabled = false;
-  imguiTaaEnabled = true;
-  imguiResponsiveTaa = true;
-  imguiSharpness = 0.08f;
-  imguiEdgeAA = 0.40f;
-  imguiAlphaDither = 0.55f;
-  imguiShadowSoftness = 1.35f;
-  imguiContactGrounding = 0.55f;
-
-  imguiDayNightEnable = false;
-  imguiDayNightHour = 12.0f;
-  imguiNormalStrength = 0.55f;
-  imguiUseGeomNormalOnly = false;
-  sceneUbo.directionalLight.direction =
-      glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
-  sceneUbo.directionalLight.colorIntensity =
-      glm::vec4(1.0f, 0.93f, 0.78f, 2.35f);
-  sceneUbo.debugMode = imguiDebugMode;
-  sceneUbo.shadowParams.x = imguiPointShadowFar;
-  sceneUbo.fogParams.x = imguiFogDensity;
-  sceneUbo.fogParams.z = imguiFogClamp;
-
-  rebuildProjection();
-  shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
-                                      imguiDrawDistance);
-  shadowPass.updatePointShadowMatrices(sceneUbo);
-  taaFrameCounter = 0;
-  taaHistoryValid = false;
-  taaHasLastCamera = false;
-  cameraMovedThisFrame = true;
-}
-
 void VulkanRenderer::rebuildProjection() {
   float aspect = static_cast<float>(swapchain.getExtent().width) /
                  static_cast<float>(swapchain.getExtent().height);
@@ -3019,7 +2940,6 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       },
       [this] { shadowPass.updatePointShadowMatrices(sceneUbo); },
       [this] { taaHistoryValid = false; },
-      [this] { applySponzaReferencePreset(); },
       [this](bool preferMailbox) {
         swapchain.setPreferMailbox(preferMailbox);
         framebufferResized = true;

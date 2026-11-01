@@ -352,7 +352,6 @@ private:
   MaterialProbeResult materialProbeResult = {};
   glm::uvec2 materialProbePixel = glm::uvec2(0);
 
-  void applySponzaReferencePreset();
   void updateMaterialProbePixel();
 
   // --- TAA state ---

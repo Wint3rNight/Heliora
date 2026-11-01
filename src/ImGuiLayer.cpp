@@ -3,13 +3,152 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
 
 namespace {
+constexpr const char *kFontPath = "Resources/Fonts/Inter-Regular.ttf";
+constexpr float kFontSize = 14.0f;
+
+// 0xRRGGBB to an ImGui colour.
+ImVec4 hex(uint32_t rgb, float alpha = 1.0f) {
+  return ImVec4(static_cast<float>((rgb >> 16) & 0xff) / 255.0f,
+                static_cast<float>((rgb >> 8) & 0xff) / 255.0f,
+                static_cast<float>(rgb & 0xff) / 255.0f, alpha);
+}
+
+// The shapes come from passivestar's Godot Minimal theme: calm panels, 5 px
+// corners, Inter. The colours are gothic: near-black with a purple tint,
+// red on anything you can change, purple on where you are.
+void applyTheme() {
+  ImGuiStyle &style = ImGui::GetStyle();
+  ImGui::StyleColorsDark(&style); // fills any slot not set below
+
+  style.WindowPadding = ImVec2(12.0f, 10.0f);
+  style.FramePadding = ImVec2(8.0f, 4.0f);
+  style.ItemSpacing = ImVec2(8.0f, 5.0f);
+  style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+  style.IndentSpacing = 14.0f;
+  style.ScrollbarSize = 10.0f;
+  style.GrabMinSize = 10.0f;
+
+  style.WindowBorderSize = 1.0f;
+  style.ChildBorderSize = 1.0f;
+  style.PopupBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.TabBorderSize = 0.0f;
+  style.TabBarBorderSize = 1.0f;
+  style.TabBarOverlineSize = 1.0f;
+  style.SeparatorTextBorderSize = 1.0f;
+  style.SeparatorTextPadding = ImVec2(0.0f, 4.0f);
+
+  style.WindowRounding = 5.0f;
+  style.ChildRounding = 5.0f;
+  style.FrameRounding = 5.0f;
+  style.PopupRounding = 5.0f;
+  style.ScrollbarRounding = 5.0f;
+  style.TabRounding = 5.0f;
+  style.GrabRounding = 3.0f; // sits inside a 5 px frame, so a bit less
+
+  style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+  style.WindowMenuButtonPosition = ImGuiDir_None;
+
+  const uint32_t base0 = 0x131016; // panels
+  const uint32_t base1 = 0x1a161e; // focused title bars, popups, tabs
+  const uint32_t base2 = 0x221d27; // input boxes, slider tracks
+  const uint32_t base3 = 0x2b2531; // buttons, hovered inputs
+  const uint32_t base4 = 0x352e3c; // pressed inputs, scrollbar
+  const uint32_t border = 0x2a2430;
+  const uint32_t text = 0xe6dee8;
+  const uint32_t textDim = 0x857a8e;
+  const uint32_t red = 0xb0243a;
+  const uint32_t redBright = 0xc93a50;
+  const uint32_t purple = 0x7b4b94;
+  const uint32_t purpleBright = 0x9a63b8;
+
+  ImVec4 *c = style.Colors;
+  c[ImGuiCol_Text] = hex(text);
+  c[ImGuiCol_TextDisabled] = hex(textDim);
+  c[ImGuiCol_WindowBg] = hex(base0, 0.94f);
+  c[ImGuiCol_ChildBg] = hex(0, 0.0f);
+  c[ImGuiCol_PopupBg] = hex(base1, 0.98f);
+  c[ImGuiCol_Border] = hex(border);
+  c[ImGuiCol_BorderShadow] = hex(0, 0.0f);
+  c[ImGuiCol_FrameBg] = hex(base2);
+  c[ImGuiCol_FrameBgHovered] = hex(base3);
+  c[ImGuiCol_FrameBgActive] = hex(base4);
+  c[ImGuiCol_TitleBg] = hex(base0);
+  c[ImGuiCol_TitleBgActive] = hex(base1);
+  c[ImGuiCol_TitleBgCollapsed] = hex(base0);
+  c[ImGuiCol_MenuBarBg] = hex(base1);
+  c[ImGuiCol_ScrollbarBg] = hex(0, 0.0f);
+  c[ImGuiCol_ScrollbarGrab] = hex(base4);
+  c[ImGuiCol_ScrollbarGrabHovered] = hex(0x463d4f);
+  c[ImGuiCol_ScrollbarGrabActive] = hex(purple);
+  c[ImGuiCol_CheckMark] = hex(redBright);
+  c[ImGuiCol_SliderGrab] = hex(red);
+  c[ImGuiCol_SliderGrabActive] = hex(redBright);
+  c[ImGuiCol_Button] = hex(base3);
+  c[ImGuiCol_ButtonHovered] = hex(base4);
+  c[ImGuiCol_ButtonActive] = hex(red);
+  c[ImGuiCol_Header] = hex(purple, 0.30f);
+  c[ImGuiCol_HeaderHovered] = hex(purple, 0.45f);
+  c[ImGuiCol_HeaderActive] = hex(purple, 0.60f);
+  c[ImGuiCol_Separator] = hex(border);
+  c[ImGuiCol_SeparatorHovered] = hex(purple);
+  c[ImGuiCol_SeparatorActive] = hex(purpleBright);
+  c[ImGuiCol_ResizeGrip] = hex(0, 0.0f);
+  c[ImGuiCol_ResizeGripHovered] = hex(purple, 0.60f);
+  c[ImGuiCol_ResizeGripActive] = hex(purpleBright);
+  c[ImGuiCol_InputTextCursor] = hex(text);
+  c[ImGuiCol_Tab] = hex(base1);
+  c[ImGuiCol_TabHovered] = hex(purple, 0.45f);
+  c[ImGuiCol_TabSelected] = hex(0x2e2238);
+  c[ImGuiCol_TabSelectedOverline] = hex(purpleBright);
+  c[ImGuiCol_TabDimmed] = hex(base0);
+  c[ImGuiCol_TabDimmedSelected] = hex(base2);
+  c[ImGuiCol_TabDimmedSelectedOverline] = hex(purple, 0.50f);
+  c[ImGuiCol_DockingPreview] = hex(purple, 0.50f);
+  c[ImGuiCol_DockingEmptyBg] = hex(base0);
+  c[ImGuiCol_PlotLines] = hex(purpleBright);
+  c[ImGuiCol_PlotLinesHovered] = hex(redBright);
+  c[ImGuiCol_PlotHistogram] = hex(purple);
+  c[ImGuiCol_PlotHistogramHovered] = hex(redBright);
+  c[ImGuiCol_TableHeaderBg] = hex(base1);
+  c[ImGuiCol_TableBorderStrong] = hex(border);
+  c[ImGuiCol_TableBorderLight] = hex(base2);
+  c[ImGuiCol_TableRowBg] = hex(0, 0.0f);
+  c[ImGuiCol_TableRowBgAlt] = hex(0xffffff, 0.03f);
+  c[ImGuiCol_TextLink] = hex(purpleBright);
+  c[ImGuiCol_TextSelectedBg] = hex(purple, 0.35f);
+  c[ImGuiCol_TreeLines] = hex(border);
+  c[ImGuiCol_DragDropTarget] = hex(redBright);
+  c[ImGuiCol_DragDropTargetBg] = hex(red, 0.15f);
+  c[ImGuiCol_UnsavedMarker] = hex(redBright);
+  c[ImGuiCol_NavCursor] = hex(purpleBright);
+  c[ImGuiCol_NavWindowingHighlight] = hex(purpleBright, 0.70f);
+  c[ImGuiCol_NavWindowingDimBg] = hex(0, 0.50f);
+  c[ImGuiCol_ModalWindowDimBg] = hex(0, 0.55f);
+
+  // ImGui asserts on a missing font file, so check first. The game runs from
+  // build/, hence the second path.
+  for (const std::string path : {std::string(kFontPath),
+                                 "../" + std::string(kFontPath)}) {
+    if (std::filesystem::exists(path)) {
+      ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), kFontSize);
+      style.FontSizeBase = kFontSize;
+      return;
+    }
+  }
+  spdlog::warn("[ui] {} not found, using ImGui's built-in font", kFontPath);
+}
+
 const char *presentModeName(VkPresentModeKHR mode) {
   switch (mode) {
   case VK_PRESENT_MODE_IMMEDIATE_KHR:
@@ -31,7 +170,7 @@ void ImGuiLayer::init(GLFWwindow *window, VulkanDevice &device,
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  ImGui::StyleColorsDark();
+  applyTheme();
 
   ImGui_ImplGlfw_InitForVulkan(window, true);
 
@@ -105,16 +244,34 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
 
   if (!visible)
     return; // F1 screenshot mode: no windows -> empty draw list this frame
-  ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_Always);
-  ImGui::Begin("Performance", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
+  constexpr ImGuiWindowFlags kPanelFlags = ImGuiWindowFlags_NoResize |
+                                           ImGuiWindowFlags_NoMove |
+                                           ImGuiWindowFlags_NoCollapse;
+  constexpr float kPanelWidth = 380.0f;
+  constexpr float kLabelWidth = 130.0f; // room for slider labels
+
+  // The left panels stack under each other, each as tall as its contents.
+  float columnY = 10.0f;
+  auto beginLeftPanel = [&](const char *name) {
+    ImGui::SetNextWindowPos(ImVec2(10.0f, columnY), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(kPanelWidth, 0.0f),
+                                        ImVec2(kPanelWidth, FLT_MAX));
+    ImGui::Begin(name, nullptr,
+                 kPanelFlags | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushItemWidth(-kLabelWidth);
+  };
+  auto endLeftPanel = [&] {
+    ImGui::PopItemWidth();
+    columnY += ImGui::GetWindowHeight() + 8.0f;
+    ImGui::End();
+  };
+
+  beginLeftPanel("Performance");
   ImGui::Text("CPU submit FPS: %.1f | CPU: %.2f ms | Avg: %.2f ms",
               ui.metrics.getAverageFps(), ui.metrics.getLastFrameTimeMs(),
               ui.metrics.getAverageFrameTimeMs());
   ImGui::PlotLines("##ft", frameTimeGraphData, 128, frameTimeGraphOffset,
-                   "Frame time (ms)", 0.0f, 50.0f, ImVec2(322, 60));
+                   "Frame time (ms)", 0.0f, 50.0f, ImVec2(-FLT_MIN, 60));
   ImGui::Text("Shadow: %.2f | Pt: %.2f ms",
               ui.metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Shadow),
               ui.metrics.getPassGpuTimeMs(
@@ -160,13 +317,9 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::Text("VRAM: %llu MiB / %llu MiB",
               static_cast<unsigned long long>(vram.usedBytes >> 20),
               static_cast<unsigned long long>(vram.budgetBytes >> 20));
-  ImGui::End();
+  endLeftPanel();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 320), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 175), ImGuiCond_Always);
-  ImGui::Begin("Camera", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
+  beginLeftPanel("Camera");
   if (ui.sceneNames && !ui.sceneNames->empty()) {
     const std::vector<std::string> &names = *ui.sceneNames;
     int count = static_cast<int>(names.size());
@@ -195,15 +348,9 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   if (ImGui::SliderFloat("Draw Dist", &ui.drawDistance, 100.0f, 20000.0f) &&
       ui.onProjectionChanged)
     ui.onProjectionChanged();
-  if (ImGui::Button("Sponza Reference Look") && ui.onSponzaReferencePreset)
-    ui.onSponzaReferencePreset();
-  ImGui::End();
+  endLeftPanel();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 475), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 230), ImGuiCond_Always);
-  ImGui::Begin("Lighting", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
+  beginLeftPanel("Lighting");
   if (ImGui::CollapsingHeader("Directional Light",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
     glm::vec3 dir = glm::vec3(ui.sceneUbo.directionalLight.direction);
@@ -257,13 +404,9 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
         ui.onPointShadowChanged();
     }
   }
-  ImGui::End();
+  endLeftPanel();
 
-  ImGui::SetNextWindowPos(ImVec2(10, 715), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, 205), ImGuiCond_Always);
-  ImGui::Begin("Debug Views", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
+  beginLeftPanel("Debug Views");
   const char *debugModes[] = {"None",          "Albedo",      "Normals",
                               "Metallic",      "Roughness",   "Depth",
                               "Shadow vis",    "SSAO factor", "Direct only",
@@ -294,15 +437,16 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   } else {
     ImGui::TextDisabled("Material Probe: no surface");
   }
-  ImGui::End();
+  endLeftPanel();
 
   if (ui.physics) {
     PhysicsPanel &physics = *ui.physics;
-    ImGui::SetNextWindowPos(ImVec2(360, 10), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(300, 150), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(20.0f + kPanelWidth, 10.0f),
+                            ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300.0f, 0.0f),
+                                        ImVec2(300.0f, FLT_MAX));
     ImGui::Begin("Physics", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoCollapse);
+                 kPanelFlags | ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Text("Bodies: %u | awake: %u", physics.bodies,
                 physics.awakeBodies);
     ImGui::Text("Step time: %.3f ms",
@@ -327,13 +471,12 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   }
 
   const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-  const float sceneControlsX = std::max(10.0f, displaySize.x - 350.0f);
+  const float sceneControlsX = std::max(10.0f, displaySize.x - 370.0f);
   const float sceneControlsH = std::max(360.0f, displaySize.y - 20.0f);
   ImGui::SetNextWindowPos(ImVec2(sceneControlsX, 10), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(340, sceneControlsH), ImGuiCond_Always);
-  ImGui::Begin("Scene Controls", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
+  ImGui::SetNextWindowSize(ImVec2(360, sceneControlsH), ImGuiCond_Always);
+  ImGui::Begin("Scene Controls", nullptr, kPanelFlags);
+  ImGui::PushItemWidth(-150.0f); // its labels are longer
   if (ImGui::SliderFloat("AA variance", &ui.specAAVariance, 0.0f, 2.0f,
                          "%.3f"))
     ui.sceneUbo.qualityToggles.z = ui.specAAVariance;
@@ -410,6 +553,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::SliderFloat("Sim hour", &ui.dayNightHour, 0.0f, 24.0f, "%.2f h");
   ImGui::SliderFloat("Speed (sim-h / real-s)", &ui.dayNightSpeed, 0.1f,
                      600.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+  ImGui::PopItemWidth();
   ImGui::End();
 }
 

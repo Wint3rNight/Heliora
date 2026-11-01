@@ -100,7 +100,6 @@ struct DebugUiContext {
   std::function<void()> onDirectionalLightChanged;
   std::function<void()> onPointShadowChanged;
   std::function<void()> onTaaHistoryInvalidated;
-  std::function<void()> onSponzaReferencePreset;
   std::function<void(bool)> onPresentModeChanged;
   std::function<void(int)> onSceneSelected;
 

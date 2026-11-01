@@ -21,7 +21,7 @@ const TestCamera kCameras[] = {
     // The user's screenshot on 2026-11-01: the floor in front went dark.
     {"high, narrow FOV, far draw distance", {0.2f, 16.7f, 21.3f}, {0, 0, 0}, 45.4f, 20000.0f},
     {"high, wide FOV", {0.2f, 16.7f, 21.3f}, {0, 0, 0}, 65.0f, 200.0f},
-    {"standing in Sponza", {0.0f, 2.0f, 0.0f}, {0, 2, -10}, 65.0f, 200.0f},
+    {"standing at head height", {0.0f, 2.0f, 0.0f}, {0, 2, -10}, 65.0f, 200.0f},
     {"far away, zoomed in", {0.0f, 40.0f, 40.0f}, {0, 0, 0}, 30.0f, 500.0f},
 };
 

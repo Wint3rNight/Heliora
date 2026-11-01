@@ -10,7 +10,7 @@ GLFWwindow *window;
 VulkanRenderer vulkanRenderer;
 InputManager inputManager;
 
-// Camera settings — positioned inside Sponza hall, looking along the length
+// The scene file sets the real start pose when it loads.
 Camera camera(glm::vec3(0.0f, 2.0f, 0.0f));
 
 // Timing
@@ -103,17 +103,13 @@ int main(int argc, char **argv) {
   if (!sceneLoaded && vulkanRenderer.hasScenes()) {
     vulkanRenderer.loadSceneAt(0);
   } else if (!sceneLoaded) {
-    // No scene files found — fall back to the classic built-in setup.
-    SceneDescription fallback;
-    fallback.name = "Sponza (built-in fallback)";
-    SceneModelEntry sponza;
-    sponza.path = "Resources/Models/Sponza/glTF/Sponza.gltf";
-    fallback.models.push_back(sponza);
-    SceneRingEntry ring;
-    ring.path = "Resources/Models/DamagedHelmet/glTF/DamagedHelmet.gltf";
-    ring.count = 64;
-    fallback.rings.push_back(ring);
-    vulkanRenderer.loadScene(fallback);
+    // Nothing to show without a scene, so say why instead of opening an
+    // empty world.
+    std::cerr << "No .scene files found in Resources/Scenes" << std::endl;
+    vulkanRenderer.cleanup();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return EXIT_FAILURE;
   }
 
   while (!inputManager.shouldClose()) {

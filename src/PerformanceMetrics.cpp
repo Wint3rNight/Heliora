@@ -152,6 +152,8 @@ void PerformanceMetrics::recordCpuPhase(CpuPhase phase, double milliseconds) {
   lastCpuPhaseMs[idx] = milliseconds;
   totalCpuPhaseMs[idx] += milliseconds;
   cpuPhaseSamples[idx]++;
+  windowCpuPhaseMs[idx] += milliseconds;
+  windowCpuPhaseSamples[idx]++;
 }
 
 void PerformanceMetrics::endFrame() {
@@ -199,6 +201,23 @@ void PerformanceMetrics::endFrame() {
                  lastPassGpuMs[(int)GpuPass::AutoExposure],
                  lastPassGpuMs[(int)GpuPass::Composite],
                  lastPassGpuMs[(int)GpuPass::ImGui]);
+
+    double cpuMs[NUM_CPU_PHASES] = {};
+    for (int p = 0; p < NUM_CPU_PHASES; p++) {
+      if (windowCpuPhaseSamples[p] > 0)
+        cpuMs[p] = windowCpuPhaseMs[p] / windowCpuPhaseSamples[p];
+      windowCpuPhaseMs[p] = 0.0;
+      windowCpuPhaseSamples[p] = 0;
+    }
+    spdlog::info("[perf] cpu mean ms: waitFence={:.3f} acquire={:.3f} "
+                 "imageFence={:.3f} update={:.3f} record={:.3f} upload={:.3f} "
+                 "submit={:.3f} present={:.3f}",
+                 cpuMs[(int)CpuPhase::WaitFence],
+                 cpuMs[(int)CpuPhase::Acquire],
+                 cpuMs[(int)CpuPhase::ImageFence],
+                 cpuMs[(int)CpuPhase::Update], cpuMs[(int)CpuPhase::Record],
+                 cpuMs[(int)CpuPhase::Upload], cpuMs[(int)CpuPhase::Submit],
+                 cpuMs[(int)CpuPhase::Present]);
   }
 }
 

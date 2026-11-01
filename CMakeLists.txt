@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)  # Jolt's own CMake needs 3.20
 
 project(VulkanRenderer LANGUAGES CXX)
 
@@ -50,6 +50,45 @@ target_include_directories(imgui_lib PUBLIC
 )
 target_link_libraries(imgui_lib PUBLIC Vulkan::Vulkan glfw)
 
+# Jolt Physics: the physics engine (the agreed exception to building our own
+# systems). Jolt's options are plain variables set before
+# FetchContent_MakeAvailable; its option() calls keep them (policy CMP0077).
+# Jolt's sample and test programs only build when it is the top-level project.
+set(ENABLE_INSTALL OFF)
+# The GPU compute backends exist for Jolt's hair simulation; Heliora has none.
+set(JPH_USE_VK OFF)
+set(JPH_USE_DX12 OFF)
+set(JPH_USE_MTL OFF)
+set(JPH_USE_CPU_COMPUTE OFF)
+# Our own CPU timers measure the physics step, and Jolt's ObjectStream file
+# format is unused, so neither costs time or code.
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
+set(ENABLE_OBJECT_STREAM OFF)
+# Kept in Debug and Release for the F2 collision-shape view; a shipping build
+# turns it off (it adds a few branches to Jolt's narrow phase).
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE ON)
+# -Werror on code we don't own would break the build on each new gcc warning.
+set(ENABLE_ALL_WARNINGS OFF)
+# Debug symbols only where we debug: in Release they only cost build RAM.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(GENERATE_DEBUG_SYMBOLS ON)
+else()
+  set(GENERATE_DEBUG_SYMBOLS OFF)
+endif()
+# Link-time optimization is off until measured: its link step runs many
+# compiler processes at once, which this machine's RAM does not tolerate.
+set(INTERPROCEDURAL_OPTIMIZATION OFF)
+# Note: Jolt adds -mavx2 -mfma (PUBLIC) to every target that links it, so the
+# whole game requires a CPU with AVX2 and FMA.
+FetchContent_Declare(
+  JoltPhysics
+  GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+  GIT_TAG        v5.6.0
+  GIT_SHALLOW    TRUE
+  SOURCE_SUBDIR  Build
+)
+FetchContent_MakeAvailable(JoltPhysics)
+
 # Source File Management - Simplified
 # Note: Using GLOB is okay for small projects, but listing them is safer.
 file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
@@ -75,6 +114,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         glm::glm
         spdlog::spdlog
         Threads::Threads
+        Jolt
 )
 
 # Vulkan-style depth [0,1] for all glm projection matrices

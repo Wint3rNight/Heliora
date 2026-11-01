@@ -223,7 +223,8 @@ In UI mode, the ImGui panels expose camera settings, lighting, fog, LOD distance
 ## Requirements
 
 - C++20 compiler
-- CMake 3.16 or newer
+- CMake 3.20 or newer
+- An x86-64 CPU with AVX2 and FMA (Jolt Physics is built with them)
 - Vulkan SDK / Vulkan loader and headers
 - GLFW
 - GLM
@@ -242,6 +243,7 @@ CMake also fetches:
 
 - `meshoptimizer` for runtime LOD generation
 - Dear ImGui docking branch for the overlay
+- Jolt Physics v5.6.0 for rigid-body physics
 
 That means the first CMake configure needs network access unless those dependencies are already available through CMake's FetchContent cache.
 
@@ -285,7 +287,6 @@ Resources/HDRIs/         HDR environment maps
 Resources/LUTs/          BRDF LUT
 Resources/Textures/      PBR texture sets
 third_party/             Vendored third-party code kept with the repo
-TODO.md                  Local development roadmap, ignored by git
 ```
 
 ## Current Status
@@ -319,7 +320,7 @@ This repository includes third-party assets and libraries for testing the render
 
 - Khronos glTF sample-style assets such as Sponza, DamagedHelmet, and FlightHelmet. See the license files inside `Resources/Models/`.
 - HDRI and PBR texture resources under `Resources/`. Check the included source/license metadata where present.
-- Dear ImGui, meshoptimizer, stb, Vulkan Memory Allocator, GLFW, GLM, Assimp, and spdlog are used by the renderer or build.
+- Dear ImGui, meshoptimizer, Jolt Physics, stb, Vulkan Memory Allocator, GLFW, GLM, Assimp, and spdlog are used by the renderer or build.
 
 The assets are here to make the renderer exercise real material, lighting, and scale problems. The renderer code is the main project.
 

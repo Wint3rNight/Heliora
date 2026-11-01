@@ -140,7 +140,8 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Acquire),
               ui.metrics.getCpuPhaseTimeMs(
                   PerformanceMetrics::CpuPhase::Present));
-  ImGui::Text("CPU upd/rec/sub: %.2f | %.2f | %.2f ms",
+  ImGui::Text("CPU phys/upd/rec/sub: %.2f | %.2f | %.2f | %.2f ms",
+              ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Physics),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Submit));

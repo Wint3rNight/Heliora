@@ -211,13 +211,13 @@ void PerformanceMetrics::endFrame() {
     }
     spdlog::info("[perf] cpu mean ms: waitFence={:.3f} acquire={:.3f} "
                  "imageFence={:.3f} update={:.3f} record={:.3f} upload={:.3f} "
-                 "submit={:.3f} present={:.3f}",
+                 "submit={:.3f} present={:.3f} physics={:.3f}",
                  cpuMs[(int)CpuPhase::WaitFence],
                  cpuMs[(int)CpuPhase::Acquire],
                  cpuMs[(int)CpuPhase::ImageFence],
                  cpuMs[(int)CpuPhase::Update], cpuMs[(int)CpuPhase::Record],
                  cpuMs[(int)CpuPhase::Upload], cpuMs[(int)CpuPhase::Submit],
-                 cpuMs[(int)CpuPhase::Present]);
+                 cpuMs[(int)CpuPhase::Present], cpuMs[(int)CpuPhase::Physics]);
   }
 }
 
@@ -282,14 +282,16 @@ double PerformanceMetrics::getAverageCpuPhaseTimeMs(CpuPhase phase) const {
 }
 
 double PerformanceMetrics::getCpuActiveTimeMs() const {
-  return getCpuPhaseTimeMs(CpuPhase::Update) +
+  return getCpuPhaseTimeMs(CpuPhase::Physics) +
+         getCpuPhaseTimeMs(CpuPhase::Update) +
          getCpuPhaseTimeMs(CpuPhase::Record) +
          getCpuPhaseTimeMs(CpuPhase::Upload) +
          getCpuPhaseTimeMs(CpuPhase::Submit);
 }
 
 double PerformanceMetrics::getAverageCpuActiveTimeMs() const {
-  return getAverageCpuPhaseTimeMs(CpuPhase::Update) +
+  return getAverageCpuPhaseTimeMs(CpuPhase::Physics) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Update) +
          getAverageCpuPhaseTimeMs(CpuPhase::Record) +
          getAverageCpuPhaseTimeMs(CpuPhase::Upload) +
          getAverageCpuPhaseTimeMs(CpuPhase::Submit);
@@ -417,6 +419,9 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║    Present:         {:>7.3f} / {:>7.3f} ms  ║",
                getCpuPhaseTimeMs(CpuPhase::Present),
                getAverageCpuPhaseTimeMs(CpuPhase::Present));
+  spdlog::info("║    Physics:         {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Physics),
+               getAverageCpuPhaseTimeMs(CpuPhase::Physics));
   spdlog::info("║    CPU active:      {:>7.3f} / {:>7.3f} ms  ║",
                getCpuActiveTimeMs(), getAverageCpuActiveTimeMs());
   spdlog::info("║    Sync/WSI wait:   {:>7.3f} / {:>7.3f} ms  ║",

@@ -6,34 +6,45 @@
 
 namespace {
 
+glm::mat4 composeTransform(glm::vec3 position, glm::quat rotation,
+                           float scale) {
+  return glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(rotation) *
+         glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+}
+
 glm::mat4 composeTransform(const NodeTransform &t) {
-  glm::mat4 m = glm::translate(glm::mat4(1.0f), t.position);
-  m = glm::rotate(m, glm::radians(t.rotationDeg.y), glm::vec3(0, 1, 0));
-  m = glm::rotate(m, glm::radians(t.rotationDeg.x), glm::vec3(1, 0, 0));
-  m = glm::rotate(m, glm::radians(t.rotationDeg.z), glm::vec3(0, 0, 1));
-  m = glm::scale(m, glm::vec3(t.scale));
-  return m;
+  return composeTransform(t.position, rotationFromDegrees(t.rotationDeg),
+                          t.scale);
 }
 
 } // namespace
 
 SceneNode::SceneNode()
     : localTransform(glm::mat4(1.0f)), globalTransform(glm::mat4(1.0f)),
-      cachedNormalMatrix(glm::mat4(1.0f)), modelId(-1) {}
+      cachedNormalMatrix(glm::mat4(1.0f)), lastParentTransform(1.0f),
+      modelId(-1) {}
 
 void SceneNode::setLocalTransform(const glm::mat4 &transform) {
   localTransform = transform;
   hasAnimation = false;
+  localDirty = true;
 }
 
 void SceneNode::setTransform(const NodeTransform &transform) {
   baseTransform = transform;
   localTransform = composeTransform(transform);
+  localDirty = true;
 }
 
 void SceneNode::setAnimation(const NodeAnimation &anim) {
   animation = anim;
   hasAnimation = anim.active();
+}
+
+void SceneNode::setPose(glm::vec3 position, glm::quat rotation) {
+  localTransform = composeTransform(position, rotation, baseTransform.scale);
+  hasAnimation = false;
+  localDirty = true;
 }
 
 glm::mat4 SceneNode::getLocalTransform() const { return localTransform; }
@@ -69,14 +80,25 @@ glm::mat4 SceneNode::composeAnimatedLocal(float timeSeconds) const {
 }
 
 void SceneNode::update(const glm::mat4 &parentTransform, float timeSeconds) {
-  if (hasAnimation)
-    localTransform = composeAnimatedLocal(timeSeconds);
+  const bool parentChanged = parentTransform != lastParentTransform;
+  lastParentTransform = parentTransform;
+  updateTree(parentTransform, timeSeconds, parentChanged);
+}
 
-  globalTransform    = parentTransform * localTransform;
-  cachedNormalMatrix = glm::transpose(glm::inverse(globalTransform));
-  for (auto &child : children) {
-    child->update(globalTransform, timeSeconds);
+void SceneNode::updateTree(const glm::mat4 &parentTransform, float timeSeconds,
+                           bool parentChanged) {
+  if (hasAnimation) {
+    localTransform = composeAnimatedLocal(timeSeconds);
+    localDirty = true;
   }
+  const bool changed = localDirty || parentChanged;
+  if (changed) {
+    globalTransform = parentTransform * localTransform;
+    cachedNormalMatrix = glm::transpose(glm::inverse(globalTransform));
+    localDirty = false;
+  }
+  for (auto &child : children)
+    child->updateTree(globalTransform, timeSeconds, changed);
 }
 
 void SceneNode::addChild(std::unique_ptr<SceneNode> child) {

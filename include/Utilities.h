@@ -13,6 +13,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "VulkanSync.h"
+#include "Vertex.h"
 
 class AllocatedBuffer {
 public:
@@ -177,15 +178,6 @@ const std::vector<const char *> deviceExtensions = {
 constexpr uint32_t MAX_BINDLESS_TEXTURES = 4096;
 
 // vertex data representation
-struct Vertex {
-  glm::vec3 pos; // position attribute for the vertex
-  glm::vec3 col; // color attribute for the vertex
-  glm::vec2 tex; // texture coordinate attribute
-  glm::vec3 normal;
-  glm::vec3 tangent;
-  glm::vec3 bitangent;
-};
-
 struct DirectionalLight {
   alignas(16) glm::vec4 direction;
   alignas(16) glm::vec4 colorIntensity;

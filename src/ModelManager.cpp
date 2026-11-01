@@ -89,6 +89,36 @@ int ModelManager::loadModel(const std::string &modelFile,
   return id;
 }
 
+int ModelManager::createModel(const std::string &key, MeshData mesh,
+                              bool withLods, const VulkanDevice &device,
+                              TextureManager &textureManager,
+                              DescriptorManager &descriptorManager) {
+  if (int id = findModel(key); id >= 0)
+    return id;
+  // Empty names give the default material: white albedo (the shape's vertex
+  // colour tints it), flat normal, roughness 1, metallic 0.
+  const Material material = textureManager.loadMaterial(
+      "", "", "", "", "", device, descriptorManager);
+  Mesh newMesh(device.getAllocator(), device.getLogicalDevice(),
+               device.getGraphicsQueue(), device.getGraphicsCommandPool(),
+               &mesh.vertices, &mesh.indices, material);
+  if (withLods)
+    newMesh.generateLods(device.getGraphicsQueue(),
+                         device.getGraphicsCommandPool());
+  std::vector<Mesh> meshes;
+  meshes.push_back(std::move(newMesh));
+  models.emplace_back(std::move(meshes));
+
+  const int id = static_cast<int>(models.size()) - 1;
+  modelMap[key] = id;
+  return id;
+}
+
+int ModelManager::findModel(const std::string &key) const {
+  auto it = modelMap.find(key);
+  return it == modelMap.end() ? -1 : it->second;
+}
+
 void ModelManager::cleanup() {
   for (auto &model : models) {
     model.destroyMeshModel();

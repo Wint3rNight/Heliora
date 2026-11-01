@@ -103,6 +103,10 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 # and CPU flags.
 set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PrimitiveMesh.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Scene.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneNode.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ScenePhysics.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -151,6 +155,10 @@ add_executable(heliora_tests
         tests/main.cpp
         tests/FixedStepTests.cpp
         tests/PhysicsWorldTests.cpp
+        tests/PrimitiveMeshTests.cpp
+        tests/SceneNodeTests.cpp
+        tests/ScenePhysicsTests.cpp
+        tests/SceneTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
 add_test(NAME heliora_tests COMMAND heliora_tests)

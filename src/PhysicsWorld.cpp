@@ -186,6 +186,7 @@ struct PhysicsWorld::Impl {
     PhysicsPose current;
   };
   std::vector<DrawnPose> drawn;
+  std::vector<uint64_t> userData; // PhysicsBodyDesc::userData, same indexing
   // Bodies active after the last step. activeStamp holds the step a body was
   // last active in, which spots the ones that just fell asleep without a
   // search.
@@ -194,6 +195,7 @@ struct PhysicsWorld::Impl {
   std::vector<uint32_t> activeStamp;
   uint32_t stepCount = 0;
   std::vector<PhysicsBodyId> moved;
+  std::vector<PhysicsMovedPose> movedPoseBuffer; // what movedPoses() returns
 
   uint32_t droppedContactSteps = 0;
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
@@ -267,6 +269,8 @@ PhysicsWorld::PhysicsWorld(const Config &config)
                     impl->objectVsBroadPhase, impl->objectPairs);
 
   impl->drawn.resize(config.maxBodies);
+  impl->userData.resize(config.maxBodies, 0);
+  impl->movedPoseBuffer.reserve(config.maxBodies);
   impl->activeStamp.resize(config.maxBodies, 0);
   impl->lastActive.reserve(config.maxBodies);
   impl->active.reserve(config.maxBodies);
@@ -311,6 +315,7 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   // Drawn at its spawn pose until the first step moves it.
   const PhysicsPose spawn = impl->readPose(id);
   impl->drawn[id.GetIndex()] = {spawn, spawn};
+  impl->userData[id.GetIndex()] = desc.userData;
   return PhysicsBodyId{id.GetIndexAndSequenceNumber()};
 }
 
@@ -366,6 +371,19 @@ PhysicsPose PhysicsWorld::interpolatedPose(PhysicsBodyId id,
 
 const std::vector<PhysicsBodyId> &PhysicsWorld::movedBodies() const {
   return impl->moved;
+}
+
+const std::vector<PhysicsMovedPose> &PhysicsWorld::movedPoses(float alpha) {
+  // No IsAdded check like interpolatedPose(): removeBody() takes bodies out
+  // of the moved list, so every id here is live.
+  impl->movedPoseBuffer.clear();
+  for (PhysicsBodyId id : impl->moved) {
+    const uint32_t index = JPH::BodyID(id.value).GetIndex();
+    const Impl::DrawnPose &pose = impl->drawn[index];
+    impl->movedPoseBuffer.push_back(
+        {impl->userData[index], blendPoses(pose.previous, pose.current, alpha)});
+  }
+  return impl->movedPoseBuffer;
 }
 
 bool PhysicsWorld::isActive(PhysicsBodyId id) const {

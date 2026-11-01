@@ -1,10 +1,12 @@
 #include "VulkanRenderer.h"
 #include "Model.h"
+#include "ScenePhysics.h"
 #include "Utilities.h"
 #include "VulkanDebug.h"
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <format>
 
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
@@ -394,6 +396,52 @@ int VulkanRenderer::createMeshModel(const std::string &modelFile) {
   return modelId;
 }
 
+int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
+  const glm::vec3 c = entry.color;
+  std::string key;
+  switch (*entry.shape) {
+  case PrimitiveShape::Box:
+    key = std::format("#box {} {} {}", entry.size.x, entry.size.y,
+                      entry.size.z);
+    break;
+  case PrimitiveShape::Sphere:
+    key = std::format("#sphere {}", entry.radius);
+    break;
+  case PrimitiveShape::Capsule:
+    key = std::format("#capsule {} {}", entry.radius, entry.height);
+    break;
+  case PrimitiveShape::Plane:
+    key = std::format("#plane {} {}", entry.size.x, entry.size.z);
+    break;
+  }
+  key += std::format(" color {} {} {}", c.r, c.g, c.b);
+  if (int cached = modelManager.findModel(key); cached >= 0)
+    return cached;
+
+  MeshData mesh;
+  bool withLods = false; // boxes and planes have nothing to simplify
+  switch (*entry.shape) {
+  case PrimitiveShape::Box:
+    mesh = makeBox(entry.size, c);
+    break;
+  case PrimitiveShape::Sphere:
+    mesh = makeSphere(entry.radius, c);
+    withLods = true;
+    break;
+  case PrimitiveShape::Capsule:
+    mesh = makeCapsule(entry.radius, entry.height, c);
+    withLods = true;
+    break;
+  case PrimitiveShape::Plane:
+    mesh = makePlane(entry.size.x, entry.size.z, c);
+    break;
+  }
+  const int modelId = modelManager.createModel(
+      key, std::move(mesh), withLods, device, textureManager, descriptorManager);
+  gpuDrivenGBufferPass.registerModelGeometry(modelId, modelManager);
+  return modelId;
+}
+
 void VulkanRenderer::discoverScenes(const std::string &directory) {
   availableScenes = SceneIO::discover(directory);
   availableSceneNames.clear();
@@ -410,20 +458,31 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   // scene graph are torn down.
   vkDeviceWaitIdle(device.getLogicalDevice());
 
+  // Physics first: physicsNodes points into the tree cleared below.
+  physicsNodes.clear();
+  physics = std::make_unique<PhysicsWorld>();
+  physicsClock = FixedStepClock();
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
   for (const SceneModelEntry &entry : desc.models) {
     try {
-      int modelId = createMeshModel(entry.path);
+      int modelId = entry.shape ? createPrimitiveModel(entry)
+                                : createMeshModel(entry.path);
       auto node = std::make_unique<SceneNode>();
       node->setModelId(modelId);
       node->setTransform(entry.transform);
       node->setAnimation(entry.animation);
+      if (entry.body) {
+        PhysicsBodyDesc body = bodyDescFor(entry);
+        body.userData = physicsNodes.size();
+        if (physics->addBody(body).isValid())
+          physicsNodes.push_back(node.get());
+      }
       rootNode.addChild(std::move(node));
     } catch (const std::exception &e) {
       spdlog::error("Scene '{}': failed to load model '{}': {}", desc.name,
-                    entry.path, e.what());
+                    entry.shape ? "generated shape" : entry.path, e.what());
     }
   }
 
@@ -451,6 +510,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
     }
   }
 
+  // Bodies went in one by one, which leaves Jolt's broad phase tree
+  // unbalanced.
+  physics->optimizeBroadPhase();
   rootNode.update(glm::mat4(1.0f), 0.0f);
 
   if (!desc.environmentHdr.empty() &&
@@ -473,8 +535,10 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   taaHistoryValid = false;
   gpuDrivenGBufferPass.invalidateHzb();
 
-  spdlog::info("Loaded scene '{}' ({} model(s), {} instanced ring(s))",
-               desc.name, desc.models.size(), desc.rings.size());
+  spdlog::info("Loaded scene '{}' ({} model(s), {} instanced ring(s), {} "
+               "physics bodies)",
+               desc.name, desc.models.size(), desc.rings.size(),
+               physicsNodes.size());
 }
 
 bool VulkanRenderer::loadSceneAt(int index) {
@@ -490,6 +554,25 @@ bool VulkanRenderer::loadSceneAt(int index) {
 
 void VulkanRenderer::requestSceneLoad(int index) {
   pendingSceneIndex = index;
+}
+
+void VulkanRenderer::stepPhysics(float frameSeconds) {
+  if (!physics)
+    return;
+  const auto start = std::chrono::steady_clock::now();
+  const int steps = physicsClock.advance(frameSeconds);
+  for (int i = 0; i < steps; ++i)
+    physics->step(static_cast<float>(physicsClock.stepSeconds()));
+  // Runs on frames with no step too: alpha still moved, so the blend did.
+  for (const PhysicsMovedPose &moved :
+       physics->movedPoses(physicsClock.alpha()))
+    physicsNodes[moved.userData]->setPose(moved.pose.position,
+                                          moved.pose.rotation);
+  metrics.recordCpuPhase(
+      PerformanceMetrics::CpuPhase::Physics,
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count());
 }
 
 void VulkanRenderer::updateScene(float timeSeconds) {

@@ -4,7 +4,7 @@ A modular Vulkan renderer focused on the rendering architecture itself: deferred
 
 ## What It Renders
 
-Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is Crytek Sponza with a 64-helmet instanced ring; a second scene showcases animated objects (a turntable FlightHelmet and a patrolling DamagedHelmet). A fly camera and the ImGui overlay handle runtime tuning.
+Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is a physics sandbox (Jolt rigid bodies) built from shapes generated in code (boxes, spheres, capsules, a ground plane), with no model files; Crytek Sponza with a 64-helmet instanced ring is next in the list, and a third scene showcases animated objects (a turntable FlightHelmet and a patrolling DamagedHelmet). A fly camera and the ImGui overlay handle runtime tuning.
 
 At a high level, one frame looks like this:
 
@@ -87,7 +87,7 @@ Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit d
 - Forward transparent pass for glTF `alphaMode=BLEND` materials, sorted back-to-front over the deferred result.
 - GPU-driven rendering path: compute frustum + HZB occlusion culling feeding indirect draws.
 - Bindless material textures via `VK_EXT_descriptor_indexing`.
-- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes.
+- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); a shape with `body = static | dynamic | kinematic` becomes a Jolt rigid body, stepped at a fixed 60 Hz and interpolated for rendering.
 - Exponential height fog.
 - ImGui runtime overlay with:
   - FPS and frame-time graph,

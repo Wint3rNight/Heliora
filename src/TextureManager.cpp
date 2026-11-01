@@ -480,8 +480,10 @@ void TextureManager::createSkyboxSampler(VkDevice device,
   ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
   ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  // No cap: the source sky cubemap has more mips than the prefiltered map,
+  // and every image clamps to its own mip count anyway.
   ci.minLod = 0.0f;
-  ci.maxLod = static_cast<float>(IBL_PREFILTER_MIPS);
+  ci.maxLod = VK_LOD_CLAMP_NONE;
   ci.anisotropyEnable = VK_TRUE;
   ci.maxAnisotropy = props.limits.maxSamplerAnisotropy;
   if (vkCreateSampler(device, &ci, nullptr, &skyboxSampler) != VK_SUCCESS)
@@ -1139,7 +1141,42 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   }
   stbi_image_free(hdr);
 
-  VkDeviceSize imageSize = cubemap.size() * sizeof(float);
+  // Full mip chain, box-filtered on the CPU per face. The prefilter and
+  // irradiance passes read a blurrier mip for samples that stand for a
+  // bigger piece of the sky. Reading only mip 0 let single-pixel stars land
+  // in some output texels and miss their neighbours, which showed up as
+  // bright specks on rough curved surfaces.
+  const uint32_t mipLevels =
+      static_cast<uint32_t>(std::floor(std::log2(float(faceSize)))) + 1u;
+  std::vector<std::vector<float>> mips(mipLevels);
+  mips[0] = std::move(cubemap);
+  for (uint32_t m = 1; m < mipLevels; ++m) {
+    const uint32_t src = faceSize >> (m - 1), dst = faceSize >> m;
+    mips[m].resize(static_cast<size_t>(dst) * dst * 6 * 4);
+    for (uint32_t face = 0; face < 6; face++)
+      for (uint32_t y = 0; y < dst; y++)
+        for (uint32_t x = 0; x < dst; x++)
+          for (uint32_t c = 0; c < 4; c++) {
+            auto at = [&](uint32_t sx, uint32_t sy) {
+              return mips[m - 1][((size_t(face) * src + sy) * src + sx) * 4 + c];
+            };
+            mips[m][((size_t(face) * dst + y) * dst + x) * 4 + c] =
+                0.25f * (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) +
+                         at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1));
+          }
+  }
+
+  // One staging buffer, one copy region per mip covering all six faces.
+  std::vector<VkBufferImageCopy> regions(mipLevels);
+  VkDeviceSize imageSize = 0;
+  for (uint32_t m = 0; m < mipLevels; ++m) {
+    const uint32_t size = faceSize >> m;
+    regions[m] = {};
+    regions[m].bufferOffset = imageSize;
+    regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 6};
+    regions[m].imageExtent = {size, size, 1};
+    imageSize += mips[m].size() * sizeof(float);
+  }
   const RenderQueueSharingInfo sharing =
       renderGraphicsComputeSharing(device.getQueueFamilies());
   AllocatedBuffer staging;
@@ -1147,15 +1184,21 @@ int TextureManager::createHdrCubemap(const std::string &filename,
                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                &staging);
-  uploadToAllocation(device.getAllocator(), staging.getAllocation(),
-                     cubemap.data(), imageSize);
+  void *mapped;
+  vmaMapMemory(device.getAllocator(), staging.getAllocation(), &mapped);
+  for (uint32_t m = 0; m < mipLevels; ++m)
+    std::memcpy(static_cast<char *>(mapped) + regions[m].bufferOffset,
+                mips[m].data(), mips[m].size() * sizeof(float));
+  vmaUnmapMemory(device.getAllocator(), staging.getAllocation());
+  vmaFlushAllocation(device.getAllocator(), staging.getAllocation(), 0,
+                     VK_WHOLE_SIZE);
 
   VkImageCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ci.imageType = VK_IMAGE_TYPE_2D;
   ci.extent = {faceSize, faceSize, 1};
-  ci.mipLevels = 1;
+  ci.mipLevels = mipLevels;
   ci.arrayLayers = 6;
   ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1173,17 +1216,26 @@ int TextureManager::createHdrCubemap(const std::string &filename,
     throw std::runtime_error("Failed to create HDR cubemap image");
   AllocatedImage cubemapImg(device.getAllocator(), img, alloc);
 
-  transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), cubemapImg.get(),
-                        VK_IMAGE_LAYOUT_UNDEFINED,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6);
-  copyImageBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
-                  device.getGraphicsCommandPool(), staging.get(),
-                  cubemapImg.get(), faceSize, faceSize, 6);
-  transitionImageLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
-                        device.getGraphicsCommandPool(), cubemapImg.get(),
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6);
+  transitionCubemapLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
+                          device.getGraphicsCommandPool(), cubemapImg.get(),
+                          VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, mipLevels);
+  {
+    VkCommandBuffer cmd = beginCommandBuffer(device.getLogicalDevice(),
+                                             device.getGraphicsCommandPool());
+    vkCmdCopyBufferToImage(cmd, staging.get(), cubemapImg.get(),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(regions.size()),
+                           regions.data());
+    endAndSubmitCommandBuffer(device.getLogicalDevice(),
+                              device.getGraphicsCommandPool(),
+                              device.getGraphicsQueue(), cmd);
+  }
+  transitionCubemapLayout(device.getLogicalDevice(), device.getGraphicsQueue(),
+                          device.getGraphicsCommandPool(), cubemapImg.get(),
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 6,
+                          mipLevels);
 
   textureImages.push_back(std::move(cubemapImg));
   int loc = static_cast<int>(textureImages.size() - 1);
@@ -1193,7 +1245,7 @@ int TextureManager::createHdrCubemap(const std::string &filename,
   vci.image = textureImages[loc].get();
   vci.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
   vci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 6};
   VkImageView view;
   if (vkCreateImageView(device.getLogicalDevice(), &vci, nullptr, &view) !=
       VK_SUCCESS)

@@ -44,6 +44,25 @@ Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice, VkQueue transferQueue,
   createIndexBuffer(transferQueue, transferCommandPool, indices);
 }
 
+void Mesh::generateLods(VkQueue transferQueue,
+                        VkCommandPool transferCommandPool) {
+  if (cpuIndices.size() < 12)
+    return;
+  const float *positions = &cpuVertices[0].pos.x;
+  auto simplify = [&](size_t targetCount, float maxError) {
+    std::vector<uint32_t> lod(cpuIndices.size());
+    lod.resize(meshopt_simplify(lod.data(), cpuIndices.data(),
+                                cpuIndices.size(), positions,
+                                cpuVertices.size(), sizeof(Vertex),
+                                targetCount, maxError));
+    return lod;
+  };
+  std::vector<uint32_t> lod1 = simplify(cpuIndices.size() / 2, 0.05f);
+  std::vector<uint32_t> lod2 = simplify(cpuIndices.size() / 8, 0.15f);
+  addLod(allocator, device, transferQueue, transferCommandPool, &lod1);
+  addLod(allocator, device, transferQueue, transferCommandPool, &lod2);
+}
+
 const Material &Mesh::getMaterial() const { return material; }
 int Mesh::getVertexCount() const { return vertexCount; }
 VkBuffer Mesh::getVertexBuffer() const { return vertexBuffer.get(); }
@@ -473,28 +492,7 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
   Mesh newMesh = Mesh(allocator, newDevice, transferQueue, transferCommandPool,
                       &vertices, &indices, materials[mesh->mMaterialIndex]);
 
-  // Generate LOD1 (~50%) and LOD2 (~12%) using meshoptimizer
-  if (indices.size() >= 12) {
-    const float *positions = &vertices[0].pos.x;
-    size_t stride = sizeof(Vertex);
-
-    auto genLod = [&](size_t targetCount, float maxError) {
-      std::vector<uint32_t> lodIdx(indices.size());
-      size_t n = meshopt_simplify(lodIdx.data(), indices.data(), indices.size(),
-                                  positions, vertices.size(), stride,
-                                  targetCount, maxError);
-      lodIdx.resize(n);
-      return lodIdx;
-    };
-
-    auto lod1 = genLod(indices.size() / 2, 0.05f);
-    newMesh.addLod(allocator, newDevice, transferQueue, transferCommandPool,
-                   &lod1);
-
-    auto lod2 = genLod(indices.size() / 8, 0.15f);
-    newMesh.addLod(allocator, newDevice, transferQueue, transferCommandPool,
-                   &lod2);
-  }
+  newMesh.generateLods(transferQueue, transferCommandPool);
 
   std::vector<Mesh> meshList;
   meshList.emplace_back(std::move(newMesh));

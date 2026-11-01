@@ -1,6 +1,7 @@
 #include "TestRunner.h"
 
 #include <cstring>
+#include <exception>
 
 // Runs every registered test, or only those whose name contains argv[1].
 int main(int argc, char **argv) {
@@ -11,7 +12,13 @@ int main(int argc, char **argv) {
     if (filter && !std::strstr(c.name, filter))
       continue;
     test::currentFailures() = 0;
-    c.fn();
+    // A test that throws fails, instead of ending the whole run.
+    try {
+      c.fn();
+    } catch (const std::exception &e) {
+      std::printf("    threw: %s\n", e.what());
+      ++test::currentFailures();
+    }
     ++ranTests;
     if (test::currentFailures() > 0) {
       ++failedTests;

@@ -56,6 +56,10 @@ public:
               VkQueue transferQueue, VkCommandPool transferCommandPool,
               std::vector<uint32_t> *indices);
 
+  // Adds LOD 1 (~50%) and LOD 2 (~12%) with meshoptimizer, from the mesh's
+  // own CPU copy. Skipped under 4 triangles.
+  void generateLods(VkQueue transferQueue, VkCommandPool transferCommandPool);
+
   void destroyBuffers();
 
   ~Mesh();

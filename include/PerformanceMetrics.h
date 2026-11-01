@@ -38,9 +38,10 @@ public:
     Record = 4,
     Upload = 5,
     Submit = 6,
-    Present = 7
+    Present = 7,
+    Physics = 8 // fixed steps plus copying moved poses into scene nodes
   };
-  static constexpr int NUM_CPU_PHASES = 8;
+  static constexpr int NUM_CPU_PHASES = 9;
 
   // Lifecycle
   void init(VkDevice device, VkPhysicalDevice physicalDevice,

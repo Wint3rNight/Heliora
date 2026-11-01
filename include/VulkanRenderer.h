@@ -16,12 +16,14 @@
 #include "BloomPass.h"
 #include "CompositePass.h"
 #include "DescriptorManager.h"
+#include "FixedStepClock.h"
 #include "GpuDrivenGBufferPass.h"
 #include "ImGuiLayer.h"
 #include "MaterialProbePass.h"
 #include "Model.h"
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
+#include "PhysicsWorld.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
 #include "Scene.h"
@@ -59,6 +61,9 @@ public:
   int init(GLFWwindow *newWindow);
   void draw();
   int createMeshModel(const std::string &modelFile);
+  // A model for a scene entry's generated shape (box, sphere, capsule or
+  // plane). Entries with the same shape, size and colour share one model.
+  int createPrimitiveModel(const SceneModelEntry &entry);
 
   // --- Scene management ---
   // Scans `directory` for *.scene files (also checked under ../ because the
@@ -75,6 +80,10 @@ public:
   // Deferred load, safe to call from UI callbacks that run mid-record; the
   // switch happens at the top of the next draw().
   void requestSceneLoad(int index);
+  // Runs the fixed physics steps this frame owes, then moves the nodes of
+  // bodies that moved to their interpolated poses. Call once per frame
+  // before updateScene() with the frame time in seconds.
+  void stepPhysics(float frameSeconds);
   // Advances node animations and recomputes global transforms. Call once per
   // frame before draw() with the elapsed time in seconds.
   void updateScene(float timeSeconds);
@@ -103,6 +112,13 @@ private:
 
   SceneNode rootNode;
   SceneUniformBuffer sceneUbo = {};
+
+  // Physics for the loaded scene. loadScene() makes a new world, so a scene
+  // switch starts clean. A body's userData indexes physicsNodes, the node it
+  // moves.
+  std::unique_ptr<PhysicsWorld> physics;
+  FixedStepClock physicsClock;
+  std::vector<SceneNode *> physicsNodes;
 
   // --- Scene library ---
   std::vector<SceneDescription> availableScenes;

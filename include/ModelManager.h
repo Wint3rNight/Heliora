@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Model.h"
+#include "PrimitiveMesh.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,6 +24,15 @@ public:
   int loadModel(const std::string &modelFile, const VulkanDevice &device,
                 TextureManager &textureManager,
                 DescriptorManager &descriptorManager);
+
+  // A model from a generated mesh (PrimitiveMesh.h) with the default
+  // material. key names the shape, size and colour; check findModel(key)
+  // first so the mesh isn't generated again for a shape that's cached.
+  int createModel(const std::string &key, MeshData mesh, bool withLods,
+                  const VulkanDevice &device, TextureManager &textureManager,
+                  DescriptorManager &descriptorManager);
+  // -1 if nothing has been loaded or created under this key.
+  int findModel(const std::string &key) const;
 
   void cleanup();
 

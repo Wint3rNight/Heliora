@@ -19,12 +19,18 @@ public:
   // local transform is recomposed from these components every update().
   void setTransform(const NodeTransform &transform);
   void setAnimation(const NodeAnimation &animation);
+  // Position and rotation from physics. Scale stays the scene's.
+  void setPose(glm::vec3 position, glm::quat rotation);
   glm::mat4 getLocalTransform() const;
   glm::mat4 getGlobalTransform() const;
-  // Cached transpose(inverse(globalTransform)) — recomputed in update()
-  // when the local transform changes.
+  // Cached transpose(inverse(globalTransform)), recomputed in update()
+  // when the node or its parent changed.
   glm::mat4 getNormalMatrix() const;
 
+  // Recomputes world matrices, but only for nodes whose own transform or
+  // parent changed since the last call, plus animated ones. A world full of
+  // still or sleeping objects costs a walk of the tree, not a matrix inverse
+  // per node.
   void update(const glm::mat4 &parentTransform, float timeSeconds = 0.0f);
 
   // Hierarchy
@@ -38,10 +44,14 @@ public:
 
 private:
   glm::mat4 composeAnimatedLocal(float timeSeconds) const;
+  void updateTree(const glm::mat4 &parentTransform, float timeSeconds,
+                  bool parentChanged);
 
   glm::mat4 localTransform;
   glm::mat4 globalTransform;
   glm::mat4 cachedNormalMatrix;
+  glm::mat4 lastParentTransform; // what update() was last called with
+  bool localDirty = true;        // local changed since the last update()
 
   NodeTransform baseTransform;
   NodeAnimation animation;

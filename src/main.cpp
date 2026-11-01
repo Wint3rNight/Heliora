@@ -150,6 +150,8 @@ int main(int argc, char **argv) {
       inputManager.resetResizedFlag();
     }
 
+    // Physics first, so nodes it moved get their matrices in updateScene.
+    vulkanRenderer.stepPhysics(deltaTime);
     // Advances node animations (dynamic objects) and global transforms.
     vulkanRenderer.updateScene(currentFrame);
 

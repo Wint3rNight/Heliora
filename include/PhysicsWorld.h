@@ -36,11 +36,17 @@ struct PhysicsBodyDesc {
   float restitution = 0.0f;    // bounciness, 0 to 1
   glm::vec3 position{0.0f};
   glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+  uint64_t userData = 0; // ours, handed back by movedPoses()
 };
 
 struct PhysicsPose {
   glm::vec3 position;
   glm::quat rotation;
+};
+
+struct PhysicsMovedPose {
+  uint64_t userData;
+  PhysicsPose pose;
 };
 
 // Pose between two physics steps, alpha 0 to 1.
@@ -87,6 +93,9 @@ public:
   // Bodies whose drawn pose can change: everything that moved in the last
   // step. Sleeping bodies never show up, so their nodes cost nothing.
   const std::vector<PhysicsBodyId> &movedBodies() const;
+  // The same bodies, with their interpolated pose and userData, in one pass.
+  // This is what the game reads every frame. Stays valid until the next call.
+  const std::vector<PhysicsMovedPose> &movedPoses(float alpha);
   // False once the body's asleep.
   bool isActive(PhysicsBodyId id) const;
 

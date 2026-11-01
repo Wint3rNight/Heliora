@@ -37,6 +37,14 @@ vec2 hammersley(uint i, uint N) {
     return vec2(float(i) / float(N), radicalInverse(i));
 }
 
+// GGX normal distribution, for the sample pdf in main().
+float distributionGGX(float NdotH, float roughness) {
+    float a  = roughness * roughness;
+    float a2 = a * a;
+    float d  = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
 vec3 importanceSampleGGX(vec2 Xi, vec3 N, float roughness) {
     float a        = roughness * roughness;
     float phi      = 2.0 * PI * Xi.x;
@@ -61,13 +69,27 @@ void main() {
     float weight = 0.0;
     const uint SAMPLES = 512u;
 
+    // Filtered importance sampling (Krivanek and Colbert, GPU Gems 3 ch. 20):
+    // each sample reads the source mip whose texels cover about as much sky
+    // as the sample stands for. Reading mip 0 let single-pixel stars hit some
+    // output texels and miss their neighbours, so rough curved surfaces
+    // showed bright specks.
+    float srcSize = float(textureSize(envMap, 0).x);
+    float texelSA = 4.0 * PI / (6.0 * srcSize * srcSize);
+
     for (uint i = 0u; i < SAMPLES; i++) {
         vec2  Xi    = hammersley(i, SAMPLES);
         vec3  H     = importanceSampleGGX(Xi, N, pc.roughness);
         vec3  L     = normalize(2.0 * dot(N, H) * H - N);
         float NdotL = max(dot(N, L), 0.0);
         if (NdotL > 0.0) {
-            color  += texture(envMap, L).rgb * NdotL;
+            // With N = V the pdf of L is D * NdotH / (4 * VdotH) = D / 4.
+            float pdf      = distributionGGX(max(dot(N, H), 0.0), pc.roughness) / 4.0;
+            float sampleSA = 1.0 / (float(SAMPLES) * pdf + 1e-4);
+            float lod      = pc.roughness == 0.0
+                                 ? 0.0
+                                 : max(0.5 * log2(sampleSA / texelSA), 0.0);
+            color  += textureLod(envMap, L, lod).rgb * NdotL;
             weight += NdotL;
         }
     }

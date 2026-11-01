@@ -35,6 +35,81 @@ glm::vec3 parseVec3(const std::string &value, int lineNumber) {
   return glm::vec3(x, y, z);
 }
 
+PrimitiveShape parseShape(const std::string &value, int lineNumber) {
+  std::string name = value;
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  if (name == "box")
+    return PrimitiveShape::Box;
+  if (name == "sphere")
+    return PrimitiveShape::Sphere;
+  if (name == "capsule")
+    return PrimitiveShape::Capsule;
+  if (name == "plane")
+    return PrimitiveShape::Plane;
+  throw std::runtime_error("scene parse error, line " +
+                           std::to_string(lineNumber) + ": unknown shape '" +
+                           value + "' (box, sphere, capsule or plane)");
+}
+
+PhysicsMotion parseBody(const std::string &value, int lineNumber) {
+  std::string name = value;
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  if (name == "static")
+    return PhysicsMotion::Static;
+  if (name == "dynamic")
+    return PhysicsMotion::Dynamic;
+  if (name == "kinematic")
+    return PhysicsMotion::Kinematic;
+  throw std::runtime_error("scene parse error, line " +
+                           std::to_string(lineNumber) + ": unknown body '" +
+                           value + "' (static, dynamic or kinematic)");
+}
+
+// A [model] needs a file or a shape, and a shape needs a size it can be
+// built at. Checked after parsing, since the keys can come in any order.
+void checkModel(const SceneModelEntry &model, int headerLine) {
+  auto fail = [&](const std::string &what) {
+    throw std::runtime_error("scene parse error, [model] at line " +
+                             std::to_string(headerLine) + ": " + what);
+  };
+  if (model.path.empty() && !model.shape)
+    fail("needs 'path' or 'shape'");
+  if (!model.path.empty() && model.shape)
+    fail("has both 'path' and 'shape', pick one");
+  if (model.body && !model.shape)
+    fail("'body' needs a 'shape' to collide with (model files have no "
+         "collider yet)");
+  if (model.body && model.animation.active())
+    fail("a 'body' can't also have spin, orbit or bob animation, both would "
+         "move it");
+  if (model.body && model.shape == PrimitiveShape::Plane &&
+      *model.body != PhysicsMotion::Static)
+    fail("a plane's body must be static");
+  if (!model.shape)
+    return;
+  switch (*model.shape) {
+  case PrimitiveShape::Box:
+    if (glm::any(glm::lessThanEqual(model.size, glm::vec3(0.0f))))
+      fail("'size' must be positive on every axis");
+    break;
+  case PrimitiveShape::Plane:
+    if (model.size.x <= 0.0f || model.size.z <= 0.0f)
+      fail("'size' must be positive on x and z");
+    break;
+  case PrimitiveShape::Capsule:
+    if (model.radius > 0.0f && model.height <= 2.0f * model.radius)
+      fail("'height' must be more than twice the radius (it includes both "
+           "round ends)");
+    [[fallthrough]];
+  case PrimitiveShape::Sphere:
+    if (model.radius <= 0.0f)
+      fail("'radius' must be positive");
+    break;
+  }
+}
+
 float parseFloat(const std::string &value, int lineNumber) {
   try {
     return std::stof(value);
@@ -47,19 +122,31 @@ float parseFloat(const std::string &value, int lineNumber) {
 
 } // namespace
 
+glm::quat rotationFromDegrees(glm::vec3 degrees) {
+  const glm::vec3 r = glm::radians(degrees);
+  return glm::angleAxis(r.y, glm::vec3(0, 1, 0)) *
+         glm::angleAxis(r.x, glm::vec3(1, 0, 0)) *
+         glm::angleAxis(r.z, glm::vec3(0, 0, 1));
+}
+
 namespace SceneIO {
 
 SceneDescription loadFromFile(const std::string &path) {
   std::ifstream file(path);
   if (!file.is_open())
     throw std::runtime_error("Failed to open scene file: " + path);
-
-  SceneDescription scene;
+  SceneDescription scene = parse(file, path);
   scene.filePath = path;
+  return scene;
+}
+
+SceneDescription parse(std::istream &file, const std::string &path) {
+  SceneDescription scene;
   scene.name = std::filesystem::path(path).stem().string();
 
   enum class Section { Global, Camera, Model, Ring };
   Section section = Section::Global;
+  std::vector<int> modelLines; // header line of each [model], for errors
 
   std::string line;
   int lineNumber = 0;
@@ -85,6 +172,7 @@ SceneDescription loadFromFile(const std::string &path) {
       } else if (name == "model") {
         section = Section::Model;
         scene.models.emplace_back();
+        modelLines.push_back(lineNumber);
       } else if (name == "ring") {
         section = Section::Ring;
         scene.rings.emplace_back();
@@ -137,6 +225,18 @@ SceneDescription loadFromFile(const std::string &path) {
       SceneModelEntry &model = scene.models.back();
       if (key == "path")
         model.path = value;
+      else if (key == "shape")
+        model.shape = parseShape(value, lineNumber);
+      else if (key == "size")
+        model.size = parseVec3(value, lineNumber);
+      else if (key == "radius")
+        model.radius = parseFloat(value, lineNumber);
+      else if (key == "height")
+        model.height = parseFloat(value, lineNumber);
+      else if (key == "color")
+        model.color = parseVec3(value, lineNumber);
+      else if (key == "body")
+        model.body = parseBody(value, lineNumber);
       else if (key == "position")
         model.transform.position = parseVec3(value, lineNumber);
       else if (key == "rotation")
@@ -181,10 +281,8 @@ SceneDescription loadFromFile(const std::string &path) {
     }
   }
 
-  for (const SceneModelEntry &model : scene.models)
-    if (model.path.empty())
-      throw std::runtime_error("scene file " + path +
-                               ": [model] section is missing 'path'");
+  for (size_t i = 0; i < scene.models.size(); ++i)
+    checkModel(scene.models[i], modelLines[i]);
   for (const SceneRingEntry &ring : scene.rings)
     if (ring.path.empty())
       throw std::runtime_error("scene file " + path +

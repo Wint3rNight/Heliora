@@ -226,6 +226,24 @@ TEST(removed_body_leaves_the_moved_list) {
   CHECK(world.movedBodies().empty());
 }
 
+TEST(moved_poses_carry_user_data_and_blend) {
+  PhysicsWorld world;
+  PhysicsBodyDesc desc;
+  desc.position = glm::vec3(0.0f, 5.0f, 0.0f);
+  desc.userData = 42;
+  const PhysicsBodyId box = world.addBody(desc);
+  world.step(kStep);
+  world.step(kStep);
+
+  const PhysicsPose expected = world.interpolatedPose(box, 0.5f);
+  const std::vector<PhysicsMovedPose> &moved = world.movedPoses(0.5f);
+  CHECK(moved.size() == 1);
+  if (moved.size() == 1) {
+    CHECK(moved[0].userData == 42);
+    CHECK(moved[0].pose.position == expected.position);
+  }
+}
+
 TEST(too_small_limits_are_reported) {
   // Room for only 4 contacts: the heap needs far more, and Jolt silently
   // drops the rest unless step() reports it.

@@ -1,6 +1,12 @@
 #pragma once
 
+#include "PhysicsWorld.h"
+#include "PrimitiveMesh.h"
+
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,8 +37,21 @@ struct NodeTransform {
   float scale = 1.0f;
 };
 
+// rotationDeg as a quaternion. Scene nodes and physics bodies both build
+// their rotation through this, so a body spawns at exactly its node's angle.
+glm::quat rotationFromDegrees(glm::vec3 degrees);
+
+// A model is a file (path) or a shape generated in code (shape), never both.
 struct SceneModelEntry {
   std::string path;
+  std::optional<PrimitiveShape> shape;
+  glm::vec3 size = glm::vec3(1.0f);  // box: full extents; plane: x and z
+  float radius = 0.5f;               // sphere and capsule
+  float height = 2.0f;               // capsule, end to end
+  glm::vec3 color = glm::vec3(0.8f); // tint for generated shapes
+  // Set for shapes that take part in physics. The collider is the shape
+  // itself; a plane becomes a static slab under its surface.
+  std::optional<PhysicsMotion> body;
   NodeTransform transform;
   NodeAnimation animation;
 };
@@ -69,6 +88,10 @@ namespace SceneIO {
 // [model], and [ring] sections; `#` starts a comment). Throws
 // std::runtime_error with a line number on malformed input.
 SceneDescription loadFromFile(const std::string &path);
+
+// The same, from any stream. sourceName gives the default scene name and
+// goes into error messages.
+SceneDescription parse(std::istream &in, const std::string &sourceName);
 
 // Loads every *.scene file in `directory`, sorted by filename. Tries the
 // directory as given and prefixed with "../" (the binary runs from build/).

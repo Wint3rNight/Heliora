@@ -262,6 +262,12 @@ Run it from the build directory, since shaders load from `../Shaders`:
 cd build && ./VulkanRenderer
 ```
 
+Run the tests (no GPU needed):
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
 The project currently assumes an X11 GLFW platform in `src/main.cpp`, so Linux/X11 is the path of least resistance right now. Other platforms should be possible, but they are not the focus of the current setup.
 
 ## Recompiling Shaders
@@ -280,6 +286,7 @@ The script compiles `.vert`, `.frag`, and `.comp` files with `glslangValidator`.
 ```text
 include/                 Public headers for renderer systems
 src/                     C++ implementation
+tests/                   Test program (CTest), GPU-free
 Shaders/                 GLSL shaders and compiled SPIR-V
 Resources/Models/        Demo glTF assets
 Resources/Scenes/        Data-driven scene files (runtime-switchable)

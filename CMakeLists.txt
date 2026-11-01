@@ -98,6 +98,22 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
         "include/*.hpp"
 )
 
+# Game code with no Vulkan in it, shared by the game and the test program so
+# it compiles once. Jolt is PUBLIC so everything that links this library is
+# built with the same Jolt defines and CPU flags.
+set(HELIORA_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
+)
+list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
+add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
+target_include_directories(heliora_core PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(heliora_core
+        PUBLIC glm::glm Jolt
+        PRIVATE spdlog::spdlog
+)
+
 # Create the Executable
 add_executable(${PROJECT_NAME} ${ALL_SOURCES})
 
@@ -114,7 +130,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         glm::glm
         spdlog::spdlog
         Threads::Threads
-        Jolt
+        heliora_core
 )
 
 # Vulkan-style depth [0,1] for all glm projection matrices
@@ -128,5 +144,14 @@ else()
 endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer imgui_lib)
+
+# Tests: no GPU needed. Run with `ctest --test-dir build --output-on-failure`.
+enable_testing()
+add_executable(heliora_tests
+        tests/main.cpp
+        tests/PhysicsWorldTests.cpp
+)
+target_link_libraries(heliora_tests PRIVATE heliora_core)
+add_test(NAME heliora_tests COMMAND heliora_tests)
 
 message(STATUS "Vulkan SDK: ${Vulkan_INCLUDE_DIRS}")

@@ -206,6 +206,8 @@ GPU pass timing (same run):
 | SSR / TAA / tonemap composite | 0.54 ms |
 | ImGui | 0.06 ms |
 
+The shadow number above is too low: until a fix on 2026-11-01, the three near cascades never held any geometry (their depth range sat behind the light), so the shadow pass mostly drew nothing and every shadow came from the coarsest cascade. With the fix the cascaded shadow pass takes about 2.2 ms in Sponza. The table gets re-measured with the next benchmark run.
+
 Two things worth noting. The frame is dominated by the screen-space lighting passes (SSGI + deferred lit) rather than geometry submission — frustum culling and LOD selection keep the G-buffer pass cheap even with the scene fully in view. And a same-day Debug-with-validation run measured within ~1 ms of this Release run (well inside thermal run-to-run variance on a laptop GPU): the renderer is thoroughly GPU-bound, so CPU-side build flags barely move the frame time.
 
 ## Controls

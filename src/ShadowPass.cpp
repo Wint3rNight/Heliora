@@ -1,4 +1,5 @@
 #include "ShadowPass.h"
+#include "ShadowCascades.h"
 
 #include "VulkanDebug.h"
 
@@ -228,80 +229,14 @@ void ShadowPass::cleanup() {
 void ShadowPass::updateLightSpaceMatrices(SceneUniformBuffer &sceneUbo,
                                           float csmFarValue,
                                           float drawDistance) {
-  const float nearPlane = 0.1f;
-  const float csmFar = std::min(csmFarValue, drawDistance);
-  const float farPlane = csmFar;
-  const float lambda = 0.75f;
-
-  float splits[NUM_CSM_CASCADES];
-  for (int i = 0; i < NUM_CSM_CASCADES; i++) {
-    float p = (i + 1) / float(NUM_CSM_CASCADES);
-    float logSplit = nearPlane * std::pow(farPlane / nearPlane, p);
-    float uniformSplit = nearPlane + (farPlane - nearPlane) * p;
-    splits[i] = lambda * logSplit + (1.0f - lambda) * uniformSplit;
-  }
-  sceneUbo.cascadeSplits =
-      glm::vec4(splits[0], splits[1], splits[2], splits[3]);
-
-  glm::vec3 lightDir =
-      glm::normalize(glm::vec3(sceneUbo.directionalLight.direction));
-  glm::vec3 lightUp = (std::abs(lightDir.y) > 0.99f)
-                          ? glm::vec3(0.0f, 0.0f, 1.0f)
-                          : glm::vec3(0.0f, 1.0f, 0.0f);
-  glm::mat4 lightView =
-      glm::lookAt(-lightDir * 100.0f, glm::vec3(0.0f), lightUp);
-  glm::mat4 invCam = glm::inverse(sceneUbo.projection * sceneUbo.view);
-
-  auto viewDepthToNdcZ = [&](float depth) -> float {
-    glm::vec4 clip =
-        sceneUbo.projection * glm::vec4(0.0f, 0.0f, -depth, 1.0f);
-    return clip.z / clip.w;
-  };
-
-  float prevSplit = nearPlane;
-  for (int i = 0; i < NUM_CSM_CASCADES; i++) {
-    float nearNdc = viewDepthToNdcZ(prevSplit);
-    float farNdc = viewDepthToNdcZ(splits[i]);
-
-    glm::vec3 corners[8];
-    int k = 0;
-    for (float nx : {-1.0f, 1.0f}) {
-      for (float ny : {-1.0f, 1.0f}) {
-        for (float nz : {nearNdc, farNdc}) {
-          glm::vec4 world = invCam * glm::vec4(nx, ny, nz, 1.0f);
-          corners[k++] = glm::vec3(world) / world.w;
-        }
-      }
-    }
-
-    glm::vec3 frustumCenter = glm::vec3(glm::inverse(sceneUbo.view)[3]);
-
-    float sphereRadius = 0.0f;
-    for (const glm::vec3 &corner : corners)
-      sphereRadius =
-          glm::max(sphereRadius, glm::length(corner - frustumCenter));
-
-    glm::vec3 lsCenter =
-        glm::vec3(lightView * glm::vec4(frustumCenter, 1.0f));
-    float texelSize = 2.0f * sphereRadius / float(SHADOW_MAP_SIZE);
-    if (texelSize > 0.0f) {
-      lsCenter.x = std::floor(lsCenter.x / texelSize) * texelSize;
-      lsCenter.y = std::floor(lsCenter.y / texelSize) * texelSize;
-    }
-
-    glm::vec3 minBounds(lsCenter.x - sphereRadius, lsCenter.y - sphereRadius,
-                        lsCenter.z - sphereRadius - csmFar);
-    glm::vec3 maxBounds(lsCenter.x + sphereRadius, lsCenter.y + sphereRadius,
-                        lsCenter.z + sphereRadius + csmFar);
-
-    glm::mat4 lightProj =
-        glm::ortho(minBounds.x, maxBounds.x, minBounds.y, maxBounds.y,
-                   minBounds.z, maxBounds.z);
-    lightProj[1][1] *= -1.0f;
-    sceneUbo.lightSpaceMatrices[i] = lightProj * lightView;
-
-    prevSplit = splits[i];
-  }
+  static_assert(kShadowCascades == NUM_CSM_CASCADES);
+  const ShadowCascades cascades = fitShadowCascades(
+      sceneUbo.view, sceneUbo.projection,
+      glm::vec3(sceneUbo.directionalLight.direction), csmFarValue,
+      drawDistance, SHADOW_MAP_SIZE);
+  sceneUbo.cascadeSplits = cascades.splits;
+  for (int i = 0; i < NUM_CSM_CASCADES; i++)
+    sceneUbo.lightSpaceMatrices[i] = cascades.lightSpace[i];
 }
 
 void ShadowPass::updatePointShadowMatrices(SceneUniformBuffer &sceneUbo) {

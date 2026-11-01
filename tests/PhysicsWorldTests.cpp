@@ -138,6 +138,94 @@ TEST(removed_body_is_gone) {
   CHECK(world.bodyCount() == before);
 }
 
+TEST(interpolation_blends_between_the_last_two_steps) {
+  PhysicsWorld world;
+  addFloor(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 5.0f, 0.0f));
+  world.step(kStep);
+  const PhysicsPose before = world.pose(box);
+  world.step(kStep);
+  const PhysicsPose after = world.pose(box);
+
+  CHECK(before.position.y > after.position.y); // still falling
+  CHECK(world.interpolatedPose(box, 0.0f).position == before.position);
+  CHECK(world.interpolatedPose(box, 1.0f).position == after.position);
+  CHECK_NEAR(world.interpolatedPose(box, 0.5f).position.y,
+             (before.position.y + after.position.y) / 2.0, 1e-5);
+}
+
+TEST(new_body_interpolates_from_its_spawn_pose) {
+  PhysicsWorld world;
+  const PhysicsBodyId box = addBox(world, glm::vec3(1.0f, 5.0f, 2.0f));
+
+  CHECK(world.interpolatedPose(box, 0.7f).position ==
+        glm::vec3(1.0f, 5.0f, 2.0f));
+}
+
+TEST(resting_body_stops_interpolating) {
+  PhysicsWorld world;
+  addFloor(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  stepFor(world, 180);
+  CHECK(!world.isActive(box));
+
+  // The resting pose at any alpha, or the box would twitch while asleep as
+  // alpha changes from frame to frame. 1e-6 is for float rounding.
+  const PhysicsPose rest = world.pose(box);
+  for (float alpha : {0.0f, 0.3f, 0.9f}) {
+    const PhysicsPose drawn = world.interpolatedPose(box, alpha);
+    CHECK(glm::length(drawn.position - rest.position) < 1e-6f);
+    CHECK(std::fabs(glm::dot(drawn.rotation, rest.rotation)) > 1.0f - 1e-6f);
+  }
+}
+
+TEST(body_is_listed_in_the_step_it_falls_asleep) {
+  PhysicsWorld world;
+  addFloor(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  for (int i = 0; i < 600 && world.isActive(box); ++i)
+    world.step(kStep);
+  CHECK(!world.isActive(box));
+
+  // The step that put it to sleep still lists it, so its node gets the
+  // final resting pose instead of staying where the last frame drew it.
+  bool listed = false;
+  for (PhysicsBodyId moved : world.movedBodies())
+    listed = listed || moved.value == box.value;
+  CHECK(listed);
+}
+
+TEST(moved_bodies_lists_only_what_moved) {
+  PhysicsWorld world;
+  const PhysicsBodyId floor = addFloor(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  world.step(kStep);
+
+  auto listed = [&](PhysicsBodyId id) {
+    for (PhysicsBodyId moved : world.movedBodies())
+      if (moved.value == id.value)
+        return true;
+    return false;
+  };
+  CHECK(listed(box));
+  CHECK(!listed(floor));
+
+  // Once the box is asleep, one more step drops it from the list.
+  stepFor(world, 180);
+  CHECK(!world.isActive(box));
+  world.step(kStep);
+  CHECK(world.movedBodies().empty());
+}
+
+TEST(removed_body_leaves_the_moved_list) {
+  PhysicsWorld world;
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 5.0f, 0.0f));
+  world.step(kStep);
+  world.removeBody(box);
+
+  CHECK(world.movedBodies().empty());
+}
+
 TEST(too_small_limits_are_reported) {
   // Room for only 4 contacts: the heap needs far more, and Jolt silently
   // drops the rest unless step() reports it.

@@ -50,36 +50,36 @@ target_include_directories(imgui_lib PUBLIC
 )
 target_link_libraries(imgui_lib PUBLIC Vulkan::Vulkan glfw)
 
-# Jolt Physics: the physics engine (the agreed exception to building our own
-# systems). Jolt's options are plain variables set before
-# FetchContent_MakeAvailable; its option() calls keep them (policy CMP0077).
-# Jolt's sample and test programs only build when it is the top-level project.
+# Jolt Physics, the one engine we don't write ourselves. Its options are plain
+# variables set before FetchContent_MakeAvailable (its option() calls keep
+# them, policy CMP0077). Its samples and tests only build when Jolt is the
+# top-level project, so they're off already.
 set(ENABLE_INSTALL OFF)
-# The GPU compute backends exist for Jolt's hair simulation; Heliora has none.
+# The GPU compute backends are for Jolt's hair simulation. We have no hair.
 set(JPH_USE_VK OFF)
 set(JPH_USE_DX12 OFF)
 set(JPH_USE_MTL OFF)
 set(JPH_USE_CPU_COMPUTE OFF)
-# Our own CPU timers measure the physics step, and Jolt's ObjectStream file
-# format is unused, so neither costs time or code.
+# Our own timers measure the step, and we don't use Jolt's ObjectStream file
+# format.
 set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
 set(ENABLE_OBJECT_STREAM OFF)
-# Kept in Debug and Release for the F2 collision-shape view; a shipping build
-# turns it off (it adds a few branches to Jolt's narrow phase).
+# On in Debug and Release for the F2 collision-shape view. A shipping build
+# should turn it off, it adds a few branches to Jolt's narrow phase.
 set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE ON)
-# -Werror on code we don't own would break the build on each new gcc warning.
+# -Werror on code we don't own breaks the build with every new gcc warning.
 set(ENABLE_ALL_WARNINGS OFF)
-# Debug symbols only where we debug: in Release they only cost build RAM.
+# Debug symbols only in Debug. In Release they just cost build RAM.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(GENERATE_DEBUG_SYMBOLS ON)
 else()
   set(GENERATE_DEBUG_SYMBOLS OFF)
 endif()
-# Link-time optimization is off until measured: its link step runs many
-# compiler processes at once, which this machine's RAM does not tolerate.
+# No link-time optimization until it's measured. Its link step runs a lot of
+# compiler processes at once, and this machine's RAM doesn't like that.
 set(INTERPROCEDURAL_OPTIMIZATION OFF)
-# Note: Jolt adds -mavx2 -mfma (PUBLIC) to every target that links it, so the
-# whole game requires a CPU with AVX2 and FMA.
+# Jolt adds -mavx2 -mfma (PUBLIC) to everything that links it, so the game
+# needs a CPU with AVX2 and FMA.
 FetchContent_Declare(
   JoltPhysics
   GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
@@ -98,9 +98,9 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
         "include/*.hpp"
 )
 
-# Game code with no Vulkan in it, shared by the game and the test program so
-# it compiles once. Jolt is PUBLIC so everything that links this library is
-# built with the same Jolt defines and CPU flags.
+# Vulkan-free game code, shared by the game and the tests so it compiles
+# once. Jolt is PUBLIC so everything linking this gets the same Jolt defines
+# and CPU flags.
 set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
 )
@@ -149,6 +149,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer imgui_lib)
 enable_testing()
 add_executable(heliora_tests
         tests/main.cpp
+        tests/FixedStepTests.cpp
         tests/PhysicsWorldTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)

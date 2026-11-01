@@ -138,8 +138,8 @@ private:
   double lastCpuPhaseMs[NUM_CPU_PHASES] = {};
   double totalCpuPhaseMs[NUM_CPU_PHASES] = {};
   uint64_t cpuPhaseSamples[NUM_CPU_PHASES] = {};
-  // Sums since the last [perf] line, so its CPU numbers cover the same 120
-  // frames as its GPU numbers instead of averaging in the startup frames.
+  // Sums since the last [perf] line, so its CPU means cover the same 120
+  // frames as the GPU numbers, not everything since startup.
   double windowCpuPhaseMs[NUM_CPU_PHASES] = {};
   uint32_t windowCpuPhaseSamples[NUM_CPU_PHASES] = {};
 

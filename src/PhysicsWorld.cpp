@@ -1,6 +1,6 @@
 #include "PhysicsWorld.h"
 
-// Jolt.h must come before any other Jolt header.
+// Jolt.h has to come before any other Jolt header.
 #include <Jolt/Jolt.h>
 
 #include <Jolt/Core/Factory.h>
@@ -27,15 +27,15 @@
 
 namespace {
 
-// Object layers say what a body is. Static bodies never test against each
-// other, which removes most pairs in a world that is mostly static.
+// Static bodies never test against each other, which cuts most pairs in a
+// world that's mostly static.
 namespace Layers {
 constexpr JPH::ObjectLayer NonMoving = 0;
 constexpr JPH::ObjectLayer Moving = 1;
 } // namespace Layers
 
-// Jolt keeps one bounding-volume tree per broad-phase layer, so the tree of
-// static bodies is not touched when dynamic bodies move.
+// One broad phase tree per layer, so moving bodies never touch the static
+// tree.
 namespace BroadPhaseLayers {
 constexpr JPH::BroadPhaseLayer NonMoving(0);
 constexpr JPH::BroadPhaseLayer Moving(1);
@@ -62,7 +62,7 @@ class ObjectVsBroadPhaseFilter final : public JPH::ObjectVsBroadPhaseLayerFilter
 public:
   bool ShouldCollide(JPH::ObjectLayer layer,
                      JPH::BroadPhaseLayer broadPhaseLayer) const override {
-    // A static body only has to look in the tree of moving bodies.
+    // A static body only needs to look in the moving tree.
     return layer != Layers::NonMoving ||
            broadPhaseLayer == BroadPhaseLayers::Moving;
   }
@@ -87,21 +87,20 @@ void traceToLog(const char *format, ...) {
 #ifdef JPH_ENABLE_ASSERTS
 bool assertToLog(const char *expression, const char *message, const char *file,
                  JPH::uint line) {
-  // Dropped contacts are reported and counted by step(), so they don't stop a
-  // Debug build. If a Jolt update rewords this message, the assert simply
-  // stops the program again, which is the safe direction.
+  // step() already counts and logs dropped contacts, so don't stop a Debug
+  // build for them. If Jolt ever rewords this message the assert just stops
+  // the program again, which is the safe way to fail.
   if (message &&
       std::strstr(message, "error occurred during the physics update"))
     return false;
   spdlog::error("[physics] Jolt assert {}:{}: ({}) {}", file, line, expression,
                 message ? message : "");
-  return true; // every other assert is a bug: stop, in the debugger if attached
+  return true; // anything else is a bug: stop (in the debugger if attached)
 }
 #endif
 
-// Jolt's allocator hooks, factory and type registry are process-wide, so
-// every PhysicsWorld shares them: the first world sets them up and the last
-// one tears them down.
+// Jolt's allocator hooks, factory and type registry are process-wide. The
+// first world sets them up, the last one tears them down.
 std::mutex joltRuntimeMutex;
 int joltRuntimeUsers = 0;
 
@@ -128,8 +127,8 @@ struct JoltRuntimeUser {
 
 JPH::Vec3 toJolt(glm::vec3 v) { return JPH::Vec3(v.x, v.y, v.z); }
 JPH::RVec3 toJoltPosition(glm::vec3 v) { return JPH::RVec3(v.x, v.y, v.z); }
-// Jolt checks that rotations are unit length (to 1e-5); glm results can be a
-// rounding error away from that.
+// Jolt wants rotations unit length to within 1e-5, and glm results can be a
+// rounding error off.
 JPH::Quat toJolt(glm::quat q) {
   return JPH::Quat(q.x, q.y, q.z, q.w).Normalized();
 }
@@ -150,7 +149,7 @@ JPH::ShapeRefC makeShape(const PhysicsBodyDesc &desc) {
   case PhysicsShape::Box:
     break;
   }
-  // Jolt rounds a box's edges by a convex radius that must fit inside it.
+  // Jolt rounds box edges by a convex radius, which has to fit inside.
   const glm::vec3 h = desc.halfExtents;
   const float convexRadius =
       std::min(JPH::cDefaultConvexRadius, std::min({h.x, h.y, h.z}));
@@ -159,9 +158,19 @@ JPH::ShapeRefC makeShape(const PhysicsBodyDesc &desc) {
 
 } // namespace
 
+PhysicsPose blendPoses(const PhysicsPose &from, const PhysicsPose &to,
+                       float alpha) {
+  // nlerp, not slerp: over one step's worth of rotation they agree to
+  // 0.0005 rad even at 30 rad/s of spin, and nlerp skips acos and sin.
+  // q and -q are the same rotation, so flip to take the short way round.
+  const glm::quat target =
+      glm::dot(from.rotation, to.rotation) < 0.0f ? -to.rotation : to.rotation;
+  return {glm::mix(from.position, to.position, alpha),
+          glm::normalize(glm::lerp(from.rotation, target, alpha))};
+}
+
 struct PhysicsWorld::Impl {
-  // Members are destroyed in reverse order: the physics system goes first,
-  // then what it uses, and the Jolt runtime last.
+  // Destroyed bottom up: the physics system first, the Jolt runtime last.
   JoltRuntimeUser runtime;
   BroadPhaseLayerMap broadPhaseLayers;
   ObjectVsBroadPhaseFilter objectVsBroadPhase;
@@ -170,19 +179,76 @@ struct PhysicsWorld::Impl {
   std::unique_ptr<JPH::JobSystemThreadPool> jobSystem;
   JPH::PhysicsSystem system;
 
+  // The two poses each body is drawn between, indexed by Jolt's body index.
+  // Sized to maxBodies up front, so recording them never allocates.
+  struct DrawnPose {
+    PhysicsPose previous;
+    PhysicsPose current;
+  };
+  std::vector<DrawnPose> drawn;
+  // Bodies active after the last step. activeStamp holds the step a body was
+  // last active in, which spots the ones that just fell asleep without a
+  // search.
+  std::vector<JPH::BodyID> lastActive;
+  std::vector<JPH::BodyID> active;
+  std::vector<uint32_t> activeStamp;
+  uint32_t stepCount = 0;
+  std::vector<PhysicsBodyId> moved;
+
   uint32_t droppedContactSteps = 0;
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
   bool warnedFull = false;
+
+  PhysicsPose readPose(JPH::BodyID id) const {
+    JPH::RVec3 position;
+    JPH::Quat rotation;
+    // Origin and identity for an invalid or removed handle.
+    system.GetBodyInterfaceNoLock().GetPositionAndRotation(id, position,
+                                                           rotation);
+    return {toGlm(position), toGlm(rotation)};
+  }
+
+  void recordMovedBodies();
 };
+
+// Runs after every step. Only active bodies are touched, so a world full of
+// sleeping bodies costs nothing here.
+void PhysicsWorld::Impl::recordMovedBodies() {
+  ++stepCount;
+  const JPH::uint count = system.GetNumActiveBodies(JPH::EBodyType::RigidBody);
+  const JPH::BodyID *ids =
+      system.GetActiveBodiesUnsafe(JPH::EBodyType::RigidBody);
+  active.assign(ids, ids + count);
+
+  moved.clear();
+  for (JPH::BodyID id : active) {
+    DrawnPose &pose = drawn[id.GetIndex()];
+    pose.previous = pose.current;
+    pose.current = readPose(id);
+    activeStamp[id.GetIndex()] = stepCount;
+    moved.push_back({id.GetIndexAndSequenceNumber()});
+  }
+  // Fell asleep this step: from now on draw exactly the resting pose. That
+  // skips blending the last sub-millimetre move, and in exchange a sleeping
+  // body can't twitch as alpha changes.
+  for (JPH::BodyID id : lastActive) {
+    if (activeStamp[id.GetIndex()] == stepCount)
+      continue;
+    DrawnPose &pose = drawn[id.GetIndex()];
+    pose.current = readPose(id);
+    pose.previous = pose.current;
+    moved.push_back({id.GetIndexAndSequenceNumber()});
+  }
+  std::swap(lastActive, active);
+}
 
 PhysicsWorld::PhysicsWorld() : PhysicsWorld(Config{}) {}
 
 PhysicsWorld::PhysicsWorld(const Config &config)
     : impl(std::make_unique<Impl>()) {
-  // Every step the contact solver takes a buffer for maxContactConstraints
-  // from the scratch memory, and running out of scratch memory aborts the
-  // program. Insist on room for the rest of the step as well (islands, body
-  // pairs), so a bad config fails here with a message instead.
+  // Every step the contact solver grabs a buffer for maxContactConstraints
+  // from scratch memory, and running out aborts. Want room for the rest of
+  // the step too (islands, body pairs), so fail here with a message instead.
   const size_t contactBytes =
       size_t(config.maxContactConstraints) *
       (JPH::ContactConstraintManager::cMaxConstraintSize + sizeof(uint32_t));
@@ -199,6 +265,12 @@ PhysicsWorld::PhysicsWorld(const Config &config)
   impl->system.Init(config.maxBodies, 0, config.maxBodyPairs,
                     config.maxContactConstraints, impl->broadPhaseLayers,
                     impl->objectVsBroadPhase, impl->objectPairs);
+
+  impl->drawn.resize(config.maxBodies);
+  impl->activeStamp.resize(config.maxBodies, 0);
+  impl->lastActive.reserve(config.maxBodies);
+  impl->active.reserve(config.maxBodies);
+  impl->moved.reserve(config.maxBodies);
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
@@ -222,28 +294,38 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
     settings.mMassPropertiesOverride.mMass = desc.mass;
   }
 
-  // The no-lock interface is safe because everything outside step() runs on
-  // one thread, and it skips a mutex per call.
+  // No-lock is fine because everything outside step() runs on one thread,
+  // and it saves a mutex per call.
   const JPH::BodyID id =
       impl->system.GetBodyInterfaceNoLock().CreateAndAddBody(
           settings, isStatic ? JPH::EActivation::DontActivate
                              : JPH::EActivation::Activate);
-  if (id.IsInvalid() && !impl->warnedFull) {
-    spdlog::warn("[physics] world is full ({} bodies): raise maxBodies",
-                 impl->system.GetMaxBodies());
-    impl->warnedFull = true;
+  if (id.IsInvalid()) {
+    if (!impl->warnedFull) {
+      spdlog::warn("[physics] world is full ({} bodies), raise maxBodies",
+                   impl->system.GetMaxBodies());
+      impl->warnedFull = true;
+    }
+    return {};
   }
+  // Drawn at its spawn pose until the first step moves it.
+  const PhysicsPose spawn = impl->readPose(id);
+  impl->drawn[id.GetIndex()] = {spawn, spawn};
   return PhysicsBodyId{id.GetIndexAndSequenceNumber()};
 }
 
 void PhysicsWorld::removeBody(PhysicsBodyId id) {
   JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
   const JPH::BodyID bodyId(id.value);
-  // IsAdded is false for invalid handles and for handles to removed bodies.
+  // IsAdded is false for invalid handles and already removed bodies.
   if (!id.isValid() || !bodies.IsAdded(bodyId))
     return;
   bodies.RemoveBody(bodyId);
   bodies.DestroyBody(bodyId);
+  // Its index can go to a new body, so it must not stay in these lists.
+  std::erase(impl->lastActive, bodyId);
+  std::erase_if(impl->moved,
+                [&](PhysicsBodyId moved) { return moved.value == id.value; });
 }
 
 void PhysicsWorld::optimizeBroadPhase() { impl->system.OptimizeBroadPhase(); }
@@ -253,27 +335,37 @@ void PhysicsWorld::step(float dt) {
   const JPH::EPhysicsUpdateError errors =
       impl->system.Update(dt, collisionSteps, impl->tempAllocator.get(),
                           impl->jobSystem.get());
-  if (errors == JPH::EPhysicsUpdateError::None)
-    return;
-  ++impl->droppedContactSteps;
-  // Log each kind of error once; after that it is only counted.
-  const uint32_t newErrors =
-      static_cast<uint32_t>(errors) & ~impl->loggedErrors;
-  if (newErrors != 0) {
-    spdlog::warn("[physics] Jolt dropped contacts (error bits {:#x}): raise "
-                 "maxBodyPairs or maxContactConstraints",
-                 newErrors);
-    impl->loggedErrors |= newErrors;
+  if (errors != JPH::EPhysicsUpdateError::None) {
+    ++impl->droppedContactSteps;
+    // Each kind gets logged once, after that it's only counted.
+    const uint32_t newErrors =
+        static_cast<uint32_t>(errors) & ~impl->loggedErrors;
+    if (newErrors != 0) {
+      spdlog::warn("[physics] Jolt dropped contacts (error bits {:#x}), raise "
+                   "maxBodyPairs or maxContactConstraints",
+                   newErrors);
+      impl->loggedErrors |= newErrors;
+    }
   }
+  impl->recordMovedBodies();
 }
 
 PhysicsPose PhysicsWorld::pose(PhysicsBodyId id) const {
-  JPH::RVec3 position;
-  JPH::Quat rotation;
-  // Gives the origin and identity for an invalid or removed handle.
-  impl->system.GetBodyInterfaceNoLock().GetPositionAndRotation(
-      JPH::BodyID(id.value), position, rotation);
-  return {toGlm(position), toGlm(rotation)};
+  return impl->readPose(JPH::BodyID(id.value));
+}
+
+PhysicsPose PhysicsWorld::interpolatedPose(PhysicsBodyId id,
+                                           float alpha) const {
+  const JPH::BodyID bodyId(id.value);
+  // A removed body's slot may belong to a new body by now.
+  if (!id.isValid() || !impl->system.GetBodyInterfaceNoLock().IsAdded(bodyId))
+    return {glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+  const Impl::DrawnPose &pose = impl->drawn[bodyId.GetIndex()];
+  return blendPoses(pose.previous, pose.current, alpha);
+}
+
+const std::vector<PhysicsBodyId> &PhysicsWorld::movedBodies() const {
+  return impl->moved;
 }
 
 bool PhysicsWorld::isActive(PhysicsBodyId id) const {

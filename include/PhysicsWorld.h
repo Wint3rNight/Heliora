@@ -5,25 +5,24 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
-// Rigid-body physics on Jolt. No Vulkan and no Jolt types in this header:
-// the test program runs it without a GPU, and files that include it don't
-// pay for Jolt's headers. The Jolt objects live in PhysicsWorld.cpp.
+// Rigid-body physics on Jolt. Jolt and Vulkan stay out of this header, so the
+// tests run without a GPU and files that include it skip Jolt's headers.
 //
-// Not thread-safe: call everything from one thread (the main thread). Jolt's
-// own worker threads run only inside step().
+// Not thread-safe: call it from the main thread. Jolt's workers only run
+// inside step().
 
-// A body handle. It wraps Jolt's BodyID (index plus a sequence number), so a
-// handle to a removed body never silently refers to a new one.
+// Wraps Jolt's BodyID (index plus a sequence number), so a stale handle never
+// points at a new body.
 struct PhysicsBodyId {
-  uint32_t value = 0xffffffffu; // Jolt's "no body" value
+  uint32_t value = 0xffffffffu; // Jolt's "no body"
   bool isValid() const { return value != 0xffffffffu; }
 };
 
 enum class PhysicsShape : uint8_t { Box, Sphere, Capsule };
 
-// Static bodies never move. Dynamic bodies are moved by the simulation.
-// Kinematic bodies are moved by code and push dynamic bodies out of the way.
+// Kinematic bodies are moved by our code and push dynamic bodies aside.
 enum class PhysicsMotion : uint8_t { Static, Dynamic, Kinematic };
 
 struct PhysicsBodyDesc {
@@ -44,21 +43,23 @@ struct PhysicsPose {
   glm::quat rotation;
 };
 
+// Pose between two physics steps, alpha 0 to 1.
+PhysicsPose blendPoses(const PhysicsPose &from, const PhysicsPose &to,
+                       float alpha);
+
 class PhysicsWorld {
 public:
   struct Config {
-    // Jolt preallocates for these limits, so nothing is allocated per step.
-    // The defaults are the ones Jolt's own samples use for scenes of about
-    // 10,000 bodies. Contacts beyond the limits are dropped, and counted by
-    // droppedContactSteps().
+    // Jolt preallocates for these, so a step never allocates. The defaults
+    // are what Jolt's samples use for about 10,000 bodies. Contacts past the
+    // limits get dropped (see droppedContactSteps()).
     uint32_t maxBodies = 16384;
     uint32_t maxBodyPairs = 65536;
     uint32_t maxContactConstraints = 20480;
-    // Scratch memory for one step. Running out aborts the program, so the
-    // constructor checks it against the contact limit above.
+    // Scratch memory for one step. Jolt aborts if it runs out, so the
+    // constructor checks it against maxContactConstraints.
     uint32_t tempAllocatorBytes = 32u * 1024u * 1024u;
-    // The main thread also works while it waits, so a step runs on
-    // workerThreads + 1 threads.
+    // The main thread helps while it waits, so a step uses workerThreads + 1.
     uint32_t workerThreads = 4;
   };
 
@@ -68,26 +69,31 @@ public:
   PhysicsWorld(const PhysicsWorld &) = delete;
   PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
-  // Returns an invalid id if the world is full (maxBodies).
+  // Invalid id if the world is full (maxBodies).
   PhysicsBodyId addBody(const PhysicsBodyDesc &desc);
   void removeBody(PhysicsBodyId id);
 
-  // Call once after adding many bodies at once (a scene load): rebuilds the
-  // broad phase's tree, which adding bodies one by one leaves unbalanced.
+  // Call after adding a lot of bodies at once, like a scene load. Adding them
+  // one by one leaves the broad phase tree unbalanced.
   void optimizeBroadPhase();
 
-  // Advances the simulation by dt seconds.
   void step(float dt);
 
-  // Position and rotation of the body's origin.
+  // Latest pose of the body's origin.
   PhysicsPose pose(PhysicsBodyId id) const;
-  // False once the body is asleep (at rest). Sleeping bodies cost nothing.
+  // The pose to draw: blended between the last two steps by the clock's
+  // alpha, so motion looks smooth at any frame rate.
+  PhysicsPose interpolatedPose(PhysicsBodyId id, float alpha) const;
+  // Bodies whose drawn pose can change: everything that moved in the last
+  // step. Sleeping bodies never show up, so their nodes cost nothing.
+  const std::vector<PhysicsBodyId> &movedBodies() const;
+  // False once the body's asleep.
   bool isActive(PhysicsBodyId id) const;
 
   uint32_t bodyCount() const;
   uint32_t activeBodyCount() const;
-  // Steps where Jolt dropped contacts because a limit in Config was too
-  // small. Bodies then sink into each other, so this should stay 0.
+  // Steps where Jolt dropped contacts because a Config limit was too small.
+  // Bodies sink into each other when that happens, so this should stay 0.
   uint32_t droppedContactSteps() const;
 
 private:

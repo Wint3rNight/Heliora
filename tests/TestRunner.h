@@ -1,11 +1,11 @@
 #pragma once
 
-// A tiny test runner, so the project needs no test framework.
+// Tiny test runner, so we don't need a test framework.
 //   TEST(name) { ... }        defines and registers a test
 //   CHECK(cond)               records a failure and keeps the test running
 //   CHECK_NEAR(a, b, eps)     the same, for numbers within eps of each other
-// tests/main.cpp runs every registered test and returns non-zero if any
-// check failed, which is what CTest looks at.
+// tests/main.cpp runs them all and returns non-zero if any check failed,
+// which is what CTest looks at.
 
 #include <cmath>
 #include <cstdio>
@@ -23,7 +23,7 @@ inline std::vector<Case> &registry() {
   return cases;
 }
 
-// Failed checks in the test that is currently running.
+// Failed checks in the running test.
 inline int &currentFailures() {
   static int failures = 0;
   return failures;

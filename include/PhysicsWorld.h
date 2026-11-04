@@ -31,7 +31,8 @@ struct PhysicsBodyDesc {
   float radius = 0.5f;         // sphere and capsule
   float halfHeight = 0.5f;     // capsule: half the length of its straight part
   PhysicsMotion motion = PhysicsMotion::Dynamic;
-  float mass = 0.0f;           // kg; 0 = from the volume at 1000 kg/m^3
+  float mass = 0.0f;           // kg; 0 = volume times density
+  float density = 1000.0f;     // kg/m^3, used when mass is 0
   float friction = 0.2f;
   float restitution = 0.0f;    // bounciness, 0 to 1
   glm::vec3 position{0.0f};
@@ -109,6 +110,8 @@ public:
   const std::vector<PhysicsMovedPose> &movedPoses(float alpha);
   // False once the body's asleep.
   bool isActive(PhysicsBodyId id) const;
+  // In kg. 0 for static bodies, which never move.
+  float mass(PhysicsBodyId id) const;
 
   uint32_t bodyCount() const;
   uint32_t activeBodyCount() const;

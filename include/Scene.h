@@ -64,6 +64,8 @@ struct SceneModelEntry {
   std::optional<PhysicsMotion> body;
   // Only with a body. Unset keeps PhysicsBodyDesc's defaults.
   std::optional<float> mass;        // kg
+  std::optional<float> density;     // kg/m^3
+  std::optional<std::string> material; // wood, stone, metal, rubber, ice
   std::optional<float> friction;    // 0 and up
   std::optional<float> restitution; // bounciness, 0 to 1
   NodeTransform transform;

@@ -117,3 +117,46 @@ TEST(body_desc_takes_mass_friction_and_restitution) {
   CHECK(plain.mass == PhysicsBodyDesc{}.mass);
   CHECK(plain.friction == PhysicsBodyDesc{}.friction);
 }
+
+TEST(materials_have_real_densities) {
+  auto density = [](const char *name) {
+    const std::optional<PhysicsMaterial> material = findMaterial(name);
+    return material ? material->density : -1.0f;
+  };
+  CHECK(density("wood") == 600.0f);
+  CHECK(density("stone") == 2400.0f);
+  CHECK(density("metal") == 7800.0f);
+  CHECK(density("rubber") == 1100.0f);
+  CHECK(density("ice") == 920.0f);
+  CHECK(findMaterial("Stone").has_value()); // case doesn't matter
+  CHECK(!findMaterial("cheese"));
+}
+
+TEST(mass_beats_density_beats_material) {
+  SceneModelEntry box = entry(PrimitiveShape::Box, PhysicsMotion::Dynamic);
+  box.material = "wood";
+  box.density = 2000.0f;
+  box.mass = 5.0f;
+  CHECK(bodyDescFor(box).mass == 5.0f);
+
+  box.mass.reset();
+  CHECK(bodyDescFor(box).mass == 0.0f);
+  CHECK(bodyDescFor(box).density == 2000.0f);
+
+  box.density.reset();
+  CHECK(bodyDescFor(box).density == 600.0f); // wood
+
+  box.material.reset();
+  CHECK(bodyDescFor(box).density == 1000.0f); // the default
+}
+
+TEST(material_sets_friction_and_restitution) {
+  SceneModelEntry ball = entry(PrimitiveShape::Sphere, PhysicsMotion::Dynamic);
+  ball.material = "rubber";
+  CHECK(bodyDescFor(ball).friction == 0.9f);
+  CHECK(bodyDescFor(ball).restitution == 0.7f);
+
+  ball.friction = 0.1f; // a key in the file beats the material
+  CHECK(bodyDescFor(ball).friction == 0.1f);
+  CHECK(bodyDescFor(ball).restitution == 0.7f);
+}

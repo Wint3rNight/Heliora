@@ -344,3 +344,29 @@ TEST(failed_save_keeps_the_old_file) {
   CHECK(readFile(path) == "name = Old\n");
   std::filesystem::remove_all(dir);
 }
+
+TEST(unknown_material_is_an_error_with_its_line) {
+  const std::string error = errorOf("[model]\nshape = box\nbody = dynamic\n"
+                                    "material = cheese\n");
+  CHECK(error.find("line 4") != std::string::npos);
+  CHECK(error.find("cheese") != std::string::npos);
+}
+
+TEST(density_must_be_positive) {
+  CHECK(errorOf("[model]\nshape = box\nbody = dynamic\ndensity = 0\n")
+            .find("density") != std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\ndensity = 500\n")
+            .find("need a 'body'") != std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nmaterial = wood\n")
+            .find("need a 'body'") != std::string::npos);
+}
+
+TEST(material_and_density_survive_a_round_trip) {
+  const SceneDescription scene = parseText("[model]\nshape = box\n"
+                                           "body = dynamic\nmaterial = wood\n"
+                                           "density = 500\n");
+  CHECK(scene.models.front().material == "wood");
+  CHECK(scene.models.front().density == 500.0f);
+  CHECK(SceneIO::write(scene).find("material = wood\n") != std::string::npos);
+  CHECK(reparse(scene) == scene);
+}

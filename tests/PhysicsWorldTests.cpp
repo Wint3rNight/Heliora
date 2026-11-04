@@ -288,3 +288,17 @@ TEST(too_small_limits_are_reported) {
 
   CHECK(world.droppedContactSteps() > 0);
 }
+
+TEST(density_sets_mass) {
+  PhysicsWorld world;
+  PhysicsBodyDesc wood; // a 1 m box
+  wood.density = 600.0f;
+  CHECK_NEAR(world.mass(world.addBody(wood)), 600.0, 6.0); // within 1%
+
+  PhysicsBodyDesc plain; // the default, about water
+  CHECK_NEAR(world.mass(world.addBody(plain)), 1000.0, 10.0);
+
+  PhysicsBodyDesc floor;
+  floor.motion = PhysicsMotion::Static;
+  CHECK(world.mass(world.addBody(floor)) == 0.0f); // static: no mass
+}

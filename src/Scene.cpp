@@ -1,5 +1,7 @@
 #include "Scene.h"
 
+#include "ScenePhysics.h"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -89,10 +91,14 @@ void checkModel(const SceneModelEntry &model, int headerLine) {
   if (model.body && model.shape == PrimitiveShape::Plane &&
       *model.body != PhysicsMotion::Static)
     fail("a plane's body must be static");
-  if (!model.body && (model.mass || model.friction || model.restitution))
-    fail("'mass', 'friction' and 'restitution' need a 'body'");
+  if (!model.body && (model.mass || model.density || model.material ||
+                      model.friction || model.restitution))
+    fail("'mass', 'density', 'material', 'friction' and 'restitution' need a "
+         "'body'");
   if (model.mass && *model.mass <= 0.0f)
     fail("'mass' must be more than 0");
+  if (model.density && *model.density <= 0.0f)
+    fail("'density' must be more than 0");
   if (model.friction && *model.friction < 0.0f)
     fail("'friction' must be 0 or more");
   if (model.restitution &&
@@ -150,6 +156,17 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
     model.body = parseBody(value, lineNumber);
   else if (key == "mass")
     model.mass = parseFloat(value, lineNumber);
+  else if (key == "density")
+    model.density = parseFloat(value, lineNumber);
+  else if (key == "material") {
+    const std::optional<PhysicsMaterial> material = findMaterial(value);
+    if (!material)
+      throw std::runtime_error("scene parse error, line " +
+                               std::to_string(lineNumber) +
+                               ": unknown material '" + value +
+                               "' (wood, stone, metal, rubber or ice)");
+    model.material = material->name;
+  }
   else if (key == "friction")
     model.friction = parseFloat(value, lineNumber);
   else if (key == "restitution")
@@ -238,6 +255,10 @@ void writeModelKeys(std::string &out, const SceneModelEntry &model) {
     writeKey(out, "color", formatVec3(model.color));
   if (model.body)
     writeKey(out, "body", bodyName(*model.body));
+  if (model.material)
+    writeKey(out, "material", *model.material);
+  if (model.density)
+    writeKey(out, "density", formatFloat(*model.density));
   if (model.mass)
     writeKey(out, "mass", formatFloat(*model.mass));
   if (model.friction)

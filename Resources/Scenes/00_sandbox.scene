@@ -1,6 +1,8 @@
 # The physics sandbox. Every shape here is generated in code, no model files.
-# body = static never moves, dynamic is moved by physics. mass (kg),
-# friction and restitution (bounciness, 0 to 1) are optional.
+# body = static never moves, dynamic is moved by physics. material (wood,
+# stone, metal, rubber, ice) sets density, friction and bounciness at once;
+# density (kg/m^3), mass (kg), friction and restitution (0 to 1) override it.
+# With none of them a body weighs as much as water, 1000 kg/m^3.
 name = Sandbox
 environment = Resources/HDRIs/kloppenheim_02_1k.hdr
 
@@ -17,12 +19,13 @@ size = 40 1 40
 color = 0.45
 body = static
 
-# A stack of 1 m crates, and one more dropped onto its corner
+# A stack of three solid 1 m wooden blocks, 600 kg each
 [model]
 shape = box
 position = -3 0.5 0
 color = 0.8 0.55 0.3
 body = dynamic
+material = wood
 
 [model]
 shape = box
@@ -30,6 +33,7 @@ position = -3 1.5 0
 rotation = 0 20 0
 color = 0.8 0.55 0.3
 body = dynamic
+material = wood
 
 [model]
 shape = box
@@ -37,14 +41,17 @@ position = -3 2.5 0
 rotation = 0 -15 0
 color = 0.8 0.55 0.3
 body = dynamic
+material = wood
 
+# A stone block dropped onto the stack's corner: 2400 kg, four times a
+# wooden one
 [model]
 shape = box
 position = -2.6 6 0.3
 rotation = 25 10 35
-color = 0.8 0.55 0.3
+color = 0.55 0.55 0.58
 body = dynamic
-mass = 400   # a heavy one, about the weight of a 1 m crate of sand
+material = stone
 
 # A plank lying flat, and a low wall
 [model]
@@ -53,6 +60,7 @@ size = 4 0.2 0.6
 position = 0 0.1 -2
 color = 0.6 0.45 0.3
 body = dynamic
+material = wood
 
 [model]
 shape = box
@@ -60,14 +68,16 @@ size = 0.5 1 6
 position = 4 0.5 -1
 color = 0.5 0.5 0.55
 body = static
+material = stone
 
-# Balls dropped from above, one onto the plank's end
+# Rubber balls dropped from above, one onto the plank's end
 [model]
 shape = sphere
 radius = 0.5
 position = 1.6 4 -2
 color = 0.75 0.15 0.15
 body = dynamic
+material = rubber
 restitution = 0.6
 
 [model]
@@ -76,9 +86,11 @@ radius = 0.25
 position = 1 6 2
 color = 0.15 0.35 0.75
 body = dynamic
+material = rubber
 restitution = 0.8
 
-# Capsules at roughly character size. The standing one won't stay standing.
+# A person-sized capsule at a person's weight, 75 kg, and a small wooden log.
+# The standing one won't stay standing.
 [model]
 shape = capsule
 radius = 0.3
@@ -87,6 +99,7 @@ position = 2 0.9 1
 rotation = 0 0 3
 color = 0.3 0.65 0.35
 body = dynamic
+mass = 75
 
 [model]
 shape = capsule
@@ -96,8 +109,10 @@ position = 2.8 0.2 2
 rotation = 0 0 90
 color = 0.85 0.8 0.3
 body = dynamic
+material = wood
 
-# A wall of 24 bricks to knock over: 6 wide, 4 high, centred on x = -1
+# A wall of 24 stone bricks to knock over, 90 kg each: 6 wide, 4 high,
+# centred on x = -1
 [grid]
 shape = box
 size = 0.5 0.3 0.25
@@ -106,3 +121,4 @@ spacing = 0.52 0.31 1
 position = -1 0.15 3
 color = 0.6 0.25 0.2
 body = dynamic
+material = stone

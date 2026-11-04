@@ -7,6 +7,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -341,10 +342,20 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   settings.mFriction = desc.friction;
   settings.mRestitution = desc.restitution;
   settings.mLinearVelocity = toJolt(desc.linearVelocity);
-  if (motion == JPH::EMotionType::Dynamic && desc.mass > 0.0f) {
+  if (motion == JPH::EMotionType::Dynamic) {
+    // Bodies share shapes, so a body's density can't live on its shape.
+    // Instead the shape's mass properties, worked out at Jolt's default of
+    // 1000 kg/m^3, are scaled to the mass this body should have. Scaling
+    // keeps the inertia matched to it.
+    constexpr float kShapeDensity = 1000.0f;
+    JPH::MassProperties massProperties = shape->GetMassProperties();
+    massProperties.ScaleToMass(desc.mass > 0.0f
+                                   ? desc.mass
+                                   : massProperties.mMass * desc.density /
+                                         kShapeDensity);
     settings.mOverrideMassProperties =
-        JPH::EOverrideMassProperties::CalculateInertia;
-    settings.mMassPropertiesOverride.mMass = desc.mass;
+        JPH::EOverrideMassProperties::MassAndInertiaProvided;
+    settings.mMassPropertiesOverride = massProperties;
   }
 
   // No-lock is fine because everything outside step() runs on one thread,
@@ -437,6 +448,14 @@ const std::vector<PhysicsMovedPose> &PhysicsWorld::movedPoses(float alpha) {
 
 bool PhysicsWorld::isActive(PhysicsBodyId id) const {
   return impl->system.GetBodyInterfaceNoLock().IsActive(JPH::BodyID(id.value));
+}
+
+float PhysicsWorld::mass(PhysicsBodyId id) const {
+  JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(),
+                         JPH::BodyID(id.value));
+  if (!lock.Succeeded() || !lock.GetBody().IsDynamic())
+    return 0.0f;
+  return 1.0f / lock.GetBody().GetMotionProperties()->GetInverseMass();
 }
 
 uint32_t PhysicsWorld::bodyCount() const { return impl->system.GetNumBodies(); }

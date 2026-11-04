@@ -27,6 +27,7 @@ struct NodeAnimation {
            (orbitDegPerSec != 0.0f && orbitRadius != 0.0f) ||
            (bobAmplitude != 0.0f && bobFrequency != 0.0f);
   }
+  bool operator==(const NodeAnimation &) const = default;
 };
 
 // Decomposed transform kept alongside the matrix so animation can recompose
@@ -35,6 +36,15 @@ struct NodeTransform {
   glm::vec3 position = glm::vec3(0.0f);
   glm::vec3 rotationDeg = glm::vec3(0.0f); // applied Y, then X, then Z
   float scale = 1.0f;
+  bool operator==(const NodeTransform &) const = default;
+};
+
+// Where a section sat in its file and the comment lines right above it, so a
+// saved scene keeps a person's notes and the order they wrote things in.
+struct SceneSectionInfo {
+  int order = 0;       // position among the file's [model], [grid], [ring]
+  std::string comment; // the '#' lines above the section, as written
+  bool operator==(const SceneSectionInfo &) const = default;
 };
 
 // rotationDeg as a quaternion. Scene nodes and physics bodies both build
@@ -58,6 +68,8 @@ struct SceneModelEntry {
   std::optional<float> restitution; // bounciness, 0 to 1
   NodeTransform transform;
   NodeAnimation animation;
+  SceneSectionInfo info;
+  bool operator==(const SceneModelEntry &) const = default;
 };
 
 // An instanced ring layout (the stress-test arrangement): `count` copies of
@@ -68,6 +80,8 @@ struct SceneRingEntry {
   float radius = 5.0f;
   float height = 1.5f;
   float scale = 1.0f;
+  SceneSectionInfo info;
+  bool operator==(const SceneRingEntry &) const = default;
 };
 
 // Many copies of one model, laid out in a grid: centred on the model's
@@ -77,6 +91,8 @@ struct SceneGridEntry {
   SceneModelEntry model;
   glm::ivec3 count = glm::ivec3(1);
   glm::vec3 spacing = glm::vec3(1.0f); // centre to centre
+  SceneSectionInfo info;
+  bool operator==(const SceneGridEntry &) const = default;
 };
 
 // One SceneModelEntry per copy of the grid.
@@ -87,6 +103,8 @@ struct SceneCameraPose {
   float yaw = -90.0f;
   float pitch = 0.0f;
   float speed = 15.0f;
+  SceneSectionInfo info; // only the comment is used
+  bool operator==(const SceneCameraPose &) const = default;
 };
 
 struct SceneDescription {
@@ -97,6 +115,8 @@ struct SceneDescription {
   std::vector<SceneModelEntry> models;
   std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;
+  std::string headerComment; // '#' lines at the top of the file
+  bool operator==(const SceneDescription &) const = default;
 };
 
 namespace SceneIO {
@@ -114,5 +134,15 @@ SceneDescription parse(std::istream &in, const std::string &sourceName);
 // directory as given and prefixed with "../" (the binary runs from build/).
 // Files that fail to parse are skipped with a logged warning.
 std::vector<SceneDescription> discover(const std::string &directory);
+
+// The scene as .scene text: the header comment, the global keys, [camera],
+// then every [model], [grid] and [ring] in their original order, each with
+// the comment that sat above it. Only keys that differ from their defaults
+// are written, so a saved file reads like a hand-written one.
+std::string write(const SceneDescription &scene);
+
+// Writes write(scene) to path through a temporary file next to it, so a
+// failed save never leaves a half-written scene. Throws on failure.
+void saveToFile(const SceneDescription &scene, const std::string &path);
 
 } // namespace SceneIO

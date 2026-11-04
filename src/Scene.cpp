@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <sstream>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -173,6 +175,97 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
   return true;
 }
 
+// Shortest text that reads back as exactly the same float.
+std::string formatFloat(float value) { return std::format("{}", value); }
+
+// One number when all three match, which parseVec3 spreads back out.
+std::string formatVec3(glm::vec3 v) {
+  if (v.x == v.y && v.y == v.z)
+    return formatFloat(v.x);
+  return std::format("{} {} {}", v.x, v.y, v.z);
+}
+
+const char *shapeName(PrimitiveShape shape) {
+  switch (shape) {
+  case PrimitiveShape::Box:
+    return "box";
+  case PrimitiveShape::Sphere:
+    return "sphere";
+  case PrimitiveShape::Capsule:
+    return "capsule";
+  case PrimitiveShape::Plane:
+    return "plane";
+  }
+  return "box";
+}
+
+const char *bodyName(PhysicsMotion motion) {
+  switch (motion) {
+  case PhysicsMotion::Static:
+    return "static";
+  case PhysicsMotion::Dynamic:
+    return "dynamic";
+  case PhysicsMotion::Kinematic:
+    return "kinematic";
+  }
+  return "static";
+}
+
+void writeKey(std::string &out, std::string_view key, std::string_view value) {
+  out += std::format("{} = {}\n", key, value);
+}
+
+// The keys [model] and [grid] share, skipping any left at its default.
+void writeModelKeys(std::string &out, const SceneModelEntry &model) {
+  const SceneModelEntry d;
+  if (!model.path.empty())
+    writeKey(out, "path", model.path);
+  if (model.shape)
+    writeKey(out, "shape", shapeName(*model.shape));
+  if (model.size != d.size)
+    writeKey(out, "size", formatVec3(model.size));
+  if (model.radius != d.radius)
+    writeKey(out, "radius", formatFloat(model.radius));
+  if (model.height != d.height)
+    writeKey(out, "height", formatFloat(model.height));
+  if (model.transform.position != d.transform.position)
+    writeKey(out, "position", formatVec3(model.transform.position));
+  if (model.transform.rotationDeg != d.transform.rotationDeg)
+    writeKey(out, "rotation", formatVec3(model.transform.rotationDeg));
+  if (model.transform.scale != d.transform.scale)
+    writeKey(out, "scale", formatFloat(model.transform.scale));
+  if (model.color != d.color)
+    writeKey(out, "color", formatVec3(model.color));
+  if (model.body)
+    writeKey(out, "body", bodyName(*model.body));
+  if (model.mass)
+    writeKey(out, "mass", formatFloat(*model.mass));
+  if (model.friction)
+    writeKey(out, "friction", formatFloat(*model.friction));
+  if (model.restitution)
+    writeKey(out, "restitution", formatFloat(*model.restitution));
+  const NodeAnimation &a = model.animation;
+  if (a.spinDegPerSec != d.animation.spinDegPerSec)
+    writeKey(out, "spin", formatVec3(a.spinDegPerSec));
+  if (a.orbitDegPerSec != d.animation.orbitDegPerSec)
+    writeKey(out, "orbit_speed", formatFloat(a.orbitDegPerSec));
+  if (a.orbitRadius != d.animation.orbitRadius)
+    writeKey(out, "orbit_radius", formatFloat(a.orbitRadius));
+  if (a.bobAmplitude != d.animation.bobAmplitude)
+    writeKey(out, "bob_amplitude", formatFloat(a.bobAmplitude));
+  if (a.bobFrequency != d.animation.bobFrequency)
+    writeKey(out, "bob_frequency", formatFloat(a.bobFrequency));
+}
+
+// A blank line, the section's comment, then its header.
+void writeHeader(std::string &out, const SceneSectionInfo &info,
+                 std::string_view header) {
+  out += '\n';
+  if (!info.comment.empty())
+    out += info.comment + '\n';
+  out += std::format("[{}]\n", header);
+}
+
 } // namespace
 
 glm::quat rotationFromDegrees(glm::vec3 degrees) {
@@ -220,18 +313,36 @@ SceneDescription parse(std::istream &file, const std::string &path) {
   std::vector<int> modelLines; // header line of each [model], for errors
   std::vector<int> gridLines;  // and of each [grid]
 
+  // Comment lines wait here for the section below them. The block at the
+  // very top is the header instead, if a blank line or a key follows it.
+  std::string pendingComment;
+  bool headerDone = false;
+  int nextOrder = 0;
+  auto takeComment = [&] { return std::exchange(pendingComment, {}); };
+
   std::string line;
   int lineNumber = 0;
   while (std::getline(file, line)) {
     ++lineNumber;
+    const std::string whole = trim(line);
+    if (whole.starts_with('#')) {
+      pendingComment += (pendingComment.empty() ? "" : "\n") + whole;
+      continue;
+    }
     size_t comment = line.find('#');
     if (comment != std::string::npos)
-      line = line.substr(0, comment);
+      line = line.substr(0, comment); // comments at the end of a line go
     line = trim(line);
-    if (line.empty())
+    if (line.empty()) {
+      if (!headerDone && !pendingComment.empty()) {
+        scene.headerComment = takeComment();
+        headerDone = true;
+      }
       continue;
+    }
 
     if (line.front() == '[') {
+      headerDone = true;
       if (line.back() != ']')
         throw std::runtime_error("scene parse error, line " +
                                  std::to_string(lineNumber) +
@@ -241,17 +352,18 @@ SceneDescription parse(std::istream &file, const std::string &path) {
                      [](unsigned char c) { return std::tolower(c); });
       if (name == "camera") {
         section = Section::Camera;
+        scene.camera.info.comment = takeComment();
       } else if (name == "model") {
         section = Section::Model;
-        scene.models.emplace_back();
+        scene.models.emplace_back().info = {nextOrder++, takeComment()};
         modelLines.push_back(lineNumber);
       } else if (name == "grid") {
         section = Section::Grid;
-        scene.grids.emplace_back();
+        scene.grids.emplace_back().info = {nextOrder++, takeComment()};
         gridLines.push_back(lineNumber);
       } else if (name == "ring") {
         section = Section::Ring;
-        scene.rings.emplace_back();
+        scene.rings.emplace_back().info = {nextOrder++, takeComment()};
       } else {
         throw std::runtime_error("scene parse error, line " +
                                  std::to_string(lineNumber) +
@@ -259,6 +371,12 @@ SceneDescription parse(std::istream &file, const std::string &path) {
       }
       continue;
     }
+
+    // A comment between keys belongs to no section and goes.
+    if (!headerDone)
+      scene.headerComment = takeComment();
+    headerDone = true;
+    pendingComment.clear();
 
     size_t eq = line.find('=');
     if (eq == std::string::npos)
@@ -392,6 +510,118 @@ std::vector<SceneDescription> discover(const std::string &directory) {
     }
   }
   return scenes;
+}
+
+std::string write(const SceneDescription &scene) {
+  std::string out;
+  if (!scene.headerComment.empty())
+    out += scene.headerComment + '\n';
+  writeKey(out, "name", scene.name);
+  if (!scene.environmentHdr.empty())
+    writeKey(out, "environment", scene.environmentHdr);
+
+  const SceneCameraPose &camera = scene.camera;
+  const SceneCameraPose d;
+  if (camera.position != d.position || camera.yaw != d.yaw ||
+      camera.pitch != d.pitch || camera.speed != d.speed ||
+      !camera.info.comment.empty()) {
+    writeHeader(out, camera.info, "camera");
+    if (camera.position != d.position)
+      writeKey(out, "position", formatVec3(camera.position));
+    if (camera.yaw != d.yaw)
+      writeKey(out, "yaw", formatFloat(camera.yaw));
+    if (camera.pitch != d.pitch)
+      writeKey(out, "pitch", formatFloat(camera.pitch));
+    if (camera.speed != d.speed)
+      writeKey(out, "speed", formatFloat(camera.speed));
+  }
+
+  // Models, grids and rings live in separate lists; info.order puts them
+  // back in the order the file had.
+  enum class Kind { Model, Grid, Ring };
+  struct Section {
+    int order;
+    Kind kind;
+    size_t index;
+  };
+  std::vector<Section> sections;
+  for (size_t i = 0; i < scene.models.size(); ++i)
+    sections.push_back({scene.models[i].info.order, Kind::Model, i});
+  for (size_t i = 0; i < scene.grids.size(); ++i)
+    sections.push_back({scene.grids[i].info.order, Kind::Grid, i});
+  for (size_t i = 0; i < scene.rings.size(); ++i)
+    sections.push_back({scene.rings[i].info.order, Kind::Ring, i});
+  std::stable_sort(sections.begin(), sections.end(),
+                   [](const Section &a, const Section &b) {
+                     return a.order < b.order;
+                   });
+
+  for (const Section &section : sections) {
+    switch (section.kind) {
+    case Kind::Model: {
+      const SceneModelEntry &model = scene.models[section.index];
+      writeHeader(out, model.info, "model");
+      writeModelKeys(out, model);
+      break;
+    }
+    case Kind::Grid: {
+      const SceneGridEntry &grid = scene.grids[section.index];
+      const SceneGridEntry gd;
+      writeHeader(out, grid.info, "grid");
+      writeModelKeys(out, grid.model);
+      if (grid.count != gd.count) {
+        const glm::ivec3 c = grid.count;
+        writeKey(out, "count",
+                 c.x == c.y && c.y == c.z
+                     ? std::format("{}", c.x)
+                     : std::format("{} {} {}", c.x, c.y, c.z));
+      }
+      if (grid.spacing != gd.spacing)
+        writeKey(out, "spacing", formatVec3(grid.spacing));
+      break;
+    }
+    case Kind::Ring: {
+      const SceneRingEntry &ring = scene.rings[section.index];
+      const SceneRingEntry rd;
+      writeHeader(out, ring.info, "ring");
+      writeKey(out, "path", ring.path);
+      if (ring.count != rd.count)
+        writeKey(out, "count", std::format("{}", ring.count));
+      if (ring.radius != rd.radius)
+        writeKey(out, "radius", formatFloat(ring.radius));
+      if (ring.height != rd.height)
+        writeKey(out, "height", formatFloat(ring.height));
+      if (ring.scale != rd.scale)
+        writeKey(out, "scale", formatFloat(ring.scale));
+      break;
+    }
+    }
+  }
+  return out;
+}
+
+void saveToFile(const SceneDescription &scene, const std::string &path) {
+  // Write next to the real file, then swap it in with one rename, so a
+  // failure part way leaves the old file as it was.
+  const std::string temporary = path + ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::trunc);
+    if (!file.is_open())
+      throw std::runtime_error("Couldn't write " + temporary);
+    file << write(scene);
+    file.close();
+    if (file.fail()) {
+      std::filesystem::remove(temporary);
+      throw std::runtime_error("Couldn't finish writing " + temporary);
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  if (error) {
+    std::filesystem::remove(temporary);
+    throw std::runtime_error("Couldn't replace " + path + ": " +
+                             error.message());
+  }
 }
 
 } // namespace SceneIO

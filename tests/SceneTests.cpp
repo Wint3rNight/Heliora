@@ -1,7 +1,9 @@
 #include "Scene.h"
 #include "TestRunner.h"
 
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -197,4 +199,148 @@ TEST(scene_grid_rejects_bad_counts_and_needs_a_model) {
   CHECK(errorOf("[grid]\ncount = 2 2 2\n").find("shape") != std::string::npos);
   CHECK(errorOf("[grid]\nshape = box\nspacing = 1 0 1\n").find("spacing") !=
         std::string::npos);
+}
+
+// Writing scenes back out (editor saves). A written scene has to parse back
+// to exactly what was written, keep the comments a person put above each
+// section, and keep the sections in the order they had.
+
+namespace {
+
+SceneDescription reparse(const SceneDescription &scene) {
+  std::istringstream in(SceneIO::write(scene));
+  SceneDescription again = SceneIO::parse(in, "test.scene");
+  again.filePath = scene.filePath;
+  return again;
+}
+
+// A fresh empty directory for file tests, removed by the caller.
+std::filesystem::path scratchDirectory(const std::string &name) {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / ("heliora_tests_" + name);
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
+std::string readFile(const std::filesystem::path &path) {
+  std::ifstream file(path);
+  std::stringstream text;
+  text << file.rdbuf();
+  return text.str();
+}
+
+} // namespace
+
+TEST(every_scene_file_survives_a_round_trip) {
+  const std::vector<SceneDescription> scenes =
+      SceneIO::discover("Resources/Scenes");
+  CHECK(scenes.size() >= 3);
+  for (const SceneDescription &scene : scenes) {
+    const bool same = reparse(scene) == scene;
+    if (!same)
+      std::printf("    changed by a round trip: %s\n", scene.filePath.c_str());
+    CHECK(same);
+  }
+}
+
+TEST(comments_above_sections_survive) {
+  const SceneDescription scene = parseText("# A test scene\n"
+                                           "# with two header lines\n"
+                                           "name = Test\n"
+                                           "\n"
+                                           "# The floor\n"
+                                           "[model]\n"
+                                           "shape = plane\n"
+                                           "\n"
+                                           "# A wall of bricks\n"
+                                           "# six wide\n"
+                                           "[grid]\n"
+                                           "shape = box\n"
+                                           "count = 6 1 1\n");
+  const std::string written = SceneIO::write(scene);
+  CHECK(written.starts_with("# A test scene\n# with two header lines\n"));
+  CHECK(written.find("# The floor\n[model]\n") != std::string::npos);
+  CHECK(written.find("# A wall of bricks\n# six wide\n[grid]\n") !=
+        std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(end_of_line_comments_are_dropped) {
+  const SceneDescription scene = parseText("[model]\n"
+                                           "shape = box\n"
+                                           "body = dynamic\n"
+                                           "mass = 400   # a heavy one\n");
+  const std::string written = SceneIO::write(scene);
+  CHECK(written.find("mass = 400\n") != std::string::npos);
+  CHECK(written.find("heavy") == std::string::npos);
+}
+
+TEST(model_and_grid_order_is_kept) {
+  const SceneDescription scene = parseText("[model]\nshape = box\n"
+                                           "position = 1 0 0\n"
+                                           "[grid]\nshape = box\n"
+                                           "position = 2 0 0\n"
+                                           "[model]\nshape = box\n"
+                                           "position = 3 0 0\n");
+  const std::string written = SceneIO::write(scene);
+  const size_t first = written.find("position = 1 0 0");
+  const size_t second = written.find("position = 2 0 0");
+  const size_t third = written.find("position = 3 0 0");
+  CHECK(first != std::string::npos && second != std::string::npos &&
+        third != std::string::npos);
+  CHECK(first < second && second < third);
+  CHECK(written.find("[grid]") < third);
+}
+
+TEST(rings_and_animations_survive) {
+  const SceneDescription scene =
+      parseText("[ring]\npath = Resources/Models/rock.glb\ncount = 12\n"
+                "radius = 7.5\nheight = 2\nscale = 0.5\n"
+                "[model]\npath = Resources/Models/rock.glb\n"
+                "spin = 0 45 0\norbit_speed = 30\norbit_radius = 2\n"
+                "bob_amplitude = 0.25\nbob_frequency = 0.5\n");
+  const std::string written = SceneIO::write(scene);
+  CHECK(written.find("[ring]") != std::string::npos);
+  CHECK(written.find("spin = 0 45 0") != std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(default_values_are_not_written) {
+  const SceneDescription scene = parseText("name = Plain\n"
+                                           "[model]\nshape = box\n");
+  CHECK(SceneIO::write(scene) == "name = Plain\n\n[model]\nshape = box\n");
+}
+
+TEST(saved_file_loads_back) {
+  const std::filesystem::path dir = scratchDirectory("saved_file_loads_back");
+  const std::filesystem::path path = dir / "saved.scene";
+  SceneDescription scene = parseText("name = Saved\n[model]\nshape = sphere\n"
+                                     "radius = 0.25\nbody = dynamic\n");
+  SceneIO::saveToFile(scene, path.string());
+  scene.filePath = path.string();
+  CHECK(SceneIO::loadFromFile(path.string()) == scene);
+  CHECK(!std::filesystem::exists(path.string() + ".tmp"));
+  std::filesystem::remove_all(dir);
+}
+
+TEST(failed_save_keeps_the_old_file) {
+  const std::filesystem::path dir =
+      scratchDirectory("failed_save_keeps_the_old_file");
+  const std::filesystem::path path = dir / "old.scene";
+  {
+    std::ofstream old(path);
+    old << "name = Old\n";
+  }
+  // A directory where the temporary file would go makes the write fail.
+  std::filesystem::create_directory(path.string() + ".tmp");
+  bool threw = false;
+  try {
+    SceneIO::saveToFile(parseText("name = New\n"), path.string());
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  CHECK(threw);
+  CHECK(readFile(path) == "name = Old\n");
+  std::filesystem::remove_all(dir);
 }

@@ -1085,6 +1085,9 @@ TextureManager::resolveTexturePath(const std::string &filename) const {
     std::filesystem::path mdir(modelBaseDirectory);
     candidates.push_back(mdir / input.filename());
     candidates.push_back(mdir / input);
+    // normalizeTextureKey drops a leading "textures/", and that's where
+    // Poly Haven's glTF files keep their images.
+    candidates.push_back(mdir / "textures" / input.filename());
   }
   for (const auto &c : candidates)
     if (std::filesystem::exists(c))

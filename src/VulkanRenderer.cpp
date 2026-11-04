@@ -484,7 +484,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
     node->setTransform(entry.transform);
     node->setAnimation(entry.animation);
     if (entry.body) {
-      PhysicsBodyDesc body = bodyDescFor(entry);
+      // A model file's collider is built from its own triangles.
+      PhysicsBodyDesc body = bodyDescFor(
+          entry, entry.shape ? nullptr : modelManager.collisionParts(modelId));
       body.userData = physicsNodes.size();
       if (physics->addBody(body).isValid())
         physicsNodes.push_back(node.get());

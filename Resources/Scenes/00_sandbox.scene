@@ -1,4 +1,4 @@
-# The physics sandbox. Every shape here is generated in code, no model files.
+# The physics sandbox. Shapes generated in code, plus one model file (a rock).
 # body = static never moves, dynamic is moved by physics. material (wood,
 # stone, metal, rubber, ice) sets density, friction and bounciness at once;
 # density (kg/m^3), mass (kg), friction and restitution (0 to 1) override it.
@@ -120,5 +120,23 @@ count = 6 4 1
 spacing = 0.52 0.31 1
 position = -1 0.15 3
 color = 0.6 0.25 0.2
+body = dynamic
+material = stone
+
+# A boulder from Poly Haven (CC0). It never moves, so it collides with its
+# exact triangles.
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -6 0.05 -1
+body = static
+material = stone
+
+# A half-size copy dropped onto it. It moves, so it collides as a
+# shrink-wrapped hull, and weighs its hull's volume in stone.
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -6 3.5 -1.2
+rotation = 30 0 20
+scale = 0.5
 body = dynamic
 material = stone

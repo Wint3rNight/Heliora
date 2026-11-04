@@ -51,6 +51,10 @@ struct SceneSectionInfo {
 // their rotation through this, so a body spawns at exactly its node's angle.
 glm::quat rotationFromDegrees(glm::vec3 degrees);
 
+// How a model file collides. Auto: its exact triangles if it never moves,
+// one hull per part if it does. Box: one box around the whole model.
+enum class SceneCollider : uint8_t { Auto, Hull, Mesh, Box };
+
 // A model is a file (path) or a shape generated in code (shape), never both.
 struct SceneModelEntry {
   std::string path;
@@ -66,6 +70,7 @@ struct SceneModelEntry {
   std::optional<float> mass;        // kg
   std::optional<float> density;     // kg/m^3
   std::optional<std::string> material; // wood, stone, metal, rubber, ice
+  std::optional<SceneCollider> collider; // model files only; unset is Auto
   std::optional<float> friction;    // 0 and up
   std::optional<float> restitution; // bounciness, 0 to 1
   NodeTransform transform;

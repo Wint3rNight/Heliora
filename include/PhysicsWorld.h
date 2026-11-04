@@ -20,16 +20,33 @@ struct PhysicsBodyId {
   bool isValid() const { return value != 0xffffffffu; }
 };
 
-enum class PhysicsShape : uint8_t { Box, Sphere, Capsule };
+// Hulls and TriangleMesh are built from a model's own triangles.
+enum class PhysicsShape : uint8_t { Box, Sphere, Capsule, Hulls, TriangleMesh };
 
 // Kinematic bodies are moved by our code and push dynamic bodies aside.
 enum class PhysicsMotion : uint8_t { Static, Dynamic, Kinematic };
+
+// One part of a model, in the model's own space: its vertex positions and
+// its triangles, three indices each.
+struct PhysicsMeshPart {
+  std::vector<glm::vec3> positions;
+  std::vector<uint32_t> indices;
+};
+
+struct PhysicsMeshParts {
+  std::vector<PhysicsMeshPart> parts;
+};
 
 struct PhysicsBodyDesc {
   PhysicsShape shape = PhysicsShape::Box;
   glm::vec3 halfExtents{0.5f}; // box
   float radius = 0.5f;         // sphere and capsule
   float halfHeight = 0.5f;     // capsule: half the length of its straight part
+  // Hulls: one shrink-wrapped hull per part, for anything. TriangleMesh:
+  // every triangle as it is, for static bodies only. Both are scaled by
+  // scale, and bodies with the same parts share one Jolt shape.
+  std::shared_ptr<const PhysicsMeshParts> parts;
+  glm::vec3 scale{1.0f};
   PhysicsMotion motion = PhysicsMotion::Dynamic;
   float mass = 0.0f;           // kg; 0 = volume times density
   float density = 1000.0f;     // kg/m^3, used when mass is 0

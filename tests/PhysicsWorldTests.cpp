@@ -302,3 +302,103 @@ TEST(density_sets_mass) {
   floor.motion = PhysicsMotion::Static;
   CHECK(world.mass(world.addBody(floor)) == 0.0f); // static: no mass
 }
+
+namespace {
+
+// A box from lo to hi as a mesh part: 8 corners and 12 triangles, wound so
+// they face outwards.
+PhysicsMeshPart boxPart(glm::vec3 lo, glm::vec3 hi) {
+  PhysicsMeshPart part;
+  for (int i = 0; i < 8; ++i)
+    part.positions.push_back(glm::vec3(i & 1 ? hi.x : lo.x,
+                                       i & 2 ? hi.y : lo.y,
+                                       i & 4 ? hi.z : lo.z));
+  part.indices = {0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4,
+                  2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5};
+  return part;
+}
+
+std::shared_ptr<PhysicsMeshParts> partsOf(std::vector<PhysicsMeshPart> list) {
+  auto parts = std::make_shared<PhysicsMeshParts>();
+  parts->parts = std::move(list);
+  return parts;
+}
+
+PhysicsBodyId dropBall(PhysicsWorld &world, glm::vec3 position) {
+  PhysicsBodyDesc ball;
+  ball.shape = PhysicsShape::Sphere;
+  ball.radius = 0.2f;
+  ball.position = position;
+  return world.addBody(ball);
+}
+
+} // namespace
+
+TEST(hull_mass_comes_from_its_volume) {
+  PhysicsWorld world;
+  PhysicsBodyDesc cube;
+  cube.shape = PhysicsShape::Hulls;
+  cube.parts = partsOf({boxPart(glm::vec3(-0.5f), glm::vec3(0.5f))});
+  CHECK_NEAR(world.mass(world.addBody(cube)), 1000.0, 20.0); // 1 m^3 of water
+
+  cube.scale = glm::vec3(2.0f); // 8 m^3
+  CHECK_NEAR(world.mass(world.addBody(cube)), 8000.0, 160.0);
+}
+
+TEST(two_part_model_keeps_its_gap) {
+  PhysicsWorld world;
+  addFloor(world);
+  // Two blocks 1 m apart, as one static body. A single hull around both
+  // would fill the gap and catch the ball on top.
+  PhysicsBodyDesc model;
+  model.shape = PhysicsShape::Hulls;
+  model.motion = PhysicsMotion::Static;
+  model.parts = partsOf({boxPart({-2.0f, 0.0f, -1.0f}, {-0.5f, 1.0f, 1.0f}),
+                         boxPart({0.5f, 0.0f, -1.0f}, {2.0f, 1.0f, 1.0f})});
+  world.addBody(model);
+  const PhysicsBodyId ball = dropBall(world, {0.0f, 3.0f, 0.0f});
+  stepFor(world, 180);
+
+  CHECK(world.pose(ball).position.y < 0.5f); // on the floor, not the blocks
+}
+
+TEST(static_mesh_collider_stops_a_ball) {
+  PhysicsWorld world;
+  // A 10 x 10 m ground made of two triangles facing up, and nothing else.
+  PhysicsMeshPart ground;
+  ground.positions = {{-5.0f, 0.0f, -5.0f},
+                      {-5.0f, 0.0f, 5.0f},
+                      {5.0f, 0.0f, 5.0f},
+                      {5.0f, 0.0f, -5.0f}};
+  ground.indices = {0, 1, 2, 0, 2, 3};
+  PhysicsBodyDesc mesh;
+  mesh.shape = PhysicsShape::TriangleMesh;
+  mesh.motion = PhysicsMotion::Static;
+  mesh.parts = partsOf({ground});
+  world.addBody(mesh);
+  const PhysicsBodyId ball = dropBall(world, {0.0f, 2.0f, 0.0f});
+  stepFor(world, 180);
+
+  const float y = world.pose(ball).position.y;
+  CHECK(y > 0.1f && y < 0.3f); // resting on the triangles, radius 0.2
+}
+
+TEST(flat_points_fall_back_to_a_box) {
+  PhysicsWorld world;
+  PhysicsMeshPart flat; // a square with no thickness
+  flat.positions = {{0.0f, 0.0f, 0.0f},
+                    {1.0f, 0.0f, 0.0f},
+                    {1.0f, 0.0f, 1.0f},
+                    {0.0f, 0.0f, 1.0f}};
+  PhysicsBodyDesc desc;
+  desc.shape = PhysicsShape::Hulls;
+  desc.parts = partsOf({flat});
+  const PhysicsBodyId id = world.addBody(desc);
+  CHECK(id.isValid());
+  CHECK(world.mass(id) > 0.0f && std::isfinite(world.mass(id)));
+
+  PhysicsMeshPart point; // one point, nothing to wrap
+  point.positions = {{0.0f, 0.0f, 0.0f}};
+  desc.parts = partsOf({point});
+  CHECK(world.addBody(desc).isValid());
+}

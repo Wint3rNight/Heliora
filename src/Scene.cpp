@@ -56,6 +56,23 @@ PrimitiveShape parseShape(const std::string &value, int lineNumber) {
                            value + "' (box, sphere, capsule or plane)");
 }
 
+SceneCollider parseCollider(const std::string &value, int lineNumber) {
+  std::string name = value;
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  if (name == "auto")
+    return SceneCollider::Auto;
+  if (name == "hull")
+    return SceneCollider::Hull;
+  if (name == "mesh")
+    return SceneCollider::Mesh;
+  if (name == "box")
+    return SceneCollider::Box;
+  throw std::runtime_error("scene parse error, line " +
+                           std::to_string(lineNumber) + ": unknown collider '" +
+                           value + "' (auto, hull, mesh or box)");
+}
+
 PhysicsMotion parseBody(const std::string &value, int lineNumber) {
   std::string name = value;
   std::transform(name.begin(), name.end(), name.begin(),
@@ -82,9 +99,6 @@ void checkModel(const SceneModelEntry &model, int headerLine) {
     fail("needs 'path' or 'shape'");
   if (!model.path.empty() && model.shape)
     fail("has both 'path' and 'shape', pick one");
-  if (model.body && !model.shape)
-    fail("'body' needs a 'shape' to collide with (model files have no "
-         "collider yet)");
   if (model.body && model.animation.active())
     fail("a 'body' can't also have spin, orbit or bob animation, both would "
          "move it");
@@ -92,9 +106,16 @@ void checkModel(const SceneModelEntry &model, int headerLine) {
       *model.body != PhysicsMotion::Static)
     fail("a plane's body must be static");
   if (!model.body && (model.mass || model.density || model.material ||
-                      model.friction || model.restitution))
-    fail("'mass', 'density', 'material', 'friction' and 'restitution' need a "
-         "'body'");
+                      model.friction || model.restitution || model.collider))
+    fail("'mass', 'density', 'material', 'friction', 'restitution' and "
+         "'collider' need a 'body'");
+  if (model.collider && model.shape)
+    fail("'collider' is for model files; generated shapes collide as "
+         "themselves");
+  if (model.body && *model.body != PhysicsMotion::Static &&
+      model.collider == SceneCollider::Mesh)
+    fail("a moving body can't use 'collider = mesh' (Jolt can't collide a "
+         "mesh with another mesh or with terrain); use hull or box");
   if (model.mass && *model.mass <= 0.0f)
     fail("'mass' must be more than 0");
   if (model.density && *model.density <= 0.0f)
@@ -158,6 +179,8 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
     model.mass = parseFloat(value, lineNumber);
   else if (key == "density")
     model.density = parseFloat(value, lineNumber);
+  else if (key == "collider")
+    model.collider = parseCollider(value, lineNumber);
   else if (key == "material") {
     const std::optional<PhysicsMaterial> material = findMaterial(value);
     if (!material)
@@ -216,6 +239,20 @@ const char *shapeName(PrimitiveShape shape) {
   return "box";
 }
 
+const char *colliderName(SceneCollider collider) {
+  switch (collider) {
+  case SceneCollider::Auto:
+    return "auto";
+  case SceneCollider::Hull:
+    return "hull";
+  case SceneCollider::Mesh:
+    return "mesh";
+  case SceneCollider::Box:
+    return "box";
+  }
+  return "auto";
+}
+
 const char *bodyName(PhysicsMotion motion) {
   switch (motion) {
   case PhysicsMotion::Static:
@@ -255,6 +292,8 @@ void writeModelKeys(std::string &out, const SceneModelEntry &model) {
     writeKey(out, "color", formatVec3(model.color));
   if (model.body)
     writeKey(out, "body", bodyName(*model.body));
+  if (model.collider)
+    writeKey(out, "collider", colliderName(*model.collider));
   if (model.material)
     writeKey(out, "material", *model.material);
   if (model.density)

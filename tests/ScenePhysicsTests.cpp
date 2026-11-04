@@ -4,6 +4,11 @@
 #include "SceneNode.h"
 #include "TestRunner.h"
 
+#include <glm/gtc/constants.hpp>
+
+#include <algorithm>
+#include <cmath>
+
 namespace {
 
 SceneModelEntry entry(PrimitiveShape shape, PhysicsMotion body) {
@@ -159,4 +164,80 @@ TEST(material_sets_friction_and_restitution) {
   ball.friction = 0.1f; // a key in the file beats the material
   CHECK(bodyDescFor(ball).friction == 0.1f);
   CHECK(bodyDescFor(ball).restitution == 0.7f);
+}
+
+TEST(auto_collider_follows_motion) {
+  auto parts = std::make_shared<PhysicsMeshParts>();
+  PhysicsMeshPart part;
+  part.positions = {{-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f},
+                    {0.0f, 2.0f, 0.0f},   {0.0f, 0.0f, 1.0f}};
+  part.indices = {0, 2, 1, 0, 3, 2, 1, 2, 3, 0, 1, 3};
+  parts->parts.push_back(part);
+
+  SceneModelEntry rock;
+  rock.path = "rock.glb";
+  rock.body = PhysicsMotion::Static;
+  CHECK(bodyDescFor(rock, parts).shape == PhysicsShape::TriangleMesh);
+
+  rock.body = PhysicsMotion::Dynamic;
+  rock.transform.scale = 2.0f;
+  const PhysicsBodyDesc hull = bodyDescFor(rock, parts);
+  CHECK(hull.shape == PhysicsShape::Hulls);
+  CHECK(hull.parts == parts);
+  CHECK(hull.scale == glm::vec3(2.0f));
+
+  // A box: one hull from the 8 corners of the model's bounds.
+  rock.collider = SceneCollider::Box;
+  const PhysicsBodyDesc box = bodyDescFor(rock, parts);
+  CHECK(box.shape == PhysicsShape::Hulls);
+  CHECK(box.parts && box.parts->parts.size() == 1 &&
+        box.parts->parts.front().positions.size() == 8);
+}
+
+namespace {
+
+// A dense unit sphere: rings x segments quads, like a scanned rock's mesh.
+PhysicsMeshPart denseSphere(int rings, int segments) {
+  PhysicsMeshPart part;
+  for (int r = 0; r <= rings; ++r)
+    for (int s = 0; s <= segments; ++s) {
+      const float theta = glm::pi<float>() * r / rings;
+      const float phi = glm::two_pi<float>() * s / segments;
+      part.positions.push_back({std::sin(theta) * std::cos(phi),
+                                std::cos(theta),
+                                std::sin(theta) * std::sin(phi)});
+    }
+  for (int r = 0; r < rings; ++r)
+    for (int s = 0; s < segments; ++s) {
+      const uint32_t a = r * (segments + 1) + s, b = a + segments + 1;
+      part.indices.insert(part.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+    }
+  return part;
+}
+
+} // namespace
+
+TEST(collision_mesh_is_simplified_to_the_limit) {
+  const PhysicsMeshPart dense = denseSphere(100, 200); // 40,000 triangles
+  const PhysicsMeshPart simple = simplifiedForCollision(dense, 2000);
+
+  const size_t triangles = simple.indices.size() / 3;
+  CHECK(triangles <= 2000);
+  CHECK(triangles >= 200); // still a sphere, not a few slivers
+  CHECK(simple.positions.size() < dense.positions.size() / 4); // unused gone
+  bool inRange = true;
+  for (uint32_t index : simple.indices)
+    inRange = inRange && index < simple.positions.size();
+  CHECK(inRange);
+  float farthest = 0.0f;
+  for (const glm::vec3 &p : simple.positions)
+    farthest = std::max(farthest, glm::length(p));
+  CHECK(farthest > 0.95f && farthest < 1.0001f); // the same size
+}
+
+TEST(small_collision_mesh_is_left_alone) {
+  const PhysicsMeshPart small = denseSphere(4, 8); // 64 triangles
+  const PhysicsMeshPart same = simplifiedForCollision(small, 2000);
+  CHECK(same.positions == small.positions);
+  CHECK(same.indices == small.indices);
 }

@@ -10,6 +10,10 @@
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/ScaledShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Constraints/ContactConstraintManager.h>
 #include <Jolt/Physics/PhysicsSettings.h>
@@ -25,6 +29,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -153,6 +158,8 @@ JPH::ShapeRefC makeShape(const PhysicsBodyDesc &desc) {
   case PhysicsShape::Capsule:
     return new JPH::CapsuleShape(desc.halfHeight, desc.radius);
   case PhysicsShape::Box:
+  case PhysicsShape::Hulls:        // built from parts, see makeHulls
+  case PhysicsShape::TriangleMesh: // and makeTriangleMesh
     break;
   }
   // Jolt rounds box edges by a convex radius, which has to fit inside.
@@ -160,6 +167,89 @@ JPH::ShapeRefC makeShape(const PhysicsBodyDesc &desc) {
   const float convexRadius =
       std::min(JPH::cDefaultConvexRadius, std::min({h.x, h.y, h.z}));
   return new JPH::BoxShape(toJolt(h), convexRadius);
+}
+
+// The 8 corners of a part's bounds, at least 1 cm thick on every axis, so
+// even a flat part or a single point gives a hull with some volume.
+JPH::Array<JPH::Vec3> boundsCorners(const PhysicsMeshPart &part) {
+  constexpr float kMinHalfThickness = 0.005f;
+  glm::vec3 lo(std::numeric_limits<float>::max());
+  glm::vec3 hi(std::numeric_limits<float>::lowest());
+  for (const glm::vec3 &p : part.positions) {
+    lo = glm::min(lo, p);
+    hi = glm::max(hi, p);
+  }
+  const glm::vec3 centre = (lo + hi) * 0.5f;
+  const glm::vec3 half = glm::max((hi - lo) * 0.5f, glm::vec3(kMinHalfThickness));
+  JPH::Array<JPH::Vec3> corners;
+  for (int i = 0; i < 8; ++i)
+    corners.push_back(toJolt(centre + half * glm::vec3(i & 1 ? 1 : -1,
+                                                       i & 2 ? 1 : -1,
+                                                       i & 4 ? 1 : -1)));
+  return corners;
+}
+
+// One part shrink-wrapped. Jolt keeps at most 256 of the points. Points it
+// can't wrap (too few, in a line) become the box around them, and so do
+// flat ones: Jolt wraps those, but the hull has no volume and so no mass.
+JPH::ShapeRefC makeHull(const PhysicsMeshPart &part) {
+  JPH::Array<JPH::Vec3> points;
+  points.reserve(part.positions.size());
+  for (const glm::vec3 &p : part.positions)
+    points.push_back(toJolt(p));
+  const JPH::ShapeSettings::ShapeResult hull =
+      JPH::ConvexHullShapeSettings(points).Create();
+  constexpr float kMinVolume = 1e-9f; // m^3
+  if (hull.IsValid() && hull.Get()->GetVolume() > kMinVolume)
+    return hull.Get();
+  spdlog::warn("[physics] couldn't wrap a hull with volume around {} points "
+               "({}), using the box around them",
+               points.size(),
+               hull.IsValid() ? "it's flat" : hull.GetError().c_str());
+  return JPH::ConvexHullShapeSettings(boundsCorners(part)).Create().Get();
+}
+
+// A hull per part. Several become one compound shape, so the gaps between
+// parts stay open.
+JPH::ShapeRefC makeHulls(const PhysicsMeshParts &parts) {
+  JPH::StaticCompoundShapeSettings compound;
+  JPH::ShapeRefC only;
+  for (const PhysicsMeshPart &part : parts.parts) {
+    if (part.positions.empty())
+      continue;
+    only = makeHull(part);
+    compound.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), only);
+  }
+  if (compound.mSubShapes.size() == 1)
+    return only;
+  if (compound.mSubShapes.empty()) {
+    spdlog::warn("[physics] a model with no points, using a 10 cm box");
+    return new JPH::BoxShape(JPH::Vec3::sReplicate(0.05f), 0.0f);
+  }
+  return compound.Create().Get();
+}
+
+// Every triangle of every part, as one static mesh.
+JPH::ShapeRefC makeTriangleMesh(const PhysicsMeshParts &parts) {
+  JPH::VertexList vertices;
+  JPH::IndexedTriangleList triangles;
+  for (const PhysicsMeshPart &part : parts.parts) {
+    const uint32_t base = static_cast<uint32_t>(vertices.size());
+    for (const glm::vec3 &p : part.positions)
+      vertices.push_back(JPH::Float3(p.x, p.y, p.z));
+    for (size_t i = 0; i + 2 < part.indices.size(); i += 3)
+      triangles.push_back(JPH::IndexedTriangle(base + part.indices[i],
+                                               base + part.indices[i + 1],
+                                               base + part.indices[i + 2], 0));
+  }
+  const JPH::ShapeSettings::ShapeResult mesh =
+      JPH::MeshShapeSettings(std::move(vertices), std::move(triangles))
+          .Create();
+  if (mesh.IsValid())
+    return mesh.Get();
+  spdlog::warn("[physics] couldn't build a triangle mesh ({}), using hulls",
+               mesh.GetError().c_str());
+  return makeHulls(parts);
 }
 
 #ifdef JPH_DEBUG_RENDERER
@@ -232,10 +322,58 @@ struct PhysicsWorld::Impl {
   // three sizes.
   std::map<std::tuple<PhysicsShape, float, float, float>, JPH::ShapeRefC>
       shapes;
+  // Shapes built from a model's parts, keyed by the parts and the kind. The
+  // entry holds the parts too, so their address can't be reused by others.
+  struct PartsShape {
+    std::shared_ptr<const PhysicsMeshParts> parts;
+    JPH::ShapeRefC shape;
+  };
+  std::map<std::pair<const PhysicsMeshParts *, PhysicsShape>, PartsShape>
+      partsShapes;
 
   uint32_t droppedContactSteps = 0;
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
   bool warnedFull = false;
+
+  JPH::ShapeRefC shapeFor(const PhysicsBodyDesc &desc) {
+    const bool fromParts = desc.shape == PhysicsShape::Hulls ||
+                           desc.shape == PhysicsShape::TriangleMesh;
+    if (fromParts && desc.parts) {
+      PhysicsShape kind = desc.shape;
+      if (kind == PhysicsShape::TriangleMesh &&
+          desc.motion != PhysicsMotion::Static) {
+        // Jolt can't collide a moving mesh with other meshes or terrain.
+        spdlog::warn("[physics] a moving body can't use a triangle mesh, "
+                     "using hulls");
+        kind = PhysicsShape::Hulls;
+      }
+      PartsShape &entry = partsShapes[{desc.parts.get(), kind}];
+      if (entry.shape == nullptr) {
+        entry.parts = desc.parts;
+        entry.shape = kind == PhysicsShape::Hulls
+                          ? makeHulls(*desc.parts)
+                          : makeTriangleMesh(*desc.parts);
+      }
+      if (desc.scale == glm::vec3(1.0f))
+        return entry.shape;
+      return new JPH::ScaledShape(entry.shape, toJolt(desc.scale));
+    }
+    if (fromParts)
+      spdlog::warn("[physics] a hull or mesh body without parts, using a box");
+
+    std::tuple<PhysicsShape, float, float, float> key{PhysicsShape::Box,
+                                                      desc.halfExtents.x,
+                                                      desc.halfExtents.y,
+                                                      desc.halfExtents.z};
+    if (desc.shape == PhysicsShape::Sphere)
+      key = {desc.shape, desc.radius, 0.0f, 0.0f};
+    else if (desc.shape == PhysicsShape::Capsule)
+      key = {desc.shape, desc.radius, desc.halfHeight, 0.0f};
+    JPH::ShapeRefC &shape = shapes[key];
+    if (shape == nullptr)
+      shape = makeShape(desc);
+    return shape;
+  }
 
   PhysicsPose readPose(JPH::BodyID id) const {
     JPH::RVec3 position;
@@ -323,18 +461,7 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
     motion = JPH::EMotionType::Kinematic;
   const bool isStatic = motion == JPH::EMotionType::Static;
 
-  std::tuple<PhysicsShape, float, float, float> key{desc.shape, 0.0f, 0.0f,
-                                                    0.0f};
-  if (desc.shape == PhysicsShape::Box)
-    key = {desc.shape, desc.halfExtents.x, desc.halfExtents.y,
-           desc.halfExtents.z};
-  else if (desc.shape == PhysicsShape::Sphere)
-    key = {desc.shape, desc.radius, 0.0f, 0.0f};
-  else
-    key = {desc.shape, desc.radius, desc.halfHeight, 0.0f};
-  JPH::ShapeRefC &shape = impl->shapes[key];
-  if (shape == nullptr)
-    shape = makeShape(desc);
+  const JPH::ShapeRefC shape = impl->shapeFor(desc);
 
   JPH::BodyCreationSettings settings(
       shape, toJoltPosition(desc.position), toJolt(desc.rotation),

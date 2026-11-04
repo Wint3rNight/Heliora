@@ -126,7 +126,7 @@ target_include_directories(heliora_core PUBLIC
 )
 target_link_libraries(heliora_core
         PUBLIC glm::glm Jolt
-        PRIVATE spdlog::spdlog
+        PRIVATE spdlog::spdlog meshoptimizer
 )
 # Vulkan-style depth [0,1] for all glm projection matrices. PUBLIC so the core,
 # the game and the tests all build glm's projections the same way.

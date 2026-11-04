@@ -120,10 +120,10 @@ TEST(scene_unknown_body_names_its_line) {
   CHECK(error.find("floaty") != std::string::npos);
 }
 
-TEST(scene_body_needs_a_shape) {
-  // No collider for model files yet (mesh colliders aren't in step 1.1).
-  CHECK(errorOf("[model]\npath = a.gltf\nbody = static\n").find("shape") !=
-        std::string::npos);
+TEST(model_file_can_have_a_body) {
+  // Its collider is built from its own triangles (step 1.1b).
+  CHECK(errorOf("[model]\npath = a.gltf\nbody = static\n").empty());
+  CHECK(errorOf("[model]\npath = a.gltf\nbody = dynamic\n").empty());
 }
 
 TEST(scene_plane_body_must_be_static) {
@@ -368,5 +368,29 @@ TEST(material_and_density_survive_a_round_trip) {
   CHECK(scene.models.front().material == "wood");
   CHECK(scene.models.front().density == 500.0f);
   CHECK(SceneIO::write(scene).find("material = wood\n") != std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(moving_mesh_collider_is_an_error) {
+  CHECK(errorOf("[model]\npath = rock.glb\nbody = dynamic\ncollider = mesh\n")
+            .find("mesh") != std::string::npos);
+  CHECK(errorOf("[model]\npath = rock.glb\nbody = static\ncollider = mesh\n")
+            .empty());
+  const std::string unknown =
+      errorOf("[model]\npath = rock.glb\nbody = static\ncollider = blob\n");
+  CHECK(unknown.find("line 4") != std::string::npos);
+  CHECK(unknown.find("blob") != std::string::npos);
+  // Generated shapes collide as themselves.
+  CHECK(errorOf("[model]\nshape = box\nbody = dynamic\ncollider = hull\n")
+            .find("collider") != std::string::npos);
+  CHECK(errorOf("[model]\npath = rock.glb\ncollider = hull\n")
+            .find("need a 'body'") != std::string::npos);
+}
+
+TEST(collider_survives_a_round_trip) {
+  const SceneDescription scene = parseText("[model]\npath = rock.glb\n"
+                                           "body = dynamic\ncollider = box\n");
+  CHECK(scene.models.front().collider == SceneCollider::Box);
+  CHECK(SceneIO::write(scene).find("collider = box\n") != std::string::npos);
   CHECK(reparse(scene) == scene);
 }

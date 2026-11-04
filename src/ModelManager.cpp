@@ -1,4 +1,6 @@
 #include "ModelManager.h"
+
+#include "ScenePhysics.h"
 #include "TextureManager.h"
 #include "VulkanDevice.h"
 
@@ -114,6 +116,36 @@ int ModelManager::createModel(const std::string &key, MeshData mesh,
   return id;
 }
 
+std::shared_ptr<const PhysicsMeshParts>
+ModelManager::collisionParts(int modelId) {
+  const MeshModel *model = getModel(modelId);
+  if (!model)
+    return nullptr;
+  if (collisionCache.size() < models.size())
+    collisionCache.resize(models.size());
+  std::shared_ptr<const PhysicsMeshParts> &cached = collisionCache[modelId];
+  if (cached)
+    return cached;
+  // From full detail (LOD 0), in model space: loading already baked the
+  // node transforms into the vertices. Cut down to 2,000 triangles a part:
+  // the 134,000 of the Poly Haven boulder made each physics step take 5 to
+  // 6 ms while a rock settled on it (2026-11-04).
+  constexpr size_t kMaxCollisionTriangles = 2000;
+  auto parts = std::make_shared<PhysicsMeshParts>();
+  for (size_t i = 0; i < model->getMeshCount(); ++i) {
+    const Mesh *mesh = model->getMesh(i);
+    PhysicsMeshPart part;
+    part.positions.reserve(mesh->getCpuVertices().size());
+    for (const Vertex &vertex : mesh->getCpuVertices())
+      part.positions.push_back(vertex.pos);
+    part.indices = mesh->getCpuIndices(0);
+    parts->parts.push_back(
+        simplifiedForCollision(part, kMaxCollisionTriangles));
+  }
+  cached = parts;
+  return cached;
+}
+
 int ModelManager::findModel(const std::string &key) const {
   auto it = modelMap.find(key);
   return it == modelMap.end() ? -1 : it->second;
@@ -125,6 +157,7 @@ void ModelManager::cleanup() {
   }
   models.clear();
   modelMap.clear();
+  collisionCache.clear();
 }
 
 MeshModel *ModelManager::getModel(int modelId) {

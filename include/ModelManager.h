@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Model.h"
+#include "PhysicsWorld.h"
 #include "PrimitiveMesh.h"
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,7 +40,12 @@ public:
 
   MeshModel *getModel(int modelId);
 
+  // The model's vertex positions and triangles, one part per mesh, for a
+  // physics collider. Built the first time it's asked for, then shared.
+  std::shared_ptr<const PhysicsMeshParts> collisionParts(int modelId);
+
 private:
   std::vector<MeshModel> models;
   std::unordered_map<std::string, int> modelMap;
+  std::vector<std::shared_ptr<const PhysicsMeshParts>> collisionCache;
 };

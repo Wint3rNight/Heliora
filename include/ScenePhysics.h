@@ -10,7 +10,10 @@
 // scaled by the entry's scale, the same way its mesh is, and the pose
 // matches its scene node. Needs entry.shape and entry.body set, which the
 // scene parser guarantees for any entry with a body.
-PhysicsBodyDesc bodyDescFor(const SceneModelEntry &entry);
+// A model file's body also needs its parts: the collider is built from them.
+PhysicsBodyDesc bodyDescFor(const SceneModelEntry &entry,
+                            std::shared_ptr<const PhysicsMeshParts> parts =
+                                nullptr);
 
 // A named material: density, friction and restitution that go together.
 struct PhysicsMaterial {
@@ -22,3 +25,10 @@ struct PhysicsMaterial {
 
 // The material called name (any case), or nothing if there isn't one.
 std::optional<PhysicsMaterial> findMaterial(std::string_view name);
+
+// A model part cut down to at most maxTriangles for its collider, keeping
+// only the vertices those triangles use. Colliders don't need a scanned
+// rock's 2 cm triangles, and every triangle a moving body touches costs a
+// test each step. Parts already under the limit come back unchanged.
+PhysicsMeshPart simplifiedForCollision(const PhysicsMeshPart &part,
+                                       size_t maxTriangles);

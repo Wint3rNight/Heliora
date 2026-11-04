@@ -131,7 +131,27 @@ public:
   bool isVisible() const { return visible; }
 
 private:
+  enum class SidebarTab {
+    Scene,
+    Render,
+    Lighting,
+    Debug,
+    Physics,
+    Performance,
+    Camera
+  };
+
   void buildUi(DebugUiContext &ui);
+  void drawTabPills();
+  void drawSceneTab(DebugUiContext &ui);
+  void drawRenderTab(DebugUiContext &ui);
+  void drawLightingTab(DebugUiContext &ui);
+  void drawDebugTab(DebugUiContext &ui);
+  void drawPhysicsTab(DebugUiContext &ui);
+  void drawPerformanceTab(DebugUiContext &ui);
+  void drawCameraTab(DebugUiContext &ui);
+
+  SidebarTab activeTab = SidebarTab::Performance;
 
   bool visible = true;
 

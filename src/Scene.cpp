@@ -148,6 +148,34 @@ void checkModel(const SceneModelEntry &model, int headerLine) {
   }
 }
 
+// Bad values here would turn the whole picture black or NaN. headerLine is 0
+// when the file has no such section, and then the defaults are fine anyway.
+void checkSun(const SceneSun &sun, int headerLine) {
+  auto fail = [&](const std::string &what) {
+    throw std::runtime_error("scene parse error, [sun] at line " +
+                             std::to_string(headerLine) + ": " + what);
+  };
+  if (sun.direction == glm::vec3(0.0f))
+    fail("'direction' can't be zero");
+  if (glm::any(glm::lessThan(sun.color, glm::vec3(0.0f))))
+    fail("'color' can't be negative");
+  if (sun.intensity < 0.0f)
+    fail("'intensity' must be 0 or more");
+}
+
+void checkFog(const SceneFog &fog, int headerLine) {
+  auto fail = [&](const std::string &what) {
+    throw std::runtime_error("scene parse error, [fog] at line " +
+                             std::to_string(headerLine) + ": " + what);
+  };
+  if (fog.density < 0.0f)
+    fail("'density' must be 0 or more");
+  if (fog.falloff < 0.0f)
+    fail("'falloff' must be 0 or more");
+  if (fog.max < 0.0f || fog.max > 1.0f)
+    fail("'max' must be between 0 and 1");
+}
+
 float parseFloat(const std::string &value, int lineNumber) {
   try {
     return std::stof(value);
@@ -368,10 +396,12 @@ SceneDescription parse(std::istream &file, const std::string &path) {
   SceneDescription scene;
   scene.name = std::filesystem::path(path).stem().string();
 
-  enum class Section { Global, Camera, Model, Grid, Ring };
+  enum class Section { Global, Camera, Sun, Fog, Model, Grid, Ring };
   Section section = Section::Global;
   std::vector<int> modelLines; // header line of each [model], for errors
   std::vector<int> gridLines;  // and of each [grid]
+  int sunLine = 0;
+  int fogLine = 0;
 
   // Comment lines wait here for the section below them. The block at the
   // very top is the header instead, if a blank line or a key follows it.
@@ -413,6 +443,14 @@ SceneDescription parse(std::istream &file, const std::string &path) {
       if (name == "camera") {
         section = Section::Camera;
         scene.camera.info.comment = takeComment();
+      } else if (name == "sun") {
+        section = Section::Sun;
+        scene.sun.info.comment = takeComment();
+        sunLine = lineNumber;
+      } else if (name == "fog") {
+        section = Section::Fog;
+        scene.fog.info.comment = takeComment();
+        fogLine = lineNumber;
       } else if (name == "model") {
         section = Section::Model;
         scene.models.emplace_back().info = {nextOrder++, takeComment()};
@@ -475,6 +513,32 @@ SceneDescription parse(std::istream &file, const std::string &path) {
                                  ": unknown camera key '" + key + "'");
       break;
 
+    case Section::Sun:
+      if (key == "direction")
+        scene.sun.direction = parseVec3(value, lineNumber);
+      else if (key == "color")
+        scene.sun.color = parseVec3(value, lineNumber);
+      else if (key == "intensity")
+        scene.sun.intensity = parseFloat(value, lineNumber);
+      else
+        throw std::runtime_error("scene parse error, line " +
+                                 std::to_string(lineNumber) +
+                                 ": unknown sun key '" + key + "'");
+      break;
+
+    case Section::Fog:
+      if (key == "density")
+        scene.fog.density = parseFloat(value, lineNumber);
+      else if (key == "falloff")
+        scene.fog.falloff = parseFloat(value, lineNumber);
+      else if (key == "max")
+        scene.fog.max = parseFloat(value, lineNumber);
+      else
+        throw std::runtime_error("scene parse error, line " +
+                                 std::to_string(lineNumber) +
+                                 ": unknown fog key '" + key + "'");
+      break;
+
     case Section::Model:
       if (!parseModelKey(scene.models.back(), key, value, lineNumber))
         throw std::runtime_error("scene parse error, line " +
@@ -522,6 +586,8 @@ SceneDescription parse(std::istream &file, const std::string &path) {
     }
   }
 
+  checkSun(scene.sun, sunLine);
+  checkFog(scene.fog, fogLine);
   for (size_t i = 0; i < scene.models.size(); ++i)
     checkModel(scene.models[i], modelLines[i]);
   for (size_t i = 0; i < scene.grids.size(); ++i) {
@@ -594,6 +660,26 @@ std::string write(const SceneDescription &scene) {
       writeKey(out, "pitch", formatFloat(camera.pitch));
     if (camera.speed != d.speed)
       writeKey(out, "speed", formatFloat(camera.speed));
+  }
+
+  // These compare the comment too, so a comment alone keeps its section.
+  if (const SceneSun d; scene.sun != d) {
+    writeHeader(out, scene.sun.info, "sun");
+    if (scene.sun.direction != d.direction)
+      writeKey(out, "direction", formatVec3(scene.sun.direction));
+    if (scene.sun.color != d.color)
+      writeKey(out, "color", formatVec3(scene.sun.color));
+    if (scene.sun.intensity != d.intensity)
+      writeKey(out, "intensity", formatFloat(scene.sun.intensity));
+  }
+  if (const SceneFog d; scene.fog != d) {
+    writeHeader(out, scene.fog.info, "fog");
+    if (scene.fog.density != d.density)
+      writeKey(out, "density", formatFloat(scene.fog.density));
+    if (scene.fog.falloff != d.falloff)
+      writeKey(out, "falloff", formatFloat(scene.fog.falloff));
+    if (scene.fog.max != d.max)
+      writeKey(out, "max", formatFloat(scene.fog.max));
   }
 
   // Models, grids and rings live in separate lists; info.order puts them

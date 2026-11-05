@@ -140,7 +140,10 @@ void main() {
     color += cookTorrance(albedo, N, V, sunL, sunRadiance, F0, metallic,
                           roughness, clothFactor);
 
-    for (int i = 0; i < min(scene.lightCounts.x, 4); ++i) {
+    // Same switch as lit.frag, so glass doesn't catch a light that's off.
+    bool enablePointLights = (scene.lightCounts.z & (1 << 1)) != 0;
+    int pointCount = enablePointLights ? min(scene.lightCounts.x, 4) : 0;
+    for (int i = 0; i < pointCount; ++i) {
         vec3 toLight = scene.pointLights[i].position.xyz - fragWorldPos;
         float dist = length(toLight);
         vec3 L = toLight / max(dist, 0.001);

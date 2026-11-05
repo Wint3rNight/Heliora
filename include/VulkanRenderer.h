@@ -142,6 +142,9 @@ private:
 
   // --- Scene library ---
   std::vector<SceneDescription> availableScenes;
+  // The loaded scene as it stands now. The Lighting tab's sun and fog sliders
+  // edit this copy, not the one read from the file.
+  SceneDescription currentScene;
   std::vector<std::string> availableSceneNames; // display names for ImGui
   int activeSceneIndex = -1;
   int pendingSceneIndex = -1;   // set by the UI, applied at next draw()
@@ -264,9 +267,6 @@ private:
   float imguiLodNear = 15.0f;
   float imguiLodFar = 45.0f;
   float imguiPointShadowFar = 40.0f;
-  // Fog tunables (mirrored into sceneUbo.fogParams so the shader can read).
-  float imguiFogDensity = 0.0f;
-  float imguiFogClamp = 0.0f;
   int imguiDebugMode = 0;
   float imguiSpecAAVariance = 1.60f;       // tunable
   // Karis-style spec-AA threshold cap. 0.18 (the plan's KAPPA) leaves
@@ -322,7 +322,9 @@ private:
   // the old high-quality path, useful for A/B checks when chasing artifacts.
   int imguiSsgiSamples = 8;
   bool imguiEnableSunDirect = true;
-  bool imguiEnablePointLights = true;
+  // Off until lights come to the editor. The point-shadow pass only runs
+  // while this is on.
+  bool imguiEnablePointLights = false;
   bool imguiEnableSpotLights = true;
   bool imguiEnableIblAmbient = true;
   bool imguiEnableSsgiBounce = true;
@@ -394,6 +396,7 @@ private:
   void initIBL();
   void cleanupIBL();
   void rebuildProjection();
+  void applySunAndFog();
 
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);

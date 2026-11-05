@@ -330,20 +330,10 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
 
     sceneUbo.cameraPosition = glm::vec4(10.0f, 0.0f, 20.0f, 1.0f);
 
-    // Warm midday sun coming through the atrium roof openings
-    sceneUbo.directionalLight.direction =
-        glm::vec4(glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f)), 0.0f);
-    // Intensity 2.5 (was 5.5) — at 5.5 the floor pixels under direct sun
-    // overshoot AgX's mid-tone band and the tile pattern crushes into a
-    // uniform bright wash. 2.5 lands the lit floor in AgX's preserved-
-    // detail range so authored albedo+normal variation actually survives
-    // the tonemap. This is a stopgap until the histogram auto-exposure
-    // (N1 in mds/sponza_visual_diagnosis.md) can drive exposure
-    // automatically; once that lands, sun intensity becomes a free knob.
-    sceneUbo.directionalLight.colorIntensity =
-        glm::vec4(1.0f, 0.93f, 0.78f, 2.5f);
+    applySunAndFog();
 
-    // Warm amber torchlight on the arcade pillars (arch height ~4.5m, x=±8.5m)
+    // Left over from Sponza's torches. Off by default, see
+    // imguiEnablePointLights.
     sceneUbo.pointLights[0].position = glm::vec4(8.5f, 4.5f, 2.0f, 1.0f);
     sceneUbo.pointLights[0].colorIntensity =
         glm::vec4(1.0f, 0.70f, 0.35f, 6.0f);
@@ -367,9 +357,6 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     sceneUbo.visualToggles =
         glm::vec4(imguiEdgeAA, imguiAlphaDither, imguiShadowSoftness,
                   imguiContactGrounding);
-    sceneUbo.fogParams =
-        glm::vec4(imguiFogDensity, 0.25f, imguiFogClamp,
-                  static_cast<float>(std::clamp(imguiSsgiSamples, 4, 12)));
     sceneUbo.lightCounts =
         glm::ivec4(1, 0, 0x3f, 0); // z = lighting-isolation bit mask
 
@@ -474,6 +461,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   physics = std::make_unique<PhysicsWorld>(physicsConfig);
   physicsClock = FixedStepClock();
   physicsPanel.thrownBalls = 0;
+  currentScene = desc;
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
@@ -584,6 +572,20 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
                std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - loadStart)
                    .count());
+}
+
+// Runs every frame, so the sliders need no path of their own and the scene's
+// sun comes back when the day/night cycle is turned off.
+void VulkanRenderer::applySunAndFog() {
+  const SceneSun &sun = currentScene.sun;
+  sceneUbo.directionalLight.direction =
+      glm::vec4(glm::normalize(sun.direction), 0.0f);
+  sceneUbo.directionalLight.colorIntensity =
+      glm::vec4(sun.color, sun.intensity);
+  const SceneFog &fog = currentScene.fog;
+  sceneUbo.fogParams.x = fog.density;
+  sceneUbo.fogParams.y = fog.falloff;
+  sceneUbo.fogParams.z = fog.max;
 }
 
 bool VulkanRenderer::loadSceneAt(int index) {
@@ -841,6 +843,7 @@ void VulkanRenderer::draw() {
   vkResetFences(logicalDevice, 1, &drawFences[currentFrame]);
 
   phaseStart = CpuClock::now();
+  applySunAndFog();
   // Day/night cycle: advance sim-hour at imguiDayNightSpeed sim-hours per
   // real-second, then place the sun on a great-circle arc through the
   // zenith. Sunrise at hour 6 (east horizon), zenith at hour 12, sunset at
@@ -871,8 +874,8 @@ void VulkanRenderer::draw() {
     glm::vec3 dayColor(1.0f, 0.93f, 0.78f);
     glm::vec3 duskColor(1.0f, 0.55f, 0.30f);
     glm::vec3 color = glm::mix(dayColor, duskColor, horizon);
-    // Peak 2.5 (was 5.5) — see comment in createSceneUBO. Stopgap until
-    // histogram auto-exposure replaces the manual EV slider.
+    // Peak 2.5 (was 5.5), see SceneSun. Stopgap until histogram auto-exposure
+    // replaces the manual EV slider.
     sceneUbo.directionalLight.colorIntensity =
         glm::vec4(color, 2.5f * dayFactor + 0.05f);
 
@@ -2883,8 +2886,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       imguiLodNear,
       imguiLodFar,
       imguiPointShadowFar,
-      imguiFogDensity,
-      imguiFogClamp,
+      currentScene.sun,
+      currentScene.fog,
       imguiDebugMode,
       imguiSpecAAVariance,
       imguiSpecAAThreshold,
@@ -2936,10 +2939,6 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       threadedCommandWorkerCount,
       swapchain.getActivePresentMode(),
       [this] { rebuildProjection(); },
-      [this] {
-        shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
-                                            imguiDrawDistance);
-      },
       [this] { shadowPass.updatePointShadowMatrices(sceneUbo); },
       [this] { taaHistoryValid = false; },
       [this](bool preferMailbox) {

@@ -394,3 +394,71 @@ TEST(collider_survives_a_round_trip) {
   CHECK(SceneIO::write(scene).find("collider = box\n") != std::string::npos);
   CHECK(reparse(scene) == scene);
 }
+
+TEST(missing_sun_and_fog_give_the_defaults) {
+  const SceneDescription scene = parseText("[model]\nshape = box\n");
+  const glm::vec3 down = glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f));
+  CHECK_NEAR(glm::length(scene.sun.direction - down), 0.0, 1e-6);
+  CHECK(scene.sun.color == glm::vec3(1.0f, 0.93f, 0.78f));
+  CHECK_NEAR(scene.sun.intensity, 2.5, 1e-6);
+  CHECK_NEAR(scene.fog.density, 0.0, 1e-6);
+  CHECK_NEAR(scene.fog.falloff, 0.25, 1e-6);
+  CHECK_NEAR(scene.fog.max, 1.0, 1e-6);
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("[sun]") == std::string::npos);
+  CHECK(text.find("[fog]") == std::string::npos);
+}
+
+TEST(sun_and_fog_survive_a_round_trip) {
+  const SceneDescription scene = parseText("[sun]\n"
+                                           "direction = 0.1 -0.9 0.3\n"
+                                           "color = 0.9 0.8 0.7\n"
+                                           "intensity = 3.25\n"
+                                           "[fog]\n"
+                                           "density = 0.015\n"
+                                           "falloff = 0.5\n"
+                                           "max = 0.8\n");
+  CHECK(scene.sun.direction == glm::vec3(0.1f, -0.9f, 0.3f));
+  CHECK(scene.sun.color == glm::vec3(0.9f, 0.8f, 0.7f));
+  CHECK_NEAR(scene.sun.intensity, 3.25, 1e-6);
+  CHECK_NEAR(scene.fog.density, 0.015, 1e-6);
+  CHECK_NEAR(scene.fog.falloff, 0.5, 1e-6);
+  CHECK_NEAR(scene.fog.max, 0.8, 1e-6);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(only_changed_sun_keys_are_written) {
+  const SceneDescription scene = parseText("[sun]\nintensity = 4\n");
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("[sun]") != std::string::npos);
+  CHECK(text.find("intensity = 4") != std::string::npos);
+  CHECK(text.find("direction") == std::string::npos);
+  CHECK(text.find("[fog]") == std::string::npos);
+}
+
+TEST(comments_above_sun_and_fog_survive) {
+  const SceneDescription scene = parseText("name = x\n"
+                                           "# Late evening\n"
+                                           "[sun]\n"
+                                           "# Keep this thin\n"
+                                           "[fog]\n");
+  CHECK(scene.sun.info.comment == "# Late evening");
+  CHECK(scene.fog.info.comment == "# Keep this thin");
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(bad_sun_and_fog_values_are_errors) {
+  CHECK(errorOf("[sun]\ndirection = 0 0 0\n").find("direction") !=
+        std::string::npos);
+  CHECK(errorOf("[sun]\nintensity = -1\n").find("intensity") !=
+        std::string::npos);
+  CHECK(errorOf("[sun]\ncolor = 1 -1 1\n").find("color") != std::string::npos);
+  CHECK(errorOf("[fog]\ndensity = -0.1\n").find("density") !=
+        std::string::npos);
+  CHECK(errorOf("[fog]\nfalloff = -1\n").find("falloff") != std::string::npos);
+  CHECK(errorOf("[fog]\nmax = 1.5\n").find("max") != std::string::npos);
+  CHECK(errorOf("[sun]\nheight = 3\n").find("unknown sun key") !=
+        std::string::npos);
+  CHECK(errorOf("[fog]\ncolor = 1\n").find("unknown fog key") !=
+        std::string::npos);
+}

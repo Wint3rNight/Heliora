@@ -1,5 +1,7 @@
 #include "ImGuiLayer.h"
 
+#include "Scene.h"
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -436,20 +438,20 @@ void ImGuiLayer::drawRenderTab(DebugUiContext &ui) {
 void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
   if (ImGui::CollapsingHeader("Directional Light",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
-    glm::vec3 dir = glm::vec3(ui.sceneUbo.directionalLight.direction);
-    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f)) {
-      ui.sceneUbo.directionalLight.direction =
-          glm::vec4(glm::normalize(dir), 0.0f);
-      if (ui.onDirectionalLightChanged)
-        ui.onDirectionalLightChanged();
-    }
-    glm::vec3 col = glm::vec3(ui.sceneUbo.directionalLight.colorIntensity);
-    if (ImGui::ColorEdit3("Color##sun", &col.x))
-      ui.sceneUbo.directionalLight.colorIntensity =
-          glm::vec4(col, ui.sceneUbo.directionalLight.colorIntensity.a);
-    float intens = ui.sceneUbo.directionalLight.colorIntensity.a;
-    if (ImGui::SliderFloat("Intensity##sun", &intens, 0.0f, 5.0f))
-      ui.sceneUbo.directionalLight.colorIntensity.a = intens;
+    // The cycle drives the sun while it runs, so edits here wouldn't show.
+    ImGui::BeginDisabled(ui.dayNightEnable);
+    glm::vec3 dir = ui.sun.direction;
+    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f) &&
+        glm::length(dir) > 0.001f)
+      ui.sun.direction = glm::normalize(dir);
+    ImGui::ColorEdit3("Color##sun", &ui.sun.color.x);
+    ImGui::SliderFloat("Intensity##sun", &ui.sun.intensity, 0.0f, 5.0f);
+    ImGui::EndDisabled();
+  }
+  if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SliderFloat("Density##fog", &ui.fog.density, 0.0f, 0.02f, "%.4f");
+    ImGui::SliderFloat("Falloff##fog", &ui.fog.falloff, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Max##fog", &ui.fog.max, 0.0f, 1.0f, "%.2f");
   }
   int pointCount = ui.sceneUbo.lightCounts.x;
   for (int i = 0; i < pointCount; i++) {
@@ -473,11 +475,6 @@ void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
     }
   }
   if (ImGui::CollapsingHeader("Post & Perf")) {
-    if (ImGui::SliderFloat("Fog density", &ui.fogDensity, 0.0f, 0.02f,
-                           "%.4f"))
-      ui.sceneUbo.fogParams.x = ui.fogDensity;
-    if (ImGui::SliderFloat("Fog clamp", &ui.fogClamp, 0.0f, 1.0f))
-      ui.sceneUbo.fogParams.z = ui.fogClamp;
     ImGui::SliderFloat("LOD near", &ui.lodNear, 1.0f, 60.0f);
     ImGui::SliderFloat("LOD far", &ui.lodFar, ui.lodNear + 1.0f, 200.0f);
     if (ImGui::SliderFloat("Pt shadow far", &ui.pointShadowFar, 5.0f,

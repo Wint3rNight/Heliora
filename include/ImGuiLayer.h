@@ -13,6 +13,9 @@
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
+struct SceneSun;
+struct SceneFog;
+
 // The Physics panel. The panel sets the requests, the renderer acts on them
 // and fills in the counts every frame.
 struct PhysicsPanel {
@@ -38,8 +41,8 @@ struct DebugUiContext {
   float &lodNear;
   float &lodFar;
   float &pointShadowFar;
-  float &fogDensity;
-  float &fogClamp;
+  SceneSun &sun; // the current scene's, so edits are saved with it
+  SceneFog &fog;
   int &debugMode;
   float &specAAVariance;
   float &specAAThreshold;
@@ -97,7 +100,6 @@ struct DebugUiContext {
   VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
 
   std::function<void()> onProjectionChanged;
-  std::function<void()> onDirectionalLightChanged;
   std::function<void()> onPointShadowChanged;
   std::function<void()> onTaaHistoryInvalidated;
   std::function<void(bool)> onPresentModeChanged;

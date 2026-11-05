@@ -114,11 +114,34 @@ struct SceneCameraPose {
   bool operator==(const SceneCameraPose &) const = default;
 };
 
+// direction is the way the light travels, so it points down. It needn't be
+// unit length in the file; the renderer normalizes it.
+struct SceneSun {
+  glm::vec3 direction = glm::normalize(glm::vec3(-0.3f, -1.0f, 0.2f));
+  glm::vec3 color = glm::vec3(1.0f, 0.93f, 0.78f);
+  // At 5.5 the tonemap crushed sunlit floors into a flat bright wash. 2.5
+  // keeps their texture visible.
+  float intensity = 2.5f;
+  SceneSectionInfo info; // only the comment is used
+  bool operator==(const SceneSun &) const = default;
+};
+
+// Height fog. Its colour is fixed in lit.frag and transparent.frag.
+struct SceneFog {
+  float density = 0.0f;  // how fast fog builds up per metre; 0 is no fog
+  float falloff = 0.25f; // how fast it thins as the camera climbs
+  float max = 1.0f;      // the most fog a pixel can get, 0 to 1
+  SceneSectionInfo info; // only the comment is used
+  bool operator==(const SceneFog &) const = default;
+};
+
 struct SceneDescription {
   std::string name;           // display name (defaults to file stem)
   std::string filePath;       // where this description was parsed from
   std::string environmentHdr; // HDRI path; empty = keep the current sky/IBL
   SceneCameraPose camera;
+  SceneSun sun;
+  SceneFog fog;
   std::vector<SceneModelEntry> models;
   std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;
@@ -128,8 +151,8 @@ struct SceneDescription {
 
 namespace SceneIO {
 
-// Parses a .scene file (INI-style: `key = value` lines under [camera],
-// [model], [grid] and [ring] sections; `#` starts a comment). Throws
+// Parses a .scene file (INI-style: `key = value` lines under [camera], [sun],
+// [fog], [model], [grid] and [ring] sections; `#` starts a comment). Throws
 // std::runtime_error with a line number on malformed input.
 SceneDescription loadFromFile(const std::string &path);
 
@@ -143,9 +166,9 @@ SceneDescription parse(std::istream &in, const std::string &sourceName);
 std::vector<SceneDescription> discover(const std::string &directory);
 
 // The scene as .scene text: the header comment, the global keys, [camera],
-// then every [model], [grid] and [ring] in their original order, each with
-// the comment that sat above it. Only keys that differ from their defaults
-// are written, so a saved file reads like a hand-written one.
+// [sun], [fog], then every [model], [grid] and [ring] in their original
+// order, each with the comment that sat above it. Only keys that differ from
+// their defaults are written, so a saved file reads like a hand-written one.
 std::string write(const SceneDescription &scene);
 
 // Writes write(scene) to path through a temporary file next to it, so a

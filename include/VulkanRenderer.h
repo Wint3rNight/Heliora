@@ -137,7 +137,7 @@ private:
   SceneUniformBuffer sceneUbo = {};
 
   // Physics for the loaded scene. loadScene() makes a new world, so a scene
-  // switch starts clean. A body's userData indexes physicsNodes, the node it
+  // switch starts clean. A body's userData indexes physicsLinks, the node it
   // moves.
   std::unique_ptr<PhysicsWorld> physics;
   FixedStepClock physicsClock;
@@ -152,9 +152,32 @@ private:
   std::optional<SceneEntryRef> selection;
   std::vector<PhysicsDebugVertex> selectionLines;
   std::vector<PhysicsDebugVertex> debugLineScratch; // wireframes + outline
+  float selectionMass = 0.0f; // kg, of one copy for a grid; 0 if no body
   void updateSelectionLines();
   bool entryHasBody(SceneEntryRef ref) const;
-  std::vector<SceneNode *> physicsNodes;
+
+  // Building and changing single entries of currentScene, so an edit never
+  // reloads the whole scene.
+  int modelFor(const SceneModelEntry &entry);
+  void addEntryNode(const SceneModelEntry &entry, int modelId,
+                    SceneEntryRef ref);
+  void addEntry(SceneEntryRef ref);        // its nodes and bodies
+  void removeEntryNodes(SceneEntryRef ref); // and its bodies
+  void placeEntry(SceneEntryRef ref); // moves them to the entry's placement
+  // Moves node entry indices of kind from `from` on by `by`, after entries
+  // before them were added or removed.
+  void shiftEntryRefs(SceneEntryRef::Kind kind, int from, int by);
+  // Edits that rebuild nodes or bodies wait for the top of draw(), where
+  // nothing in flight can be using them and a new mesh can be uploaded.
+  enum class EntryOp { Rebuild, Delete, Split };
+  std::vector<std::pair<EntryOp, SceneEntryRef>> pendingEntryOps;
+  void applyEntryOp(EntryOp op, SceneEntryRef ref);
+  // A removed body leaves an empty slot, so the others keep their index.
+  struct PhysicsLink {
+    SceneNode *node = nullptr;
+    PhysicsBodyId body;
+  };
+  std::vector<PhysicsLink> physicsLinks;
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;
   // Sums for the [physics] log line, printed every 120 frames.

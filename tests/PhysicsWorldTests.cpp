@@ -494,3 +494,18 @@ TEST(cast_ray_misses_past_max_distance) {
   CHECK(!world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 5.0f));
   CHECK(world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 20.0f));
 }
+
+TEST(set_pose_moves_the_body_without_blending) {
+  PhysicsWorld world;
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 5.0f, 0.0f));
+  stepFor(world, 10);
+  const PhysicsPose target{glm::vec3(3.0f, 2.0f, 1.0f),
+                           glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))};
+  world.setPose(box, target);
+  CHECK_NEAR(glm::distance(world.pose(box).position, target.position), 0.0,
+             1e-5);
+  // Drawn there straight away, not blended in from where it was.
+  const PhysicsPose drawn = world.interpolatedPose(box, 0.5f);
+  CHECK_NEAR(glm::distance(drawn.position, target.position), 0.0, 1e-5);
+  CHECK_NEAR(std::fabs(glm::dot(drawn.rotation, target.rotation)), 1.0, 1e-5);
+}

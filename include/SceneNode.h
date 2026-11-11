@@ -3,6 +3,7 @@
 #include "Scene.h"
 
 #include <glm/glm.hpp>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -37,12 +38,17 @@ public:
   void addChild(std::unique_ptr<SceneNode> child);
   const std::vector<std::unique_ptr<SceneNode>> &getChildren() const;
   void clearChildren();
+  // Drops every child the test picks.
+  void removeChildren(const std::function<bool(const SceneNode &)> &which);
 
   // Rendering
   void setModelId(int id);
   int getModelId() const;
   void setEntry(SceneEntryRef ref) { entryRef = ref; }
   SceneEntryRef entry() const { return entryRef; }
+  // Where the owner keeps this node's physics body; -1 for none.
+  void setPhysicsLink(int index) { physicsLinkIndex = index; }
+  int physicsLink() const { return physicsLinkIndex; }
 
 private:
   glm::mat4 composeAnimatedLocal(float timeSeconds) const;
@@ -60,6 +66,7 @@ private:
   bool hasAnimation = false;
 
   SceneEntryRef entryRef; // none for thrown balls
+  int physicsLinkIndex = -1;
   int modelId = -1; // References a model in the ModelManager
 
   std::vector<std::unique_ptr<SceneNode>> children;

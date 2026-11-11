@@ -11,11 +11,9 @@
 
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
+#include "Scene.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
-
-struct SceneSun;
-struct SceneFog;
 
 // The Physics panel. The panel sets the requests, the renderer acts on them
 // and fills in the counts every frame.
@@ -126,6 +124,17 @@ struct DebugUiContext {
   bool playing = true;
   std::function<void()> onTogglePlay;
   const std::string *sceneError = nullptr;
+
+  // The Inspector: the scene it edits and the selection, which the renderer
+  // only passes in edit mode. Moving takes effect at once; other changes,
+  // Delete and Split ask the renderer to rebuild that entry.
+  SceneDescription *scene = nullptr;
+  std::optional<SceneEntryRef> selection;
+  float selectionMass = 0.0f; // kg, one copy for a grid; 0 without a body
+  std::function<void(SceneEntryRef)> onEntryMoved;
+  std::function<void(SceneEntryRef)> onEntryChanged;
+  std::function<void(SceneEntryRef)> onEntryDeleted;
+  std::function<void(SceneEntryRef)> onGridSplit;
 };
 
 class ImGuiLayer {
@@ -168,6 +177,7 @@ private:
   void buildUi(DebugUiContext &ui);
   void drawTabPills();
   void drawToolbar(DebugUiContext &ui);
+  void drawInspector(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
   void drawRenderTab(DebugUiContext &ui);
   void drawLightingTab(DebugUiContext &ui);
@@ -178,6 +188,13 @@ private:
   void drawCameraTab(DebugUiContext &ui);
 
   SidebarTab activeTab = SidebarTab::Performance;
+
+  // A change that rebuilds the entry waits until no field is held, so a
+  // drag rebuilds once, when it ends.
+  bool inspectorRebuildPending = false;
+  SceneEntryRef inspectorPendingRef;
+  SceneEntryRef inspectorShownRef;
+  std::string inspectorProblem; // why the last edit was refused
 
   bool visible = true;
 

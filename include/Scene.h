@@ -98,6 +98,10 @@ struct SceneGridEntry {
   SceneModelEntry model;
   glm::ivec3 count = glm::ivec3(1);
   glm::vec3 spacing = glm::vec3(1.0f); // centre to centre
+  // Degrees about the vertical axis through the model's position. Turns the
+  // whole arrangement, copies included, so the model's own rotation keeps
+  // meaning each copy's rotation.
+  float layoutRotation = 0.0f;
   SceneSectionInfo info;
   bool operator==(const SceneGridEntry &) const = default;
 };
@@ -157,6 +161,21 @@ struct SceneDescription {
   std::string headerComment; // '#' lines at the top of the file
   bool operator==(const SceneDescription &) const = default;
 };
+
+// What's wrong with an entry, by the parser's rules, or nothing. The
+// Inspector checks edits with it, so a saved scene always loads again.
+std::optional<std::string> problemWith(const SceneModelEntry &model);
+std::optional<std::string> problemWith(const SceneGridEntry &grid);
+
+// Takes the entry out. The others keep their order in the file, but entries
+// of the same kind after it move down one index.
+void removeEntry(SceneDescription &scene, SceneEntryRef ref);
+
+// Turns a grid into one [model] per copy, where the grid was in the file;
+// the first copy keeps the grid's comment. Returns the new models, which sit
+// next to each other in the models list: models after them move up by the
+// number of copies, and grids after the grid move down one.
+std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex);
 
 namespace SceneIO {
 

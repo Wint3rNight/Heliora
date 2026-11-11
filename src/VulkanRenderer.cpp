@@ -546,9 +546,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   vkDeviceWaitIdle(device.getLogicalDevice());
   const auto loadStart = std::chrono::steady_clock::now();
 
-  // Physics first: physicsNodes points into the tree cleared below.
+  // Physics first: physicsLinks points into the tree cleared below.
   // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
-  physicsNodes.clear();
+  physicsLinks.clear();
   PhysicsWorld::Config physicsConfig = physicsPanel.config;
   if (const char *threads = std::getenv("HELIORA_PHYSICS_THREADS"))
     physicsConfig.workerThreads =
@@ -568,54 +568,10 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   if (moveCamera)
     selection.reset();
 
-  // A node for the entry, plus a physics body if it has one.
-  auto addNode = [&](const SceneModelEntry &entry, int modelId,
-                     SceneEntryRef ref) {
-    auto node = std::make_unique<SceneNode>();
-    node->setModelId(modelId);
-    node->setEntry(ref);
-    node->setTransform(entry.transform);
-    node->setAnimation(entry.animation);
-    if (entry.body) {
-      // A model file's collider is built from its own triangles.
-      PhysicsBodyDesc body = bodyDescFor(
-          entry, entry.shape ? nullptr : modelManager.collisionParts(modelId),
-          physicsPanel.defaultFriction);
-      body.userData = physicsNodes.size();
-      if (physics->addBody(body).isValid())
-        physicsNodes.push_back(node.get());
-    }
-    rootNode.addChild(std::move(node));
-  };
-  auto modelFor = [&](const SceneModelEntry &entry) {
-    return entry.shape ? createPrimitiveModel(entry)
-                       : createMeshModel(entry.path);
-  };
-
-  for (size_t i = 0; i < desc.models.size(); ++i) {
-    const SceneModelEntry &entry = desc.models[i];
-    try {
-      addNode(entry, modelFor(entry),
-              {SceneEntryRef::Kind::Model, static_cast<int>(i)});
-    } catch (const std::exception &e) {
-      spdlog::error("Scene '{}': failed to load model '{}': {}", desc.name,
-                    entry.shape ? "generated shape" : entry.path, e.what());
-    }
-  }
-  // Every copy in a grid shares one model, so it's made once.
-  for (size_t i = 0; i < desc.grids.size(); ++i) {
-    const SceneGridEntry &grid = desc.grids[i];
-    try {
-      const int modelId = modelFor(grid.model);
-      for (const SceneModelEntry &copy : expandGrid(grid))
-        addNode(copy, modelId,
-                {SceneEntryRef::Kind::Grid, static_cast<int>(i)});
-    } catch (const std::exception &e) {
-      spdlog::error("Scene '{}': failed to load grid model '{}': {}",
-                    desc.name, grid.model.shape ? "generated shape" : grid.model.path,
-                    e.what());
-    }
-  }
+  for (int i = 0; i < static_cast<int>(currentScene.models.size()); ++i)
+    addEntry({SceneEntryRef::Kind::Model, i});
+  for (int i = 0; i < static_cast<int>(currentScene.grids.size()); ++i)
+    addEntry({SceneEntryRef::Kind::Grid, i});
 
   for (const SceneRingEntry &ring : desc.rings) {
     if (ring.count <= 0)
@@ -679,7 +635,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
                "ring(s), {} physics bodies, {} Jolt workers) in {:.0f} ms",
                moveCamera ? "Loaded" : "Rebuilt", desc.name,
                desc.models.size(), desc.grids.size(),
-               desc.rings.size(), physicsNodes.size(),
+               desc.rings.size(), physics->bodyCount(),
                physicsConfig.workerThreads,
                std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - loadStart)
@@ -698,6 +654,137 @@ void VulkanRenderer::applySunAndFog() {
   sceneUbo.fogParams.x = fog.density;
   sceneUbo.fogParams.y = fog.falloff;
   sceneUbo.fogParams.z = fog.max;
+}
+
+int VulkanRenderer::modelFor(const SceneModelEntry &entry) {
+  return entry.shape ? createPrimitiveModel(entry)
+                     : createMeshModel(entry.path);
+}
+
+// A node for the entry, plus a physics body if it has one.
+void VulkanRenderer::addEntryNode(const SceneModelEntry &entry, int modelId,
+                                  SceneEntryRef ref) {
+  auto node = std::make_unique<SceneNode>();
+  node->setModelId(modelId);
+  node->setEntry(ref);
+  node->setTransform(entry.transform);
+  node->setAnimation(entry.animation);
+  if (entry.body) {
+    // A model file's collider is built from its own triangles.
+    PhysicsBodyDesc body = bodyDescFor(
+        entry, entry.shape ? nullptr : modelManager.collisionParts(modelId),
+        physicsPanel.defaultFriction);
+    body.userData = physicsLinks.size();
+    const PhysicsBodyId id = physics->addBody(body);
+    if (id.isValid()) {
+      node->setPhysicsLink(static_cast<int>(physicsLinks.size()));
+      physicsLinks.push_back({node.get(), id});
+    }
+  }
+  rootNode.addChild(std::move(node));
+}
+
+void VulkanRenderer::addEntry(SceneEntryRef ref) {
+  const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  const SceneModelEntry &model = isGrid ? currentScene.grids[ref.index].model
+                                        : currentScene.models[ref.index];
+  try {
+    // Every copy in a grid shares one model, so it's made once.
+    const int modelId = modelFor(model);
+    if (isGrid)
+      for (const SceneModelEntry &copy :
+           expandGrid(currentScene.grids[ref.index]))
+        addEntryNode(copy, modelId, ref);
+    else
+      addEntryNode(model, modelId, ref);
+  } catch (const std::exception &e) {
+    spdlog::error("Scene '{}': failed to load {} '{}': {}", currentScene.name,
+                  isGrid ? "grid model" : "model",
+                  model.shape ? "generated shape" : model.path, e.what());
+  }
+}
+
+void VulkanRenderer::removeEntryNodes(SceneEntryRef ref) {
+  for (PhysicsLink &link : physicsLinks)
+    if (link.node && link.node->entry() == ref) {
+      physics->removeBody(link.body);
+      link = {};
+    }
+  rootNode.removeChildren(
+      [&](const SceneNode &node) { return node.entry() == ref; });
+}
+
+void VulkanRenderer::placeEntry(SceneEntryRef ref) {
+  auto place = [&](SceneNode &node, const SceneModelEntry &entry) {
+    node.setTransform(entry.transform);
+    if (node.physicsLink() >= 0) {
+      // From bodyDescFor, since a plane's body sits under its surface.
+      const PhysicsBodyDesc body =
+          bodyDescFor(entry, nullptr, physicsPanel.defaultFriction);
+      physics->setPose(physicsLinks[node.physicsLink()].body,
+                       {body.position, body.rotation});
+    }
+  };
+  const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  // A grid's nodes went in in expandGrid's order and stay in it.
+  const std::vector<SceneModelEntry> copies =
+      isGrid ? expandGrid(currentScene.grids[ref.index])
+             : std::vector<SceneModelEntry>{currentScene.models[ref.index]};
+  size_t next = 0;
+  for (const auto &node : rootNode.getChildren())
+    if (node->entry() == ref && next < copies.size())
+      place(*node, copies[next++]);
+  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+  updateSelectionLines();
+}
+
+void VulkanRenderer::shiftEntryRefs(SceneEntryRef::Kind kind, int from,
+                                    int by) {
+  for (const auto &node : rootNode.getChildren()) {
+    SceneEntryRef ref = node->entry();
+    if (ref.kind == kind && ref.index >= from) {
+      ref.index += by;
+      node->setEntry(ref);
+    }
+  }
+}
+
+void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
+  const size_t count = ref.kind == SceneEntryRef::Kind::Grid
+                           ? currentScene.grids.size()
+                           : currentScene.models.size();
+  if (ref.kind == SceneEntryRef::Kind::None || ref.index < 0 ||
+      ref.index >= static_cast<int>(count))
+    return;
+  switch (op) {
+  case EntryOp::Rebuild:
+    removeEntryNodes(ref);
+    addEntry(ref);
+    break;
+  case EntryOp::Delete:
+    removeEntryNodes(ref);
+    removeEntry(currentScene, ref);
+    shiftEntryRefs(ref.kind, ref.index + 1, -1);
+    selection.reset();
+    break;
+  case EntryOp::Split: {
+    if (ref.kind != SceneEntryRef::Kind::Grid)
+      return;
+    removeEntryNodes(ref);
+    const std::vector<SceneEntryRef> copies =
+        splitGrid(currentScene, ref.index);
+    shiftEntryRefs(SceneEntryRef::Kind::Grid, ref.index + 1, -1);
+    if (!copies.empty())
+      shiftEntryRefs(SceneEntryRef::Kind::Model, copies.front().index,
+                     static_cast<int>(copies.size()));
+    for (const SceneEntryRef &copy : copies)
+      addEntry(copy);
+    selection.reset();
+    break;
+  }
+  }
+  // Bodies added one by one leave Jolt's broad phase tree unbalanced.
+  physics->optimizeBroadPhase();
 }
 
 bool VulkanRenderer::loadSceneAt(int index) {
@@ -765,8 +852,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
   for (const PhysicsMovedPose &moved : physics->movedPoses(alpha))
-    physicsNodes[moved.userData]->setPose(moved.pose.position,
-                                          moved.pose.rotation);
+    if (SceneNode *node = physicsLinks[moved.userData].node)
+      node->setPose(moved.pose.position, moved.pose.rotation);
   const auto posed = std::chrono::steady_clock::now();
 
   using Ms = std::chrono::duration<double, std::milli>;
@@ -816,10 +903,12 @@ void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
   node->setTransform(ball.transform);
   PhysicsBodyDesc body = bodyDescFor(ball, nullptr, physicsPanel.defaultFriction);
   body.linearVelocity = direction * 25.0f; // m/s, a hard throw
-  body.userData = physicsNodes.size();
-  if (!physics->addBody(body).isValid())
+  body.userData = physicsLinks.size();
+  const PhysicsBodyId id = physics->addBody(body);
+  if (!id.isValid())
     return; // world full; PhysicsWorld already logged it
-  physicsNodes.push_back(node.get());
+  node->setPhysicsLink(static_cast<int>(physicsLinks.size()));
+  physicsLinks.push_back({node.get(), id});
   rootNode.addChild(std::move(node));
   ++physicsPanel.thrownBalls;
 }
@@ -878,7 +967,8 @@ void VulkanRenderer::selectAt(glm::vec2 pixel, glm::vec2 windowSize) {
   if (const std::optional<PhysicsRayHit> hit =
           physics->castRay(ray.origin, ray.direction, nearest)) {
     nearest = hit->distance;
-    picked = physicsNodes[hit->userData]->entry();
+    if (const SceneNode *node = physicsLinks[hit->userData].node)
+      picked = node->entry();
   }
   // Objects without a body have no collider to hit, so their bounding sphere
   // stands in. It's rough, but these are rare in a physics game.
@@ -913,8 +1003,14 @@ void VulkanRenderer::selectAt(glm::vec2 pixel, glm::vec2 windowSize) {
 
 void VulkanRenderer::updateSelectionLines() {
   selectionLines.clear();
+  selectionMass = 0.0f;
   if (!selection)
     return;
+  for (const PhysicsLink &link : physicsLinks)
+    if (link.node && link.node->entry() == *selection) {
+      selectionMass = physics->mass(link.body);
+      break;
+    }
   // A centimetre out, so the outline doesn't sit in the object's own faces.
   constexpr float kMargin = 0.01f;
   // One object gets a box turned with it; a grid gets one box around every
@@ -1020,6 +1116,13 @@ void VulkanRenderer::draw() {
     int requested = pendingSceneIndex;
     pendingSceneIndex = -1;
     loadSceneAt(requested);
+  }
+  if (!pendingEntryOps.empty()) {
+    vkDeviceWaitIdle(logicalDevice);
+    for (const auto &[op, ref] : std::exchange(pendingEntryOps, {}))
+      applyEntryOp(op, ref);
+    rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+    updateSelectionLines();
   }
   if (playToggleRequested) {
     playToggleRequested = false;
@@ -3224,6 +3327,19 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.playing = playing;
   ui.onTogglePlay = [this] { togglePlayMode(); };
   ui.sceneError = &sceneError;
+  ui.scene = &currentScene;
+  ui.selection = playing ? std::nullopt : selection;
+  ui.selectionMass = selectionMass;
+  ui.onEntryMoved = [this](SceneEntryRef ref) { placeEntry(ref); };
+  ui.onEntryChanged = [this](SceneEntryRef ref) {
+    pendingEntryOps.push_back({EntryOp::Rebuild, ref});
+  };
+  ui.onEntryDeleted = [this](SceneEntryRef ref) {
+    pendingEntryOps.push_back({EntryOp::Delete, ref});
+  };
+  ui.onGridSplit = [this](SceneEntryRef ref) {
+    pendingEntryOps.push_back({EntryOp::Split, ref});
+  };
 
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the

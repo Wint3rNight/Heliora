@@ -159,6 +159,8 @@ PhysicsMeshPart simplifiedForCollision(const PhysicsMeshPart &part,
   return simple;
 }
 
+std::span<const PhysicsMaterial> physicsMaterials() { return kMaterials; }
+
 std::optional<PhysicsMaterial> findMaterial(std::string_view name) {
   const auto sameName = [name](const PhysicsMaterial &material) {
     return std::ranges::equal(name, std::string_view(material.name),

@@ -88,64 +88,82 @@ PhysicsMotion parseBody(const std::string &value, int lineNumber) {
                            value + "' (static, dynamic or kinematic)");
 }
 
-// A [model] needs a file or a shape, and a shape needs a size it can be
-// built at. Checked after parsing, since the keys can come in any order.
-void checkModel(const SceneModelEntry &model, int headerLine) {
-  auto fail = [&](const std::string &what) {
-    throw std::runtime_error("scene parse error, [model] at line " +
-                             std::to_string(headerLine) + ": " + what);
-  };
+// The rules behind problemWith, which a [model] has to pass.
+std::optional<std::string> modelProblem(const SceneModelEntry &model) {
   if (model.path.empty() && !model.shape)
-    fail("needs 'path' or 'shape'");
+    return "needs 'path' or 'shape'";
   if (!model.path.empty() && model.shape)
-    fail("has both 'path' and 'shape', pick one");
+    return "has both 'path' and 'shape', pick one";
   if (model.body && model.animation.active())
-    fail("a 'body' can't also have spin, orbit or bob animation, both would "
-         "move it");
+    return "a 'body' can't also have spin, orbit or bob animation, both would "
+           "move it";
   if (model.body && model.shape == PrimitiveShape::Plane &&
       *model.body != PhysicsMotion::Static)
-    fail("a plane's body must be static");
+    return "a plane's body must be static";
   if (!model.body && (model.mass || model.density || model.material ||
                       model.friction || model.restitution || model.collider))
-    fail("'mass', 'density', 'material', 'friction', 'restitution' and "
-         "'collider' need a 'body'");
+    return "'mass', 'density', 'material', 'friction', 'restitution' and "
+           "'collider' need a 'body'";
   if (model.collider && model.shape)
-    fail("'collider' is for model files; generated shapes collide as "
-         "themselves");
+    return "'collider' is for model files; generated shapes collide as "
+           "themselves";
   if (model.body && *model.body != PhysicsMotion::Static &&
       model.collider == SceneCollider::Mesh)
-    fail("a moving body can't use 'collider = mesh' (Jolt can't collide a "
-         "mesh with another mesh or with terrain); use hull or box");
+    return "a moving body can't use 'collider = mesh' (Jolt can't collide a "
+           "mesh with another mesh or with terrain); use hull or box";
   if (model.mass && *model.mass <= 0.0f)
-    fail("'mass' must be more than 0");
+    return "'mass' must be more than 0";
   if (model.density && *model.density <= 0.0f)
-    fail("'density' must be more than 0");
+    return "'density' must be more than 0";
   if (model.friction && *model.friction < 0.0f)
-    fail("'friction' must be 0 or more");
+    return "'friction' must be 0 or more";
   if (model.restitution &&
       (*model.restitution < 0.0f || *model.restitution > 1.0f))
-    fail("'restitution' must be between 0 and 1");
+    return "'restitution' must be between 0 and 1";
   if (!model.shape)
-    return;
+    return std::nullopt;
   switch (*model.shape) {
   case PrimitiveShape::Box:
     if (glm::any(glm::lessThanEqual(model.size, glm::vec3(0.0f))))
-      fail("'size' must be positive on every axis");
+      return "'size' must be positive on every axis";
     break;
   case PrimitiveShape::Plane:
     if (model.size.x <= 0.0f || model.size.z <= 0.0f)
-      fail("'size' must be positive on x and z");
+      return "'size' must be positive on x and z";
     break;
   case PrimitiveShape::Capsule:
     if (model.radius > 0.0f && model.height <= 2.0f * model.radius)
-      fail("'height' must be more than twice the radius (it includes both "
-           "round ends)");
+      return "'height' must be more than twice the radius (it includes both "
+             "round ends)";
     [[fallthrough]];
   case PrimitiveShape::Sphere:
     if (model.radius <= 0.0f)
-      fail("'radius' must be positive");
+      return "'radius' must be positive";
     break;
   }
+  return std::nullopt;
+}
+
+// Numbers the sections 0, 1, 2... in the order the writer puts them, so a
+// scene that lost or gained entries reads back equal to itself.
+void renumberSections(SceneDescription &scene) {
+  struct Section {
+    int order;
+    SceneSectionInfo *info;
+  };
+  std::vector<Section> sections;
+  for (SceneModelEntry &model : scene.models)
+    sections.push_back({model.info.order, &model.info});
+  for (SceneGridEntry &grid : scene.grids)
+    sections.push_back({grid.info.order, &grid.info});
+  for (SceneRingEntry &ring : scene.rings)
+    sections.push_back({ring.info.order, &ring.info});
+  std::stable_sort(sections.begin(), sections.end(),
+                   [](const Section &a, const Section &b) {
+                     return a.order < b.order;
+                   });
+  for (size_t i = 0; i < sections.size(); ++i)
+    sections[i].info->order = static_cast<int>(i);
 }
 
 // Bad values here would turn the whole picture black or NaN. headerLine is 0
@@ -367,6 +385,10 @@ std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid) {
   std::vector<SceneModelEntry> copies;
   copies.reserve(size_t(grid.count.x) * grid.count.y * grid.count.z);
   const glm::vec3 base = grid.model.transform.position;
+  // At 0 this is the identity, which leaves every position exactly as it
+  // was, so grids without the key don't move by a rounding error.
+  const glm::quat turn =
+      rotationFromDegrees(glm::vec3(0.0f, grid.layoutRotation, 0.0f));
   // Centred on x and z: copy i sits (i - (n - 1) / 2) spacings from base.
   const glm::vec2 half = (glm::vec2(grid.count.x, grid.count.z) - 1.0f) * 0.5f;
   for (int z = 0; z < grid.count.z; ++z)
@@ -374,11 +396,66 @@ std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid) {
       for (int x = 0; x < grid.count.x; ++x) {
         SceneModelEntry copy = grid.model;
         copy.transform.position =
-            base + glm::vec3((x - half.x) * grid.spacing.x, y * grid.spacing.y,
-                             (z - half.y) * grid.spacing.z);
+            base + turn * glm::vec3((x - half.x) * grid.spacing.x,
+                                    y * grid.spacing.y,
+                                    (z - half.y) * grid.spacing.z);
+        // Turning about world y first is the same as adding to the yaw,
+        // since rotationFromDegrees applies y first.
+        copy.transform.rotationDeg.y += grid.layoutRotation;
         copies.push_back(copy);
       }
   return copies;
+}
+
+std::optional<std::string> problemWith(const SceneModelEntry &model) {
+  return modelProblem(model);
+}
+
+std::optional<std::string> problemWith(const SceneGridEntry &grid) {
+  if (std::optional<std::string> problem = modelProblem(grid.model))
+    return problem;
+  if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))))
+    return "'count' must be at least 1 on every axis";
+  if (glm::any(glm::lessThanEqual(grid.spacing, glm::vec3(0.0f))))
+    return "'spacing' must be positive on every axis";
+  return std::nullopt;
+}
+
+void removeEntry(SceneDescription &scene, SceneEntryRef ref) {
+  if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
+      ref.index < static_cast<int>(scene.models.size()))
+    scene.models.erase(scene.models.begin() + ref.index);
+  else if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
+           ref.index < static_cast<int>(scene.grids.size()))
+    scene.grids.erase(scene.grids.begin() + ref.index);
+  else
+    return;
+  renumberSections(scene);
+}
+
+std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex) {
+  if (gridIndex < 0 || gridIndex >= static_cast<int>(scene.grids.size()))
+    return {};
+  const SceneGridEntry grid = scene.grids[gridIndex]; // erased just below
+  scene.grids.erase(scene.grids.begin() + gridIndex);
+  std::vector<SceneModelEntry> copies = expandGrid(grid);
+  // The models list is in file order, so the copies go in after the models
+  // that came before the grid. That keeps the scene equal to itself read
+  // back from its saved file.
+  const auto at = std::find_if(
+      scene.models.begin(), scene.models.end(),
+      [&](const SceneModelEntry &m) { return m.info.order > grid.info.order; });
+  const int first = static_cast<int>(at - scene.models.begin());
+  for (size_t i = 0; i < copies.size(); ++i)
+    // All at the grid's place; renumbering spreads them out in copy order.
+    copies[i].info = {grid.info.order, i == 0 ? grid.info.comment : ""};
+  scene.models.insert(at, std::make_move_iterator(copies.begin()),
+                      std::make_move_iterator(copies.end()));
+  renumberSections(scene);
+  std::vector<SceneEntryRef> refs;
+  for (int i = 0; i < static_cast<int>(copies.size()); ++i)
+    refs.push_back({SceneEntryRef::Kind::Model, first + i});
+  return refs;
 }
 
 namespace SceneIO {
@@ -557,6 +634,8 @@ SceneDescription parse(std::istream &file, const std::string &path) {
                                    ": 'count' takes whole numbers");
       } else if (key == "spacing") {
         grid.spacing = parseVec3(value, lineNumber);
+      } else if (key == "layout_rotation") {
+        grid.layoutRotation = parseFloat(value, lineNumber);
       } else if (!parseModelKey(grid.model, key, value, lineNumber)) {
         throw std::runtime_error("scene parse error, line " +
                                  std::to_string(lineNumber) +
@@ -588,20 +667,15 @@ SceneDescription parse(std::istream &file, const std::string &path) {
 
   checkSun(scene.sun, sunLine);
   checkFog(scene.fog, fogLine);
+  // Checked after parsing, since the keys can come in any order.
   for (size_t i = 0; i < scene.models.size(); ++i)
-    checkModel(scene.models[i], modelLines[i]);
-  for (size_t i = 0; i < scene.grids.size(); ++i) {
-    const SceneGridEntry &grid = scene.grids[i];
-    checkModel(grid.model, gridLines[i]);
-    const std::string where =
-        "scene parse error, [grid] at line " + std::to_string(gridLines[i]);
-    if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))))
-      throw std::runtime_error(where +
-                               ": 'count' must be at least 1 on every axis");
-    if (glm::any(glm::lessThanEqual(grid.spacing, glm::vec3(0.0f))))
-      throw std::runtime_error(where +
-                               ": 'spacing' must be positive on every axis");
-  }
+    if (const auto problem = problemWith(scene.models[i]))
+      throw std::runtime_error("scene parse error, [model] at line " +
+                               std::to_string(modelLines[i]) + ": " + *problem);
+  for (size_t i = 0; i < scene.grids.size(); ++i)
+    if (const auto problem = problemWith(scene.grids[i]))
+      throw std::runtime_error("scene parse error, [grid] at line " +
+                               std::to_string(gridLines[i]) + ": " + *problem);
   for (const SceneRingEntry &ring : scene.rings)
     if (ring.path.empty())
       throw std::runtime_error("scene file " + path +
@@ -724,6 +798,8 @@ std::string write(const SceneDescription &scene) {
       }
       if (grid.spacing != gd.spacing)
         writeKey(out, "spacing", formatVec3(grid.spacing));
+      if (grid.layoutRotation != gd.layoutRotation)
+        writeKey(out, "layout_rotation", formatFloat(grid.layoutRotation));
       break;
     }
     case Kind::Ring: {

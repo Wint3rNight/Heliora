@@ -111,6 +111,13 @@ const std::vector<std::unique_ptr<SceneNode>> &SceneNode::getChildren() const {
 
 void SceneNode::clearChildren() { children.clear(); }
 
+void SceneNode::removeChildren(
+    const std::function<bool(const SceneNode &)> &which) {
+  std::erase_if(children, [&](const std::unique_ptr<SceneNode> &child) {
+    return which(*child);
+  });
+}
+
 void SceneNode::setModelId(int id) { modelId = id; }
 
 int SceneNode::getModelId() const { return modelId; }

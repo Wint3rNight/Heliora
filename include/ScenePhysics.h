@@ -4,6 +4,7 @@
 #include "Scene.h"
 
 #include <optional>
+#include <span>
 #include <string_view>
 
 // The physics body for a scene entry with a shape and a body. Sizes are
@@ -27,6 +28,8 @@ struct PhysicsMaterial {
 
 // The material called name (any case), or nothing if there isn't one.
 std::optional<PhysicsMaterial> findMaterial(std::string_view name);
+// Every material, for the Inspector's list.
+std::span<const PhysicsMaterial> physicsMaterials();
 
 // A model part cut down to at most maxTriangles for its collider, keeping
 // only the vertices those triangles use. Colliders don't need a scanned

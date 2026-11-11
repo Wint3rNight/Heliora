@@ -139,6 +139,9 @@ public:
   // body, or sleeping ones would hang in the air until something hit them.
   void applySettings(const Config &config);
 
+  // Moves the body there at once, for the editor. It's drawn there too, not
+  // blended in from where it was. Wakes it if it can move.
+  void setPose(PhysicsBodyId id, const PhysicsPose &pose);
   // Latest pose of the body's origin.
   PhysicsPose pose(PhysicsBodyId id) const;
   // The pose to draw: blended between the last two steps by the clock's

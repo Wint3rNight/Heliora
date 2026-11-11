@@ -1,6 +1,7 @@
 #include "ImGuiLayer.h"
 
 #include "Scene.h"
+#include "ScenePhysics.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -12,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <format>
+#include <span>
 #include <stdexcept>
 
 namespace {
@@ -296,6 +299,281 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::EndChild();
   ImGui::End();
   drawToolbar(ui);
+  drawInspector(ui);
+}
+
+namespace {
+
+// A key that's either set on the entry or left to its material and the
+// defaults. The box sets it; unticked, the field shows the value in use,
+// greyed out.
+bool optionalFloat(const char *label, std::optional<float> &value,
+                   float inUse, float speed, float lo, float hi,
+                   const char *format) {
+  bool changed = false;
+  ImGui::PushID(label);
+  bool on = value.has_value();
+  if (ImGui::Checkbox("##set", &on)) {
+    value = on ? std::optional<float>(inUse) : std::nullopt;
+    changed = true;
+  }
+  ImGui::SameLine();
+  float shown = value.value_or(inUse);
+  ImGui::BeginDisabled(!on);
+  if (ImGui::DragFloat(label, &shown, speed, lo, hi, format,
+                       ImGuiSliderFlags_AlwaysClamp) &&
+      on) {
+    value = shown;
+    changed = true;
+  }
+  ImGui::EndDisabled();
+  ImGui::PopID();
+  return changed;
+}
+
+} // namespace
+
+// The selected entry's settings, on the right, in edit mode. Edits go to a
+// copy first and are only kept if the parser would accept them, so a saved
+// scene always loads.
+void ImGuiLayer::drawInspector(DebugUiContext &ui) {
+  auto flushRebuild = [&] {
+    if (inspectorRebuildPending && !ImGui::IsAnyItemActive()) {
+      inspectorRebuildPending = false;
+      if (ui.onEntryChanged)
+        ui.onEntryChanged(inspectorPendingRef);
+    }
+  };
+  if (!ui.scene || !ui.selection) {
+    flushRebuild();
+    return;
+  }
+  const SceneEntryRef ref = *ui.selection;
+  SceneDescription &scene = *ui.scene;
+  const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  const size_t count = isGrid ? scene.grids.size() : scene.models.size();
+  if (ref.index < 0 || ref.index >= static_cast<int>(count)) {
+    flushRebuild();
+    return;
+  }
+  if (ref != inspectorShownRef) {
+    inspectorShownRef = ref;
+    inspectorProblem.clear();
+  }
+  SceneGridEntry *grid = isGrid ? &scene.grids[ref.index] : nullptr;
+  SceneModelEntry &entry = isGrid ? grid->model : scene.models[ref.index];
+  SceneModelEntry edited = entry;
+  SceneGridEntry editedGrid = isGrid ? *grid : SceneGridEntry{};
+  bool moved = false;   // placement only: applied at once
+  bool changed = false; // needs the entry rebuilt
+  bool split = false;
+  bool deleting = false;
+
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos(ImVec2(display.x - 10.0f, 10.0f), ImGuiCond_Always,
+                          ImVec2(1.0f, 0.0f));
+  // 0 height fits the contents.
+  ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
+  ImGui::Begin("##inspector", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                   ImGuiWindowFlags_NoSavedSettings);
+  constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+  static constexpr const char *kShapes[] = {"box", "sphere", "capsule",
+                                            "plane"};
+  const std::string what =
+      edited.shape ? kShapes[static_cast<int>(*edited.shape)]
+                   : std::filesystem::path(edited.path).filename().string();
+  if (isGrid) {
+    const glm::ivec3 n = grid->count;
+    ImGui::Text("Grid %d: %s, %d copies", ref.index, what.c_str(),
+                n.x * n.y * n.z);
+  } else {
+    ImGui::Text("Model %d: %s", ref.index, what.c_str());
+  }
+  ImGui::PushItemWidth(-110.0f);
+
+  ImGui::SeparatorText("Transform");
+  moved |= ImGui::DragFloat3("Position", &edited.transform.position.x, 0.05f,
+                             0.0f, 0.0f, "%.2f");
+  moved |= ImGui::DragFloat3("Rotation", &edited.transform.rotationDeg.x,
+                             0.5f, 0.0f, 0.0f, "%.1f\u00b0");
+  // Scale shows at once, but the body's size only changes in the rebuild.
+  if (ImGui::DragFloat("Scale", &edited.transform.scale, 0.01f, 0.01f, 100.0f,
+                       "%.2f", kClamp)) {
+    moved = true;
+    changed = true;
+  }
+
+  if (edited.shape) {
+    ImGui::SeparatorText("Shape");
+    int shape = static_cast<int>(*edited.shape);
+    if (ImGui::Combo("Shape", &shape, kShapes, 4)) {
+      edited.shape = static_cast<PrimitiveShape>(shape);
+      changed = true;
+    }
+    switch (*edited.shape) {
+    case PrimitiveShape::Box:
+      changed |= ImGui::DragFloat3("Size", &edited.size.x, 0.01f, 0.01f,
+                                   1000.0f, "%.2f", kClamp);
+      break;
+    case PrimitiveShape::Plane: {
+      glm::vec2 size(edited.size.x, edited.size.z);
+      if (ImGui::DragFloat2("Size", &size.x, 0.05f, 0.01f, 10000.0f, "%.2f",
+                            kClamp)) {
+        edited.size.x = size.x;
+        edited.size.z = size.y;
+        changed = true;
+      }
+      break;
+    }
+    case PrimitiveShape::Capsule:
+      changed |= ImGui::DragFloat("Height", &edited.height, 0.01f, 0.02f,
+                                  1000.0f, "%.2f", kClamp);
+      [[fallthrough]];
+    case PrimitiveShape::Sphere:
+      changed |= ImGui::DragFloat("Radius", &edited.radius, 0.01f, 0.01f,
+                                  1000.0f, "%.2f", kClamp);
+      break;
+    }
+    changed |= ImGui::ColorEdit3("Colour", &edited.color.x);
+  } else {
+    ImGui::SeparatorText("Model file");
+    ImGui::TextWrapped("%s", edited.path.c_str());
+  }
+
+  ImGui::SeparatorText("Physics");
+  static constexpr const char *kBodies[] = {"none", "static", "dynamic",
+                                            "kinematic"};
+  int body = edited.body ? 1 + static_cast<int>(*edited.body) : 0;
+  if (ImGui::Combo("Body", &body, kBodies, 4)) {
+    if (body == 0) {
+      // These only mean something with a body.
+      edited.body.reset();
+      edited.mass.reset();
+      edited.density.reset();
+      edited.material.reset();
+      edited.friction.reset();
+      edited.restitution.reset();
+      edited.collider.reset();
+    } else {
+      edited.body = static_cast<PhysicsMotion>(body - 1);
+    }
+    changed = true;
+  }
+  if (edited.body) {
+    const std::span<const PhysicsMaterial> materials = physicsMaterials();
+    const char *materialName =
+        edited.material ? edited.material->c_str() : "none";
+    if (ImGui::BeginCombo("Material", materialName)) {
+      if (ImGui::Selectable("none", !edited.material)) {
+        edited.material.reset();
+        changed = true;
+      }
+      for (const PhysicsMaterial &m : materials)
+        if (ImGui::Selectable(m.name, edited.material == m.name)) {
+          edited.material = m.name;
+          changed = true;
+        }
+      ImGui::EndCombo();
+    }
+    // What the body gets from its material and the defaults right now.
+    const PhysicsBodyDesc inUse = bodyDescFor(
+        edited, nullptr, ui.physics ? ui.physics->defaultFriction : 0.2f);
+    // The weight Jolt gave it; a body that doesn't exist yet (just given
+    // one, not rebuilt) starts from 1 kg, since 0 isn't allowed.
+    const float massInUse = ui.selectionMass > 0.0f ? ui.selectionMass
+                            : inUse.mass > 0.0f     ? inUse.mass
+                                                    : 1.0f;
+    changed |= optionalFloat("Mass", edited.mass, massInUse, 0.5f, 0.01f,
+                             1.0e6f, "%.1f kg");
+    changed |= optionalFloat("Density", edited.density, inUse.density, 5.0f,
+                             1.0f, 30000.0f, "%.0f kg/m\u00b3");
+    changed |= optionalFloat("Friction", edited.friction, inUse.friction,
+                             0.01f, 0.0f, 10.0f, "%.2f");
+    changed |= optionalFloat("Restitution", edited.restitution,
+                             inUse.restitution, 0.01f, 0.0f, 1.0f, "%.2f");
+    if (!edited.shape) {
+      static constexpr const char *kColliders[] = {"auto", "hull", "mesh",
+                                                   "box"};
+      int collider = static_cast<int>(
+          edited.collider.value_or(SceneCollider::Auto));
+      if (ImGui::Combo("Collider", &collider, kColliders, 4)) {
+        // auto is the default, so it's left out of the file.
+        if (collider == 0)
+          edited.collider.reset();
+        else
+          edited.collider = static_cast<SceneCollider>(collider);
+        changed = true;
+      }
+    }
+    if (ui.selectionMass > 0.0f)
+      ImGui::TextDisabled(isGrid ? "Weighs %.1f kg each" : "Weighs %.1f kg",
+                          ui.selectionMass);
+  }
+
+  if (isGrid) {
+    ImGui::SeparatorText("Grid");
+    changed |= ImGui::DragInt3("Count", &editedGrid.count.x, 0.1f, 1, 64,
+                               "%d", kClamp);
+    moved |= ImGui::DragFloat3("Spacing", &editedGrid.spacing.x, 0.01f, 0.01f,
+                               100.0f, "%.2f", kClamp);
+    moved |= ImGui::DragFloat("Layout rotation", &editedGrid.layoutRotation,
+                              0.5f, -360.0f, 360.0f, "%.1f\u00b0", kClamp);
+    split = ImGui::Button("Split into objects");
+  }
+  ImGui::PopItemWidth();
+
+  if (moved || changed) {
+    std::optional<std::string> problem;
+    if (isGrid) {
+      editedGrid.model = edited;
+      problem = problemWith(editedGrid);
+      const glm::ivec3 n = editedGrid.count;
+      const uint32_t maxBodies =
+          ui.physics ? ui.physics->config.maxBodies : 16384u;
+      if (!problem && edited.body &&
+          uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z) > maxBodies)
+        problem = std::format("more copies than the physics world holds ({})",
+                              maxBodies);
+    } else {
+      problem = problemWith(edited);
+    }
+    if (problem) {
+      inspectorProblem = *problem;
+    } else {
+      inspectorProblem.clear();
+      if (isGrid)
+        *grid = editedGrid;
+      else
+        entry = edited;
+      if (moved && ui.onEntryMoved)
+        ui.onEntryMoved(ref);
+      if (changed) {
+        inspectorRebuildPending = true;
+        inspectorPendingRef = ref;
+      }
+    }
+  }
+  if (!inspectorProblem.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
+    ImGui::TextWrapped("%s", inspectorProblem.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
+  deleting = ImGui::Button("Delete");
+  ImGui::End();
+
+  if (split || deleting) {
+    // The entry is going, so a rebuild of it would be wasted.
+    inspectorRebuildPending = false;
+    if (split && ui.onGridSplit)
+      ui.onGridSplit(ref);
+    else if (deleting && ui.onEntryDeleted)
+      ui.onEntryDeleted(ref);
+    return;
+  }
+  flushRebuild();
 }
 
 // A small bar at the top centre: Play/Stop and which mode the game is in.

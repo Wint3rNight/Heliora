@@ -565,6 +565,22 @@ void PhysicsWorld::step(float dt) {
   impl->recordMovedBodies();
 }
 
+void PhysicsWorld::setPose(PhysicsBodyId id, const PhysicsPose &pose) {
+  JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
+  const JPH::BodyID bodyId(id.value);
+  if (!id.isValid() || !bodies.IsAdded(bodyId))
+    return;
+  // Static bodies can't be woken; asking would trip a Jolt assert.
+  const JPH::EActivation activation =
+      bodies.GetMotionType(bodyId) == JPH::EMotionType::Static
+          ? JPH::EActivation::DontActivate
+          : JPH::EActivation::Activate;
+  bodies.SetPositionAndRotation(bodyId, toJoltPosition(pose.position),
+                                toJolt(pose.rotation), activation);
+  const PhysicsPose placed = impl->readPose(bodyId);
+  impl->drawn[bodyId.GetIndex()] = {placed, placed};
+}
+
 PhysicsPose PhysicsWorld::pose(PhysicsBodyId id) const {
   return impl->readPose(JPH::BodyID(id.value));
 }

@@ -462,3 +462,81 @@ TEST(bad_sun_and_fog_values_are_errors) {
   CHECK(errorOf("[fog]\ncolor = 1\n").find("unknown fog key") !=
         std::string::npos);
 }
+
+TEST(grid_layout_rotation_turns_the_arrangement) {
+  SceneGridEntry grid;
+  grid.model.shape = PrimitiveShape::Box;
+  grid.model.transform.rotationDeg = glm::vec3(10.0f, 5.0f, 0.0f);
+  grid.count = glm::ivec3(3, 1, 1);
+  grid.spacing = glm::vec3(2.0f);
+  grid.layoutRotation = 90.0f;
+  const std::vector<SceneModelEntry> copies = expandGrid(grid);
+  CHECK(copies.size() == 3);
+  // A quarter turn about y takes the row along x onto z.
+  CHECK_NEAR(glm::distance(copies[0].transform.position, glm::vec3(0, 0, 2)),
+             0.0, 1e-5);
+  CHECK_NEAR(glm::distance(copies[2].transform.position, glm::vec3(0, 0, -2)),
+             0.0, 1e-5);
+  // Each copy turns with the arrangement, on top of its own rotation.
+  CHECK_NEAR(copies[0].transform.rotationDeg.y, 95.0, 1e-4);
+  CHECK_NEAR(copies[0].transform.rotationDeg.x, 10.0, 1e-6);
+}
+
+TEST(layout_rotation_survives_a_round_trip) {
+  const SceneDescription scene =
+      parseText("[grid]\nshape = box\ncount = 2 1 2\nlayout_rotation = 30\n");
+  CHECK_NEAR(scene.grids.front().layoutRotation, 30.0, 1e-6);
+  CHECK(reparse(scene) == scene);
+  CHECK(SceneIO::write(parseText("[grid]\nshape = box\n"))
+            .find("layout_rotation") == std::string::npos);
+}
+
+TEST(problem_with_uses_the_parsers_rules) {
+  SceneModelEntry plane;
+  plane.shape = PrimitiveShape::Plane;
+  plane.size = glm::vec3(10.0f, 1.0f, 10.0f);
+  plane.body = PhysicsMotion::Dynamic;
+  CHECK(problemWith(plane).value_or("").find("static") != std::string::npos);
+  plane.body = PhysicsMotion::Static;
+  CHECK(!problemWith(plane));
+
+  SceneGridEntry grid;
+  grid.model.shape = PrimitiveShape::Box;
+  grid.spacing = glm::vec3(0.0f);
+  CHECK(problemWith(grid).value_or("").find("spacing") != std::string::npos);
+}
+
+TEST(removing_an_entry_keeps_the_rest_in_order) {
+  SceneDescription scene = parseText("[model]\nshape = box\nposition = 1 0 0\n"
+                                     "[grid]\nshape = sphere\n"
+                                     "[model]\nshape = box\nposition = 3 0 0\n");
+  removeEntry(scene, {SceneEntryRef::Kind::Model, 0});
+  CHECK(scene.models.size() == 1);
+  CHECK(scene.models.front().transform.position.x == 3.0f);
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("[grid]") < text.find("[model]"));
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(split_grid_keeps_its_place_and_its_copies) {
+  SceneDescription scene = parseText("[model]\nshape = box\n"
+                                     "# The wall\n"
+                                     "[grid]\nshape = box\ncount = 3 1 1\n"
+                                     "spacing = 2\nbody = dynamic\n"
+                                     "[model]\nshape = sphere\n");
+  const std::vector<SceneEntryRef> copies = splitGrid(scene, 0);
+  CHECK(copies.size() == 3);
+  CHECK(scene.grids.empty());
+  CHECK(scene.models.size() == 5);
+  if (copies.size() == 3) {
+    const SceneModelEntry &first = scene.models[copies[0].index];
+    CHECK(first.body == PhysicsMotion::Dynamic);
+    CHECK(first.info.comment == "# The wall");
+    CHECK(scene.models[copies[2].index].transform.position.x == 2.0f);
+  }
+  // The copies sit where the grid was: after the first box, before the
+  // sphere.
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("# The wall") < text.find("shape = sphere"));
+  CHECK(reparse(scene) == scene);
+}

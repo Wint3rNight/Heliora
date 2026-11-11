@@ -538,7 +538,7 @@ void VulkanRenderer::discoverScenes(const std::string &directory) {
                directory);
 }
 
-void VulkanRenderer::loadScene(const SceneDescription &desc) {
+void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // Rare, user-triggered operation: a full idle wait is the simple and safe
   // way to retire every in-flight frame before instance buffers and the
   // scene graph are torn down.
@@ -557,6 +557,8 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
                                 physicsPanel.maxCatchUpSteps);
   physicsPanel.settingsChanged = false; // the new world has them all
   physicsPanel.thrownBalls = 0;
+  playSeconds = 0.0;
+  // Stop passes currentScene itself; copying it onto itself is harmless.
   currentScene = desc;
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
@@ -648,7 +650,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
                  desc.name, desc.environmentHdr);
   }
 
-  if (cameraPresetCallback)
+  if (moveCamera && cameraPresetCallback)
     cameraPresetCallback(desc.camera.position, desc.camera.yaw,
                          desc.camera.pitch, desc.camera.speed);
 
@@ -661,9 +663,10 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   taaHistoryValid = false;
   gpuDrivenGBufferPass.invalidateHzb();
 
-  spdlog::info("Loaded scene '{}' ({} model(s), {} grid(s), {} instanced "
+  spdlog::info("{} scene '{}' ({} model(s), {} grid(s), {} instanced "
                "ring(s), {} physics bodies, {} Jolt workers) in {:.0f} ms",
-               desc.name, desc.models.size(), desc.grids.size(),
+               moveCamera ? "Loaded" : "Rebuilt", desc.name,
+               desc.models.size(), desc.grids.size(),
                desc.rings.size(), physicsNodes.size(),
                physicsConfig.workerThreads,
                std::chrono::duration<double, std::milli>(
@@ -691,7 +694,21 @@ bool VulkanRenderer::loadSceneAt(int index) {
                   availableScenes.size());
     return false;
   }
-  loadScene(availableScenes[index]);
+  // From disk again, so edits made by hand since startup show up. A file
+  // that no longer parses leaves the current scene running.
+  SceneDescription fresh;
+  try {
+    fresh = SceneIO::loadFromFile(availableScenes[index].filePath);
+  } catch (const std::exception &e) {
+    sceneError = std::format("Couldn't load '{}': {}",
+                             availableScenes[index].name, e.what());
+    spdlog::error("{}", sceneError);
+    return false;
+  }
+  sceneError.clear();
+  availableScenes[index] = fresh;
+  availableSceneNames[index] = fresh.name;
+  loadScene(fresh);
   activeSceneIndex = index;
   return true;
 }
@@ -703,10 +720,6 @@ void VulkanRenderer::requestSceneLoad(int index) {
 void VulkanRenderer::stepPhysics(float frameSeconds) {
   if (!physics)
     return;
-  if (physicsPanel.resetRequested) {
-    physicsPanel.resetRequested = false;
-    requestSceneLoad(activeSceneIndex); // happens at the top of draw()
-  }
   if (physicsPanel.settingsChanged) {
     physicsPanel.settingsChanged = false;
     physics->applySettings(physicsPanel.config);
@@ -720,7 +733,12 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   const auto start = std::chrono::steady_clock::now();
   int steps;
   float alpha;
-  if (physicsPanel.paused) {
+  if (!playing) {
+    // Edit mode: bodies stay where the layout put them.
+    steps = 0;
+    physicsPanel.stepRequested = false;
+    alpha = 1.0f;
+  } else if (physicsPanel.paused) {
     // Paused: only the Step button advances, and the latest step is drawn
     // as is.
     steps = physicsPanel.stepRequested ? 1 : 0;
@@ -776,7 +794,7 @@ SceneModelEntry VulkanRenderer::thrownBallEntry() {
 }
 
 void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
-  if (!physics || ballModelId < 0)
+  if (!physics || ballModelId < 0 || !playing)
     return;
   SceneModelEntry ball = thrownBallEntry();
   // A metre ahead of the camera, so it doesn't start inside the near plane.
@@ -794,8 +812,10 @@ void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
   ++physicsPanel.thrownBalls;
 }
 
-void VulkanRenderer::updateScene(float timeSeconds) {
-  rootNode.update(glm::mat4(1.0f), timeSeconds);
+void VulkanRenderer::updateScene(float frameSeconds) {
+  if (playing)
+    playSeconds += frameSeconds;
+  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
 }
 
 SceneNode &VulkanRenderer::getRootNode() { return rootNode; }
@@ -865,6 +885,14 @@ void VulkanRenderer::draw() {
     int requested = pendingSceneIndex;
     pendingSceneIndex = -1;
     loadSceneAt(requested);
+  }
+  if (playToggleRequested) {
+    playToggleRequested = false;
+    playing = !playing;
+    // Stop: back to the layout. Thrown balls and everything physics moved
+    // go, since the layout never had them.
+    if (!playing)
+      loadScene(currentScene, /*moveCamera=*/false);
   }
 
   metrics.beginFrame();
@@ -3058,6 +3086,9 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.onSaveSettings = [this](const char *section) { saveSettings(section); };
   ui.onResetSettings = [this](const char *section) { resetSettings(section); };
   ui.settingsStatus = &settingsStatus;
+  ui.playing = playing;
+  ui.onTogglePlay = [this] { togglePlayMode(); };
+  ui.sceneError = &sceneError;
 
   // Physics wireframes go in the ImGui pass, under the panels. The list is
   // only built while F2 is on.

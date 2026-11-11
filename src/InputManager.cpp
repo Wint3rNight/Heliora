@@ -57,6 +57,26 @@ void InputManager::resetMouseDelta() {
   deltaY = 0.0f;
 }
 
+bool InputManager::isMouseButtonPressed(int button) const {
+  return glfwGetMouseButton(window, button) == GLFW_PRESS;
+}
+
+bool InputManager::wasMouseButtonJustPressed(int button) {
+  const bool down = isMouseButtonPressed(button);
+  bool &prev = prevButtonDown[button];
+  const bool justPressed = down && !prev;
+  prev = down;
+  return justPressed;
+}
+
+void InputManager::setCursorCaptured(bool captured) {
+  glfwSetInputMode(window, GLFW_CURSOR,
+                   captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+  firstMouse = true;
+  deltaX = 0.0f;
+  deltaY = 0.0f;
+}
+
 bool InputManager::shouldClose() const { return glfwWindowShouldClose(window); }
 
 bool InputManager::wasResized() const { return framebufferResized; }

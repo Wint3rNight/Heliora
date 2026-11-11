@@ -20,7 +20,11 @@ float deltaTime = 0.0f;
 // camera/animation stutter. The delta itself is small and safe as float.
 double lastFrame = 0.0;
 
-void processInput() {
+// typing: a text box in the UI has the keyboard, so letters and Esc are
+// its, not the game's (Esc leaves the box instead of quitting).
+void processInput(bool typing) {
+  if (typing)
+    return;
   if (inputManager.isKeyPressed(GLFW_KEY_ESCAPE))
     glfwSetWindowShouldClose(window, true);
 
@@ -74,7 +78,10 @@ int main(int argc, char **argv) {
         camera.MovementSpeed = speed;
       });
   bool cameraMode = true;  // Tab toggles between camera fly-through and ImGui
-  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  // In UI mode, holding the right mouse button flies too. Tab stays for the
+  // touchpad, which can't hold a right click.
+  bool rightMouseFlying = false;
+  inputManager.setCursorCaptured(true);
 
   // Scenes are data-driven: Resources/Scenes/*.scene files describe models,
   // transforms, animations, instanced rings, and the camera pose. The ImGui
@@ -118,17 +125,18 @@ int main(int argc, char **argv) {
     lastFrame = currentFrame;
 
     inputManager.pollEvents();
-    processInput();
+    const bool typing = vulkanRenderer.imguiWantsTextInput();
+    processInput(typing);
 
     // Tab toggles between camera fly-through (cursor hidden) and UI mode
     // (cursor visible, ImGui panels interactive).
     // WantCaptureMouse can't drive this because GLFW_CURSOR_DISABLED delivers
     // only raw deltas — ImGui never sees absolute positions and can't detect
     // hover.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB)) {
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB) && !typing) {
       cameraMode = !cameraMode;
-      glfwSetInputMode(window, GLFW_CURSOR,
-                       cameraMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+      rightMouseFlying = false;
+      inputManager.setCursorCaptured(cameraMode);
       // Entering UI mode with the HUD hidden would strand the user in a
       // dead-looking state (free cursor, nothing to click, no mouse-look) —
       // un-hide the panels so UI mode always shows a UI.
@@ -136,20 +144,40 @@ int main(int argc, char **argv) {
         vulkanRenderer.toggleUiVisibility();
     }
 
+    // Only a press that starts off the panels flies; one on a panel stays
+    // with the panel. Read every frame, so a press made in camera mode
+    // doesn't count as new after Tab.
+    const bool rightPressed =
+        inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
+    if (!cameraMode) {
+      if (rightPressed && !vulkanRenderer.imguiWantsMouse()) {
+        rightMouseFlying = true;
+        inputManager.setCursorCaptured(true);
+      } else if (rightMouseFlying &&
+                 !inputManager.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
+        rightMouseFlying = false;
+        inputManager.setCursorCaptured(false);
+      }
+    }
+
+    // F5 switches between play mode and edit mode.
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_F5))
+      vulkanRenderer.togglePlayMode();
     // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
     if (inputManager.wasKeyJustPressed(GLFW_KEY_F1))
       vulkanRenderer.toggleUiVisibility();
     // F2 shows the physics shapes as wireframes.
     if (inputManager.wasKeyJustPressed(GLFW_KEY_F2))
       vulkanRenderer.togglePhysicsDebug();
-    // F throws a ball where the camera looks (camera mode only, so typing
-    // in a panel doesn't throw).
-    if (cameraMode && inputManager.wasKeyJustPressed(GLFW_KEY_F))
+    // F throws a ball where the camera looks, in camera mode only so a
+    // click-and-type in a panel never throws. Play mode only (throwBall).
+    if (cameraMode && !typing && inputManager.wasKeyJustPressed(GLFW_KEY_F))
       vulkanRenderer.throwBall(camera.Position, camera.Front);
 
-    // Mouse drives camera only in camera mode
+    // The mouse turns the camera only while flying.
     glm::vec2 mouseDelta = inputManager.getMouseDelta();
-    if (cameraMode && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
+    if ((cameraMode || rightMouseFlying) &&
+        (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
       camera.ProcessMouseMovement(mouseDelta.x, mouseDelta.y);
     }
 
@@ -161,8 +189,8 @@ int main(int argc, char **argv) {
 
     // Physics first, so nodes it moved get their matrices in updateScene.
     vulkanRenderer.stepPhysics(deltaTime);
-    // Advances node animations (dynamic objects) and global transforms.
-    vulkanRenderer.updateScene(currentFrame);
+    // Advances node animations (play mode only) and global transforms.
+    vulkanRenderer.updateScene(deltaTime);
 
     vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
 

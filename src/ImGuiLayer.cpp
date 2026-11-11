@@ -237,6 +237,10 @@ bool ImGuiLayer::wantsMouse() const {
   return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse;
 }
 
+bool ImGuiLayer::wantsTextInput() const {
+  return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
+}
+
 void ImGuiLayer::buildUi(DebugUiContext &ui) {
   // Frame-time history accumulates even while hidden so the graph shows
   // truthful recent history after un-hiding, not a stale pre-hide splice.
@@ -290,6 +294,26 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   }
   ImGui::PopItemWidth();
   ImGui::EndChild();
+  ImGui::End();
+  drawToolbar(ui);
+}
+
+// A small bar at the top centre: Play/Stop and which mode the game is in.
+void ImGuiLayer::drawToolbar(DebugUiContext &ui) {
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, 10.0f), ImGuiCond_Always,
+                          ImVec2(0.5f, 0.0f));
+  ImGui::Begin("##toolbar", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                   ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoSavedSettings);
+  if (ImGui::Button(ui.playing ? "Stop" : "Play") && ui.onTogglePlay)
+    ui.onTogglePlay();
+  ImGui::SameLine();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled(ui.playing ? "Playing (F5 stops)" : "Editing (F5 plays)");
   ImGui::End();
 }
 
@@ -353,6 +377,11 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
       }
       ImGui::EndCombo();
     }
+  }
+  if (ui.sceneError && !ui.sceneError->empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
+    ImGui::TextWrapped("%s", ui.sceneError->c_str());
+    ImGui::PopStyleColor();
   }
 }
 
@@ -559,15 +588,17 @@ void ImGuiLayer::drawPhysicsTab(DebugUiContext &ui) {
     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
                        "Dropped contacts in %u steps",
                        physics.droppedContactSteps);
+  // Pause and Step are for play mode; in edit mode physics doesn't run.
+  ImGui::BeginDisabled(!ui.playing);
   ImGui::Checkbox("Pause", &physics.paused);
   ImGui::SameLine();
   ImGui::BeginDisabled(!physics.paused);
   if (ImGui::Button("Step"))
     physics.stepRequested = true;
   ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("Reset scene"))
-    physics.resetRequested = true;
+  ImGui::EndDisabled();
+  if (!ui.playing)
+    ImGui::TextDisabled("Editing: physics waits for Play (F5)");
   ImGui::Checkbox("Wireframes (F2)", &physics.showWireframes);
   ImGui::Text("F throws a ball (%u thrown)", physics.thrownBalls);
 

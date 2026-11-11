@@ -75,9 +75,11 @@ public:
   // Immediate load: waits for the device to go idle, clears the scene graph
   // and instanced drawables, then builds the described scene. Models are
   // cached by path, so returning to a scene reuses its GPU geometry.
-  void loadScene(const SceneDescription &desc);
-  // Returns false (and leaves the current scene untouched) when the index
-  // is out of range — callers with a fallback must check this.
+  // moveCamera puts the camera at the scene's pose; Stop leaves it be.
+  void loadScene(const SceneDescription &desc, bool moveCamera = true);
+  // Reads the scene's file again first, so hand edits show up. Returns false
+  // (and leaves the current scene untouched) when the index is out of range
+  // or the file doesn't parse; the Scene tab shows why.
   bool loadSceneAt(int index);
   // Deferred load, safe to call from UI callbacks that run mid-record; the
   // switch happens at the top of the next draw().
@@ -90,11 +92,20 @@ public:
   void togglePhysicsDebug() {
     physicsPanel.showWireframes = !physicsPanel.showWireframes;
   }
-  // F: throws a ball from the camera along direction.
+  // F: throws a ball from the camera along direction. Play mode only.
   void throwBall(glm::vec3 from, glm::vec3 direction);
-  // Advances node animations and recomputes global transforms. Call once per
-  // frame before draw() with the elapsed time in seconds.
-  void updateScene(float timeSeconds);
+  // Advances node animations (in play mode) and recomputes global
+  // transforms. Call once per frame before draw() with the frame time in
+  // seconds.
+  void updateScene(float frameSeconds);
+
+  // Edit mode: physics and animations stand still and everything sits where
+  // the layout puts it. Play mode: they run from the layout. The game starts
+  // in play mode.
+  bool isPlaying() const { return playing; }
+  // F5 and the toolbar button. Stop rebuilds the scene from the layout,
+  // without moving the camera, at the top of the next draw().
+  void togglePlayMode() { playToggleRequested = true; }
 
   SceneNode &getRootNode();
   void updateCameraView(const glm::mat4 &viewMatrix,
@@ -109,6 +120,7 @@ public:
   void setCameraPresetCallback(CameraPresetCallback callback);
   float getCameraSpeed() const { return imguiCameraSpeed; }
   bool imguiWantsMouse() const { return imguiLayer.wantsMouse(); }
+  bool imguiWantsTextInput() const { return imguiLayer.wantsTextInput(); }
   void toggleUiVisibility() { imguiLayer.toggleVisibility(); }
   bool isUiVisible() const { return imguiLayer.isVisible(); }
 
@@ -126,6 +138,11 @@ private:
   // moves.
   std::unique_ptr<PhysicsWorld> physics;
   FixedStepClock physicsClock;
+  bool playing = true;
+  bool playToggleRequested = false;
+  // Animation time. Runs only while playing, and goes back to 0 with the
+  // layout. double for the same reason as main.cpp's frame clock.
+  double playSeconds = 0.0;
   std::vector<SceneNode *> physicsNodes;
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;
@@ -159,6 +176,7 @@ private:
   std::vector<std::string> availableSceneNames; // display names for ImGui
   int activeSceneIndex = -1;
   int pendingSceneIndex = -1;   // set by the UI, applied at next draw()
+  std::string sceneError; // why the last scene pick failed, for the UI
   std::string activeEnvironmentHdr; // HDRI backing the current sky/IBL
   VkFormat shadowDepthFormat = VK_FORMAT_UNDEFINED;
 

@@ -22,7 +22,6 @@ struct SceneFog;
 struct PhysicsPanel {
   bool paused = false;
   bool stepRequested = false;  // one step while paused
-  bool resetRequested = false; // reload the scene
   bool showWireframes = false; // also F2
   uint32_t bodies = 0;
   uint32_t awakeBodies = 0;
@@ -122,6 +121,11 @@ struct DebugUiContext {
   std::function<void(const char *)> onSaveSettings;
   std::function<void(const char *)> onResetSettings;
   const std::string *settingsStatus = nullptr; // the last button's result
+
+  // The toolbar's Play/Stop button, and why the last scene pick failed.
+  bool playing = true;
+  std::function<void()> onTogglePlay;
+  const std::string *sceneError = nullptr;
 };
 
 class ImGuiLayer {
@@ -142,6 +146,8 @@ public:
               const std::function<void(VkCommandBuffer)> &beforeUi = {});
 
   bool wantsMouse() const;
+  // A text box has the keyboard, so typed letters aren't game keys.
+  bool wantsTextInput() const;
 
   // Screenshot mode: hides every panel (empty ImGui draw list) so captures
   // are HUD-free. Rendering itself is unaffected.
@@ -161,6 +167,7 @@ private:
 
   void buildUi(DebugUiContext &ui);
   void drawTabPills();
+  void drawToolbar(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
   void drawRenderTab(DebugUiContext &ui);
   void drawLightingTab(DebugUiContext &ui);

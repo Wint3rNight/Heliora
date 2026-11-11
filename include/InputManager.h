@@ -23,6 +23,12 @@ public:
   glm::vec2 getMouseDelta() const;
   glm::vec2 getMousePosition() const;
   void resetMouseDelta();
+  bool isMouseButtonPressed(int button) const;
+  // True once per press, like wasKeyJustPressed.
+  bool wasMouseButtonJustPressed(int button);
+  // Hides the cursor and sends raw movement (flying), or frees it. The first
+  // movement after a switch is dropped, since the cursor jumps.
+  void setCursorCaptured(bool captured);
 
   // --- Window state ---
   bool shouldClose() const;
@@ -44,6 +50,7 @@ private:
 
   // Per-key previous state for wasKeyJustPressed edge detection
   std::unordered_map<int, bool> prevKeyDown;
+  std::unordered_map<int, bool> prevButtonDown;
 
   // Static callbacks (GLFW requires free/static functions)
   static void mouseCallback(GLFWwindow *w, double xpos, double ypos);

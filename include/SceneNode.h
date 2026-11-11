@@ -41,6 +41,8 @@ public:
   // Rendering
   void setModelId(int id);
   int getModelId() const;
+  void setEntry(SceneEntryRef ref) { entryRef = ref; }
+  SceneEntryRef entry() const { return entryRef; }
 
 private:
   glm::mat4 composeAnimatedLocal(float timeSeconds) const;
@@ -57,6 +59,7 @@ private:
   NodeAnimation animation;
   bool hasAnimation = false;
 
+  SceneEntryRef entryRef; // none for thrown balls
   int modelId = -1; // References a model in the ModelManager
 
   std::vector<std::unique_ptr<SceneNode>> children;

@@ -460,3 +460,37 @@ TEST(big_contact_limit_gets_enough_scratch_memory) {
   }
   CHECK(!threw);
 }
+
+TEST(cast_ray_finds_the_nearest_body) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.motion = PhysicsMotion::Static;
+  box.position = glm::vec3(0.0f, 0.0f, -10.0f);
+  box.userData = 9;
+  world.addBody(box);
+  box.position = glm::vec3(0.0f, 0.0f, -5.0f);
+  box.userData = 7;
+  world.addBody(box);
+
+  const std::optional<PhysicsRayHit> hit =
+      world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f);
+  CHECK(hit.has_value());
+  if (hit) {
+    CHECK(hit->userData == 7);
+    CHECK_NEAR(hit->distance, 4.5, 1e-3); // the near face of a 1 m box
+  }
+  // The direction doesn't have to be unit length.
+  const std::optional<PhysicsRayHit> longer =
+      world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -3.0f), 100.0f);
+  CHECK_NEAR(longer ? longer->distance : -1.0f, 4.5, 1e-3);
+}
+
+TEST(cast_ray_misses_past_max_distance) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.motion = PhysicsMotion::Static;
+  box.position = glm::vec3(0.0f, 0.0f, -10.0f);
+  world.addBody(box);
+  CHECK(!world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 5.0f));
+  CHECK(world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 20.0f));
+}

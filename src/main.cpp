@@ -160,6 +160,18 @@ int main(int argc, char **argv) {
       }
     }
 
+    // A left click in edit mode, with the cursor free and off the panels,
+    // selects what's under it.
+    const bool leftPressed =
+        inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
+    if (leftPressed && !cameraMode && !rightMouseFlying &&
+        !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse()) {
+      int width = 0, height = 0;
+      glfwGetWindowSize(window, &width, &height);
+      vulkanRenderer.selectAt(inputManager.getMousePosition(),
+                              glm::vec2(width, height));
+    }
+
     // F5 switches between play mode and edit mode.
     if (inputManager.wasKeyJustPressed(GLFW_KEY_F5))
       vulkanRenderer.togglePlayMode();

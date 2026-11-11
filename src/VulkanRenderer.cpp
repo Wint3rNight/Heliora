@@ -1,5 +1,6 @@
 #include "VulkanRenderer.h"
 #include "Model.h"
+#include "Picking.h"
 #include "ScenePhysics.h"
 #include "Utilities.h"
 #include "VulkanDebug.h"
@@ -563,10 +564,16 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
+  // A new scene's entries are different ones; Stop keeps the same layout.
+  if (moveCamera)
+    selection.reset();
+
   // A node for the entry, plus a physics body if it has one.
-  auto addNode = [&](const SceneModelEntry &entry, int modelId) {
+  auto addNode = [&](const SceneModelEntry &entry, int modelId,
+                     SceneEntryRef ref) {
     auto node = std::make_unique<SceneNode>();
     node->setModelId(modelId);
+    node->setEntry(ref);
     node->setTransform(entry.transform);
     node->setAnimation(entry.animation);
     if (entry.body) {
@@ -585,20 +592,24 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
                        : createMeshModel(entry.path);
   };
 
-  for (const SceneModelEntry &entry : desc.models) {
+  for (size_t i = 0; i < desc.models.size(); ++i) {
+    const SceneModelEntry &entry = desc.models[i];
     try {
-      addNode(entry, modelFor(entry));
+      addNode(entry, modelFor(entry),
+              {SceneEntryRef::Kind::Model, static_cast<int>(i)});
     } catch (const std::exception &e) {
       spdlog::error("Scene '{}': failed to load model '{}': {}", desc.name,
                     entry.shape ? "generated shape" : entry.path, e.what());
     }
   }
   // Every copy in a grid shares one model, so it's made once.
-  for (const SceneGridEntry &grid : desc.grids) {
+  for (size_t i = 0; i < desc.grids.size(); ++i) {
+    const SceneGridEntry &grid = desc.grids[i];
     try {
       const int modelId = modelFor(grid.model);
       for (const SceneModelEntry &copy : expandGrid(grid))
-        addNode(copy, modelId);
+        addNode(copy, modelId,
+                {SceneEntryRef::Kind::Grid, static_cast<int>(i)});
     } catch (const std::exception &e) {
       spdlog::error("Scene '{}': failed to load grid model '{}': {}",
                     desc.name, grid.model.shape ? "generated shape" : grid.model.path,
@@ -642,6 +653,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
   }
   rootNode.update(glm::mat4(1.0f), 0.0f);
+  updateSelectionLines();
 
   if (!desc.environmentHdr.empty() &&
       desc.environmentHdr != activeEnvironmentHdr) {
@@ -810,6 +822,129 @@ void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
   physicsNodes.push_back(node.get());
   rootNode.addChild(std::move(node));
   ++physicsPanel.thrownBalls;
+}
+
+namespace {
+
+// The UI's bright purple (kPurpleBright, 0x9a63b8) as RGBA8 bytes.
+constexpr uint32_t kSelectionColor = 0x9au | 0x63u << 8 | 0xb8u << 16 |
+                                     0xffu << 24;
+
+// Corner i has bit 0 set for max x, bit 1 for max y, bit 2 for max z.
+std::array<glm::vec3, 8> boxCorners(glm::vec3 lo, glm::vec3 hi,
+                                    const glm::mat4 &transform) {
+  std::array<glm::vec3, 8> corners;
+  for (int i = 0; i < 8; ++i)
+    corners[i] = glm::vec3(
+        transform * glm::vec4(i & 1 ? hi.x : lo.x, i & 2 ? hi.y : lo.y,
+                              i & 4 ? hi.z : lo.z, 1.0f));
+  return corners;
+}
+
+// The 12 edges: each corner joined to the corners one axis over.
+void appendBoxLines(std::vector<PhysicsDebugVertex> &lines,
+                    const std::array<glm::vec3, 8> &corners, uint32_t color) {
+  for (int i = 0; i < 8; ++i)
+    for (int axis = 1; axis < 8; axis <<= 1)
+      if (!(i & axis)) {
+        lines.push_back({corners[i], color});
+        lines.push_back({corners[i | axis], color});
+      }
+}
+
+float largestScale(const glm::mat4 &m) {
+  return std::max({glm::length(glm::vec3(m[0])), glm::length(glm::vec3(m[1])),
+                   glm::length(glm::vec3(m[2]))});
+}
+
+} // namespace
+
+bool VulkanRenderer::entryHasBody(SceneEntryRef ref) const {
+  if (ref.kind == SceneEntryRef::Kind::Model)
+    return currentScene.models[ref.index].body.has_value();
+  if (ref.kind == SceneEntryRef::Kind::Grid)
+    return currentScene.grids[ref.index].model.body.has_value();
+  return false;
+}
+
+void VulkanRenderer::selectAt(glm::vec2 pixel, glm::vec2 windowSize) {
+  if (playing || !physics || windowSize.x <= 0.0f || windowSize.y <= 0.0f)
+    return;
+  // Unjittered, so the ray matches what's on screen on average.
+  const PickRay ray = rayFromScreen(
+      pixel, windowSize, glm::inverse(taaBaseProjection * sceneUbo.view));
+  std::optional<SceneEntryRef> picked;
+  float nearest = imguiDrawDistance;
+  if (const std::optional<PhysicsRayHit> hit =
+          physics->castRay(ray.origin, ray.direction, nearest)) {
+    nearest = hit->distance;
+    picked = physicsNodes[hit->userData]->entry();
+  }
+  // Objects without a body have no collider to hit, so their bounding sphere
+  // stands in. It's rough, but these are rare in a physics game.
+  for (const auto &node : rootNode.getChildren()) {
+    const SceneEntryRef ref = node->entry();
+    if (ref.kind == SceneEntryRef::Kind::None || entryHasBody(ref))
+      continue;
+    const MeshModel *model = modelManager.getModel(node->getModelId());
+    if (!model)
+      continue;
+    const glm::mat4 &m = node->getGlobalTransform();
+    const std::optional<float> distance = rayHitsSphere(
+        ray, glm::vec3(m * glm::vec4(model->boundingCenter, 1.0f)),
+        model->boundingRadius * largestScale(m));
+    if (distance && *distance < nearest) {
+      nearest = *distance;
+      picked = ref;
+    }
+  }
+  if (picked && picked->kind == SceneEntryRef::Kind::None)
+    picked.reset(); // a thrown ball, which isn't part of the layout
+  selection = picked;
+  updateSelectionLines();
+  if (selection)
+    spdlog::info("Selected {} {}",
+                 selection->kind == SceneEntryRef::Kind::Model ? "[model]"
+                                                               : "[grid]",
+                 selection->index);
+  else
+    spdlog::info("Selection cleared");
+}
+
+void VulkanRenderer::updateSelectionLines() {
+  selectionLines.clear();
+  if (!selection)
+    return;
+  // A centimetre out, so the outline doesn't sit in the object's own faces.
+  constexpr float kMargin = 0.01f;
+  // One object gets a box turned with it; a grid gets one box around every
+  // copy, lined up with the world.
+  glm::vec3 lo(std::numeric_limits<float>::max());
+  glm::vec3 hi(std::numeric_limits<float>::lowest());
+  bool any = false;
+  for (const auto &node : rootNode.getChildren()) {
+    if (node->entry() != *selection)
+      continue;
+    const std::optional<ModelManager::Bounds> bounds =
+        modelManager.localBounds(node->getModelId());
+    if (!bounds)
+      continue;
+    const std::array<glm::vec3, 8> corners =
+        boxCorners(bounds->min - kMargin, bounds->max + kMargin,
+                   node->getGlobalTransform());
+    if (selection->kind == SceneEntryRef::Kind::Model) {
+      appendBoxLines(selectionLines, corners, kSelectionColor);
+      return;
+    }
+    for (const glm::vec3 &corner : corners) {
+      lo = glm::min(lo, corner);
+      hi = glm::max(hi, corner);
+    }
+    any = true;
+  }
+  if (any)
+    appendBoxLines(selectionLines, boxCorners(lo, hi, glm::mat4(1.0f)),
+                   kSelectionColor);
 }
 
 void VulkanRenderer::updateScene(float frameSeconds) {
@@ -3090,13 +3225,28 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.onTogglePlay = [this] { togglePlayMode(); };
   ui.sceneError = &sceneError;
 
-  // Physics wireframes go in the ImGui pass, under the panels. The list is
-  // only built while F2 is on.
-  const bool drawPhysicsLines = physicsPanel.showWireframes && physics;
+  // Debug lines go in the ImGui pass, under the panels: the physics
+  // wireframes (only built while F2 is on) and, in edit mode, the
+  // selection's outline. Copied together only when both are showing.
+  const bool showWireframes = physicsPanel.showWireframes && physics;
+  const bool showSelection = !playing && !selectionLines.empty();
+  const std::vector<PhysicsDebugVertex> *lines = nullptr;
+  if (showWireframes) {
+    const std::vector<PhysicsDebugVertex> &wireframes =
+        physics->debugLines(glm::vec3(sceneUbo.cameraPosition));
+    lines = &wireframes;
+    if (showSelection) {
+      debugLineScratch = wireframes;
+      debugLineScratch.insert(debugLineScratch.end(), selectionLines.begin(),
+                              selectionLines.end());
+      lines = &debugLineScratch;
+    }
+  } else if (showSelection) {
+    lines = &selectionLines;
+  }
+  const bool drawPhysicsLines = lines != nullptr;
   if (drawPhysicsLines)
-    debugLinePass.upload(
-        device, imageIndex,
-        physics->debugLines(glm::vec3(sceneUbo.cameraPosition)));
+    debugLinePass.upload(device, imageIndex, *lines);
   imguiLayer.record(
       cmd, renderPassManager.getImGuiRenderPass(), swapchain.getExtent(),
       imageIndex, ui, [&](VkCommandBuffer c) {

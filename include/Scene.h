@@ -105,6 +105,15 @@ struct SceneGridEntry {
 // One SceneModelEntry per copy of the grid.
 std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid);
 
+// Which entry of a SceneDescription a scene node was built from. Every copy
+// of a grid points at the grid, so clicking one brick selects all of them.
+struct SceneEntryRef {
+  enum class Kind : uint8_t { None, Model, Grid };
+  Kind kind = Kind::None;
+  int index = -1; // into SceneDescription::models or ::grids
+  bool operator==(const SceneEntryRef &) const = default;
+};
+
 struct SceneCameraPose {
   glm::vec3 position = glm::vec3(0.0f, 2.0f, 0.0f);
   float yaw = -90.0f;

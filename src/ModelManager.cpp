@@ -8,6 +8,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 
 int ModelManager::loadModel(const std::string &modelFile,
@@ -146,6 +147,28 @@ ModelManager::collisionParts(int modelId) {
   return cached;
 }
 
+std::optional<ModelManager::Bounds> ModelManager::localBounds(int modelId) {
+  const MeshModel *model = getModel(modelId);
+  if (!model)
+    return std::nullopt;
+  if (boundsCache.size() < models.size())
+    boundsCache.resize(models.size());
+  std::optional<Bounds> &cached = boundsCache[modelId];
+  if (cached)
+    return cached;
+  Bounds bounds{glm::vec3(std::numeric_limits<float>::max()),
+                glm::vec3(std::numeric_limits<float>::lowest())};
+  for (size_t i = 0; i < model->getMeshCount(); ++i)
+    for (const Vertex &vertex : model->getMesh(i)->getCpuVertices()) {
+      bounds.min = glm::min(bounds.min, vertex.pos);
+      bounds.max = glm::max(bounds.max, vertex.pos);
+    }
+  if (bounds.min.x > bounds.max.x)
+    return std::nullopt; // no vertices
+  cached = bounds;
+  return cached;
+}
+
 int ModelManager::findModel(const std::string &key) const {
   auto it = modelMap.find(key);
   return it == modelMap.end() ? -1 : it->second;
@@ -158,6 +181,7 @@ void ModelManager::cleanup() {
   models.clear();
   modelMap.clear();
   collisionCache.clear();
+  boundsCache.clear();
 }
 
 MeshModel *ModelManager::getModel(int modelId) {

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 // Rigid-body physics on Jolt. Jolt and Vulkan stay out of this header, so the
@@ -61,6 +62,12 @@ struct PhysicsBodyDesc {
 struct PhysicsPose {
   glm::vec3 position;
   glm::quat rotation;
+};
+
+struct PhysicsRayHit {
+  PhysicsBodyId body;
+  uint64_t userData; // the body's
+  float distance;    // m from the ray's start
 };
 
 struct PhysicsMovedPose {
@@ -147,6 +154,11 @@ public:
   bool isActive(PhysicsBodyId id) const;
   // In kg. 0 for static bodies, which never move.
   float mass(PhysicsBodyId id) const;
+
+  // The nearest body the ray hits within maxDistance, for clicking on
+  // things. direction needn't be unit length.
+  std::optional<PhysicsRayHit> castRay(glm::vec3 origin, glm::vec3 direction,
+                                       float maxDistance) const;
 
   uint32_t bodyCount() const;
   uint32_t activeBodyCount() const;

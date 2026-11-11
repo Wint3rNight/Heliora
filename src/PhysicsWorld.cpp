@@ -16,6 +16,8 @@
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Constraints/ContactConstraintManager.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -604,6 +606,21 @@ float PhysicsWorld::mass(PhysicsBodyId id) const {
   if (!lock.Succeeded() || !lock.GetBody().IsDynamic())
     return 0.0f;
   return 1.0f / lock.GetBody().GetMotionProperties()->GetInverseMass();
+}
+
+std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
+                                                   glm::vec3 direction,
+                                                   float maxDistance) const {
+  // Jolt's ray is as long as its direction vector, and a hit comes back as
+  // the fraction of that length.
+  const glm::vec3 ray = glm::normalize(direction) * maxDistance;
+  JPH::RayCastResult hit;
+  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(
+          JPH::RRayCast(toJoltPosition(origin), toJolt(ray)), hit))
+    return std::nullopt;
+  return PhysicsRayHit{PhysicsBodyId{hit.mBodyID.GetIndexAndSequenceNumber()},
+                       impl->userData[hit.mBodyID.GetIndex()],
+                       hit.mFraction * maxDistance};
 }
 
 uint32_t PhysicsWorld::bodyCount() const { return impl->system.GetNumBodies(); }

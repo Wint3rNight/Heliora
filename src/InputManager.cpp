@@ -50,7 +50,13 @@ bool InputManager::wasKeyJustPressed(int key) {
 
 glm::vec2 InputManager::getMouseDelta() const { return {deltaX, deltaY}; }
 
-glm::vec2 InputManager::getMousePosition() const { return {lastX, lastY}; }
+// Asked from GLFW, since the tracked position is stale right after the cursor
+// is freed.
+glm::vec2 InputManager::getMousePosition() const {
+  double x = 0.0, y = 0.0;
+  glfwGetCursorPos(window, &x, &y);
+  return {static_cast<float>(x), static_cast<float>(y)};
+}
 
 void InputManager::resetMouseDelta() {
   deltaX = 0.0f;

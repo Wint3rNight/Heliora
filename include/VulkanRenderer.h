@@ -106,6 +106,9 @@ public:
   // F5 and the toolbar button. Stop rebuilds the scene from the layout,
   // without moving the camera, at the top of the next draw().
   void togglePlayMode() { playToggleRequested = true; }
+  // Left click in edit mode: selects what's under the pixel (window
+  // coordinates), or nothing. A click on any copy in a grid selects the grid.
+  void selectAt(glm::vec2 pixel, glm::vec2 windowSize);
 
   SceneNode &getRootNode();
   void updateCameraView(const glm::mat4 &viewMatrix,
@@ -143,6 +146,14 @@ private:
   // Animation time. Runs only while playing, and goes back to 0 with the
   // layout. double for the same reason as main.cpp's frame clock.
   double playSeconds = 0.0;
+  // What's selected in edit mode, and its outline for DebugLinePass. The
+  // outline is worked out when the selection or the layout changes, not
+  // every frame.
+  std::optional<SceneEntryRef> selection;
+  std::vector<PhysicsDebugVertex> selectionLines;
+  std::vector<PhysicsDebugVertex> debugLineScratch; // wireframes + outline
+  void updateSelectionLines();
+  bool entryHasBody(SceneEntryRef ref) const;
   std::vector<SceneNode *> physicsNodes;
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;

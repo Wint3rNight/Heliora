@@ -3,6 +3,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -401,4 +402,61 @@ TEST(flat_points_fall_back_to_a_box) {
   point.positions = {{0.0f, 0.0f, 0.0f}};
   desc.parts = partsOf({point});
   CHECK(world.addBody(desc).isValid());
+}
+
+TEST(zero_gravity_body_stays_put) {
+  PhysicsWorld::Config config;
+  config.gravity = glm::vec3(0.0f);
+  PhysicsWorld world(config);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 5.0f, 0.0f));
+  stepFor(world, 60);
+  CHECK_NEAR(world.pose(box).position.y, 5.0, 1e-4);
+}
+
+TEST(longer_sleep_delay_keeps_a_body_awake_longer) {
+  // With the default half second, a box resting on the floor soon sleeps.
+  PhysicsWorld quick;
+  addFloor(quick);
+  const PhysicsBodyId a = addBox(quick, glm::vec3(0.0f, 0.5f, 0.0f));
+  int steps = 0;
+  for (; steps < 600 && quick.isActive(a); ++steps)
+    quick.step(kStep);
+  CHECK(!quick.isActive(a));
+
+  PhysicsWorld::Config config;
+  config.sleepDelay = 3.0f;
+  PhysicsWorld slow(config);
+  addFloor(slow);
+  const PhysicsBodyId b = addBox(slow, glm::vec3(0.0f, 0.5f, 0.0f));
+  stepFor(slow, steps);
+  CHECK(slow.isActive(b));
+}
+
+TEST(gravity_change_wakes_sleeping_bodies) {
+  PhysicsWorld world;
+  addFloor(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 0.5f, 0.0f));
+  stepFor(world, 120);
+  CHECK(!world.isActive(box));
+
+  // Upwards: the box has to wake up to notice, then it lifts off.
+  PhysicsWorld::Config config;
+  config.gravity = glm::vec3(0.0f, 9.81f, 0.0f);
+  world.applySettings(config);
+  stepFor(world, 30);
+  CHECK(world.pose(box).position.y > 1.0f);
+}
+
+TEST(big_contact_limit_gets_enough_scratch_memory) {
+  // Raised in the Physics tab, past what the default scratch memory holds.
+  PhysicsWorld::Config config;
+  config.maxContactConstraints = 60000;
+  bool threw = false;
+  try {
+    PhysicsWorld world(config);
+    runHeap(world);
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  CHECK(!threw);
 }

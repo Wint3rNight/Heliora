@@ -356,7 +356,26 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
   }
 }
 
+// Save writes one section of the settings file; Reset puts that section
+// back to the code defaults without saving.
+void ImGuiLayer::drawSettingsButtons(DebugUiContext &ui, const char *section) {
+  if (ImGui::Button("Save settings") && ui.onSaveSettings)
+    ui.onSaveSettings(section);
+  ImGui::SameLine();
+  if (ImGui::Button("Reset to defaults") && ui.onResetSettings)
+    ui.onResetSettings(section);
+  if (ui.settingsStatus && !ui.settingsStatus->empty())
+    ImGui::TextDisabled("%s", ui.settingsStatus->c_str());
+}
+
 void ImGuiLayer::drawRenderTab(DebugUiContext &ui) {
+  drawSettingsButtons(ui, "render");
+  ImGui::BeginDisabled();
+  ImGui::TextWrapped("Also saves FOV and draw distance (Camera), normal "
+                     "strength (Debug), and LOD and point-shadow far "
+                     "(Lighting).");
+  ImGui::EndDisabled();
+  ImGui::Separator();
   if (ImGui::SliderFloat("AA variance", &ui.specAAVariance, 0.0f, 2.0f,
                          "%.3f"))
     ui.sceneUbo.qualityToggles.z = ui.specAAVariance;
@@ -373,6 +392,56 @@ void ImGuiLayer::drawRenderTab(DebugUiContext &ui) {
   ImGui::SliderFloat("CSM far", &ui.csmFar, 100.0f, 5000.0f, "%.0f");
   ImGui::Checkbox("Shadow front-face cull", &ui.shadowFrontFaceCull);
   ImGui::Checkbox("Cull shadow casters", &ui.cullShadowCasters);
+  ImGui::SliderFloat("IBL / sky intensity", &ui.iblIntensity, 0.0f, 2.0f,
+                     "%.2f");
+  ImGui::Checkbox("Auto-exposure", &ui.autoExposureEnabled);
+  ImGui::SameLine();
+  ImGui::Text("(%.2fx)", ui.autoExposureAdaptedValue);
+  ImGui::SliderFloat("Exposure (EV)", &ui.exposureEV, -3.0f, 3.0f, "%+.2f");
+  ImGui::SliderFloat("SSGI intensity", &ui.ssgiIntensity, 0.0f, 2.0f,
+                     "%.2f");
+  ImGui::SliderInt("SSGI samples", &ui.ssgiSamples, 4, 12);
+  ImGui::SeparatorText("Bloom");
+  if (ImGui::Checkbox("Bloom", &ui.enableBloom) &&
+      ui.onTaaHistoryInvalidated)
+    ui.onTaaHistoryInvalidated();
+  if (ui.enableBloom) {
+    float bloomSensitivity = (4.0f - ui.bloomThreshold) / (4.0f - 0.2f);
+    if (ImGui::SliderFloat("Bloom sensitivity", &bloomSensitivity, 0.0f, 1.0f,
+                           "%.2f")) {
+      ui.bloomThreshold = glm::mix(4.0f, 0.2f, bloomSensitivity);
+    }
+    ImGui::SliderFloat("Bloom intensity", &ui.bloomIntensity, 0.0f, 1.0f,
+                       "%.3f");
+    ImGui::SliderFloat("Bloom radius", &ui.bloomRadius, 0.5f, 4.0f, "%.2f");
+  }
+  ImGui::SeparatorText("TAA / SSR");
+  ImGui::Checkbox("SSR reflections", &ui.ssrEnabled);
+  ImGui::Checkbox("TAA", &ui.taaEnabled);
+  ImGui::Checkbox("Responsive TAA", &ui.responsiveTaa);
+  ImGui::SeparatorText("Edge / Alpha / Shadow");
+  ImGui::SliderFloat("Sharpness", &ui.sharpness, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Edge AA", &ui.edgeAA, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Alpha dither", &ui.alphaDither, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Shadow softness", &ui.shadowSoftness, 0.5f, 2.5f,
+                     "%.2f");
+  ImGui::SliderFloat("Contact grounding", &ui.contactGrounding, 0.0f, 1.0f,
+                     "%.2f");
+  ImGui::SeparatorText("Day / night");
+  ImGui::Checkbox("Day/night cycle", &ui.dayNightEnable);
+  ImGui::SliderFloat("Sim hour", &ui.dayNightHour, 0.0f, 24.0f, "%.2f h");
+  ImGui::SliderFloat("Speed (sim-h / real-s)", &ui.dayNightSpeed, 0.1f,
+                     600.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+
+  // Below here nothing is saved: these start at the code defaults every
+  // launch (see VulkanRenderer::loadSettings).
+  ImGui::SeparatorText("Lighting isolation (not saved)");
+  ImGui::Checkbox("Sun direct", &ui.enableSunDirect);
+  ImGui::Checkbox("Point lights", &ui.enablePointLights);
+  ImGui::Checkbox("Spot lights", &ui.enableSpotLights);
+  ImGui::Checkbox("IBL ambient", &ui.enableIblAmbient);
+  ImGui::Checkbox("SSGI bounce", &ui.enableSsgiBounce);
+  ImGui::SeparatorText("Diagnostics (not saved)");
   ImGui::Checkbox("GPU-driven G-buffer", &ui.gpuDrivenEnabled);
   ImGui::Checkbox("HZB occlusion cull", &ui.hzbCullingEnabled);
   ImGui::SliderInt("GPU min candidates", &ui.gpuDrivenMinCandidates, 0, 2048);
@@ -389,50 +458,6 @@ void ImGuiLayer::drawRenderTab(DebugUiContext &ui) {
   }
   ImGui::SameLine();
   ImGui::Text("actual: %s", presentModeName(ui.activePresentMode));
-  ImGui::SliderFloat("IBL / sky intensity", &ui.iblIntensity, 0.0f, 2.0f,
-                     "%.2f");
-  ImGui::Checkbox("Auto-exposure", &ui.autoExposureEnabled);
-  ImGui::SameLine();
-  ImGui::Text("(%.2fx)", ui.autoExposureAdaptedValue);
-  ImGui::SliderFloat("Exposure (EV)", &ui.exposureEV, -3.0f, 3.0f, "%+.2f");
-  ImGui::SliderFloat("SSGI intensity", &ui.ssgiIntensity, 0.0f, 2.0f,
-                     "%.2f");
-  ImGui::SliderInt("SSGI samples", &ui.ssgiSamples, 4, 12);
-  ImGui::SeparatorText("Lighting isolation");
-  ImGui::Checkbox("Sun direct", &ui.enableSunDirect);
-  ImGui::Checkbox("Point lights", &ui.enablePointLights);
-  ImGui::Checkbox("Spot lights", &ui.enableSpotLights);
-  ImGui::Checkbox("IBL ambient", &ui.enableIblAmbient);
-  ImGui::Checkbox("SSGI bounce", &ui.enableSsgiBounce);
-  if (ImGui::Checkbox("Bloom", &ui.enableBloom) &&
-      ui.onTaaHistoryInvalidated)
-    ui.onTaaHistoryInvalidated();
-  if (ui.enableBloom) {
-    float bloomSensitivity = (4.0f - ui.bloomThreshold) / (4.0f - 0.2f);
-    if (ImGui::SliderFloat("Bloom sensitivity", &bloomSensitivity, 0.0f, 1.0f,
-                           "%.2f")) {
-      ui.bloomThreshold = glm::mix(4.0f, 0.2f, bloomSensitivity);
-    }
-    ImGui::SliderFloat("Bloom intensity", &ui.bloomIntensity, 0.0f, 1.0f,
-                       "%.3f");
-    ImGui::SliderFloat("Bloom radius", &ui.bloomRadius, 0.5f, 4.0f, "%.2f");
-  }
-  ImGui::Checkbox("SSR reflections", &ui.ssrEnabled);
-  ImGui::Checkbox("TAA", &ui.taaEnabled);
-  ImGui::Checkbox("Responsive TAA", &ui.responsiveTaa);
-  ImGui::SeparatorText("Edge / Alpha / Shadow");
-  ImGui::SliderFloat("Sharpness", &ui.sharpness, 0.0f, 1.0f, "%.2f");
-  ImGui::SliderFloat("Edge AA", &ui.edgeAA, 0.0f, 1.0f, "%.2f");
-  ImGui::SliderFloat("Alpha dither", &ui.alphaDither, 0.0f, 1.0f, "%.2f");
-  ImGui::SliderFloat("Shadow softness", &ui.shadowSoftness, 0.5f, 2.5f,
-                     "%.2f");
-  ImGui::SliderFloat("Contact grounding", &ui.contactGrounding, 0.0f, 1.0f,
-                     "%.2f");
-  ImGui::Separator();
-  ImGui::Checkbox("Day/night cycle", &ui.dayNightEnable);
-  ImGui::SliderFloat("Sim hour", &ui.dayNightHour, 0.0f, 24.0f, "%.2f h");
-  ImGui::SliderFloat("Speed (sim-h / real-s)", &ui.dayNightSpeed, 0.1f,
-                     600.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
 }
 
 void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
@@ -545,6 +570,48 @@ void ImGuiLayer::drawPhysicsTab(DebugUiContext &ui) {
     physics.resetRequested = true;
   ImGui::Checkbox("Wireframes (F2)", &physics.showWireframes);
   ImGui::Text("F throws a ball (%u thrown)", physics.thrownBalls);
+
+  ImGui::SeparatorText("Settings");
+  drawSettingsButtons(ui, "physics");
+  // AlwaysClamp holds typed-in values (Ctrl+click) to the range too.
+  constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+  PhysicsWorld::Config &config = physics.config;
+  bool changed = false;
+  changed |= ImGui::DragFloat3("Gravity", &config.gravity.x, 0.05f, -100.0f,
+                               100.0f, "%.2f", kClamp);
+  changed |= ImGui::SliderInt("Steps per second", &physics.stepsPerSecond, 10,
+                              480, "%d", kClamp);
+  changed |= ImGui::SliderInt("Max catch-up steps", &physics.maxCatchUpSteps,
+                              1, 16, "%d", kClamp);
+  changed |= ImGui::SliderInt("Velocity passes", &config.velocitySteps, 2, 64,
+                              "%d", kClamp);
+  changed |= ImGui::SliderInt("Position passes", &config.positionSteps, 1, 64,
+                              "%d", kClamp);
+  changed |= ImGui::SliderFloat("Sleep delay", &config.sleepDelay, 0.0f, 5.0f,
+                                "%.2f s", kClamp);
+  changed |= ImGui::SliderFloat("Sleep speed", &config.sleepSpeed, 0.0f, 0.5f,
+                                "%.3f m/s", kClamp);
+  changed |= ImGui::SliderFloat("Penetration slop", &config.penetrationSlop,
+                                0.0f, 0.1f, "%.3f m", kClamp);
+  if (changed)
+    physics.settingsChanged = true;
+
+  ImGui::SeparatorText("Applies on the next scene load");
+  ImGui::SliderFloat("Default friction", &physics.defaultFriction, 0.0f, 2.0f,
+                     "%.2f", kClamp);
+  const uint32_t threadsMin = 0, threadsMax = 64;
+  ImGui::SliderScalar("Worker threads", ImGuiDataType_U32,
+                      &config.workerThreads, &threadsMin, &threadsMax, "%u",
+                      kClamp);
+  const uint32_t limitMin = 64, bodiesMax = 1u << 20, pairsMax = 1u << 22,
+                 contactsMax = 1u << 17;
+  ImGui::DragScalar("Max bodies", ImGuiDataType_U32, &config.maxBodies,
+                    64.0f, &limitMin, &bodiesMax, "%u", kClamp);
+  ImGui::DragScalar("Max body pairs", ImGuiDataType_U32, &config.maxBodyPairs,
+                    256.0f, &limitMin, &pairsMax, "%u", kClamp);
+  ImGui::DragScalar("Max contacts", ImGuiDataType_U32,
+                    &config.maxContactConstraints, 128.0f, &limitMin,
+                    &contactsMax, "%u", kClamp);
 }
 
 void ImGuiLayer::drawPerformanceTab(DebugUiContext &ui) {

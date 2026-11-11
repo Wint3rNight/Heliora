@@ -25,6 +25,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -137,6 +138,8 @@ VulkanRenderer::VulkanRenderer() {}
 
 int VulkanRenderer::init(GLFWwindow *newWindow) {
   window = newWindow;
+  // First, so everything set up below starts from the saved values.
+  loadSettings();
 
   try {
     // 1. Device
@@ -434,6 +437,97 @@ int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
   return modelId;
 }
 
+// Everything the Save settings buttons keep, with the range a value from
+// the file must be in. Diagnostic switches are left out on purpose (GPU-
+// driven, HZB, threaded recording, min candidates, uncapped present, the
+// debug view, geometric normals and the lighting isolation boxes): they start
+// at the code defaults every launch, so one left off after a test can't skew
+// later measurements.
+void VulkanRenderer::loadSettings() {
+  // Next to the scenes. The game usually runs from a build folder.
+  settingsPath = std::filesystem::is_directory("Resources")
+                     ? "Resources/settings.cfg"
+                     : "../Resources/settings.cfg";
+  PhysicsPanel &p = physicsPanel;
+  PhysicsWorld::Config &c = physicsPanel.config;
+  settingBindings = {
+      {"render", "spec_aa_variance", &imguiSpecAAVariance, 0, 4},
+      {"render", "spec_aa_threshold", &imguiSpecAAThreshold, 0, 1},
+      {"render", "ibl_roughness_floor", &imguiIblRoughnessFloor, 0, 1},
+      {"render", "min_surface_roughness", &imguiMinSurfaceRoughness, 0, 1},
+      {"render", "sky_occlusion_floor", &imguiSkyOcclusionFloor, 0, 1},
+      {"render", "csm_far", &imguiCsmFar, 10, 10000},
+      {"render", "shadow_front_face_cull", &imguiShadowFrontFaceCull},
+      {"render", "cull_shadow_casters", &imguiCullShadowCasters},
+      {"render", "ibl_intensity", &imguiIblIntensity, 0, 4},
+      {"render", "auto_exposure", &autoExpEnabled},
+      {"render", "exposure_ev", &imguiExposureEV, -6, 6},
+      {"render", "ssgi_intensity", &imguiSsgiIntensity, 0, 4},
+      {"render", "ssgi_samples", &imguiSsgiSamples, 4, 12},
+      {"render", "bloom", &imguiEnableBloom},
+      {"render", "bloom_threshold", &imguiBloomThreshold, 0.2, 4},
+      {"render", "bloom_intensity", &imguiBloomIntensity, 0, 1},
+      {"render", "bloom_radius", &imguiBloomRadius, 0.5, 4},
+      {"render", "ssr", &imguiSsrEnabled},
+      {"render", "taa", &imguiTaaEnabled},
+      {"render", "responsive_taa", &imguiResponsiveTaa},
+      {"render", "sharpness", &imguiSharpness, 0, 1},
+      {"render", "edge_aa", &imguiEdgeAA, 0, 1},
+      {"render", "alpha_dither", &imguiAlphaDither, 0, 1},
+      {"render", "shadow_softness", &imguiShadowSoftness, 0.5, 2.5},
+      {"render", "contact_grounding", &imguiContactGrounding, 0, 1},
+      {"render", "day_night_cycle", &imguiDayNightEnable},
+      {"render", "day_night_speed", &imguiDayNightSpeed, 0.1, 600},
+      {"render", "day_night_hour", &imguiDayNightHour, 0, 24},
+      {"render", "fov", &imguiCameraFov, 30, 120},
+      {"render", "draw_distance", &imguiDrawDistance, 10, 20000},
+      {"render", "normal_strength", &imguiNormalStrength, 0, 1.5},
+      {"render", "lod_near", &imguiLodNear, 1, 200},
+      {"render", "lod_far", &imguiLodFar, 2, 1000},
+      {"render", "point_shadow_far", &imguiPointShadowFar, 1, 500},
+      {"physics", "gravity", &c.gravity, -100, 100},
+      {"physics", "steps_per_second", &p.stepsPerSecond, 10, 480},
+      {"physics", "max_catch_up_steps", &p.maxCatchUpSteps, 1, 16},
+      {"physics", "velocity_steps", &c.velocitySteps, 2, 64},
+      {"physics", "position_steps", &c.positionSteps, 1, 64},
+      {"physics", "sleep_delay", &c.sleepDelay, 0, 60},
+      {"physics", "sleep_speed", &c.sleepSpeed, 0, 10},
+      {"physics", "penetration_slop", &c.penetrationSlop, 0, 1},
+      {"physics", "default_friction", &p.defaultFriction, 0, 10},
+      {"physics", "worker_threads", &c.workerThreads, 0, 64},
+      {"physics", "max_bodies", &c.maxBodies, 64, 1 << 20},
+      {"physics", "max_body_pairs", &c.maxBodyPairs, 64, 1 << 22},
+      {"physics", "max_contact_constraints", &c.maxContactConstraints, 64,
+       1 << 17},
+  };
+  writeSettings(settingsDefaults, settingBindings);
+  settingsFile = SettingsFile::load(settingsPath);
+  readSettings(settingsFile, settingBindings);
+}
+
+void VulkanRenderer::saveSettings(std::string_view section) {
+  writeSettings(settingsFile, settingBindings, section, settingsDefaults);
+  try {
+    settingsFile.save(settingsPath);
+    settingsStatus = std::format("Saved {} settings", section);
+    spdlog::info("Saved {} settings to {}", section, settingsPath);
+  } catch (const std::exception &e) {
+    settingsStatus = std::format("Couldn't save: {}", e.what());
+    spdlog::error("Couldn't save settings: {}", e.what());
+  }
+}
+
+void VulkanRenderer::resetSettings(std::string_view section) {
+  readSettings(settingsDefaults, settingBindings, section);
+  // Values that only take effect through something built from them.
+  rebuildProjection();
+  taaHistoryValid = false;
+  physicsPanel.settingsChanged = true;
+  settingsStatus = std::format("{} settings are back to the defaults, not "
+                               "saved yet",
+                               section == "render" ? "Render" : "Physics");
+}
+
 void VulkanRenderer::discoverScenes(const std::string &directory) {
   availableScenes = SceneIO::discover(directory);
   availableSceneNames.clear();
@@ -454,12 +548,14 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
   // Physics first: physicsNodes points into the tree cleared below.
   // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
   physicsNodes.clear();
-  PhysicsWorld::Config physicsConfig;
+  PhysicsWorld::Config physicsConfig = physicsPanel.config;
   if (const char *threads = std::getenv("HELIORA_PHYSICS_THREADS"))
     physicsConfig.workerThreads =
         static_cast<uint32_t>(std::max(0, std::atoi(threads)));
   physics = std::make_unique<PhysicsWorld>(physicsConfig);
-  physicsClock = FixedStepClock();
+  physicsClock = FixedStepClock(1.0 / physicsPanel.stepsPerSecond,
+                                physicsPanel.maxCatchUpSteps);
+  physicsPanel.settingsChanged = false; // the new world has them all
   physicsPanel.thrownBalls = 0;
   currentScene = desc;
   rootNode.clearChildren();
@@ -474,7 +570,8 @@ void VulkanRenderer::loadScene(const SceneDescription &desc) {
     if (entry.body) {
       // A model file's collider is built from its own triangles.
       PhysicsBodyDesc body = bodyDescFor(
-          entry, entry.shape ? nullptr : modelManager.collisionParts(modelId));
+          entry, entry.shape ? nullptr : modelManager.collisionParts(modelId),
+          physicsPanel.defaultFriction);
       body.userData = physicsNodes.size();
       if (physics->addBody(body).isValid())
         physicsNodes.push_back(node.get());
@@ -610,6 +707,16 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     physicsPanel.resetRequested = false;
     requestSceneLoad(activeSceneIndex); // happens at the top of draw()
   }
+  if (physicsPanel.settingsChanged) {
+    physicsPanel.settingsChanged = false;
+    physics->applySettings(physicsPanel.config);
+    // Only when the rate changed: a new clock forgets the time it was owed,
+    // and rebuilding it every frame of a slider drag would stall physics.
+    const double step = 1.0 / physicsPanel.stepsPerSecond;
+    if (physicsClock.stepSeconds() != step ||
+        physicsClock.maxStepsPerFrame() != physicsPanel.maxCatchUpSteps)
+      physicsClock = FixedStepClock(step, physicsPanel.maxCatchUpSteps);
+  }
   const auto start = std::chrono::steady_clock::now();
   int steps;
   float alpha;
@@ -677,7 +784,7 @@ void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
   auto node = std::make_unique<SceneNode>();
   node->setModelId(ballModelId);
   node->setTransform(ball.transform);
-  PhysicsBodyDesc body = bodyDescFor(ball);
+  PhysicsBodyDesc body = bodyDescFor(ball, nullptr, physicsPanel.defaultFriction);
   body.linearVelocity = direction * 25.0f; // m/s, a hard throw
   body.userData = physicsNodes.size();
   if (!physics->addBody(body).isValid())
@@ -914,6 +1021,7 @@ void VulkanRenderer::draw() {
   // making ssgi.frag return immediately instead of running the sample loop.
   sceneUbo.shadowParams.y    =
       imguiEnableSsgiBounce ? imguiSsgiIntensity : 0.0f;
+  sceneUbo.shadowParams.x    = imguiPointShadowFar;
   sceneUbo.shadowParams.z    = imguiSharpness;
   sceneUbo.shadowParams.w    = imguiSsrEnabled ? 1.0f : 0.0f;
   sceneUbo.visualToggles =
@@ -2947,6 +3055,9 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       },
       [this](int index) { requestSceneLoad(index); }};
   ui.physics = &physicsPanel;
+  ui.onSaveSettings = [this](const char *section) { saveSettings(section); };
+  ui.onResetSettings = [this](const char *section) { resetSettings(section); };
+  ui.settingsStatus = &settingsStatus;
 
   // Physics wireframes go in the ImGui pass, under the panels. The list is
   // only built while F2 is on.

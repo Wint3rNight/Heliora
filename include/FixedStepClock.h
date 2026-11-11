@@ -32,6 +32,7 @@ public:
   float alpha() const { return static_cast<float>(owed / step); }
 
   double stepSeconds() const { return step; }
+  int maxStepsPerFrame() const { return maxSteps; }
 
 private:
   double step;

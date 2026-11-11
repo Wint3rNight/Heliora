@@ -241,3 +241,11 @@ TEST(small_collision_mesh_is_left_alone) {
   CHECK(same.positions == small.positions);
   CHECK(same.indices == small.indices);
 }
+
+TEST(default_friction_is_used_without_a_material) {
+  const SceneModelEntry box = entry(PrimitiveShape::Box, PhysicsMotion::Dynamic);
+  CHECK_NEAR(bodyDescFor(box, nullptr, 0.7f).friction, 0.7, 1e-6);
+  SceneModelEntry wood = box;
+  wood.material = "wood";
+  CHECK_NEAR(bodyDescFor(wood, nullptr, 0.7f).friction, 0.5, 1e-6);
+}

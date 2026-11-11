@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "PerformanceMetrics.h"
+#include "PhysicsWorld.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
@@ -27,6 +28,15 @@ struct PhysicsPanel {
   uint32_t awakeBodies = 0;
   uint32_t droppedContactSteps = 0;
   uint32_t thrownBalls = 0;
+
+  // Physics settings, saved in the settings file. The renderer hands
+  // config's live values to the world when settingsChanged is set; the
+  // limits, threads and default friction wait for the next scene load.
+  PhysicsWorld::Config config;
+  int stepsPerSecond = 60;
+  int maxCatchUpSteps = 4; // steps a slow frame may run before time slips
+  float defaultFriction = 0.2f;
+  bool settingsChanged = false;
 };
 
 struct DebugUiContext {
@@ -106,6 +116,12 @@ struct DebugUiContext {
   std::function<void(int)> onSceneSelected;
 
   PhysicsPanel *physics = nullptr; // no panel when null
+
+  // The Save settings and Reset to defaults buttons, for one section of the
+  // settings file: "render" or "physics".
+  std::function<void(const char *)> onSaveSettings;
+  std::function<void(const char *)> onResetSettings;
+  const std::string *settingsStatus = nullptr; // the last button's result
 };
 
 class ImGuiLayer {
@@ -150,6 +166,7 @@ private:
   void drawLightingTab(DebugUiContext &ui);
   void drawDebugTab(DebugUiContext &ui);
   void drawPhysicsTab(DebugUiContext &ui);
+  void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);
 

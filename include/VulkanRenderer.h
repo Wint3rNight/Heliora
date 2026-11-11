@@ -29,6 +29,7 @@
 #include "RenderPassManager.h"
 #include "Scene.h"
 #include "SceneNode.h"
+#include "SettingsFile.h"
 #include "ShadowPass.h"
 #include "SsaoPass.h"
 #include "SsgiPass.h"
@@ -139,6 +140,16 @@ private:
   static SceneModelEntry thrownBallEntry();
   // The camera's near plane, shared by the projection and the debug lines.
   static constexpr float kCameraNear = 1.0f;
+
+  // --- Settings (Resources/settings.cfg, shared by every scene) ---
+  std::string settingsPath;
+  SettingsFile settingsFile;     // the file as last read or saved
+  SettingsFile settingsDefaults; // the code defaults, for Reset to defaults
+  std::vector<SettingBinding> settingBindings;
+  std::string settingsStatus; // shown under the settings buttons
+  void loadSettings();
+  void saveSettings(std::string_view section);
+  void resetSettings(std::string_view section);
 
   // --- Scene library ---
   std::vector<SceneDescription> availableScenes;

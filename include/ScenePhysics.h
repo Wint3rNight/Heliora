@@ -11,9 +11,11 @@
 // matches its scene node. Needs entry.shape and entry.body set, which the
 // scene parser guarantees for any entry with a body.
 // A model file's body also needs its parts: the collider is built from them.
+// defaultFriction is for entries with no friction or material of their own.
 PhysicsBodyDesc bodyDescFor(const SceneModelEntry &entry,
                             std::shared_ptr<const PhysicsMeshParts> parts =
-                                nullptr);
+                                nullptr,
+                            float defaultFriction = 0.2f);
 
 // A named material: density, friction and restitution that go together.
 struct PhysicsMaterial {

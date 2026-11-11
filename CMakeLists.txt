@@ -113,6 +113,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Scene.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneNode.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ScenePhysics.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SettingsFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
@@ -171,6 +172,7 @@ add_executable(heliora_tests
         tests/SceneNodeTests.cpp
         tests/ScenePhysicsTests.cpp
         tests/SceneTests.cpp
+        tests/SettingsFileTests.cpp
         tests/ShadowCascadesTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)

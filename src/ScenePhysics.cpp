@@ -47,9 +47,11 @@ constexpr PhysicsMaterial kMaterials[] = {
 } // namespace
 
 PhysicsBodyDesc bodyDescFor(const SceneModelEntry &entry,
-                            std::shared_ptr<const PhysicsMeshParts> parts) {
+                            std::shared_ptr<const PhysicsMeshParts> parts,
+                            float defaultFriction) {
   const float scale = entry.transform.scale;
   PhysicsBodyDesc desc;
+  desc.friction = defaultFriction;
   desc.motion = *entry.body;
   desc.position = entry.transform.position;
   desc.rotation = rotationFromDegrees(entry.transform.rotationDeg);

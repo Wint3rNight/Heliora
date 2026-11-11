@@ -33,7 +33,6 @@
 #include <map>
 #include <mutex>
 #include <tuple>
-#include <stdexcept>
 #include <string>
 
 namespace {
@@ -423,18 +422,19 @@ PhysicsWorld::PhysicsWorld() : PhysicsWorld(Config{}) {}
 PhysicsWorld::PhysicsWorld(const Config &config)
     : impl(std::make_unique<Impl>()) {
   // Every step the contact solver grabs a buffer for maxContactConstraints
-  // from scratch memory, and running out aborts. Want room for the rest of
-  // the step too (islands, body pairs), so fail here with a message instead.
+  // from scratch memory, and running out aborts. Twice that leaves room for
+  // the rest of the step (islands, body pairs).
   const size_t contactBytes =
       size_t(config.maxContactConstraints) *
       (JPH::ContactConstraintManager::cMaxConstraintSize + sizeof(uint32_t));
-  if (contactBytes * 2 > config.tempAllocatorBytes)
-    throw std::invalid_argument(
-        "PhysicsWorld: tempAllocatorBytes must be at least twice the contact "
-        "buffer (" + std::to_string(contactBytes) + " bytes)");
+  const size_t tempBytes =
+      std::max<size_t>(config.tempAllocatorBytes, contactBytes * 2);
+  if (tempBytes > config.tempAllocatorBytes)
+    spdlog::info("[physics] scratch memory raised to {} MB for {} contacts",
+                 tempBytes >> 20, config.maxContactConstraints);
 
-  impl->tempAllocator =
-      std::make_unique<JPH::TempAllocatorImpl>(config.tempAllocatorBytes);
+  impl->tempAllocator = std::make_unique<JPH::TempAllocatorImpl>(
+      static_cast<JPH::uint>(tempBytes));
   impl->jobSystem = std::make_unique<JPH::JobSystemThreadPool>(
       JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
       static_cast<int>(config.workerThreads));
@@ -449,9 +449,30 @@ PhysicsWorld::PhysicsWorld(const Config &config)
   impl->lastActive.reserve(config.maxBodies);
   impl->active.reserve(config.maxBodies);
   impl->moved.reserve(config.maxBodies);
+  applySettings(config);
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
+
+void PhysicsWorld::applySettings(const Config &config) {
+  const JPH::Vec3 gravity = toJolt(config.gravity);
+  const bool gravityChanged = gravity != impl->system.GetGravity();
+  impl->system.SetGravity(gravity);
+  JPH::PhysicsSettings settings = impl->system.GetPhysicsSettings();
+  settings.mNumVelocitySteps = static_cast<JPH::uint>(config.velocitySteps);
+  settings.mNumPositionSteps = static_cast<JPH::uint>(config.positionSteps);
+  settings.mTimeBeforeSleep = config.sleepDelay;
+  settings.mPointVelocitySleepThreshold = config.sleepSpeed;
+  settings.mPenetrationSlop = config.penetrationSlop;
+  impl->system.SetPhysicsSettings(settings);
+  if (gravityChanged) {
+    JPH::BodyIDVector bodies;
+    impl->system.GetBodies(bodies);
+    // Static bodies can't be woken, and Jolt skips them.
+    impl->system.GetBodyInterfaceNoLock().ActivateBodies(
+        bodies.data(), static_cast<int>(bodies.size()));
+  }
+}
 
 PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   JPH::EMotionType motion = JPH::EMotionType::Dynamic;

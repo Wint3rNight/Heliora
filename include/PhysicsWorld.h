@@ -88,7 +88,7 @@ public:
     uint32_t maxBodyPairs = 65536;
     uint32_t maxContactConstraints = 20480;
     // Scratch memory for one step. Jolt aborts if it runs out, so the
-    // constructor checks it against maxContactConstraints.
+    // constructor raises it when maxContactConstraints needs more.
     uint32_t tempAllocatorBytes = 32u * 1024u * 1024u;
     // The main thread helps while it waits, so a step uses workerThreads + 1.
     // 6 was the fastest of 2, 4 and 6 on the 6-core laptop: 5,000 awake
@@ -96,6 +96,19 @@ public:
     // (2026-11-01). Nothing else runs during the step, so the extra threads
     // cost the renderer nothing yet.
     uint32_t workerThreads = 6;
+
+    // These can also change while the world runs, through applySettings().
+    // The defaults are Jolt's own.
+    glm::vec3 gravity{0.0f, -9.81f, 0.0f};
+    // Solver passes per step. More passes make stacks steadier and cost
+    // time. Friction needs at least 2 velocity passes.
+    int velocitySteps = 10;
+    int positionSteps = 2;
+    float sleepDelay = 0.5f;  // seconds a body must stay slow before it sleeps
+    float sleepSpeed = 0.03f; // m/s; slower than this counts as resting
+    // How far bodies may sink into each other before being pushed apart, so
+    // resting contacts don't jitter.
+    float penetrationSlop = 0.02f; // m
   };
 
   PhysicsWorld();
@@ -113,6 +126,11 @@ public:
   void optimizeBroadPhase();
 
   void step(float dt);
+
+  // Takes gravity and the solver and sleep values from config; the limits
+  // and threads only apply to a new world. A gravity change wakes every
+  // body, or sleeping ones would hang in the air until something hit them.
+  void applySettings(const Config &config);
 
   // Latest pose of the body's origin.
   PhysicsPose pose(PhysicsBodyId id) const;

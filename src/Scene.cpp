@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -453,6 +454,14 @@ void removeEntry(SceneDescription &scene, SceneEntryRef ref) {
   else
     return;
   renumberSections(scene);
+}
+
+SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model) {
+  // Past every section, then numbered back into 0, 1, 2...
+  model.info.order = std::numeric_limits<int>::max();
+  scene.models.push_back(std::move(model));
+  renumberSections(scene);
+  return {SceneEntryRef::Kind::Model, static_cast<int>(scene.models.size()) - 1};
 }
 
 std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex) {

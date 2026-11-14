@@ -89,6 +89,7 @@ int main(int argc, char **argv) {
   // CLI argument selects the startup scene: an index into the discovered
   // list, or a path to a .scene file.
   vulkanRenderer.discoverScenes("Resources/Scenes");
+  vulkanRenderer.discoverModels("Resources/Models");
   bool sceneLoaded = false;
   if (argc > 1) {
     const std::string arg = argv[1];

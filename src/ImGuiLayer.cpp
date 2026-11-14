@@ -4,6 +4,7 @@
 #include "Picking.h"
 #include "Scene.h"
 #include "ScenePhysics.h"
+#include "Spawning.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -1020,6 +1021,38 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
     ImGui::TextWrapped("%s", ui.sceneError->c_str());
     ImGui::PopStyleColor();
   }
+
+  // The spawn list, edit mode only: a new object lands where the camera
+  // looks and gets selected.
+  ImGui::SeparatorText("Add an object");
+  if (ui.playing)
+    ImGui::TextDisabled("Stop (F5) to add objects.");
+  ImGui::BeginDisabled(ui.playing);
+  static constexpr std::pair<PrimitiveShape, const char *> kShapes[] = {
+      {PrimitiveShape::Box, "Box"},
+      {PrimitiveShape::Sphere, "Sphere"},
+      {PrimitiveShape::Capsule, "Capsule"},
+      {PrimitiveShape::Plane, "Plane"}};
+  for (const auto &[shape, label] : kShapes) {
+    if (shape != PrimitiveShape::Box)
+      ImGui::SameLine();
+    if (ImGui::Button(label) && ui.onSpawn)
+      ui.onSpawn(newShapeEntry(shape));
+  }
+  if (ui.modelFiles) {
+    for (const std::string &file : *ui.modelFiles) {
+      const std::string name =
+          std::filesystem::path(file).filename().string() + "##" + file;
+      if (ImGui::Selectable(name.c_str()) && ui.onSpawn)
+        ui.onSpawn(newModelFileEntry(file));
+      ImGui::SetItemTooltip("%s", file.c_str());
+    }
+    if (ui.modelFiles->empty())
+      ImGui::TextDisabled("No .gltf or .glb files in Resources/Models.");
+  }
+  if (ImGui::Button("Rescan models") && ui.onRescanModels)
+    ui.onRescanModels();
+  ImGui::EndDisabled();
 }
 
 // Save writes one section of the settings file; Reset puts that section

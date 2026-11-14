@@ -72,6 +72,8 @@ public:
   // Scans `directory` for *.scene files (also checked under ../ because the
   // binary runs from build/). Call once after init(), before loadSceneAt().
   void discoverScenes(const std::string &directory = "Resources/Scenes");
+  // The model files the spawn list offers.
+  void discoverModels(const std::string &folder = "Resources/Models");
   bool hasScenes() const { return !availableScenes.empty(); }
   // Immediate load: waits for the device to go idle, clears the scene graph
   // and instanced drawables, then builds the described scene. Models are
@@ -187,6 +189,11 @@ private:
   void requestHistoryStep(HistoryStep step);
   void applyHistoryStep();
   void recordEdit() { history.push(currentScene); }
+  // The spawn list: what it offers, and what was picked, added at the top of
+  // the next draw() since a new model may need a GPU upload.
+  std::vector<std::string> modelFiles;
+  std::optional<SceneModelEntry> pendingSpawn;
+  void spawnEntry(SceneModelEntry entry);
   // A removed body leaves an empty slot, so the others keep their index.
   struct PhysicsLink {
     SceneNode *node = nullptr;

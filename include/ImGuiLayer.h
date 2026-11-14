@@ -143,6 +143,12 @@ struct DebugUiContext {
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
   // nothing is held any more, so it's one undo step.
   std::function<void()> onEditFinished;
+
+  // The Scene tab's spawn list: the model files under Resources/Models, and
+  // what was picked, which the renderer adds at the top of the next frame.
+  const std::vector<std::string> *modelFiles = nullptr;
+  std::function<void(SceneModelEntry)> onSpawn;
+  std::function<void()> onRescanModels;
 };
 
 class ImGuiLayer {

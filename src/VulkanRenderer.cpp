@@ -1,6 +1,7 @@
 #include "VulkanRenderer.h"
 #include "Model.h"
 #include "Picking.h"
+#include "Spawning.h"
 #include "ScenePhysics.h"
 #include "Utilities.h"
 #include "VulkanDebug.h"
@@ -539,6 +540,11 @@ void VulkanRenderer::discoverScenes(const std::string &directory) {
                directory);
 }
 
+void VulkanRenderer::discoverModels(const std::string &folder) {
+  modelFiles = findModelFiles(folder);
+  spdlog::info("Found {} model file(s) in {}", modelFiles.size(), folder);
+}
+
 void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // Rare, user-triggered operation: a full idle wait is the simple and safe
   // way to retire every in-flight frame before instance buffers and the
@@ -793,6 +799,47 @@ void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
   // recorded; a delete or split is a step of its own.
   if (op != EntryOp::Rebuild)
     recordEdit();
+}
+
+// One new object from the spawn list, added like a thrown ball: its model,
+// node and body, without a scene reload. It lands where the camera looks and
+// gets selected, and adding it is one undo step.
+void VulkanRenderer::spawnEntry(SceneModelEntry entry) {
+  if (playing)
+    return;
+  int modelId = -1;
+  try {
+    modelId = modelFor(entry);
+  } catch (const std::exception &e) {
+    sceneError = std::format("Couldn't add '{}': {}", entry.path, e.what());
+    spdlog::error("{}", sceneError);
+    return;
+  }
+  // Its box, so it can be set against the surface instead of half in it.
+  const std::optional<ModelManager::Bounds> bounds =
+      modelManager.localBounds(modelId);
+  const float scale = entry.transform.scale;
+  const glm::vec3 boundsMin = bounds ? bounds->min * scale : glm::vec3(0.0f);
+  const glm::vec3 boundsMax = bounds ? bounds->max * scale : glm::vec3(0.0f);
+  // The ray through the middle of the screen, which is where the camera
+  // looks; any viewport size gives the same ray for its centre.
+  const PickRay ray =
+      rayFromScreen(glm::vec2(0.5f), glm::vec2(1.0f),
+                    glm::inverse(taaBaseProjection * sceneUbo.view));
+  const std::optional<PhysicsRayHit> hit =
+      physics ? physics->castRay(ray.origin, ray.direction, kSpawnReach)
+              : std::nullopt;
+  entry.transform.position = spawnPosition(ray, hit, boundsMin, boundsMax);
+
+  const SceneEntryRef ref = addModel(currentScene, std::move(entry));
+  addEntry(ref);
+  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+  selection = ref;
+  updateSelectionLines();
+  recordEdit();
+  sceneError.clear();
+  spdlog::info("Added [model] {}{}", ref.index,
+               hit ? "" : ", 5 m ahead with no surface in reach");
 }
 
 void VulkanRenderer::requestHistoryStep(HistoryStep step) {
@@ -1159,6 +1206,12 @@ void VulkanRenderer::draw() {
       applyEntryOp(op, ref);
     rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
     updateSelectionLines();
+  }
+  if (pendingSpawn) {
+    vkDeviceWaitIdle(logicalDevice);
+    SceneModelEntry entry = std::move(*pendingSpawn);
+    pendingSpawn.reset();
+    spawnEntry(std::move(entry));
   }
   if (historyRequest != HistoryStep::None)
     applyHistoryStep();
@@ -3385,6 +3438,12 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   };
   ui.viewProj = taaBaseProjection * sceneUbo.view;
   ui.onEditFinished = [this] { recordEdit(); };
+  ui.modelFiles = &modelFiles;
+  ui.onSpawn = [this](SceneModelEntry entry) {
+    if (!playing)
+      pendingSpawn = std::move(entry);
+  };
+  ui.onRescanModels = [this] { discoverModels(); };
 
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the

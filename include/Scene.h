@@ -181,6 +181,10 @@ void removeEntry(SceneDescription &scene, SceneEntryRef ref);
 // number of copies, and grids after the grid move down one.
 std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex);
 
+// Adds a model after everything else in the file and returns where it went:
+// the end of the models list.
+SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model);
+
 namespace SceneIO {
 
 // Parses a .scene file (INI-style: `key = value` lines under [camera], [sun],

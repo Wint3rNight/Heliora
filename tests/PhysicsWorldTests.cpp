@@ -485,6 +485,24 @@ TEST(cast_ray_finds_the_nearest_body) {
   CHECK_NEAR(longer ? longer->distance : -1.0f, 4.5, 1e-3);
 }
 
+TEST(cast_ray_reports_the_surface_normal) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.motion = PhysicsMotion::Static;
+  box.position = glm::vec3(0.0f, 0.0f, -5.0f);
+  world.addBody(box);
+  const std::optional<PhysicsRayHit> front =
+      world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f);
+  const std::optional<PhysicsRayHit> top = world.castRay(
+      glm::vec3(0.2f, 5.0f, -5.1f), glm::vec3(0.0f, -1.0f, 0.0f), 100.0f);
+  CHECK(front.has_value());
+  CHECK(top.has_value());
+  if (front)
+    CHECK_NEAR(glm::distance(front->normal, glm::vec3(0, 0, 1)), 0.0, 1e-4);
+  if (top)
+    CHECK_NEAR(glm::distance(top->normal, glm::vec3(0, 1, 0)), 0.0, 1e-4);
+}
+
 TEST(cast_ray_misses_past_max_distance) {
   PhysicsWorld world;
   PhysicsBodyDesc box;

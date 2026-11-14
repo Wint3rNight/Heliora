@@ -502,6 +502,22 @@ TEST(degrees_from_rotation_undoes_rotation_from_degrees) {
   }
 }
 
+TEST(added_model_goes_last_in_the_file) {
+  SceneDescription scene = parseText("[model]\nshape = box\n"
+                                     "[grid]\nshape = sphere\n"
+                                     "[model]\nshape = capsule\n");
+  SceneModelEntry added;
+  added.shape = PrimitiveShape::Plane;
+  added.info.order = -5; // wherever it came from, it goes last
+  const SceneEntryRef ref = addModel(scene, added);
+  CHECK(ref.kind == SceneEntryRef::Kind::Model);
+  CHECK(ref.index == 2);
+  CHECK(scene.models.size() == 3);
+  CHECK(scene.models.back().shape == PrimitiveShape::Plane);
+  CHECK(scene.models.back().info.order == 3);
+  CHECK(reparse(scene) == scene);
+}
+
 TEST(layout_rotation_survives_a_round_trip) {
   const SceneDescription scene =
       parseText("[grid]\nshape = box\ncount = 2 1 2\nlayout_rotation = 30\n");

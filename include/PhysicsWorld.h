@@ -68,6 +68,7 @@ struct PhysicsRayHit {
   PhysicsBodyId body;
   uint64_t userData; // the body's
   float distance;    // m from the ray's start
+  glm::vec3 normal{0.0f, 1.0f, 0.0f}; // unit, the way the surface faces
 };
 
 struct PhysicsMovedPose {

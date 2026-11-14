@@ -630,13 +630,26 @@ std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
   // Jolt's ray is as long as its direction vector, and a hit comes back as
   // the fraction of that length.
   const glm::vec3 ray = glm::normalize(direction) * maxDistance;
+  const JPH::RRayCast cast(toJoltPosition(origin), toJolt(ray));
   JPH::RayCastResult hit;
-  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(
-          JPH::RRayCast(toJoltPosition(origin), toJolt(ray)), hit))
+  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(cast, hit))
     return std::nullopt;
-  return PhysicsRayHit{PhysicsBodyId{hit.mBodyID.GetIndexAndSequenceNumber()},
+  PhysicsRayHit result{PhysicsBodyId{hit.mBodyID.GetIndexAndSequenceNumber()},
                        impl->userData[hit.mBodyID.GetIndex()],
                        hit.mFraction * maxDistance};
+  // The normal of the face it hit: the sub-shape ID says which part of the
+  // shape (a compound's child, a mesh's triangle) that was.
+  JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(),
+                         hit.mBodyID);
+  if (lock.Succeeded()) {
+    const JPH::Vec3 n = lock.GetBody().GetWorldSpaceSurfaceNormal(
+        hit.mSubShapeID2, cast.GetPointOnRay(hit.mFraction));
+    result.normal = glm::vec3(n.GetX(), n.GetY(), n.GetZ());
+    // A triangle hit from behind reports the side facing away.
+    if (glm::dot(result.normal, ray) > 0.0f)
+      result.normal = -result.normal;
+  }
+  return result;
 }
 
 uint32_t PhysicsWorld::bodyCount() const { return impl->system.GetNumBodies(); }

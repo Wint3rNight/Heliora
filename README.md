@@ -87,8 +87,9 @@ Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit d
 - Forward transparent pass for glTF `alphaMode=BLEND` materials, sorted back-to-front over the deferred result.
 - GPU-driven rendering path: compute frustum + HZB occlusion culling feeding indirect draws.
 - Bindless material textures via `VK_EXT_descriptor_indexing`.
-- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); a shape with `body = static | dynamic | kinematic` becomes a Jolt rigid body (optional `mass`, `friction`, `restitution`), stepped at a fixed 60 Hz and interpolated for rendering. A `[grid]` block places many copies of one model.
-- Physics debugging: a Physics panel (pause, single step, reset, body and awake counts, step time), wireframes of every collision shape (`F2`), and throwing balls from the camera (`F`). Stress scenes with 1,000 and 5,000 boxes (`90_stress_1k.scene`, `91_stress_5k.scene`).
+- Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); an entry with `body = static | dynamic | kinematic` becomes a Jolt rigid body (optional `mass`, `density`, `material`, `friction`, `restitution`; model files get a `collider = auto | hull | mesh | box`), stepped at a fixed 60 Hz and interpolated for rendering. A `[grid]` block places many copies of one model.
+- An in-game editor: edit and play modes, click to select, move, rotate and scale handles, an Inspector, adding shapes and model files, undo and redo, Save and Save as that keep the file's comments and order, and render and physics settings saved to `Resources/settings.cfg`.
+- Physics debugging: a Physics panel (pause, single step, body and awake counts, step time), wireframes of every collision shape (`F2`), and throwing balls from the camera (`F`). Stress scenes with 1,000 and 5,000 boxes (`90_stress_1k.scene`, `91_stress_5k.scene`).
 - Exponential height fog.
 - ImGui runtime overlay with:
   - FPS and frame-time graph,
@@ -119,7 +120,8 @@ The project used to be closer to a typical single-file Vulkan experiment. The cu
 | `TextureManager` | Texture loading, fallback textures, HDR cubemap creation, compute IBL resources, texture deduplication |
 | `ModelManager` / `Model` | Assimp loading, mesh buffers, material extraction, bounding spheres, generated LOD buffers |
 | `SceneNode` | Transform hierarchy, model placement, per-node animation |
-| `Scene` | Scene-file parsing (`Resources/Scenes/*.scene`), runtime scene switching |
+| `Scene` | Scene-file parsing and writing (`Resources/Scenes/*.scene`), runtime scene switching |
+| Editor | `Picking`, `GizmoMath`, `EditHistory`, `Spawning` and `SettingsFile` hold the editor's logic, GPU-free and tested; `ImGuiLayer` draws it and `VulkanRenderer` applies the edits |
 | `RenderResources` | Per-swap-image render-target registry, tracked image layouts and transitions |
 | Pass modules | `GpuDrivenGBufferPass`, `ShadowPass`, `BloomPass`, `AutoExposurePass`, `SsaoPass`, `SsgiPass`, `CompositePass`, `ImGuiLayer` — each owns its resources, pipelines, and command recording |
 | `InputManager` | GLFW input state, mouse delta tracking, resize events |
@@ -218,12 +220,19 @@ Two things worth noting. The frame is dominated by the screen-space lighting pas
 | `W`, `A`, `S`, `D` | Move the camera |
 | Mouse | Look around in camera mode |
 | `Tab` | Toggle between camera mode and UI mode |
+| Right mouse button, held | Fly while in UI mode |
+| `F5` | Switch between play mode and edit mode (also the Play/Stop button in the toolbar) |
+| Left click | Select an object (edit mode, UI mode); click empty space to deselect |
+| `1`, `2`, `3` | Move, rotate or scale handles for the selected object |
+| `Ctrl` while dragging a handle | Snap to 0.25 m, 15° or 0.1 scale steps (also the Snap box in the toolbar) |
+| `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo (edit mode) |
+| `Ctrl+S`, `Ctrl+Shift+S` | Save, Save as |
 | `F1` | Toggle HUD-free screenshot mode (hides all panels) |
 | `F2` | Show physics collision shapes as wireframes |
-| `F` | Throw a ball from the camera (camera mode) |
-| `Esc` | Close the application |
+| `F` | Throw a ball from the camera (camera mode, play mode) |
+| `Esc` | Quit, asking first if something isn't saved |
 
-In UI mode, the ImGui panels expose camera settings, lighting, fog, LOD distances, point shadow range, G-buffer debug views, and live performance metrics.
+The game starts in play mode. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector on the right, add shapes and model files from the Scene tab, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell. The sidebar's other tabs hold the render, lighting, debug, physics, performance and camera settings; the Render and Physics tabs save theirs to `Resources/settings.cfg`, read at startup.
 
 ## Requirements
 
@@ -303,7 +312,7 @@ third_party/             Vendored third-party code kept with the repo
 
 ## Current Status
 
-This is an active renderer project, not a packaged engine. The current focus is graphics architecture and rendering features rather than editor tooling or game-level systems.
+This is an active renderer project turning into a game, Heliora, not a packaged engine. The current focus is the game: physics went in first, then the in-game editor; a character comes next.
 
 Working well:
 

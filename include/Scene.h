@@ -50,6 +50,10 @@ struct SceneSectionInfo {
 // rotationDeg as a quaternion. Scene nodes and physics bodies both build
 // their rotation through this, so a body spawns at exactly its node's angle.
 glm::quat rotationFromDegrees(glm::vec3 degrees);
+// The reverse: degrees that rotationFromDegrees turns back into rotation,
+// with x from -90 to 90 and y and z from -180 to 180. Pointing straight up
+// or down, y and z turn about the same axis, so z comes back as 0.
+glm::vec3 degreesFromRotation(const glm::quat &rotation);
 
 // How a model file collides. Auto: its exact triangles if it never moves,
 // one hull per part if it does. Box: one box around the whole model.

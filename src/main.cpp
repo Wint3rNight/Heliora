@@ -160,12 +160,13 @@ int main(int argc, char **argv) {
       }
     }
 
-    // A left click in edit mode, with the cursor free and off the panels,
-    // selects what's under it.
+    // A left click in edit mode, with the cursor free and off the panels and
+    // the gizmo's handles, selects what's under it.
     const bool leftPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
     if (leftPressed && !cameraMode && !rightMouseFlying &&
-        !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse()) {
+        !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse() &&
+        !vulkanRenderer.gizmoHasMouse()) {
       int width = 0, height = 0;
       glfwGetWindowSize(window, &width, &height);
       vulkanRenderer.selectAt(inputManager.getMousePosition(),

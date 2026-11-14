@@ -124,6 +124,7 @@ public:
   float getCameraSpeed() const { return imguiCameraSpeed; }
   bool imguiWantsMouse() const { return imguiLayer.wantsMouse(); }
   bool imguiWantsTextInput() const { return imguiLayer.wantsTextInput(); }
+  bool gizmoHasMouse() const { return imguiLayer.gizmoHasMouse(); }
   void toggleUiVisibility() { imguiLayer.toggleVisibility(); }
   bool isUiVisible() const { return imguiLayer.isVisible(); }
 

@@ -2274,6 +2274,11 @@ void VulkanRenderer::addInstancedModel(
 
 void VulkanRenderer::cleanup() {
   vkDeviceWaitIdle(device.getLogicalDevice());
+  // The world goes now, while main() runs. Left to the destructor, it would
+  // go after main() returns, when Jolt's own statics (its default material)
+  // may already be gone, and Jolt would release that material twice.
+  physicsLinks.clear();
+  physics.reset();
 
   metrics.printReport(device.getAllocator());
 
@@ -3340,6 +3345,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.onGridSplit = [this](SceneEntryRef ref) {
     pendingEntryOps.push_back({EntryOp::Split, ref});
   };
+  ui.viewProj = taaBaseProjection * sceneUbo.view;
 
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the

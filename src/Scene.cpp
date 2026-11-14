@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -379,6 +380,27 @@ glm::quat rotationFromDegrees(glm::vec3 degrees) {
   return glm::angleAxis(r.y, glm::vec3(0, 1, 0)) *
          glm::angleAxis(r.x, glm::vec3(1, 0, 0)) *
          glm::angleAxis(r.z, glm::vec3(0, 0, 1));
+}
+
+glm::vec3 degreesFromRotation(const glm::quat &rotation) {
+  // rotationFromDegrees builds Ry(y) * Rx(x) * Rz(z). Multiplied out, that
+  // matrix has -sin(x) in row 1, column 2, cos(x) times sin(y) and cos(y) in
+  // column 2's other rows, and cos(x) times sin(z) and cos(z) in row 1's
+  // other columns. glm indexes [column][row].
+  const glm::mat3 m = glm::mat3_cast(rotation);
+  const float cosX = std::hypot(m[2][0], m[2][2]);
+  const float x = std::atan2(-m[2][1], cosX);
+  float y = 0.0f;
+  float z = 0.0f;
+  if (cosX > 1e-3f) {
+    y = std::atan2(m[2][0], m[2][2]);
+    z = std::atan2(m[0][1], m[1][1]);
+  } else {
+    // Straight up or down, y and z turn about the same axis and only their
+    // sum or difference shows, so all of it goes in y.
+    y = std::atan2(-m[0][2], m[0][0]);
+  }
+  return glm::degrees(glm::vec3(x, y, z));
 }
 
 std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid) {

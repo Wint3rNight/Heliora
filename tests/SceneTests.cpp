@@ -1,6 +1,7 @@
 #include "Scene.h"
 #include "TestRunner.h"
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -480,6 +481,25 @@ TEST(grid_layout_rotation_turns_the_arrangement) {
   // Each copy turns with the arrangement, on top of its own rotation.
   CHECK_NEAR(copies[0].transform.rotationDeg.y, 95.0, 1e-4);
   CHECK_NEAR(copies[0].transform.rotationDeg.x, 10.0, 1e-6);
+}
+
+TEST(degrees_from_rotation_undoes_rotation_from_degrees) {
+  const glm::vec3 cases[] = {{0.0f, 0.0f, 0.0f},
+                             {30.0f, 45.0f, -60.0f},
+                             {-80.0f, 170.0f, 10.0f},
+                             {10.0f, -120.0f, 135.0f}};
+  for (const glm::vec3 &degrees : cases) {
+    const glm::vec3 back = degreesFromRotation(rotationFromDegrees(degrees));
+    CHECK_NEAR(back.x, degrees.x, 1e-2);
+    CHECK_NEAR(back.y, degrees.y, 1e-2);
+    CHECK_NEAR(back.z, degrees.z, 1e-2);
+  }
+  // Straight up and down, only the rotation itself has to come back.
+  for (float pitch : {90.0f, -90.0f}) {
+    const glm::quat steep = rotationFromDegrees(glm::vec3(pitch, 30.0f, 20.0f));
+    const glm::quat back = rotationFromDegrees(degreesFromRotation(steep));
+    CHECK_NEAR(std::abs(glm::dot(steep, back)), 1.0, 1e-5);
+  }
 }
 
 TEST(layout_rotation_survives_a_round_trip) {

@@ -27,6 +27,9 @@ void InputManager::init(GLFWwindow *newWindow) {
   // e.g. tapping a key during a scene-switch device-idle wait — still reads
   // as GLFW_PRESS on the next poll instead of being silently dropped.
   glfwSetInputMode(window, GLFW_STICKY_KEYS, GLFW_TRUE);
+  // The same for mouse buttons: a touchpad tap can press and release
+  // between two polls, and would otherwise never read as pressed.
+  glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
 }
 
 void InputManager::pollEvents() {

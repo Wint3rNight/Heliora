@@ -1,5 +1,7 @@
 #include "ImGuiLayer.h"
 
+#include "GizmoMath.h"
+#include "Picking.h"
 #include "Scene.h"
 #include "ScenePhysics.h"
 
@@ -9,11 +11,14 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <numbers>
+#include <optional>
 #include <span>
 #include <stdexcept>
 
@@ -172,6 +177,7 @@ const char *presentModeName(VkPresentModeKHR mode) {
 
 void ImGuiLayer::init(GLFWwindow *window, VulkanDevice &device,
                       VkRenderPass renderPass, uint32_t imageCount) {
+  this->window = window;
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -251,8 +257,12 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
       static_cast<float>(ui.metrics.getLastFrameTimeMs());
   frameTimeGraphOffset = (frameTimeGraphOffset + 1) % 128;
 
-  if (!visible)
-    return; // F1 screenshot mode: no windows -> empty draw list this frame
+  if (!visible) {
+    // F1 screenshot mode: no windows -> empty draw list this frame
+    gizmoHovered = false;
+    endGizmoDrag(ui);
+    return;
+  }
 
   // One sidebar, full height, with the tabs as two rows of pills on top.
   constexpr float kSidebarWidth = 380.0f;
@@ -300,6 +310,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::End();
   drawToolbar(ui);
   drawInspector(ui);
+  drawGizmo(ui);
 }
 
 namespace {
@@ -592,7 +603,336 @@ void ImGuiLayer::drawToolbar(DebugUiContext &ui) {
   ImGui::SameLine();
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled(ui.playing ? "Playing (F5 stops)" : "Editing (F5 plays)");
+  if (!ui.playing) {
+    // The gizmo's mode, for the touchpad as much as for keys 1, 2, 3.
+    static constexpr std::pair<GizmoMode, const char *> kModes[] = {
+        {GizmoMode::Move, "Move"},
+        {GizmoMode::Rotate, "Rotate"},
+        {GizmoMode::Scale, "Scale"}};
+    int key = 1;
+    for (const auto &[mode, label] : kModes) {
+      ImGui::SameLine();
+      const bool selected = mode == gizmoMode;
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            selected ? hex(kPurple) : hex(kBase3));
+      if (ImGui::Button(label))
+        gizmoMode = mode;
+      ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("Key %d", key++);
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Snap", &gizmoSnap);
+    ImGui::SetItemTooltip(
+        "Or hold Ctrl: 0.25 m steps, 15\u00b0 steps and 0.1 scale steps");
+  }
   ImGui::End();
+}
+
+namespace {
+
+// Handles keep this size on screen however far away the object is.
+constexpr float kGizmoPixels = 110.0f;     // arrow length, ring radius
+constexpr float kScaleRingPixels = 70.0f;  // the scale handle's radius
+constexpr float kGrabPixels = 8.0f;        // how close counts as on it
+constexpr int kRingSegments = 48;
+constexpr float kMoveSnap = 0.25f;  // metres
+constexpr float kRotateSnap = 15.0f; // degrees
+constexpr float kScaleSnap = 0.1f;
+constexpr glm::vec3 kAxes[3] = {
+    {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+constexpr uint32_t kAxisColours[3] = {0xe0505f, 0x7ac74f, 0x4f8fe6};
+constexpr uint32_t kGizmoHot = 0xf5d36b; // under the cursor or dragged
+
+ImU32 colourU32(uint32_t rgb) { return ImGui::GetColorU32(hex(rgb)); }
+
+// The ring around axis, as points on screen. A point behind the camera is
+// left out, and the segments either side of it aren't drawn.
+std::array<std::optional<glm::vec2>, kRingSegments>
+ringOnScreen(glm::vec3 centre, glm::vec3 axis, float radius,
+             glm::vec2 viewport, const glm::mat4 &viewProj) {
+  const glm::vec3 helper = std::abs(axis.y) < 0.9f ? glm::vec3(0, 1, 0)
+                                                   : glm::vec3(1, 0, 0);
+  const glm::vec3 u = glm::normalize(glm::cross(axis, helper));
+  const glm::vec3 v = glm::cross(axis, u);
+  std::array<std::optional<glm::vec2>, kRingSegments> points;
+  for (int i = 0; i < kRingSegments; ++i) {
+    const float a = 2.0f * std::numbers::pi_v<float> * i / kRingSegments;
+    points[i] = screenFromWorld(
+        centre + radius * (std::cos(a) * u + std::sin(a) * v), viewport,
+        viewProj);
+  }
+  return points;
+}
+
+} // namespace
+
+void ImGuiLayer::endGizmoDrag(DebugUiContext &ui) {
+  if (!gizmoDrag.active)
+    return;
+  // The scale showed at once; the body's size changes in this rebuild.
+  if (gizmoDrag.scaled && ui.onEntryChanged)
+    ui.onEntryChanged(gizmoDrag.ref);
+  gizmoDrag = {};
+}
+
+// The handles are drawn in 2D over the frame, under the panels, and a click
+// is tested against them on screen. Dragging turns the cursor into a ray and
+// the ray into a placement, with the maths in GizmoMath. Only the selected
+// object is looked at, so it costs nothing per object in the scene.
+void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
+  gizmoHovered = false;
+  ImGuiIO &io = ImGui::GetIO();
+  if (!ui.playing && !io.WantTextInput && !gizmoDrag.active) {
+    if (ImGui::IsKeyPressed(ImGuiKey_1, false))
+      gizmoMode = GizmoMode::Move;
+    if (ImGui::IsKeyPressed(ImGuiKey_2, false))
+      gizmoMode = GizmoMode::Rotate;
+    if (ImGui::IsKeyPressed(ImGuiKey_3, false))
+      gizmoMode = GizmoMode::Scale;
+  }
+
+  // The selected entry. The renderer only passes a selection in edit mode.
+  SceneGridEntry *grid = nullptr;
+  SceneModelEntry *entry = nullptr;
+  if (ui.scene && ui.selection) {
+    const SceneEntryRef ref = *ui.selection;
+    if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
+        ref.index < static_cast<int>(ui.scene->grids.size())) {
+      grid = &ui.scene->grids[ref.index];
+      entry = &grid->model;
+    } else if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
+               ref.index < static_cast<int>(ui.scene->models.size())) {
+      entry = &ui.scene->models[ref.index];
+    }
+  }
+  // While flying, the cursor is hidden and its position means nothing.
+  const bool cursorFree =
+      window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
+  if (!entry || !cursorFree || !ImGui::IsMousePosValid() ||
+      (gizmoDrag.active && gizmoDrag.ref != *ui.selection)) {
+    endGizmoDrag(ui);
+    return;
+  }
+
+  const glm::vec2 viewport(io.DisplaySize.x, io.DisplaySize.y);
+  // A grid turns about its first copy's spot, so the handles sit there.
+  const glm::vec3 centre = entry->transform.position;
+  const std::optional<glm::vec2> centrePixel =
+      screenFromWorld(centre, viewport, ui.viewProj);
+  if (!centrePixel || viewport.y <= 0.0f) {
+    endGizmoDrag(ui); // behind the camera
+    return;
+  }
+  // The world length that shows as kGizmoPixels at the centre's depth (w):
+  // the projection's y scale times half the viewport's height is how many
+  // pixels one metre covers one metre away.
+  const float depth = (ui.viewProj * glm::vec4(centre, 1.0f)).w;
+  const float pixelsPerMetre =
+      std::abs(ui.sceneUbo.projection[1][1]) * viewport.y * 0.5f / depth;
+  const float length = kGizmoPixels / pixelsPerMetre;
+  const glm::vec2 mouse(io.MousePos.x, io.MousePos.y);
+  const PickRay ray =
+      rayFromScreen(mouse, viewport, glm::inverse(ui.viewProj));
+  // A grid only turns about y, through its layout rotation.
+  auto axisShown = [&](int axis) {
+    return !(gizmoMode == GizmoMode::Rotate && grid && axis != 1);
+  };
+  // An arrow pointing almost straight at the camera is too short to grab
+  // or drag sensibly, so it's hidden.
+  auto arrowTip = [&](int axis) -> std::optional<glm::vec2> {
+    const std::optional<glm::vec2> tip =
+        screenFromWorld(centre + kAxes[axis] * length, viewport, ui.viewProj);
+    if (!tip || glm::distance(*tip, *centrePixel) < 0.2f * kGizmoPixels)
+      return std::nullopt;
+    return tip;
+  };
+
+  // Which handle the cursor is on: an axis, or 0 for the scale ring.
+  int hot = gizmoDrag.active ? gizmoDrag.axis : -1;
+  if (!gizmoDrag.active && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
+      !ImGui::IsAnyItemActive()) {
+    float nearest = kGrabPixels;
+    auto consider = [&](int handle, float distance) {
+      if (distance < nearest) {
+        nearest = distance;
+        hot = handle;
+      }
+    };
+    for (int axis = 0; axis < 3; ++axis) {
+      if (!axisShown(axis))
+        continue;
+      if (gizmoMode == GizmoMode::Move) {
+        if (const std::optional<glm::vec2> tip = arrowTip(axis))
+          consider(axis, distanceToSegment(mouse, *centrePixel, *tip));
+      } else if (gizmoMode == GizmoMode::Rotate) {
+        const auto ring =
+            ringOnScreen(centre, kAxes[axis], length, viewport, ui.viewProj);
+        for (int i = 0; i < kRingSegments; ++i) {
+          const auto &a = ring[i];
+          const auto &b = ring[(i + 1) % kRingSegments];
+          if (a && b)
+            consider(axis, distanceToSegment(mouse, *a, *b));
+        }
+      }
+    }
+    if (gizmoMode == GizmoMode::Scale)
+      consider(0, std::abs(glm::distance(mouse, *centrePixel) -
+                           kScaleRingPixels));
+  }
+  gizmoHovered = hot >= 0;
+
+  if (!gizmoDrag.active && hot >= 0 &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    GizmoDrag drag;
+    drag.active = true;
+    drag.axis = hot;
+    drag.ref = *ui.selection;
+    drag.start = entry->transform;
+    drag.startLayoutRotation = grid ? grid->layoutRotation : 0.0f;
+    drag.grabbedPixel = mouse;
+    drag.centrePixel = *centrePixel;
+    bool grabbed = true;
+    if (gizmoMode == GizmoMode::Move) {
+      const std::optional<glm::vec3> point =
+          closestPointOnAxis(ray, centre, kAxes[hot]);
+      grabbed = point.has_value();
+      drag.grabbed = point.value_or(centre);
+    } else if (gizmoMode == GizmoMode::Rotate) {
+      const std::optional<float> angle =
+          angleAroundAxis(ray, centre, kAxes[hot]);
+      grabbed = angle.has_value();
+      drag.lastAngle = angle.value_or(0.0f);
+    }
+    if (grabbed)
+      gizmoDrag = drag;
+  }
+
+  if (gizmoDrag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    endGizmoDrag(ui);
+  } else if (gizmoDrag.active) {
+    const bool snapping = gizmoSnap || io.KeyCtrl;
+    const int axis = gizmoDrag.axis;
+    SceneGridEntry editedGrid = grid ? *grid : SceneGridEntry{};
+    SceneModelEntry edited = *entry;
+    NodeTransform &t = edited.transform;
+    switch (gizmoMode) {
+    case GizmoMode::Move:
+      // The line through the object along the axis doesn't change as it
+      // slides along it, so the current position works as well as the
+      // start.
+      if (const std::optional<glm::vec3> point =
+              closestPointOnAxis(ray, centre, kAxes[axis])) {
+        t.position = gizmoDrag.start.position + (*point - gizmoDrag.grabbed);
+        // Snapped onto the 0.25 m grid, not by 0.25 m steps, so things
+        // line up with each other.
+        if (snapping)
+          t.position[axis] = snap(t.position[axis], kMoveSnap);
+      }
+      break;
+    case GizmoMode::Rotate: {
+      if (const std::optional<float> angle =
+              angleAroundAxis(ray, centre, kAxes[axis])) {
+        // The change since last frame, taken the short way round, so
+        // passing the -180/180 seam doesn't jump a full turn.
+        gizmoDrag.turned += std::remainder(*angle - gizmoDrag.lastAngle,
+                                           2.0f * std::numbers::pi_v<float>);
+        gizmoDrag.lastAngle = *angle;
+      }
+      float degrees = glm::degrees(gizmoDrag.turned);
+      if (snapping)
+        degrees = snap(degrees, kRotateSnap); // by 15 degree steps
+      if (grid) {
+        editedGrid.layoutRotation =
+            std::remainder(gizmoDrag.startLayoutRotation + degrees, 360.0f);
+      } else if (axis == 1) {
+        // About world y it's just more yaw, since rotationFromDegrees
+        // applies y first, so the other two numbers stay as typed.
+        t.rotationDeg = gizmoDrag.start.rotationDeg;
+        t.rotationDeg.y = std::remainder(t.rotationDeg.y + degrees, 360.0f);
+      } else {
+        t.rotationDeg = degreesFromRotation(
+            glm::angleAxis(glm::radians(degrees), kAxes[axis]) *
+            rotationFromDegrees(gizmoDrag.start.rotationDeg));
+      }
+      break;
+    }
+    case GizmoMode::Scale: {
+      float scale = gizmoDrag.start.scale *
+                    scaleFromDrag(gizmoDrag.centrePixel,
+                                  gizmoDrag.grabbedPixel, mouse);
+      if (snapping)
+        scale = snap(scale, kScaleSnap); // onto 0.1 steps
+      t.scale = glm::clamp(scale, 0.01f, 100.0f);
+      break;
+    }
+    }
+    // Kept only if the parser would take it, as in the Inspector.
+    bool changed = false;
+    if (grid) {
+      editedGrid.model = edited;
+      if (editedGrid != *grid && !problemWith(editedGrid)) {
+        *grid = editedGrid;
+        changed = true;
+      }
+    } else if (edited != *entry && !problemWith(edited)) {
+      *entry = edited;
+      changed = true;
+    }
+    if (changed) {
+      gizmoDrag.scaled |= gizmoMode == GizmoMode::Scale;
+      if (ui.onEntryMoved)
+        ui.onEntryMoved(gizmoDrag.ref);
+    }
+  }
+  if (gizmoHovered)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+  // Drawn after the edit, so the handles sit on the object's new spot.
+  const glm::vec3 now = entry->transform.position;
+  const std::optional<glm::vec2> nowPixel =
+      screenFromWorld(now, viewport, ui.viewProj);
+  if (!nowPixel)
+    return;
+  ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  auto colourOf = [&](int handle, uint32_t rgb) {
+    return colourU32(handle == hot ? kGizmoHot : rgb);
+  };
+  for (int axis = 0; axis < 3 && gizmoMode != GizmoMode::Scale; ++axis) {
+    if (!axisShown(axis))
+      continue;
+    const ImU32 colour = colourOf(axis, kAxisColours[axis]);
+    const float thickness = axis == hot ? 4.0f : 2.5f;
+    if (gizmoMode == GizmoMode::Move) {
+      const std::optional<glm::vec2> tip =
+          screenFromWorld(now + kAxes[axis] * length, viewport, ui.viewProj);
+      if (!tip || glm::distance(*tip, *nowPixel) < 0.2f * kGizmoPixels)
+        continue;
+      const glm::vec2 along = glm::normalize(*tip - *nowPixel);
+      const glm::vec2 across(-along.y, along.x);
+      const glm::vec2 point = *tip + along * 14.0f;
+      draw->AddLine(ImVec2(nowPixel->x, nowPixel->y), ImVec2(tip->x, tip->y),
+                    colour, thickness);
+      draw->AddTriangleFilled(
+          ImVec2(point.x, point.y),
+          ImVec2(tip->x + across.x * 6.0f, tip->y + across.y * 6.0f),
+          ImVec2(tip->x - across.x * 6.0f, tip->y - across.y * 6.0f), colour);
+    } else {
+      const auto ring =
+          ringOnScreen(now, kAxes[axis], length, viewport, ui.viewProj);
+      for (int i = 0; i < kRingSegments; ++i) {
+        const auto &a = ring[i];
+        const auto &b = ring[(i + 1) % kRingSegments];
+        if (a && b)
+          draw->AddLine(ImVec2(a->x, a->y), ImVec2(b->x, b->y), colour,
+                        thickness);
+      }
+    }
+  }
+  if (gizmoMode == GizmoMode::Scale)
+    draw->AddCircle(ImVec2(nowPixel->x, nowPixel->y), kScaleRingPixels,
+                    colourOf(0, kText), kRingSegments, hot == 0 ? 4.0f : 2.5f);
+  draw->AddCircleFilled(ImVec2(nowPixel->x, nowPixel->y), 3.0f,
+                        colourU32(kText));
 }
 
 // Pills wrap onto a second row when the first is full. The selected one is

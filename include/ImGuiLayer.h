@@ -135,6 +135,10 @@ struct DebugUiContext {
   std::function<void(SceneEntryRef)> onEntryChanged;
   std::function<void(SceneEntryRef)> onEntryDeleted;
   std::function<void(SceneEntryRef)> onGridSplit;
+
+  // The gizmo's camera: the unjittered projection times view, the one
+  // picking uses, so the handles sit where the object is on screen.
+  glm::mat4 viewProj{1.0f};
 };
 
 class ImGuiLayer {
@@ -157,6 +161,9 @@ public:
   bool wantsMouse() const;
   // A text box has the keyboard, so typed letters aren't game keys.
   bool wantsTextInput() const;
+  // The cursor is on one of the gizmo's handles, or dragging one, so a left
+  // click there isn't a click to select.
+  bool gizmoHasMouse() const { return gizmoHovered || gizmoDrag.active; }
 
   // Screenshot mode: hides every panel (empty ImGui draw list) so captures
   // are HUD-free. Rendering itself is unaffected.
@@ -178,6 +185,8 @@ private:
   void drawTabPills();
   void drawToolbar(DebugUiContext &ui);
   void drawInspector(DebugUiContext &ui);
+  void drawGizmo(DebugUiContext &ui);
+  void endGizmoDrag(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
   void drawRenderTab(DebugUiContext &ui);
   void drawLightingTab(DebugUiContext &ui);
@@ -195,6 +204,31 @@ private:
   SceneEntryRef inspectorPendingRef;
   SceneEntryRef inspectorShownRef;
   std::string inspectorProblem; // why the last edit was refused
+
+  // The gizmo: handles on the selected object, in edit mode. Keys 1, 2, 3
+  // or the toolbar pick the mode; Ctrl or the toolbar's Snap box snaps.
+  enum class GizmoMode { Move, Rotate, Scale };
+  GizmoMode gizmoMode = GizmoMode::Move;
+  bool gizmoSnap = false;
+  bool gizmoHovered = false; // last frame, which is what a click goes by
+  // What a drag started from. Each frame works out the new placement from
+  // these and the cursor, rather than adding up small steps, so rounding
+  // doesn't drift and snapping stays on its steps.
+  struct GizmoDrag {
+    bool active = false;
+    int axis = 0; // x, y, z; the scale handle has none
+    SceneEntryRef ref;
+    NodeTransform start;
+    float startLayoutRotation = 0.0f; // a grid's
+    glm::vec3 grabbed{0.0f};      // move: the point on the axis grabbed
+    float lastAngle = 0.0f;       // rotate: radians, last frame
+    float turned = 0.0f;          // rotate: radians, can pass a full turn
+    glm::vec2 grabbedPixel{0.0f}; // scale
+    glm::vec2 centrePixel{0.0f};  // scale
+    bool scaled = false;          // the body needs rebuilding at the end
+  };
+  GizmoDrag gizmoDrag;
+  GLFWwindow *window = nullptr; // to tell if the cursor is free
 
   bool visible = true;
 

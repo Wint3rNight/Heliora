@@ -250,6 +250,21 @@ bool ImGuiLayer::wantsTextInput() const {
   return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
 }
 
+bool ImGuiLayer::editInProgress() const {
+  return gizmoDrag.active ||
+         (ImGui::GetCurrentContext() && ImGui::IsAnyItemActive());
+}
+
+// Once nothing is held, the edit is one finished step: a drag gives one undo
+// step, not one per frame.
+void ImGuiLayer::finishSceneEdit(DebugUiContext &ui) {
+  if (sceneEditOpen && !ImGui::IsAnyItemActive() && !gizmoDrag.active) {
+    sceneEditOpen = false;
+    if (ui.onEditFinished)
+      ui.onEditFinished();
+  }
+}
+
 void ImGuiLayer::buildUi(DebugUiContext &ui) {
   // Frame-time history accumulates even while hidden so the graph shows
   // truthful recent history after un-hiding, not a stale pre-hide splice.
@@ -261,6 +276,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
     // F1 screenshot mode: no windows -> empty draw list this frame
     gizmoHovered = false;
     endGizmoDrag(ui);
+    finishSceneEdit(ui);
     return;
   }
 
@@ -311,6 +327,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   drawToolbar(ui);
   drawInspector(ui);
   drawGizmo(ui);
+  finishSceneEdit(ui);
 }
 
 namespace {
@@ -554,6 +571,7 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
       inspectorProblem = *problem;
     } else {
       inspectorProblem.clear();
+      sceneEditOpen = true;
       if (isGrid)
         *grid = editedGrid;
       else
@@ -879,6 +897,7 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
       changed = true;
     }
     if (changed) {
+      sceneEditOpen = true;
       gizmoDrag.scaled |= gizmoMode == GizmoMode::Scale;
       if (ui.onEntryMoved)
         ui.onEntryMoved(gizmoDrag.ref);
@@ -1112,18 +1131,25 @@ void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
                               ImGuiTreeNodeFlags_DefaultOpen)) {
     // The cycle drives the sun while it runs, so edits here wouldn't show.
     ImGui::BeginDisabled(ui.dayNightEnable);
+    // The sun and fog are saved with the scene, so they're undo steps too.
     glm::vec3 dir = ui.sun.direction;
     if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f) &&
-        glm::length(dir) > 0.001f)
+        glm::length(dir) > 0.001f) {
       ui.sun.direction = glm::normalize(dir);
-    ImGui::ColorEdit3("Color##sun", &ui.sun.color.x);
-    ImGui::SliderFloat("Intensity##sun", &ui.sun.intensity, 0.0f, 5.0f);
+      sceneEditOpen = true;
+    }
+    sceneEditOpen |= ImGui::ColorEdit3("Color##sun", &ui.sun.color.x);
+    sceneEditOpen |=
+        ImGui::SliderFloat("Intensity##sun", &ui.sun.intensity, 0.0f, 5.0f);
     ImGui::EndDisabled();
   }
   if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::SliderFloat("Density##fog", &ui.fog.density, 0.0f, 0.02f, "%.4f");
-    ImGui::SliderFloat("Falloff##fog", &ui.fog.falloff, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Max##fog", &ui.fog.max, 0.0f, 1.0f, "%.2f");
+    sceneEditOpen |= ImGui::SliderFloat("Density##fog", &ui.fog.density, 0.0f,
+                                        0.02f, "%.4f");
+    sceneEditOpen |= ImGui::SliderFloat("Falloff##fog", &ui.fog.falloff, 0.0f,
+                                        1.0f, "%.2f");
+    sceneEditOpen |=
+        ImGui::SliderFloat("Max##fog", &ui.fog.max, 0.0f, 1.0f, "%.2f");
   }
   int pointCount = ui.sceneUbo.lightCounts.x;
   for (int i = 0; i < pointCount; i++) {

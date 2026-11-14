@@ -108,6 +108,7 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 # once. Jolt is PUBLIC so everything linking this gets the same Jolt defines
 # and CPU flags.
 set(HELIORA_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/EditHistory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/GizmoMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Picking.cpp
@@ -168,6 +169,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer imgui_lib)
 enable_testing()
 add_executable(heliora_tests
         tests/main.cpp
+        tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp
         tests/GizmoTests.cpp
         tests/PhysicsWorldTests.cpp

@@ -173,6 +173,20 @@ int main(int argc, char **argv) {
                               glm::vec2(width, height));
     }
 
+    // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer
+    // checks), unless a text box has the keyboard: it has its own undo.
+    const bool zPressed = inputManager.wasKeyJustPressed(GLFW_KEY_Z);
+    const bool ctrl = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
+                      inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
+    const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
+                       inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
+    if (zPressed && ctrl && !typing) {
+      if (shift)
+        vulkanRenderer.redoEdit();
+      else
+        vulkanRenderer.undoEdit();
+    }
+
     // F5 switches between play mode and edit mode.
     if (inputManager.wasKeyJustPressed(GLFW_KEY_F5))
       vulkanRenderer.togglePlayMode();

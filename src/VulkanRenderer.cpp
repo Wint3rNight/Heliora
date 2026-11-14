@@ -564,9 +564,13 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   rootNode.clearChildren();
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
-  // A new scene's entries are different ones; Stop keeps the same layout.
-  if (moveCamera)
+  // A new scene's entries are different ones, and its history starts here.
+  // Stop and undo keep the selection and the history.
+  if (moveCamera) {
     selection.reset();
+    history.clear();
+    history.push(currentScene);
+  }
 
   for (int i = 0; i < static_cast<int>(currentScene.models.size()); ++i)
     addEntry({SceneEntryRef::Kind::Model, i});
@@ -785,6 +789,38 @@ void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
   }
   // Bodies added one by one leave Jolt's broad phase tree unbalanced.
   physics->optimizeBroadPhase();
+  // A rebuild only catches the nodes up with an edit that was already
+  // recorded; a delete or split is a step of its own.
+  if (op != EntryOp::Rebuild)
+    recordEdit();
+}
+
+void VulkanRenderer::requestHistoryStep(HistoryStep step) {
+  if (!playing && !imguiLayer.editInProgress())
+    historyRequest = step;
+}
+
+void VulkanRenderer::applyHistoryStep() {
+  const HistoryStep step = std::exchange(historyRequest, HistoryStep::None);
+  if (playing)
+    return;
+  const std::optional<SceneDescription> scene =
+      step == HistoryStep::Undo ? history.undo() : history.redo();
+  const char *what = step == HistoryStep::Undo ? "undo" : "redo";
+  if (!scene) {
+    spdlog::info("Nothing to {}", what);
+    return;
+  }
+  // The same index is the same object only if no entry came or went.
+  if (scene->models.size() != currentScene.models.size() ||
+      scene->grids.size() != currentScene.grids.size())
+    selection.reset();
+  const auto start = std::chrono::steady_clock::now();
+  loadScene(*scene, /*moveCamera=*/false);
+  spdlog::info("Applied {} in {:.1f} ms", what,
+               std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - start)
+                   .count());
 }
 
 bool VulkanRenderer::loadSceneAt(int index) {
@@ -1124,6 +1160,8 @@ void VulkanRenderer::draw() {
     rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
     updateSelectionLines();
   }
+  if (historyRequest != HistoryStep::None)
+    applyHistoryStep();
   if (playToggleRequested) {
     playToggleRequested = false;
     playing = !playing;
@@ -3346,6 +3384,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     pendingEntryOps.push_back({EntryOp::Split, ref});
   };
   ui.viewProj = taaBaseProjection * sceneUbo.view;
+  ui.onEditFinished = [this] { recordEdit(); };
 
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the

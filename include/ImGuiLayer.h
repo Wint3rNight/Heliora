@@ -139,6 +139,10 @@ struct DebugUiContext {
   // The gizmo's camera: the unjittered projection times view, the one
   // picking uses, so the handles sit where the object is on screen.
   glm::mat4 viewProj{1.0f};
+
+  // An edit to the scene (a drag, a typed value, the sun or fog) is done:
+  // nothing is held any more, so it's one undo step.
+  std::function<void()> onEditFinished;
 };
 
 class ImGuiLayer {
@@ -164,6 +168,8 @@ public:
   // The cursor is on one of the gizmo's handles, or dragging one, so a left
   // click there isn't a click to select.
   bool gizmoHasMouse() const { return gizmoHovered || gizmoDrag.active; }
+  // A field or a handle is being dragged, so undo would fight it.
+  bool editInProgress() const;
 
   // Screenshot mode: hides every panel (empty ImGui draw list) so captures
   // are HUD-free. Rendering itself is unaffected.
@@ -187,6 +193,7 @@ private:
   void drawInspector(DebugUiContext &ui);
   void drawGizmo(DebugUiContext &ui);
   void endGizmoDrag(DebugUiContext &ui);
+  void finishSceneEdit(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
   void drawRenderTab(DebugUiContext &ui);
   void drawLightingTab(DebugUiContext &ui);
@@ -204,6 +211,9 @@ private:
   SceneEntryRef inspectorPendingRef;
   SceneEntryRef inspectorShownRef;
   std::string inspectorProblem; // why the last edit was refused
+  // The scene was edited and the edit isn't finished yet (something is
+  // still held), so the undo step waits.
+  bool sceneEditOpen = false;
 
   // The gizmo: handles on the selected object, in edit mode. Keys 1, 2, 3
   // or the toolbar pick the mode; Ctrl or the toolbar's Snap box snaps.

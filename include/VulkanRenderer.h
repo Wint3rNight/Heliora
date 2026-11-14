@@ -17,6 +17,7 @@
 #include "CompositePass.h"
 #include "DebugLinePass.h"
 #include "DescriptorManager.h"
+#include "EditHistory.h"
 #include "FixedStepClock.h"
 #include "GpuDrivenGBufferPass.h"
 #include "ImGuiLayer.h"
@@ -106,6 +107,11 @@ public:
   // F5 and the toolbar button. Stop rebuilds the scene from the layout,
   // without moving the camera, at the top of the next draw().
   void togglePlayMode() { playToggleRequested = true; }
+  // Ctrl+Z and Ctrl+Shift+Z: one finished edit back or forward, rebuilt the
+  // way Stop rebuilds, at the top of the next draw(). Edit mode only, and
+  // not in the middle of a drag.
+  void undoEdit() { requestHistoryStep(HistoryStep::Undo); }
+  void redoEdit() { requestHistoryStep(HistoryStep::Redo); }
   // Left click in edit mode: selects what's under the pixel (window
   // coordinates), or nothing. A click on any copy in a grid selects the grid.
   void selectAt(glm::vec2 pixel, glm::vec2 windowSize);
@@ -173,6 +179,14 @@ private:
   enum class EntryOp { Rebuild, Delete, Split };
   std::vector<std::pair<EntryOp, SceneEntryRef>> pendingEntryOps;
   void applyEntryOp(EntryOp op, SceneEntryRef ref);
+  // A copy of currentScene after every finished edit, for undo. Loading
+  // another scene starts a new history; Stop and undo keep it.
+  EditHistory history;
+  enum class HistoryStep { None, Undo, Redo };
+  HistoryStep historyRequest = HistoryStep::None;
+  void requestHistoryStep(HistoryStep step);
+  void applyHistoryStep();
+  void recordEdit() { history.push(currentScene); }
   // A removed body leaves an empty slot, so the others keep their index.
   struct PhysicsLink {
     SceneNode *node = nullptr;

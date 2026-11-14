@@ -22,6 +22,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 constexpr const char *kFontPath = "Resources/Fonts/Inter-Regular.ttf";
@@ -329,6 +330,107 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   drawInspector(ui);
   drawGizmo(ui);
   finishSceneEdit(ui);
+  drawPrompt(ui);
+}
+
+// The renderer's question as a modal window in the middle of the screen,
+// which blocks the rest of the UI until it's answered. Esc is Cancel.
+void ImGuiLayer::drawPrompt(DebugUiContext &ui) {
+  static constexpr const char *kPopup = "##prompt";
+  const UiPrompt *prompt = ui.prompt;
+  if (!prompt || prompt->kind == UiPrompt::Kind::None) {
+    // Answered: close the modal if it's still up.
+    if (promptShown != UiPrompt::Kind::None &&
+        ImGui::BeginPopupModal(kPopup)) {
+      ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+    }
+    promptShown = UiPrompt::Kind::None;
+    return;
+  }
+  if (promptShown == UiPrompt::Kind::None) {
+    ImGui::OpenPopup(kPopup);
+    if (prompt->kind == UiPrompt::Kind::SaveAs)
+      std::snprintf(saveAsName, sizeof(saveAsName), "%s",
+                    ui.sceneName ? ui.sceneName->c_str() : "");
+  }
+  // The name field takes the keyboard when Save as opens, after Replace is
+  // cancelled, and after a name is refused, so typing goes straight in.
+  if (prompt->kind == UiPrompt::Kind::SaveAs &&
+      promptShown != UiPrompt::Kind::SaveAs)
+    focusSaveAsName = true;
+  promptShown = prompt->kind;
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.4f),
+                          ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  if (!ImGui::BeginPopupModal(kPopup, nullptr,
+                              ImGuiWindowFlags_AlwaysAutoResize |
+                                  ImGuiWindowFlags_NoTitleBar |
+                                  ImGuiWindowFlags_NoMove))
+    return;
+  auto answer = [&](PromptAnswer a) {
+    if (ui.onPromptAnswer)
+      ui.onPromptAnswer(a, saveAsName);
+  };
+  auto button = [&](const char *label, PromptAnswer a) {
+    if (ImGui::Button(label))
+      answer(a);
+    ImGui::SameLine();
+  };
+  const char *name = prompt->name.c_str();
+  switch (prompt->kind) {
+  case UiPrompt::Kind::UnsavedQuit:
+    ImGui::TextUnformatted("Quit with unsaved changes?");
+    if (prompt->unsavedScene)
+      ImGui::BulletText("The scene '%s'", name);
+    if (prompt->unsavedSettings)
+      ImGui::BulletText("Render or physics settings");
+    button("Save and quit", PromptAnswer::Save);
+    button("Quit without saving", PromptAnswer::DontSave);
+    button("Cancel", PromptAnswer::Cancel);
+    break;
+  case UiPrompt::Kind::UnsavedSwitch:
+    ImGui::Text("Save the changes to '%s' before switching scenes?", name);
+    button("Save", PromptAnswer::Save);
+    button("Don't save", PromptAnswer::DontSave);
+    button("Cancel", PromptAnswer::Cancel);
+    break;
+  case UiPrompt::Kind::SaveAs:
+    ImGui::TextUnformatted("Save the scene as");
+    if (std::exchange(focusSaveAsName, false))
+      ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(320.0f);
+    if (ImGui::InputText("##name", saveAsName, sizeof(saveAsName),
+                         ImGuiInputTextFlags_EnterReturnsTrue)) {
+      answer(PromptAnswer::Save);
+      focusSaveAsName = true; // still here if the name was refused
+    }
+    ImGui::TextDisabled("Letters, digits, spaces, - and _. It goes in "
+                        "Resources/Scenes.");
+    if (ImGui::Button("Save")) {
+      answer(PromptAnswer::Save);
+      focusSaveAsName = true;
+    }
+    ImGui::SameLine();
+    button("Cancel", PromptAnswer::Cancel);
+    break;
+  case UiPrompt::Kind::Replace:
+    ImGui::Text("%s already exists. Replace it?", name);
+    button("Replace", PromptAnswer::Replace);
+    button("Cancel", PromptAnswer::Cancel);
+    break;
+  case UiPrompt::Kind::None:
+    break;
+  }
+  ImGui::NewLine();
+  if (!prompt->error.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
+    ImGui::TextWrapped("%s", prompt->error.c_str());
+    ImGui::PopStyleColor();
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+    answer(PromptAnswer::Cancel);
+  ImGui::EndPopup();
 }
 
 namespace {
@@ -622,6 +724,17 @@ void ImGuiLayer::drawToolbar(DebugUiContext &ui) {
   ImGui::SameLine();
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled(ui.playing ? "Playing (F5 stops)" : "Editing (F5 plays)");
+  if (ui.sceneName) {
+    ImGui::SameLine();
+    ImGui::TextUnformatted(ui.sceneName->c_str());
+    if (ui.sceneUnsaved) {
+      ImGui::SameLine(0.0f, 4.0f);
+      ImGui::PushStyleColor(ImGuiCol_Text, hex(kPurpleBright));
+      ImGui::TextUnformatted("(unsaved)");
+      ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("Ctrl+S saves");
+    }
+  }
   if (!ui.playing) {
     // The gizmo's mode, for the touchpad as much as for keys 1, 2, 3.
     static constexpr std::pair<GizmoMode, const char *> kModes[] = {
@@ -727,7 +840,8 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
   // While flying, the cursor is hidden and its position means nothing.
   const bool cursorFree =
       window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
-  if (!entry || !cursorFree || !ImGui::IsMousePosValid() ||
+  const bool asking = ui.prompt && ui.prompt->kind != UiPrompt::Kind::None;
+  if (!entry || !cursorFree || asking || !ImGui::IsMousePosValid() ||
       (gizmoDrag.active && gizmoDrag.ref != *ui.selection)) {
     endGizmoDrag(ui);
     return;
@@ -1020,6 +1134,18 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
     ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
     ImGui::TextWrapped("%s", ui.sceneError->c_str());
     ImGui::PopStyleColor();
+  }
+  // Save writes the layout, never where physics moved things.
+  if (ImGui::Button("Save") && ui.onSave)
+    ui.onSave();
+  ImGui::SetItemTooltip("Ctrl+S");
+  ImGui::SameLine();
+  if (ImGui::Button("Save as...") && ui.onSaveAs)
+    ui.onSaveAs();
+  ImGui::SetItemTooltip("Ctrl+Shift+S");
+  if (ui.saveStatus && !ui.saveStatus->empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", ui.saveStatus->c_str());
   }
 
   // The spawn list, edit mode only: a new object lands where the camera

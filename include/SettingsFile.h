@@ -85,6 +85,14 @@ void readSettings(const SettingsFile &file,
                   std::span<const SettingBinding> bindings,
                   std::string_view section = {});
 
+// Whether saving section ("" for every section) would change file: a bound
+// variable differs from what file holds, the defaults standing in for keys
+// it doesn't have. Used to ask about unsaved settings on quit.
+bool hasUnsavedSettings(const SettingsFile &file,
+                        std::span<const SettingBinding> bindings,
+                        std::string_view section = {},
+                        const SettingsFile &defaults = {});
+
 // Copies each bound variable in section ("" for every section) into file.
 // A value that matches defaults is removed instead, so a saved file holds
 // only what was tuned, and later changes to a code default still apply.

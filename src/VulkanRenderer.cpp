@@ -507,16 +507,32 @@ void VulkanRenderer::loadSettings() {
   readSettings(settingsFile, settingBindings);
 }
 
-void VulkanRenderer::saveSettings(std::string_view section) {
+bool VulkanRenderer::saveSettings(std::string_view section) {
   writeSettings(settingsFile, settingBindings, section, settingsDefaults);
   try {
     settingsFile.save(settingsPath);
     settingsStatus = std::format("Saved {} settings", section);
     spdlog::info("Saved {} settings to {}", section, settingsPath);
+    return true;
   } catch (const std::exception &e) {
     settingsStatus = std::format("Couldn't save: {}", e.what());
     spdlog::error("Couldn't save settings: {}", e.what());
+    return false;
   }
+}
+
+std::vector<std::string> VulkanRenderer::unsavedSettingsSections() const {
+  // While the day/night cycle runs its hour moves on its own, which isn't
+  // an edit, so it's left out.
+  std::vector<SettingBinding> checked;
+  for (const SettingBinding &b : settingBindings)
+    if (!(imguiDayNightEnable && b.key == "day_night_hour"))
+      checked.push_back(b);
+  std::vector<std::string> sections;
+  for (const char *section : {"render", "physics"})
+    if (hasUnsavedSettings(settingsFile, checked, section, settingsDefaults))
+      sections.push_back(section);
+  return sections;
 }
 
 void VulkanRenderer::resetSettings(std::string_view section) {
@@ -531,6 +547,10 @@ void VulkanRenderer::resetSettings(std::string_view section) {
 }
 
 void VulkanRenderer::discoverScenes(const std::string &directory) {
+  // Where SceneIO::discover looks, so Save as writes next to the others.
+  scenesDirectory = std::filesystem::is_directory(directory)
+                        ? directory
+                        : (std::filesystem::path("..") / directory).string();
   availableScenes = SceneIO::discover(directory);
   availableSceneNames.clear();
   availableSceneNames.reserve(availableScenes.size());
@@ -576,7 +596,10 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     selection.reset();
     history.clear();
     history.push(currentScene);
+    savedScene = currentScene;
+    saveStatus.clear();
   }
+  updateUnsaved();
 
   for (int i = 0; i < static_cast<int>(currentScene.models.size()); ++i)
     addEntry({SceneEntryRef::Kind::Model, i});
@@ -862,8 +885,13 @@ void VulkanRenderer::applyHistoryStep() {
   if (scene->models.size() != currentScene.models.size() ||
       scene->grids.size() != currentScene.grids.size())
     selection.reset();
+  // The file and name are where the scene is saved, not part of the edits,
+  // so undoing past a Save as still saves to the new file.
+  SceneDescription restored = *scene;
+  restored.name = currentScene.name;
+  restored.filePath = currentScene.filePath;
   const auto start = std::chrono::steady_clock::now();
-  loadScene(*scene, /*moveCamera=*/false);
+  loadScene(restored, /*moveCamera=*/false);
   spdlog::info("Applied {} in {:.1f} ms", what,
                std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - start)
@@ -896,7 +924,168 @@ bool VulkanRenderer::loadSceneAt(int index) {
 }
 
 void VulkanRenderer::requestSceneLoad(int index) {
+  if (sceneUnsaved) {
+    prompt = {UiPrompt::Kind::UnsavedSwitch, currentScene.name};
+    promptSceneIndex = index;
+    return;
+  }
   pendingSceneIndex = index;
+}
+
+void VulkanRenderer::requestSave() {
+  if (promptOpen())
+    return;
+  if (currentScene.filePath.empty())
+    requestSaveAs();
+  else
+    saveScene();
+}
+
+void VulkanRenderer::requestSaveAs() {
+  if (!promptOpen())
+    prompt = {UiPrompt::Kind::SaveAs};
+}
+
+void VulkanRenderer::requestQuit() {
+  if (promptOpen())
+    return;
+  const bool settingsUnsaved = !unsavedSettingsSections().empty();
+  if (!sceneUnsaved && !settingsUnsaved) {
+    quitting = true;
+    return;
+  }
+  prompt = {UiPrompt::Kind::UnsavedQuit, currentScene.name, sceneUnsaved,
+            settingsUnsaved};
+}
+
+bool VulkanRenderer::saveScene() {
+  const std::string file =
+      std::filesystem::path(currentScene.filePath).filename().string();
+  try {
+    // Through a temporary file and a rename, so a failed save leaves the
+    // old file as it was.
+    SceneIO::saveToFile(currentScene, currentScene.filePath);
+  } catch (const std::exception &e) {
+    saveStatus = std::format("Couldn't save {}: {}", file, e.what());
+    spdlog::error("{}", saveStatus);
+    return false;
+  }
+  savedScene = currentScene;
+  updateUnsaved();
+  saveStatus = std::format("Saved {}", file);
+  spdlog::info("Saved scene '{}' to {}", currentScene.name,
+               currentScene.filePath);
+  return true;
+}
+
+bool VulkanRenderer::saveSceneAs(const std::string &path,
+                                 const std::string &name) {
+  SceneDescription renamed = currentScene;
+  renamed.name = name;
+  renamed.filePath = path;
+  const std::string file = std::filesystem::path(path).filename().string();
+  try {
+    SceneIO::saveToFile(renamed, path);
+  } catch (const std::exception &e) {
+    saveStatus = std::format("Couldn't save {}: {}", file, e.what());
+    spdlog::error("{}", saveStatus);
+    return false;
+  }
+  currentScene.name = name;
+  currentScene.filePath = path;
+  savedScene = currentScene;
+  updateUnsaved();
+  // The picker: the same file again takes over its entry, a new one joins.
+  std::error_code error;
+  int index = -1;
+  for (int i = 0; i < static_cast<int>(availableScenes.size()); ++i)
+    if (std::filesystem::equivalent(availableScenes[i].filePath, path, error))
+      index = i;
+  if (index < 0) {
+    index = static_cast<int>(availableScenes.size());
+    availableScenes.push_back(currentScene);
+    availableSceneNames.push_back(name);
+  } else {
+    availableScenes[index] = currentScene;
+    availableSceneNames[index] = name;
+  }
+  activeSceneIndex = index;
+  saveStatus = std::format("Saved as {}", file);
+  spdlog::info("Saved scene '{}' as {}", name, path);
+  return true;
+}
+
+void VulkanRenderer::answerPrompt(PromptAnswer answer,
+                                  const std::string &text) {
+  const UiPrompt::Kind kind = prompt.kind;
+  auto close = [&] { prompt = {}; };
+  if (answer == PromptAnswer::Cancel) {
+    // Cancelling Replace goes back to the name, so it can be changed.
+    if (kind == UiPrompt::Kind::Replace)
+      prompt = {UiPrompt::Kind::SaveAs};
+    else
+      close();
+    return;
+  }
+  switch (kind) {
+  case UiPrompt::Kind::UnsavedQuit: {
+    std::string problem; // a save that failed keeps the game open
+    if (answer == PromptAnswer::Save) {
+      if (sceneUnsaved && !saveScene())
+        problem = saveStatus;
+      for (const std::string &section : unsavedSettingsSections())
+        if (!saveSettings(section))
+          problem = settingsStatus;
+    }
+    if (problem.empty())
+      quitting = true;
+    else
+      prompt.error = problem;
+    break;
+  }
+  case UiPrompt::Kind::UnsavedSwitch:
+    if (answer == PromptAnswer::Save && !saveScene()) {
+      prompt.error = saveStatus;
+      break;
+    }
+    pendingSceneIndex = promptSceneIndex;
+    close();
+    break;
+  case UiPrompt::Kind::SaveAs: {
+    const std::optional<std::string> file = sceneFileNameFor(text);
+    if (!file) {
+      prompt.error = "Use letters, digits, spaces, - and _ only.";
+      break;
+    }
+    const std::string path =
+        (std::filesystem::path(scenesDirectory) / *file).string();
+    std::error_code error;
+    const bool sameFile =
+        std::filesystem::equivalent(path, currentScene.filePath, error);
+    std::string name = text;
+    name.erase(0, name.find_first_not_of(' '));
+    name.erase(name.find_last_not_of(' ') + 1);
+    if (std::filesystem::exists(path) && !sameFile) {
+      replaceName = name;
+      replacePath = path;
+      prompt = {UiPrompt::Kind::Replace, *file};
+      break;
+    }
+    if (saveSceneAs(path, name))
+      close();
+    else
+      prompt.error = saveStatus;
+    break;
+  }
+  case UiPrompt::Kind::Replace:
+    if (saveSceneAs(replacePath, replaceName))
+      close();
+    else
+      prompt = {UiPrompt::Kind::SaveAs, {}, false, false, saveStatus};
+    break;
+  case UiPrompt::Kind::None:
+    break;
+  }
 }
 
 void VulkanRenderer::stepPhysics(float frameSeconds) {
@@ -3444,6 +3633,15 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       pendingSpawn = std::move(entry);
   };
   ui.onRescanModels = [this] { discoverModels(); };
+  ui.sceneName = &currentScene.name;
+  ui.sceneUnsaved = sceneUnsaved;
+  ui.onSave = [this] { requestSave(); };
+  ui.onSaveAs = [this] { requestSaveAs(); };
+  ui.saveStatus = &saveStatus;
+  ui.prompt = &prompt;
+  ui.onPromptAnswer = [this](PromptAnswer answer, const std::string &text) {
+    answerPrompt(answer, text);
+  };
 
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the

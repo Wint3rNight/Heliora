@@ -150,6 +150,30 @@ TEST(one_section_at_a_time) {
   CHECK(file.getInt("physics", "steps_per_second") == 120);
 }
 
+TEST(unsaved_settings_are_noticed) {
+  float fov = 45.0f;
+  int steps = 60;
+  const SettingBinding bindings[] = {
+      {"render", "fov", &fov, 30.0, 120.0},
+      {"physics", "steps_per_second", &steps, 10.0, 480.0},
+  };
+  SettingsFile defaults;
+  writeSettings(defaults, bindings);
+  SettingsFile saved = parseText("[render]\nfov = 70\n");
+  readSettings(saved, bindings);
+  CHECK(!hasUnsavedSettings(saved, bindings, {}, defaults));
+
+  steps = 90; // tuned, not saved
+  CHECK(hasUnsavedSettings(saved, bindings, "physics", defaults));
+  CHECK(!hasUnsavedSettings(saved, bindings, "render", defaults));
+  CHECK(hasUnsavedSettings(saved, bindings, {}, defaults));
+  writeSettings(saved, bindings, "physics", defaults); // Save in that tab
+  CHECK(!hasUnsavedSettings(saved, bindings, {}, defaults));
+
+  fov = 45.0f; // back to the default, which the file doesn't have as 70
+  CHECK(hasUnsavedSettings(saved, bindings, "render", defaults));
+}
+
 TEST(saved_settings_load_back) {
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() / "heliora_settings_test.cfg";

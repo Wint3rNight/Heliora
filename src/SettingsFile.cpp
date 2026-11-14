@@ -335,6 +335,16 @@ void readSettings(const SettingsFile &file,
   }
 }
 
+bool hasUnsavedSettings(const SettingsFile &file,
+                        std::span<const SettingBinding> bindings,
+                        std::string_view section,
+                        const SettingsFile &defaults) {
+  // What Save would write, against what's there.
+  SettingsFile saved = file;
+  writeSettings(saved, bindings, section, defaults);
+  return saved.write() != file.write();
+}
+
 void writeSettings(SettingsFile &file, std::span<const SettingBinding> bindings,
                    std::string_view section, const SettingsFile &defaults) {
   for (const SettingBinding &b : bindings) {

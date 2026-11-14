@@ -8,6 +8,7 @@
 #include <iosfwd>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Procedural per-node animation evaluated from elapsed time each frame.
@@ -184,6 +185,12 @@ std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex);
 // Adds a model after everything else in the file and returns where it went:
 // the end of the models list.
 SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model);
+
+// Save as: the file name for a scene name, like "My_level.scene". Letters,
+// digits, - and _ are kept, spaces become _, and the ends are trimmed. Nothing
+// for an empty name or any other character, so a name can't reach outside
+// the scenes folder ("..", "/", "\\") or make a file other tools trip on.
+std::optional<std::string> sceneFileNameFor(std::string_view name);
 
 namespace SceneIO {
 

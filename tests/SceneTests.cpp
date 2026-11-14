@@ -518,6 +518,18 @@ TEST(added_model_goes_last_in_the_file) {
   CHECK(reparse(scene) == scene);
 }
 
+TEST(scene_name_becomes_a_safe_file_name) {
+  CHECK(sceneFileNameFor("level1") == "level1.scene");
+  CHECK(sceneFileNameFor("My first level") == "My_first_level.scene");
+  CHECK(sceneFileNameFor("  stress-test_2  ") == "stress-test_2.scene");
+}
+
+TEST(bad_scene_names_are_refused) {
+  for (const char *name : {"", "   ", "..", "../sandbox", "a/b", "a\\b",
+                           "level.v2", "what?", "na\xc3\xafve", "tab\there"})
+    CHECK(!sceneFileNameFor(name));
+}
+
 TEST(layout_rotation_survives_a_round_trip) {
   const SceneDescription scene =
       parseText("[grid]\nshape = box\ncount = 2 1 2\nlayout_rotation = 30\n");

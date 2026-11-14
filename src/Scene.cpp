@@ -456,6 +456,24 @@ void removeEntry(SceneDescription &scene, SceneEntryRef ref) {
   renumberSections(scene);
 }
 
+std::optional<std::string> sceneFileNameFor(std::string_view name) {
+  const std::string trimmed = trim(std::string(name));
+  if (trimmed.empty())
+    return std::nullopt;
+  std::string file;
+  for (const char c : trimmed) {
+    // Only ASCII letters and digits: the byte cast keeps isalnum away from
+    // negative values, and in the C locale bytes past 127 aren't letters.
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')
+      file += c;
+    else if (c == ' ')
+      file += '_';
+    else
+      return std::nullopt;
+  }
+  return file + ".scene";
+}
+
 SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model) {
   // Past every section, then numbered back into 0, 1, 2...
   model.info.order = std::numeric_limits<int>::max();

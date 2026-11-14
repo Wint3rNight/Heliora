@@ -36,6 +36,20 @@ struct PhysicsPanel {
   bool settingsChanged = false;
 };
 
+// A question that has to be answered before something can happen: unsaved
+// changes before quitting or switching scenes, the name for Save as, or
+// whether Save as may replace a file. The renderer sets it and acts on the
+// answer; the UI shows it as a modal window.
+struct UiPrompt {
+  enum class Kind { None, UnsavedQuit, UnsavedSwitch, SaveAs, Replace };
+  Kind kind = Kind::None;
+  std::string name;             // the scene, or the file Replace is about
+  bool unsavedScene = false;    // quitting: what isn't saved
+  bool unsavedSettings = false;
+  std::string error;            // why the last answer didn't work
+};
+enum class PromptAnswer { Save, DontSave, Replace, Cancel };
+
 struct DebugUiContext {
   PerformanceMetrics &metrics;
   VmaAllocator allocator = VK_NULL_HANDLE;
@@ -149,6 +163,17 @@ struct DebugUiContext {
   const std::vector<std::string> *modelFiles = nullptr;
   std::function<void(SceneModelEntry)> onSpawn;
   std::function<void()> onRescanModels;
+
+  // Saving: the scene's name and the toolbar's unsaved marker, the Save and
+  // Save as buttons, the last save's result, and the question on screen
+  // (text is the name typed for Save as).
+  const std::string *sceneName = nullptr;
+  bool sceneUnsaved = false;
+  std::function<void()> onSave;
+  std::function<void()> onSaveAs;
+  const std::string *saveStatus = nullptr;
+  const UiPrompt *prompt = nullptr;
+  std::function<void(PromptAnswer, const std::string &text)> onPromptAnswer;
 };
 
 class ImGuiLayer {
@@ -200,6 +225,7 @@ private:
   void drawGizmo(DebugUiContext &ui);
   void endGizmoDrag(DebugUiContext &ui);
   void finishSceneEdit(DebugUiContext &ui);
+  void drawPrompt(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
   void drawRenderTab(DebugUiContext &ui);
   void drawLightingTab(DebugUiContext &ui);
@@ -220,6 +246,11 @@ private:
   // The scene was edited and the edit isn't finished yet (something is
   // still held), so the undo step waits.
   bool sceneEditOpen = false;
+  // The prompt on screen, so a new one opens the modal once, and the name
+  // typed for Save as, kept while Replace asks.
+  UiPrompt::Kind promptShown = UiPrompt::Kind::None;
+  char saveAsName[64] = {};
+  bool focusSaveAsName = false;
 
   // The gizmo: handles on the selected object, in edit mode. Keys 1, 2, 3
   // or the toolbar pick the mode; Ctrl or the toolbar's Snap box snaps.

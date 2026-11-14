@@ -86,7 +86,18 @@ public:
   bool loadSceneAt(int index);
   // Deferred load, safe to call from UI callbacks that run mid-record; the
   // switch happens at the top of the next draw().
+  // Asks first when the current scene has unsaved changes.
   void requestSceneLoad(int index);
+  // Ctrl+S saves the scene to its file, Ctrl+Shift+S asks for a name. Both
+  // write the layout, so saving while playing is safe.
+  void requestSave();
+  void requestSaveAs();
+  // Esc and the window's close button: quits at once with nothing unsaved,
+  // otherwise asks. The main loop runs until quitApproved().
+  void requestQuit();
+  bool quitApproved() const { return quitting; }
+  // A question is on screen, so game keys wait.
+  bool promptOpen() const { return prompt.kind != UiPrompt::Kind::None; }
   // Runs the fixed physics steps this frame owes, then moves the nodes of
   // bodies that moved to their interpolated poses. Call once per frame
   // before updateScene() with the frame time in seconds.
@@ -188,7 +199,10 @@ private:
   HistoryStep historyRequest = HistoryStep::None;
   void requestHistoryStep(HistoryStep step);
   void applyHistoryStep();
-  void recordEdit() { history.push(currentScene); }
+  void recordEdit() {
+    history.push(currentScene);
+    updateUnsaved();
+  }
   // The spawn list: what it offers, and what was picked, added at the top of
   // the next draw() since a new model may need a GPU upload.
   std::vector<std::string> modelFiles;
@@ -221,7 +235,7 @@ private:
   std::vector<SettingBinding> settingBindings;
   std::string settingsStatus; // shown under the settings buttons
   void loadSettings();
-  void saveSettings(std::string_view section);
+  bool saveSettings(std::string_view section); // false if it failed
   void resetSettings(std::string_view section);
 
   // --- Scene library ---
@@ -233,6 +247,23 @@ private:
   int activeSceneIndex = -1;
   int pendingSceneIndex = -1;   // set by the UI, applied at next draw()
   std::string sceneError; // why the last scene pick failed, for the UI
+
+  // --- Saving the scene ---
+  // The scene as last loaded or saved: unsaved changes are any difference.
+  // Checked when the scene changes, not every frame.
+  SceneDescription savedScene;
+  bool sceneUnsaved = false;
+  void updateUnsaved() { sceneUnsaved = currentScene != savedScene; }
+  std::string scenesDirectory; // where Save as puts new scenes
+  std::string saveStatus;      // the last save's result, for the Scene tab
+  UiPrompt prompt;             // the question on screen, if any
+  int promptSceneIndex = -1;   // the switch waiting on the prompt
+  std::string replaceName, replacePath; // the Save as waiting on Replace
+  bool quitting = false;
+  bool saveScene(); // to currentScene.filePath; false if it failed
+  bool saveSceneAs(const std::string &path, const std::string &name);
+  void answerPrompt(PromptAnswer answer, const std::string &text);
+  std::vector<std::string> unsavedSettingsSections() const;
   std::string activeEnvironmentHdr; // HDRI backing the current sky/IBL
   VkFormat shadowDepthFormat = VK_FORMAT_UNDEFINED;
 

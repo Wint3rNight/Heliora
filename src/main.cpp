@@ -23,10 +23,17 @@ double lastFrame = 0.0;
 // typing: a text box in the UI has the keyboard, so letters and Esc are
 // its, not the game's (Esc leaves the box instead of quitting).
 void processInput(bool typing) {
-  if (typing)
+  // Esc quits, asking first if something isn't saved. While a question is
+  // on screen, Esc is its Cancel.
+  const bool escPressed = inputManager.wasKeyJustPressed(GLFW_KEY_ESCAPE);
+  if (typing || vulkanRenderer.promptOpen())
     return;
-  if (inputManager.isKeyPressed(GLFW_KEY_ESCAPE))
-    glfwSetWindowShouldClose(window, true);
+  if (escPressed)
+    vulkanRenderer.requestQuit();
+  // Ctrl+S saves, so with Ctrl held the letters aren't movement.
+  if (inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
+      inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL))
+    return;
 
   if (inputManager.isKeyPressed(GLFW_KEY_W))
     camera.ProcessKeyboard(FORWARD, deltaTime);
@@ -120,13 +127,28 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  while (!inputManager.shouldClose()) {
+  while (!vulkanRenderer.quitApproved()) {
     double currentFrame = glfwGetTime();
     deltaTime = static_cast<float>(currentFrame - lastFrame);
     lastFrame = currentFrame;
 
     inputManager.pollEvents();
+    // The window's close button asks first, the same as Esc.
+    if (inputManager.shouldClose()) {
+      glfwSetWindowShouldClose(window, GLFW_FALSE);
+      vulkanRenderer.requestQuit();
+    }
     const bool typing = vulkanRenderer.imguiWantsTextInput();
+    // A question needs the cursor and the panels, and the game's keys wait
+    // until it's answered.
+    const bool asking = vulkanRenderer.promptOpen();
+    if (asking && (cameraMode || rightMouseFlying)) {
+      cameraMode = false;
+      rightMouseFlying = false;
+      inputManager.setCursorCaptured(false);
+    }
+    if (asking && !vulkanRenderer.isUiVisible())
+      vulkanRenderer.toggleUiVisibility();
     processInput(typing);
 
     // Tab toggles between camera fly-through (cursor hidden) and UI mode
@@ -134,7 +156,7 @@ int main(int argc, char **argv) {
     // WantCaptureMouse can't drive this because GLFW_CURSOR_DISABLED delivers
     // only raw deltas — ImGui never sees absolute positions and can't detect
     // hover.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB) && !typing) {
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB) && !typing && !asking) {
       cameraMode = !cameraMode;
       rightMouseFlying = false;
       inputManager.setCursorCaptured(cameraMode);
@@ -151,7 +173,7 @@ int main(int argc, char **argv) {
     const bool rightPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
     if (!cameraMode) {
-      if (rightPressed && !vulkanRenderer.imguiWantsMouse()) {
+      if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse()) {
         rightMouseFlying = true;
         inputManager.setCursorCaptured(true);
       } else if (rightMouseFlying &&
@@ -165,7 +187,7 @@ int main(int argc, char **argv) {
     // the gizmo's handles, selects what's under it.
     const bool leftPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
-    if (leftPressed && !cameraMode && !rightMouseFlying &&
+    if (leftPressed && !cameraMode && !rightMouseFlying && !asking &&
         !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse() &&
         !vulkanRenderer.gizmoHasMouse()) {
       int width = 0, height = 0;
@@ -177,29 +199,40 @@ int main(int argc, char **argv) {
     // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer
     // checks), unless a text box has the keyboard: it has its own undo.
     const bool zPressed = inputManager.wasKeyJustPressed(GLFW_KEY_Z);
+    const bool sPressed = inputManager.wasKeyJustPressed(GLFW_KEY_S);
     const bool ctrl = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
                       inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
     const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
                        inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
-    if (zPressed && ctrl && !typing) {
+    const bool shortcuts = ctrl && !typing && !asking;
+    if (zPressed && shortcuts) {
       if (shift)
         vulkanRenderer.redoEdit();
       else
         vulkanRenderer.undoEdit();
     }
+    // Ctrl+S saves the scene and Ctrl+Shift+S saves it under a new name,
+    // in either mode: what's saved is the layout.
+    if (sPressed && shortcuts) {
+      if (shift)
+        vulkanRenderer.requestSaveAs();
+      else
+        vulkanRenderer.requestSave();
+    }
 
     // F5 switches between play mode and edit mode.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F5))
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_F5) && !asking)
       vulkanRenderer.togglePlayMode();
     // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F1))
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_F1) && !asking)
       vulkanRenderer.toggleUiVisibility();
     // F2 shows the physics shapes as wireframes.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F2))
+    if (inputManager.wasKeyJustPressed(GLFW_KEY_F2) && !asking)
       vulkanRenderer.togglePhysicsDebug();
     // F throws a ball where the camera looks, in camera mode only so a
     // click-and-type in a panel never throws. Play mode only (throwBall).
-    if (cameraMode && !typing && inputManager.wasKeyJustPressed(GLFW_KEY_F))
+    if (cameraMode && !typing && !asking &&
+        inputManager.wasKeyJustPressed(GLFW_KEY_F))
       vulkanRenderer.throwBall(camera.Position, camera.Front);
 
     // The mouse turns the camera only while flying.

@@ -174,6 +174,34 @@ TEST(unsaved_settings_are_noticed) {
   CHECK(hasUnsavedSettings(saved, bindings, "render", defaults));
 }
 
+TEST(unsaved_settings_ignore_formatting_and_clamping) {
+  // A hand-written file counts as saved however it spells its values: only
+  // a variable that differs from what the file gave it is a change.
+  float fov = 60.0f;
+  float drawDistance = 100.0f;
+  bool taa = false;
+  int steps = 60;
+  const SettingBinding bindings[] = {
+      {"render", "fov", &fov, 30.0, 120.0},
+      {"render", "draw_distance", &drawDistance, 1.0, 1000.0},
+      {"render", "taa", &taa},
+      {"physics", "steps_per_second", &steps, 10.0, 480.0},
+  };
+  SettingsFile defaults;
+  writeSettings(defaults, bindings);
+  // 70.0 is written back as 70, on as true, 50000 is clamped, and 60 is the
+  // default, which Save would leave out.
+  SettingsFile saved = parseText("[render]\nfov = 70.0\ndraw_distance = 50000\n"
+                                 "taa = on\n[physics]\nsteps_per_second = 60\n");
+  readSettings(saved, bindings);
+  CHECK(drawDistance == 1000.0f);
+  CHECK(!hasUnsavedSettings(saved, bindings, {}, defaults));
+
+  fov = 75.0f;
+  CHECK(hasUnsavedSettings(saved, bindings, "render", defaults));
+  CHECK(!hasUnsavedSettings(saved, bindings, "physics", defaults));
+}
+
 TEST(saved_settings_load_back) {
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() / "heliora_settings_test.cfg";

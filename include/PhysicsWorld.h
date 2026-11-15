@@ -165,6 +165,8 @@ public:
                                        float maxDistance) const;
 
   uint32_t bodyCount() const;
+  // The most bodies this world holds (Config::maxBodies when it was made).
+  uint32_t bodyLimit() const;
   uint32_t activeBodyCount() const;
   // Wireframes of every body's collision shape, as Jolt sees it, in pairs of
   // end points. Coloured by state: awake and asleep differ. Jolt draws the

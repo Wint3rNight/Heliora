@@ -269,54 +269,61 @@ void SettingsFile::save(const std::string &path) const {
   }
 }
 
-void readSettings(const SettingsFile &file,
-                  std::span<const SettingBinding> bindings,
-                  std::string_view section) {
+namespace {
+
+// Sets b's variable from file, clamped to its range, or leaves it alone if
+// file has no such key. warn says whether a clamp is logged.
+void readBinding(const SettingsFile &file, const SettingBinding &b,
+                 bool warn) {
   // Also held to the variable's own type, so a huge number in the file
   // can't overflow an int.
-  auto clampTo = [](const SettingBinding &b, double value, double typeMin,
-                    double typeMax) {
+  auto clampTo = [&](double value, double typeMin, double typeMax) {
     const double lo = std::max(b.min, typeMin);
     const double hi = std::min(b.max, typeMax);
     const double clamped = std::clamp(value, lo, hi);
-    if (clamped != value)
+    if (warn && clamped != value)
       spdlog::warn("settings: [{}] {} = {} is outside {} to {}, using {}",
                    b.section, b.key, value, lo, hi, clamped);
     return clamped;
   };
   constexpr double kFloatMax = std::numeric_limits<float>::max();
-  for (const SettingBinding &b : bindings) {
-    if (!section.empty() && b.section != section)
-      continue;
-    std::visit(
-        Overloaded{
-            [&](float *v) {
-              if (const auto x = file.getFloat(b.section, b.key))
-                *v = float(clampTo(b, *x, -kFloatMax, kFloatMax));
-            },
-            [&](int *v) {
-              if (const auto x = file.getInt(b.section, b.key))
-                *v = int(clampTo(b, double(*x),
-                                 std::numeric_limits<int>::min(),
-                                 std::numeric_limits<int>::max()));
-            },
-            [&](uint32_t *v) {
-              if (const auto x = file.getInt(b.section, b.key))
-                *v = uint32_t(clampTo(b, double(*x), 0.0,
-                                      std::numeric_limits<uint32_t>::max()));
-            },
-            [&](bool *v) {
-              if (const auto x = file.getBool(b.section, b.key))
-                *v = *x;
-            },
-            [&](glm::vec3 *v) {
-              if (const auto x = file.getVec3(b.section, b.key))
-                for (int i = 0; i < 3; ++i)
-                  (*v)[i] = float(clampTo(b, (*x)[i], -kFloatMax, kFloatMax));
-            },
-        },
-        b.value);
-  }
+  std::visit(
+      Overloaded{
+          [&](float *v) {
+            if (const auto x = file.getFloat(b.section, b.key))
+              *v = float(clampTo(*x, -kFloatMax, kFloatMax));
+          },
+          [&](int *v) {
+            if (const auto x = file.getInt(b.section, b.key))
+              *v = int(clampTo(double(*x), std::numeric_limits<int>::min(),
+                               std::numeric_limits<int>::max()));
+          },
+          [&](uint32_t *v) {
+            if (const auto x = file.getInt(b.section, b.key))
+              *v = uint32_t(clampTo(double(*x), 0.0,
+                                    std::numeric_limits<uint32_t>::max()));
+          },
+          [&](bool *v) {
+            if (const auto x = file.getBool(b.section, b.key))
+              *v = *x;
+          },
+          [&](glm::vec3 *v) {
+            if (const auto x = file.getVec3(b.section, b.key))
+              for (int i = 0; i < 3; ++i)
+                (*v)[i] = float(clampTo((*x)[i], -kFloatMax, kFloatMax));
+          },
+      },
+      b.value);
+}
+
+} // namespace
+
+void readSettings(const SettingsFile &file,
+                  std::span<const SettingBinding> bindings,
+                  std::string_view section) {
+  for (const SettingBinding &b : bindings)
+    if (section.empty() || b.section == section)
+      readBinding(file, b, /*warn=*/true);
 
   // A key in a section we read that nothing reads is probably misspelt.
   std::vector<std::string_view> checked;
@@ -339,10 +346,27 @@ bool hasUnsavedSettings(const SettingsFile &file,
                         std::span<const SettingBinding> bindings,
                         std::string_view section,
                         const SettingsFile &defaults) {
-  // What Save would write, against what's there.
-  SettingsFile saved = file;
-  writeSettings(saved, bindings, section, defaults);
-  return saved.write() != file.write();
+  // Each variable against the value the file gives it, or the default where
+  // it has no such key, read the way readSettings reads it. Values, not
+  // text, so `60.0` for 60, `on` for true, a value clamped on the way in or
+  // a default spelt out in the file all count as saved.
+  for (const SettingBinding &b : bindings) {
+    if (!section.empty() && b.section != section)
+      continue;
+    const bool changed = std::visit(
+        [&](auto *variable) {
+          auto loaded = *variable;
+          SettingBinding probe = b;
+          probe.value = &loaded;
+          readBinding(defaults, probe, /*warn=*/false);
+          readBinding(file, probe, /*warn=*/false);
+          return loaded != *variable;
+        },
+        b.value);
+    if (changed)
+      return true;
+  }
+  return false;
 }
 
 void writeSettings(SettingsFile &file, std::span<const SettingBinding> bindings,

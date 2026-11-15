@@ -85,9 +85,11 @@ void readSettings(const SettingsFile &file,
                   std::span<const SettingBinding> bindings,
                   std::string_view section = {});
 
-// Whether saving section ("" for every section) would change file: a bound
-// variable differs from what file holds, the defaults standing in for keys
-// it doesn't have. Used to ask about unsaved settings on quit.
+// Whether a bound variable in section ("" for every section) differs from
+// the value file gives it, the defaults standing in for keys it doesn't
+// have. Values, not text: a file that spells a value differently, or held
+// one past its range, isn't a change. Used to ask about unsaved settings on
+// quit.
 bool hasUnsavedSettings(const SettingsFile &file,
                         std::span<const SettingBinding> bindings,
                         std::string_view section = {},

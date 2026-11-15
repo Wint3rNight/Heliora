@@ -173,3 +173,13 @@ std::optional<PhysicsMaterial> findMaterial(std::string_view name) {
     return {};
   return *found;
 }
+
+bool gridFitsBodyLimit(uint32_t bodiesInWorld, uint32_t gridBodiesNow,
+                       uint32_t gridBodiesAfter, uint32_t limit) {
+  // Fewer bodies frees room, even in a world that's over the limit already.
+  if (gridBodiesAfter <= gridBodiesNow)
+    return true;
+  const uint64_t others =
+      bodiesInWorld > gridBodiesNow ? bodiesInWorld - gridBodiesNow : 0;
+  return others + gridBodiesAfter <= limit;
+}

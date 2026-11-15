@@ -171,6 +171,9 @@ struct SceneDescription {
 // Inspector checks edits with it, so a saved scene always loads again.
 std::optional<std::string> problemWith(const SceneModelEntry &model);
 std::optional<std::string> problemWith(const SceneGridEntry &grid);
+// The same for the sun and fog, which the Lighting tab edits.
+std::optional<std::string> problemWith(const SceneSun &sun);
+std::optional<std::string> problemWith(const SceneFog &fog);
 
 // Takes the entry out. The others keep their order in the file, but entries
 // of the same kind after it move down one index.

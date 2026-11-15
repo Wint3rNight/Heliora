@@ -90,8 +90,17 @@ PhysicsMotion parseBody(const std::string &value, int lineNumber) {
                            value + "' (static, dynamic or kinematic)");
 }
 
+bool allFinite(glm::vec3 v) {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
 // The rules behind problemWith, which a [model] has to pass.
 std::optional<std::string> modelProblem(const SceneModelEntry &model) {
+  // The parser can't read inf or nan back, so a scene mustn't hold one.
+  const NodeTransform &t = model.transform;
+  if (!allFinite(t.position) || !allFinite(t.rotationDeg) ||
+      !std::isfinite(t.scale))
+    return "position, rotation and scale must be ordinary numbers";
   if (model.path.empty() && !model.shape)
     return "needs 'path' or 'shape'";
   if (!model.path.empty() && model.shape)
@@ -168,32 +177,46 @@ void renumberSections(SceneDescription &scene) {
     sections[i].info->order = static_cast<int>(i);
 }
 
-// Bad values here would turn the whole picture black or NaN. headerLine is 0
-// when the file has no such section, and then the defaults are fine anyway.
-void checkSun(const SceneSun &sun, int headerLine) {
-  auto fail = [&](const std::string &what) {
-    throw std::runtime_error("scene parse error, [sun] at line " +
-                             std::to_string(headerLine) + ": " + what);
-  };
+// The rules behind problemWith for the sun and fog. Bad values here would
+// turn the whole picture black or NaN.
+std::optional<std::string> sunProblem(const SceneSun &sun) {
+  if (!allFinite(sun.direction) || !allFinite(sun.color) ||
+      !std::isfinite(sun.intensity))
+    return "the sun's numbers must be ordinary numbers";
   if (sun.direction == glm::vec3(0.0f))
-    fail("'direction' can't be zero");
+    return "'direction' can't be zero";
   if (glm::any(glm::lessThan(sun.color, glm::vec3(0.0f))))
-    fail("'color' can't be negative");
+    return "'color' can't be negative";
   if (sun.intensity < 0.0f)
-    fail("'intensity' must be 0 or more");
+    return "'intensity' must be 0 or more";
+  return std::nullopt;
+}
+
+std::optional<std::string> fogProblem(const SceneFog &fog) {
+  if (!std::isfinite(fog.density) || !std::isfinite(fog.falloff) ||
+      !std::isfinite(fog.max))
+    return "the fog's numbers must be ordinary numbers";
+  if (fog.density < 0.0f)
+    return "'density' must be 0 or more";
+  if (fog.falloff < 0.0f)
+    return "'falloff' must be 0 or more";
+  if (fog.max < 0.0f || fog.max > 1.0f)
+    return "'max' must be between 0 and 1";
+  return std::nullopt;
+}
+
+// headerLine is 0 when the file has no such section, and then the defaults
+// are fine anyway.
+void checkSun(const SceneSun &sun, int headerLine) {
+  if (const std::optional<std::string> problem = sunProblem(sun))
+    throw std::runtime_error("scene parse error, [sun] at line " +
+                             std::to_string(headerLine) + ": " + *problem);
 }
 
 void checkFog(const SceneFog &fog, int headerLine) {
-  auto fail = [&](const std::string &what) {
+  if (const std::optional<std::string> problem = fogProblem(fog))
     throw std::runtime_error("scene parse error, [fog] at line " +
-                             std::to_string(headerLine) + ": " + what);
-  };
-  if (fog.density < 0.0f)
-    fail("'density' must be 0 or more");
-  if (fog.falloff < 0.0f)
-    fail("'falloff' must be 0 or more");
-  if (fog.max < 0.0f || fog.max > 1.0f)
-    fail("'max' must be between 0 and 1");
+                             std::to_string(headerLine) + ": " + *problem);
 }
 
 float parseFloat(const std::string &value, int lineNumber) {
@@ -432,6 +455,14 @@ std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid) {
 
 std::optional<std::string> problemWith(const SceneModelEntry &model) {
   return modelProblem(model);
+}
+
+std::optional<std::string> problemWith(const SceneSun &sun) {
+  return sunProblem(sun);
+}
+
+std::optional<std::string> problemWith(const SceneFog &fog) {
+  return fogProblem(fog);
 }
 
 std::optional<std::string> problemWith(const SceneGridEntry &grid) {

@@ -249,3 +249,15 @@ TEST(default_friction_is_used_without_a_material) {
   wood.material = "wood";
   CHECK_NEAR(bodyDescFor(wood, nullptr, 0.7f).friction, 0.5, 1e-6);
 }
+
+TEST(grid_limit_counts_every_body_in_the_world) {
+  // 100 bodies elsewhere and a grid of 50, in a world of at most 1000: the
+  // grid can grow to 900.
+  CHECK(gridFitsBodyLimit(150, 50, 900, 1000));
+  CHECK(!gridFitsBodyLimit(150, 50, 901, 1000));
+  // A grid of 900 alone fits, but not next to 200 other bodies.
+  CHECK(gridFitsBodyLimit(0, 0, 900, 1000));
+  CHECK(!gridFitsBodyLimit(200, 0, 900, 1000));
+  // Shrinking always fits, even in a world that's over the limit already.
+  CHECK(gridFitsBodyLimit(1500, 400, 300, 1000));
+}

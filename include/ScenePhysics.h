@@ -3,6 +3,7 @@
 #include "PhysicsWorld.h"
 #include "Scene.h"
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -37,3 +38,8 @@ std::span<const PhysicsMaterial> physicsMaterials();
 // test each step. Parts already under the limit come back unchanged.
 PhysicsMeshPart simplifiedForCollision(const PhysicsMeshPart &part,
                                        size_t maxTriangles);
+
+// Whether a grid can have gridBodiesAfter bodies instead of gridBodiesNow in
+// a world holding bodiesInWorld (the grid's included) of at most limit.
+bool gridFitsBodyLimit(uint32_t bodiesInWorld, uint32_t gridBodiesNow,
+                       uint32_t gridBodiesAfter, uint32_t limit);

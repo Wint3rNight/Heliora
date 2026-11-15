@@ -127,6 +127,9 @@ struct DebugUiContext {
   std::function<void(int)> onSceneSelected;
 
   PhysicsPanel *physics = nullptr; // no panel when null
+  // The live physics world's bodies and limit, for the grid count check.
+  uint32_t bodiesInWorld = 0;
+  uint32_t bodyLimit = 0;
 
   // The Save settings and Reset to defaults buttons, for one section of the
   // settings file: "render" or "physics".
@@ -249,6 +252,9 @@ private:
   // The prompt on screen, so a new one opens the modal once, and the name
   // typed for Save as, kept while Replace asks.
   UiPrompt::Kind promptShown = UiPrompt::Kind::None;
+  // The frame the question last opened or changed on. The Esc press that
+  // opened it (main.cpp's quit key) reaches ImGui on that same frame.
+  int promptOpenedFrame = -1;
   char saveAsName[64] = {};
   bool focusSaveAsName = false;
 
@@ -258,6 +264,9 @@ private:
   GizmoMode gizmoMode = GizmoMode::Move;
   bool gizmoSnap = false;
   bool gizmoHovered = false; // last frame, which is what a click goes by
+  // Last frame's selection: a click that selects an object doesn't also
+  // grab the handles that only appear with it.
+  std::optional<SceneEntryRef> gizmoLastSelection;
   // What a drag started from. Each frame works out the new placement from
   // these and the cursor, rather than adding up small steps, so rounding
   // doesn't drift and snapping stays on its steps.

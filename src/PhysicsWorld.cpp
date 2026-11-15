@@ -654,6 +654,10 @@ std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
 
 uint32_t PhysicsWorld::bodyCount() const { return impl->system.GetNumBodies(); }
 
+uint32_t PhysicsWorld::bodyLimit() const {
+  return impl->system.GetMaxBodies();
+}
+
 uint32_t PhysicsWorld::activeBodyCount() const {
   return impl->system.GetNumActiveBodies(JPH::EBodyType::RigidBody);
 }

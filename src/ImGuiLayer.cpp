@@ -359,6 +359,8 @@ void ImGuiLayer::drawPrompt(DebugUiContext &ui) {
   if (prompt->kind == UiPrompt::Kind::SaveAs &&
       promptShown != UiPrompt::Kind::SaveAs)
     focusSaveAsName = true;
+  if (promptShown != prompt->kind)
+    promptOpenedFrame = ImGui::GetFrameCount();
   promptShown = prompt->kind;
   const ImVec2 display = ImGui::GetIO().DisplaySize;
   ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.4f),
@@ -428,7 +430,10 @@ void ImGuiLayer::drawPrompt(DebugUiContext &ui) {
     ImGui::TextWrapped("%s", prompt->error.c_str());
     ImGui::PopStyleColor();
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+  // Not on the frame it opened: Esc to quit opens it, and ImGui sees that
+  // same press this frame.
+  if (ImGui::GetFrameCount() > promptOpenedFrame &&
+      ImGui::IsKeyPressed(ImGuiKey_Escape, false))
     answer(PromptAnswer::Cancel);
   ImGui::EndPopup();
 }
@@ -660,13 +665,17 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     if (isGrid) {
       editedGrid.model = edited;
       problem = problemWith(editedGrid);
-      const glm::ivec3 n = editedGrid.count;
-      const uint32_t maxBodies =
-          ui.physics ? ui.physics->config.maxBodies : 16384u;
-      if (!problem && edited.body &&
-          uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z) > maxBodies)
-        problem = std::format("more copies than the physics world holds ({})",
-                              maxBodies);
+      // Every body in the world counts, against the live world's limit
+      // (the Physics tab's only applies at the next load).
+      auto bodies = [](const SceneGridEntry &g) {
+        const glm::ivec3 n = g.count;
+        return g.model.body ? uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z)
+                            : 0u;
+      };
+      if (!problem && !gridFitsBodyLimit(ui.bodiesInWorld, bodies(*grid),
+                                         bodies(editedGrid), ui.bodyLimit))
+        problem = std::format("more bodies than the physics world holds ({})",
+                              ui.bodyLimit);
     } else {
       problem = problemWith(edited);
     }
@@ -837,6 +846,12 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
       entry = &ui.scene->models[ref.index];
     }
   }
+  // main.cpp selects before the UI runs, so on the click that selected this
+  // object its handles are new, and the click mustn't grab one.
+  const std::optional<SceneEntryRef> selected =
+      entry ? ui.selection : std::nullopt;
+  const bool justSelected = selected != gizmoLastSelection;
+  gizmoLastSelection = selected;
   // While flying, the cursor is hidden and its position means nothing.
   const bool cursorFree =
       window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
@@ -914,7 +929,7 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
   }
   gizmoHovered = hot >= 0;
 
-  if (!gizmoDrag.active && hot >= 0 &&
+  if (!gizmoDrag.active && hot >= 0 && !justSelected &&
       ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     GizmoDrag drag;
     drag.active = true;
@@ -942,7 +957,11 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
 
   if (gizmoDrag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     endGizmoDrag(ui);
-  } else if (gizmoDrag.active) {
+  } else if (gizmoDrag.active &&
+             ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    // Nothing moves until the cursor has gone ImGui's drag distance (6 px)
+    // from where it grabbed, so a plain click, or a tap that wobbles a
+    // pixel, changes nothing: no snapping, no unsaved marker, no undo step.
     const bool snapping = gizmoSnap || io.KeyCtrl;
     const int axis = gizmoDrag.axis;
     SceneGridEntry editedGrid = grid ? *grid : SceneGridEntry{};
@@ -1291,24 +1310,42 @@ void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
     // The cycle drives the sun while it runs, so edits here wouldn't show.
     ImGui::BeginDisabled(ui.dayNightEnable);
     // The sun and fog are saved with the scene, so they're undo steps too.
-    glm::vec3 dir = ui.sun.direction;
-    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f) &&
+    // Each edit goes into a copy that's kept only if the parser would read
+    // it back; Ctrl+click typing isn't clamped otherwise, and the colour
+    // fields take negatives.
+    constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+    SceneSun sun = ui.sun;
+    bool sunChanged = false;
+    glm::vec3 dir = sun.direction;
+    if (ImGui::DragFloat3("Dir##sun", &dir.x, 0.01f, -1.0f, 1.0f, "%.3f",
+                          kClamp) &&
         glm::length(dir) > 0.001f) {
-      ui.sun.direction = glm::normalize(dir);
+      sun.direction = glm::normalize(dir);
+      sunChanged = true;
+    }
+    sunChanged |= ImGui::ColorEdit3("Color##sun", &sun.color.x);
+    sunChanged |= ImGui::SliderFloat("Intensity##sun", &sun.intensity, 0.0f,
+                                     5.0f, "%.3f", kClamp);
+    if (sunChanged && !problemWith(sun)) {
+      ui.sun = sun;
       sceneEditOpen = true;
     }
-    sceneEditOpen |= ImGui::ColorEdit3("Color##sun", &ui.sun.color.x);
-    sceneEditOpen |=
-        ImGui::SliderFloat("Intensity##sun", &ui.sun.intensity, 0.0f, 5.0f);
     ImGui::EndDisabled();
   }
   if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_DefaultOpen)) {
-    sceneEditOpen |= ImGui::SliderFloat("Density##fog", &ui.fog.density, 0.0f,
-                                        0.02f, "%.4f");
-    sceneEditOpen |= ImGui::SliderFloat("Falloff##fog", &ui.fog.falloff, 0.0f,
-                                        1.0f, "%.2f");
-    sceneEditOpen |=
-        ImGui::SliderFloat("Max##fog", &ui.fog.max, 0.0f, 1.0f, "%.2f");
+    constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+    SceneFog fog = ui.fog;
+    bool fogChanged = false;
+    fogChanged |= ImGui::SliderFloat("Density##fog", &fog.density, 0.0f,
+                                     0.02f, "%.4f", kClamp);
+    fogChanged |= ImGui::SliderFloat("Falloff##fog", &fog.falloff, 0.0f, 1.0f,
+                                     "%.2f", kClamp);
+    fogChanged |=
+        ImGui::SliderFloat("Max##fog", &fog.max, 0.0f, 1.0f, "%.2f", kClamp);
+    if (fogChanged && !problemWith(fog)) {
+      ui.fog = fog;
+      sceneEditOpen = true;
+    }
   }
   int pointCount = ui.sceneUbo.lightCounts.x;
   for (int i = 0; i < pointCount; i++) {

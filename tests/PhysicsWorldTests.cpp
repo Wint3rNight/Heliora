@@ -278,6 +278,13 @@ TEST(body_starts_with_its_velocity) {
   CHECK_NEAR(world.pose(id).position.x, 20.0 * kStep, 1e-3);
 }
 
+TEST(body_limit_is_the_configured_one) {
+  PhysicsWorld::Config config;
+  config.maxBodies = 300;
+  PhysicsWorld world(config);
+  CHECK(world.bodyLimit() == 300);
+}
+
 TEST(too_small_limits_are_reported) {
   // Room for only 4 contacts: the heap needs far more, and Jolt silently
   // drops the rest unless step() reports it.

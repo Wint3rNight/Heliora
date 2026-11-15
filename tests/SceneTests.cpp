@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -552,6 +553,69 @@ TEST(problem_with_uses_the_parsers_rules) {
   grid.model.shape = PrimitiveShape::Box;
   grid.spacing = glm::vec3(0.0f);
   CHECK(problemWith(grid).value_or("").find("spacing") != std::string::npos);
+}
+
+TEST(problem_with_sun_and_fog_uses_the_parsers_rules) {
+  auto mentions = [](const std::optional<std::string> &problem,
+                     const char *word) {
+    return problem.value_or("").find(word) != std::string::npos;
+  };
+  SceneSun sun;
+  CHECK(!problemWith(sun));
+  sun.intensity = -1.0f;
+  CHECK(mentions(problemWith(sun), "intensity"));
+  sun = SceneSun{};
+  sun.color.g = -0.1f;
+  CHECK(mentions(problemWith(sun), "color"));
+  sun = SceneSun{};
+  sun.direction = glm::vec3(0.0f);
+  CHECK(mentions(problemWith(sun), "direction"));
+
+  SceneFog fog;
+  CHECK(!problemWith(fog));
+  fog.max = 1.5f;
+  CHECK(mentions(problemWith(fog), "max"));
+  fog = SceneFog{};
+  fog.density = -0.01f;
+  CHECK(mentions(problemWith(fog), "density"));
+  fog = SceneFog{};
+  fog.falloff = -1.0f;
+  CHECK(mentions(problemWith(fog), "falloff"));
+
+  // The parser refuses the same thing.
+  bool threw = false;
+  try {
+    parseText("[fog]\nmax = 1.5\n");
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
+TEST(problem_with_refuses_numbers_that_arent_finite) {
+  // A file can't hold inf or nan (the parser can't read them back), so an
+  // edit mustn't put one in.
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  SceneModelEntry box;
+  box.shape = PrimitiveShape::Box;
+  CHECK(!problemWith(box));
+  SceneModelEntry far = box;
+  far.transform.position.x = inf;
+  CHECK(problemWith(far));
+  SceneModelEntry turned = box;
+  turned.transform.rotationDeg.z = nan;
+  CHECK(problemWith(turned));
+  SceneModelEntry huge = box;
+  huge.transform.scale = inf;
+  CHECK(problemWith(huge));
+
+  SceneSun sun;
+  sun.intensity = inf;
+  CHECK(problemWith(sun));
+  SceneFog fog;
+  fog.density = nan;
+  CHECK(problemWith(fog));
 }
 
 TEST(removing_an_entry_keeps_the_rest_in_order) {

@@ -88,7 +88,7 @@ Cross-submit edges are timeline-semaphore waits: the async-compute SSAO submit d
 - GPU-driven rendering path: compute frustum + HZB occlusion culling feeding indirect draws.
 - Bindless material textures via `VK_EXT_descriptor_indexing`.
 - Data-driven scene files (`Resources/Scenes/*.scene`) with runtime scene switching and animated scene nodes. A `[model]` can be a file (`path`) or a generated shape (`shape = box | sphere | capsule | plane`, with `size`, `radius`, `height` and `color`); an entry with `body = static | dynamic | kinematic` becomes a Jolt rigid body (optional `mass`, `density`, `material`, `friction`, `restitution`; model files get a `collider = auto | hull | mesh | box`), stepped at a fixed 60 Hz and interpolated for rendering. A `[grid]` block places many copies of one model.
-- An in-game editor: edit and play modes, click to select, move, rotate and scale handles, an Inspector, adding shapes and model files, undo and redo, Save and Save as that keep the file's comments and order, and render and physics settings saved to `Resources/settings.cfg`.
+- An in-game editor: edit and play modes, click to select, move, rotate and scale handles, an Inspector, adding shapes and model files, undo and redo, Save and Save as that keep the file's comments and order, and render and physics settings saved to `Resources/settings.cfg`. Its panels dock: drag them to any side, stack them as tabs or float them, and the scene renders at the size of the space they leave, so nothing covers it. The arrangement is saved between runs.
 - Physics debugging: a Physics panel (pause, single step, body and awake counts, step time), wireframes of every collision shape (`F2`), and throwing balls from the camera (`F`). Stress scenes with 1,000 and 5,000 boxes (`90_stress_1k.scene`, `91_stress_5k.scene`).
 - Exponential height fog.
 - ImGui runtime overlay with:
@@ -227,12 +227,14 @@ Two things worth noting. The frame is dominated by the screen-space lighting pas
 | `Ctrl` while dragging a handle | Snap to 0.25 m, 15° or 0.1 scale steps (also the Snap box in the toolbar) |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo (edit mode) |
 | `Ctrl+S`, `Ctrl+Shift+S` | Save, Save as |
-| `F1` | Toggle HUD-free screenshot mode (hides all panels) |
+| `F1` | Hide the menu bar and panels; the scene takes the whole window |
 | `F2` | Show physics collision shapes as wireframes |
 | `F` | Throw a ball from the camera (camera mode, play mode) |
 | `Esc` | Quit, asking first if something isn't saved |
 
-The game starts in play mode. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector on the right, add shapes and model files from the Scene tab, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell. The sidebar's other tabs hold the render, lighting, debug, physics, performance and camera settings; the Render and Physics tabs save theirs to `Resources/settings.cfg`, read at startup.
+The game starts in play mode. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector, add shapes and model files from the Scene panel, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell.
+
+The window is a docked editor: a menu bar on top (File: Save, Save as, Quit; View: show or hide each panel, Reset layout; then Play/Stop, the handle modes and Snap) and panels down the sides, with the scene in the space they leave. Drag a panel's tab to another side, onto another panel's tabs, or out to float it; drag a divider to resize. The arrangement is saved to `Resources/editor_layout.ini` when you quit. The Render and Physics panels save their settings to `Resources/settings.cfg`, read at startup.
 
 ## Requirements
 

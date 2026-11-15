@@ -180,6 +180,9 @@ private:
   std::vector<PhysicsDebugVertex> selectionLines;
   std::vector<PhysicsDebugVertex> debugLineScratch; // wireframes + outline
   float selectionMass = 0.0f; // kg, of one copy for a grid; 0 if no body
+  // Bodies the world holds for the selection now (a grid's copies), which
+  // a drag of its Count runs ahead of until the rebuild.
+  uint32_t selectionBodies = 0;
   void updateSelectionLines();
   bool entryHasBody(SceneEntryRef ref) const;
 

@@ -98,3 +98,19 @@ TEST(child_follows_a_moved_parent) {
   CHECK_NEAR(childPtr->getGlobalTransform()[3].x, 1.0, 1e-6);
   CHECK_NEAR(childPtr->getGlobalTransform()[3].y, 2.0, 1e-6);
 }
+
+TEST(spin_stays_smooth_after_hours) {
+  // At 16384 s a float's step is about 2 ms, so half a millisecond would
+  // be lost and the object would turn in jumps.
+  NodeAnimation spin;
+  spin.spinDegPerSec = glm::vec3(0.0f, 90.0f, 0.0f);
+  SceneNode node;
+  node.setAnimation(spin);
+  auto yaw = [&](double seconds) {
+    node.update(glm::mat4(1.0f), seconds);
+    const glm::mat4 m = node.getGlobalTransform();
+    return glm::degrees(std::atan2(-m[0][2], m[0][0]));
+  };
+  CHECK_NEAR(yaw(16384.0), 0.0, 1e-3);      // 90 * 16384 is 4096 full turns
+  CHECK_NEAR(yaw(16384.0005), 0.045, 5e-3); // half a millisecond later
+}

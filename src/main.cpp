@@ -185,10 +185,12 @@ int main(int argc, char **argv) {
     }
 
     // A left click in edit mode, with the cursor free and on the scene (off
-    // the panels and the gizmo's handles), selects what's under it.
+    // the panels and the gizmo's handles), selects what's under it. While a
+    // text field has the keyboard, the click only ends the typing, so the
+    // value goes to the object it was typed for.
     const bool leftPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
-    if (leftPressed && !cameraMode && !rightMouseFlying && !asking &&
+    if (leftPressed && !typing && !cameraMode && !rightMouseFlying && !asking &&
         !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse() &&
         !vulkanRenderer.gizmoHasMouse()) {
       vulkanRenderer.selectAt(inputManager.getMousePosition());

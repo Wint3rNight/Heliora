@@ -598,6 +598,10 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     inspectorShownRef = ref;
     inspectorProblem.clear();
   }
+  // Each entry's fields get their own IDs, so a field still being typed in
+  // can't carry over to another entry when the selection changes.
+  ImGui::PushID(static_cast<int>(ref.kind));
+  ImGui::PushID(ref.index);
   SceneGridEntry *grid = isGrid ? &scene.grids[ref.index] : nullptr;
   SceneModelEntry &entry = isGrid ? grid->model : scene.models[ref.index];
   SceneModelEntry edited = entry;
@@ -615,8 +619,8 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
                    : std::filesystem::path(edited.path).filename().string();
   if (isGrid) {
     const glm::ivec3 n = grid->count;
-    ImGui::Text("Grid %d: %s, %d copies", ref.index, what.c_str(),
-                n.x * n.y * n.z);
+    ImGui::Text("Grid %d: %s, %lld copies", ref.index, what.c_str(),
+                static_cast<long long>(n.x) * n.y * n.z);
   } else {
     ImGui::Text("Model %d: %s", ref.index, what.c_str());
   }
@@ -759,14 +763,14 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
       editedGrid.model = edited;
       problem = problemWith(editedGrid);
       // Every body in the world counts, against the live world's limit
-      // (the Physics tab's only applies at the next load).
-      auto bodies = [](const SceneGridEntry &g) {
-        const glm::ivec3 n = g.count;
-        return g.model.body ? uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z)
-                            : 0u;
-      };
-      if (!problem && !gridFitsBodyLimit(ui.bodiesInWorld, bodies(*grid),
-                                         bodies(editedGrid), ui.bodyLimit))
+      // (the Physics tab's only applies at the next load). What the world
+      // holds for this grid now, not the scene's count: a drag of Count
+      // changes the scene every frame but the world only at its end.
+      const glm::ivec3 n = editedGrid.count;
+      const uint32_t after =
+          edited.body ? uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z) : 0u;
+      if (!problem && !gridFitsBodyLimit(ui.bodiesInWorld, ui.selectionBodies,
+                                         after, ui.bodyLimit))
         problem = std::format("more bodies than the physics world holds ({})",
                               ui.bodyLimit);
     } else {
@@ -796,6 +800,8 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   }
   ImGui::Separator();
   deleting = ImGui::Button("Delete");
+  ImGui::PopID();
+  ImGui::PopID();
 
   if (split || deleting) {
     // The entry is going, so a rebuild of it would be wasted.
@@ -1257,9 +1263,14 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
     for (const std::string &file : *ui.modelFiles) {
       const std::string name =
           std::filesystem::path(file).filename().string() + "##" + file;
+      // A path the scene file couldn't read back (a '#') can't be added.
+      const std::optional<std::string> problem =
+          problemWith(newModelFileEntry(file));
+      ImGui::BeginDisabled(problem.has_value());
       if (ImGui::Selectable(name.c_str()) && ui.onSpawn)
         ui.onSpawn(newModelFileEntry(file));
-      ImGui::SetItemTooltip("%s", file.c_str());
+      ImGui::EndDisabled();
+      ImGui::SetItemTooltip("%s", problem ? problem->c_str() : file.c_str());
     }
     if (ui.modelFiles->empty())
       ImGui::TextDisabled("No .gltf or .glb files in Resources/Models.");

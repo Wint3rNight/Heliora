@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 #include <iterator>
 #include <meshoptimizer.h>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 
 // =============================================================================
@@ -482,12 +483,22 @@ std::vector<Mesh> MeshModel::LoadMesh(VmaAllocator allocator,
     }
   }
 
+  // Triangles only. The importer already drops lines and points; this is
+  // the second guard, since every index buffer is read three at a time.
+  size_t skipped = 0;
   for (size_t i = 0; i < mesh->mNumFaces; i++) {
-    aiFace face = mesh->mFaces[i];
-    for (size_t j = 0; j < face.mNumIndices; j++) {
-      indices.push_back(face.mIndices[j]);
+    const aiFace &face = mesh->mFaces[i];
+    if (face.mNumIndices != 3) {
+      ++skipped;
+      continue;
     }
+    indices.insert(indices.end(), face.mIndices, face.mIndices + 3);
   }
+  if (skipped > 0)
+    spdlog::warn("Mesh '{}': skipped {} faces that weren't triangles",
+                 mesh->mName.C_Str(), skipped);
+  if (indices.empty())
+    return {};
 
   Mesh newMesh = Mesh(allocator, newDevice, transferQueue, transferCommandPool,
                       &vertices, &indices, materials[mesh->mMaterialIndex]);

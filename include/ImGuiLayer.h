@@ -150,6 +150,7 @@ struct DebugUiContext {
   SceneDescription *scene = nullptr;
   std::optional<SceneEntryRef> selection;
   float selectionMass = 0.0f; // kg, one copy for a grid; 0 without a body
+  uint32_t selectionBodies = 0; // bodies the world holds for it right now
   std::function<void(SceneEntryRef)> onEntryMoved;
   std::function<void(SceneEntryRef)> onEntryChanged;
   std::function<void(SceneEntryRef)> onEntryDeleted;

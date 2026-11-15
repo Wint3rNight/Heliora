@@ -32,7 +32,9 @@ public:
   // parent changed since the last call, plus animated ones. A world full of
   // still or sleeping objects costs a walk of the tree, not a matrix inverse
   // per node.
-  void update(const glm::mat4 &parentTransform, float timeSeconds = 0.0f);
+  // timeSeconds is a double: at float's precision a long play session would
+  // step animations in milliseconds.
+  void update(const glm::mat4 &parentTransform, double timeSeconds = 0.0);
 
   // Hierarchy
   void addChild(std::unique_ptr<SceneNode> child);
@@ -51,8 +53,8 @@ public:
   int physicsLink() const { return physicsLinkIndex; }
 
 private:
-  glm::mat4 composeAnimatedLocal(float timeSeconds) const;
-  void updateTree(const glm::mat4 &parentTransform, float timeSeconds,
+  glm::mat4 composeAnimatedLocal(double timeSeconds) const;
+  void updateTree(const glm::mat4 &parentTransform, double timeSeconds,
                   bool parentChanged);
 
   glm::mat4 localTransform;

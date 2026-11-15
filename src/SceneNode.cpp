@@ -53,22 +53,30 @@ glm::mat4 SceneNode::getGlobalTransform() const { return globalTransform; }
 
 glm::mat4 SceneNode::getNormalMatrix() const { return cachedNormalMatrix; }
 
-glm::mat4 SceneNode::composeAnimatedLocal(float timeSeconds) const {
+glm::mat4 SceneNode::composeAnimatedLocal(double timeSeconds) const {
   NodeTransform t = baseTransform;
+  // Angles and phases are wrapped to one turn in double before they become
+  // float, so they keep their precision however long the game has played.
+  auto turned = [&](float degreesPerSecond) {
+    return glm::radians(
+        static_cast<float>(std::fmod(degreesPerSecond * timeSeconds, 360.0)));
+  };
 
   if (animation.orbitDegPerSec != 0.0f && animation.orbitRadius != 0.0f) {
-    float angle = glm::radians(animation.orbitDegPerSec) * timeSeconds;
+    float angle = turned(animation.orbitDegPerSec);
     t.position += glm::vec3(std::cos(angle), 0.0f, std::sin(angle)) *
                   animation.orbitRadius;
   }
   if (animation.bobAmplitude != 0.0f && animation.bobFrequency != 0.0f) {
+    const double cycles = std::fmod(animation.bobFrequency * timeSeconds, 1.0);
     t.position.y += animation.bobAmplitude *
-                    std::sin(glm::two_pi<float>() * animation.bobFrequency *
-                             timeSeconds);
+                    std::sin(glm::two_pi<float>() * static_cast<float>(cycles));
   }
 
   glm::mat4 m = composeTransform(t);
-  glm::vec3 spin = glm::radians(animation.spinDegPerSec) * timeSeconds;
+  glm::vec3 spin(turned(animation.spinDegPerSec.x),
+                 turned(animation.spinDegPerSec.y),
+                 turned(animation.spinDegPerSec.z));
   if (spin != glm::vec3(0.0f)) {
     // Spin rotates the model in place, after base orientation. Scale is
     // uniform, so applying spin inside the scaled basis introduces no skew.
@@ -79,13 +87,13 @@ glm::mat4 SceneNode::composeAnimatedLocal(float timeSeconds) const {
   return m;
 }
 
-void SceneNode::update(const glm::mat4 &parentTransform, float timeSeconds) {
+void SceneNode::update(const glm::mat4 &parentTransform, double timeSeconds) {
   const bool parentChanged = parentTransform != lastParentTransform;
   lastParentTransform = parentTransform;
   updateTree(parentTransform, timeSeconds, parentChanged);
 }
 
-void SceneNode::updateTree(const glm::mat4 &parentTransform, float timeSeconds,
+void SceneNode::updateTree(const glm::mat4 &parentTransform, double timeSeconds,
                            bool parentChanged) {
   if (hasAnimation) {
     localTransform = composeAnimatedLocal(timeSeconds);

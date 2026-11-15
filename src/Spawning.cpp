@@ -1,5 +1,7 @@
 #include "Spawning.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <system_error>
@@ -15,14 +17,24 @@ std::vector<std::string> findModelFiles(const std::string &folder) {
   std::error_code error;
   if (!fs::is_directory(searched, error))
     return files;
-  for (const auto &entry :
-       fs::recursive_directory_iterator(searched, error)) {
-    const fs::path &path = entry.path();
-    if (entry.is_regular_file() &&
+  // The error_code forms throughout: a folder it can't read is skipped, and
+  // any other error ends the scan with what it found, instead of throwing
+  // out of the frame.
+  fs::recursive_directory_iterator it(
+      searched, fs::directory_options::skip_permission_denied, error);
+  for (; !error && it != fs::recursive_directory_iterator();
+       it.increment(error)) {
+    const fs::path &path = it->path();
+    std::error_code typeError;
+    if (it->is_regular_file(typeError) &&
         (path.extension() == ".gltf" || path.extension() == ".glb"))
       files.push_back(
-          (fs::path(folder) / fs::relative(path, searched)).string());
+          (fs::path(folder) / fs::relative(path, searched, typeError))
+              .string());
   }
+  if (error)
+    spdlog::warn("Model scan of {} stopped early: {}", searched.string(),
+                 error.message());
   std::sort(files.begin(), files.end());
   return files;
 }

@@ -96,11 +96,30 @@ bool allFinite(glm::vec3 v) {
 
 // The rules behind problemWith, which a [model] has to pass.
 std::optional<std::string> modelProblem(const SceneModelEntry &model) {
-  // The parser can't read inf or nan back, so a scene mustn't hold one.
+  // The parser can't read inf or nan back, so a scene mustn't hold one. NaN
+  // also fails every comparison below, so it would pass them all.
   const NodeTransform &t = model.transform;
   if (!allFinite(t.position) || !allFinite(t.rotationDeg) ||
       !std::isfinite(t.scale))
     return "position, rotation and scale must be ordinary numbers";
+  auto finite = [](const std::optional<float> &value) {
+    return !value || std::isfinite(*value);
+  };
+  const NodeAnimation &a = model.animation;
+  if (!allFinite(model.size) || !std::isfinite(model.radius) ||
+      !std::isfinite(model.height) || !allFinite(model.color) ||
+      !finite(model.mass) || !finite(model.density) ||
+      !finite(model.friction) || !finite(model.restitution) ||
+      !allFinite(a.spinDegPerSec) || !std::isfinite(a.orbitDegPerSec) ||
+      !std::isfinite(a.orbitRadius) || !std::isfinite(a.bobAmplitude) ||
+      !std::isfinite(a.bobFrequency))
+    return "every number must be an ordinary number";
+  if (t.scale <= 0.0f)
+    return "'scale' must be more than 0";
+  // The parser reads # as the start of a comment.
+  if (model.path.find('#') != std::string::npos)
+    return "a model path can't contain '#' (a scene file reads it as a "
+           "comment); rename the file";
   if (model.path.empty() && !model.shape)
     return "needs 'path' or 'shape'";
   if (!model.path.empty() && model.shape)
@@ -220,13 +239,21 @@ void checkFog(const SceneFog &fog, int headerLine) {
 }
 
 float parseFloat(const std::string &value, int lineNumber) {
+  float number = 0.0f;
   try {
-    return std::stof(value);
+    number = std::stof(value);
   } catch (const std::exception &) {
     throw std::runtime_error("scene parse error, line " +
                              std::to_string(lineNumber) +
                              ": expected a number, got '" + value + "'");
   }
+  // std::stof reads nan and inf, which would get past every range check.
+  if (!std::isfinite(number))
+    throw std::runtime_error("scene parse error, line " +
+                             std::to_string(lineNumber) +
+                             ": expected an ordinary number, got '" + value +
+                             "'");
+  return number;
 }
 
 // Keys shared by [model] and [grid]. False if the key isn't one of them.
@@ -468,8 +495,15 @@ std::optional<std::string> problemWith(const SceneFog &fog) {
 std::optional<std::string> problemWith(const SceneGridEntry &grid) {
   if (std::optional<std::string> problem = modelProblem(grid.model))
     return problem;
-  if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))))
-    return "'count' must be at least 1 on every axis";
+  if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))) ||
+      glm::any(glm::greaterThan(grid.count, glm::ivec3(kMaxCountPerAxis))))
+    return "'count' must be 1 to " + std::to_string(kMaxCountPerAxis) +
+           " on every axis";
+  if (int64_t(grid.count.x) * grid.count.y * grid.count.z > kMaxGridCopies)
+    return "a grid can't have more than " + std::to_string(kMaxGridCopies) +
+           " copies";
+  if (!allFinite(grid.spacing) || !std::isfinite(grid.layoutRotation))
+    return "'spacing' and 'layout_rotation' must be ordinary numbers";
   if (glm::any(glm::lessThanEqual(grid.spacing, glm::vec3(0.0f))))
     return "'spacing' must be positive on every axis";
   return std::nullopt;
@@ -706,7 +740,16 @@ SceneDescription parse(std::istream &file, const std::string &path) {
     case Section::Grid: {
       SceneGridEntry &grid = scene.grids.back();
       if (key == "count") {
+        // Checked as floats first: converting one past int's range is
+        // undefined.
         const glm::vec3 count = parseVec3(value, lineNumber);
+        if (!allFinite(count) ||
+            glm::any(glm::lessThan(count, glm::vec3(1.0f))) ||
+            glm::any(glm::greaterThan(count, glm::vec3(kMaxCountPerAxis))))
+          throw std::runtime_error(
+              "scene parse error, line " + std::to_string(lineNumber) +
+              ": 'count' must be 1 to " + std::to_string(kMaxCountPerAxis) +
+              " on every axis");
         grid.count = glm::ivec3(glm::round(count));
         if (glm::any(glm::notEqual(glm::vec3(grid.count), count)))
           throw std::runtime_error("scene parse error, line " +
@@ -728,8 +771,16 @@ SceneDescription parse(std::istream &file, const std::string &path) {
       SceneRingEntry &ring = scene.rings.back();
       if (key == "path")
         ring.path = value;
-      else if (key == "count")
-        ring.count = static_cast<int>(parseFloat(value, lineNumber));
+      else if (key == "count") {
+        const float count = parseFloat(value, lineNumber);
+        if (count < 1.0f || count > float(kMaxCountPerAxis) ||
+            count != std::round(count))
+          throw std::runtime_error(
+              "scene parse error, line " + std::to_string(lineNumber) +
+              ": a ring's 'count' must be a whole number, 1 to " +
+              std::to_string(kMaxCountPerAxis));
+        ring.count = static_cast<int>(count);
+      }
       else if (key == "radius")
         ring.radius = parseFloat(value, lineNumber);
       else if (key == "height")
@@ -775,10 +826,19 @@ std::vector<SceneDescription> discover(const std::string &directory) {
     return {};
   }
 
+  // The error_code forms, so an unreadable folder or entry is a warning,
+  // not an exception out of startup or the scene picker.
   std::vector<fs::path> files;
-  for (const auto &entry : fs::directory_iterator(dir))
-    if (entry.is_regular_file() && entry.path().extension() == ".scene")
-      files.push_back(entry.path());
+  std::error_code error;
+  for (fs::directory_iterator it(dir, error);
+       !error && it != fs::directory_iterator(); it.increment(error)) {
+    std::error_code typeError;
+    if (it->is_regular_file(typeError) && it->path().extension() == ".scene")
+      files.push_back(it->path());
+  }
+  if (error)
+    spdlog::warn("Scene scan of {} stopped early: {}", dir.string(),
+                 error.message());
   std::sort(files.begin(), files.end());
 
   std::vector<SceneDescription> scenes;

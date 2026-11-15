@@ -334,7 +334,10 @@ void RenderPassManager::createRenderPass(VkDevice device,
   deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[1].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+  // Input attachment for the centre pixel, and sampled (texelFetch) for the
+  // TAA clamp's neighbours and the edge AA.
+  deps[1].dstAccessMask =
+      VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
 
   // Subpass 1 → external (covers history → SHADER_READ_ONLY for next frame
   // and the scene output → the copy into the window).

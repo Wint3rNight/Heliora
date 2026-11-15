@@ -5,6 +5,7 @@
 #include "VulkanDevice.h"
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #include <filesystem>
@@ -33,8 +34,14 @@ int ModelManager::loadModel(const std::string &modelFile,
         (std::filesystem::path("..") / inputPath).string());
   }
 
+  // Lines and points (wire helpers, OBJ `l` elements) are dropped: every
+  // index buffer here is triangles, and meshoptimizer asserts on anything
+  // else.
+  importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE,
+                              aiPrimitiveType_LINE | aiPrimitiveType_POINT);
   for (const std::string &path : candidatePaths) {
     scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs |
+                                        aiProcess_SortByPType |
                                         aiProcess_JoinIdenticalVertices |
                                         aiProcess_GenSmoothNormals |
                                         aiProcess_CalcTangentSpace);

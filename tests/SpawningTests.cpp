@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 
 namespace {
 
@@ -92,4 +93,28 @@ TEST(model_files_are_found_in_subfolders) {
   }
   CHECK(findModelFiles((root / "missing").string()).empty());
   fs::remove_all(root);
+}
+
+TEST(unreadable_folders_are_skipped) {
+  // A folder the scan can't read is left out, not a crash.
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "heliora_spawn_locked";
+  if (fs::exists(root / "locked"))
+    fs::permissions(root / "locked", fs::perms::owner_all);
+  fs::remove_all(root);
+  fs::create_directories(root / "locked");
+  std::ofstream(root / "crate.glb") << "x";
+  std::ofstream(root / "locked" / "hidden.glb") << "x";
+  fs::permissions(root / "locked", fs::perms::none);
+  std::vector<std::string> found;
+  bool threw = false;
+  try {
+    found = findModelFiles(root.string());
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  fs::permissions(root / "locked", fs::perms::owner_all);
+  fs::remove_all(root);
+  CHECK(!threw);
+  CHECK(found.size() == 1);
 }

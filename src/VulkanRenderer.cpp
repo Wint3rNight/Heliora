@@ -711,7 +711,7 @@ void VulkanRenderer::placeEntry(SceneEntryRef ref) {
   for (const auto &node : rootNode.getChildren())
     if (node->entry() == ref && next < copies.size())
       place(*node, copies[next++]);
-  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+  rootNode.update(glm::mat4(1.0f), playSeconds);
   updateSelectionLines();
 }
 
@@ -800,7 +800,7 @@ void VulkanRenderer::spawnEntry(SceneModelEntry entry) {
 
   const SceneEntryRef ref = addModel(currentScene, std::move(entry));
   addEntry(ref);
-  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+  rootNode.update(glm::mat4(1.0f), playSeconds);
   selection = ref;
   updateSelectionLines();
   recordEdit();
@@ -1223,12 +1223,13 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
 void VulkanRenderer::updateSelectionLines() {
   selectionLines.clear();
   selectionMass = 0.0f;
+  selectionBodies = 0;
   if (!selection)
     return;
   for (const PhysicsLink &link : physicsLinks)
     if (link.node && link.node->entry() == *selection) {
-      selectionMass = physics->mass(link.body);
-      break;
+      if (selectionBodies++ == 0)
+        selectionMass = physics->mass(link.body);
     }
   // A centimetre out, so the outline doesn't sit in the object's own faces.
   constexpr float kMargin = 0.01f;
@@ -1265,7 +1266,7 @@ void VulkanRenderer::updateSelectionLines() {
 void VulkanRenderer::updateScene(float frameSeconds) {
   if (playing)
     playSeconds += frameSeconds;
-  rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+  rootNode.update(glm::mat4(1.0f), playSeconds);
 }
 
 SceneNode &VulkanRenderer::getRootNode() { return rootNode; }
@@ -1332,7 +1333,7 @@ void VulkanRenderer::draw() {
     vkDeviceWaitIdle(logicalDevice);
     for (const auto &[op, ref] : std::exchange(pendingEntryOps, {}))
       applyEntryOp(op, ref);
-    rootNode.update(glm::mat4(1.0f), static_cast<float>(playSeconds));
+    rootNode.update(glm::mat4(1.0f), playSeconds);
     updateSelectionLines();
   }
   if (pendingSpawn) {
@@ -3770,6 +3771,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.scene = &currentScene;
   ui.selection = playing ? std::nullopt : selection;
   ui.selectionMass = selectionMass;
+  ui.selectionBodies = selectionBodies;
   ui.onEntryMoved = [this](SceneEntryRef ref) { placeEntry(ref); };
   ui.onEntryChanged = [this](SceneEntryRef ref) {
     pendingEntryOps.push_back({EntryOp::Rebuild, ref});

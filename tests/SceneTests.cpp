@@ -652,3 +652,80 @@ TEST(split_grid_keeps_its_place_and_its_copies) {
   CHECK(text.find("# The wall") < text.find("shape = sphere"));
   CHECK(reparse(scene) == scene);
 }
+
+TEST(nan_and_inf_in_a_scene_file_are_errors) {
+  // std::stof reads both, and NaN then fails every range check.
+  for (const char *value : {"nan", "inf", "-inf"}) {
+    std::string message;
+    try {
+      parseText(std::string("[model]\nshape = sphere\nradius = ") + value +
+                "\n");
+    } catch (const std::runtime_error &e) {
+      message = e.what();
+    }
+    CHECK(message.find("line 3") != std::string::npos);
+  }
+}
+
+TEST(problem_with_refuses_bad_scale_and_numbers_that_arent_finite) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  SceneModelEntry box;
+  box.shape = PrimitiveShape::Box;
+  box.body = PhysicsMotion::Dynamic;
+  CHECK(!problemWith(box));
+  for (float scale : {0.0f, -1.0f}) {
+    SceneModelEntry scaled = box;
+    scaled.transform.scale = scale;
+    CHECK(problemWith(scaled).value_or("").find("scale") != std::string::npos);
+  }
+  SceneModelEntry sized = box;
+  sized.size.x = nan;
+  CHECK(problemWith(sized));
+  SceneModelEntry heavy = box;
+  heavy.mass = nan;
+  CHECK(problemWith(heavy));
+  SceneModelEntry tinted = box;
+  tinted.color.g = nan;
+  CHECK(problemWith(tinted));
+  SceneModelEntry spun = box;
+  spun.body.reset();
+  spun.animation.spinDegPerSec.y = std::numeric_limits<float>::infinity();
+  CHECK(problemWith(spun));
+  SceneModelEntry sphere;
+  sphere.shape = PrimitiveShape::Sphere;
+  sphere.radius = nan;
+  CHECK(problemWith(sphere));
+  SceneGridEntry grid;
+  grid.model = box;
+  grid.spacing.z = nan;
+  CHECK(problemWith(grid));
+}
+
+TEST(paths_with_a_hash_are_refused) {
+  // The parser reads # as the start of a comment, so the path wouldn't
+  // come back.
+  SceneModelEntry rock;
+  rock.path = "Resources/Models/Rock #2.glb";
+  CHECK(problemWith(rock).value_or("").find("#") != std::string::npos);
+  rock.path = "Resources/Models/Rock 2.glb";
+  CHECK(!problemWith(rock));
+}
+
+TEST(counts_out_of_range_are_errors) {
+  auto refused = [](const std::string &text) {
+    try {
+      parseText(text);
+    } catch (const std::runtime_error &) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(refused("[grid]\nshape = box\ncount = 20000 1 1\n"));
+  CHECK(refused("[grid]\nshape = box\ncount = 1e20 1 1\n"));
+  CHECK(refused("[grid]\nshape = box\ncount = 1000 1000 2\n")); // 2 million
+  CHECK(!refused("[grid]\nshape = box\ncount = 25 8 25\n"));
+  CHECK(refused("[ring]\npath = a.gltf\ncount = 1e10\n"));
+  CHECK(refused("[ring]\npath = a.gltf\ncount = 2.5\n"));
+  CHECK(refused("[ring]\npath = a.gltf\ncount = 0\n"));
+  CHECK(!refused("[ring]\npath = a.gltf\ncount = 12\n"));
+}

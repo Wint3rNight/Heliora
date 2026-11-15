@@ -5,6 +5,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <cstdint>
 #include <iosfwd>
 #include <optional>
 #include <string>
@@ -166,6 +167,11 @@ struct SceneDescription {
   std::string headerComment; // '#' lines at the top of the file
   bool operator==(const SceneDescription &) const = default;
 };
+
+// Limits on counts in a scene file: per grid axis and per ring, and a grid's
+// copies in all, so a typo can't ask for a trillion of them.
+constexpr int kMaxCountPerAxis = 10000;
+constexpr int64_t kMaxGridCopies = 1000000;
 
 // What's wrong with an entry, by the parser's rules, or nothing. The
 // Inspector checks edits with it, so a saved scene always loads again.

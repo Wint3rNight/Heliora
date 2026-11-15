@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -178,6 +179,7 @@ struct DebugUiContext {
   bool sceneUnsaved = false;
   std::function<void()> onSave;
   std::function<void()> onSaveAs;
+  std::function<void()> onQuit; // File > Quit, which asks like Esc does
   const std::string *saveStatus = nullptr;
   const UiPrompt *prompt = nullptr;
   std::function<void(PromptAnswer, const std::string &text)> onPromptAnswer;
@@ -214,21 +216,35 @@ public:
   void toggleVisibility() { visible = !visible; }
   bool isVisible() const { return visible; }
 
+  // Where the panel layout is saved, in ImGui's own format. Set before the
+  // first frame, which is when ImGui reads it.
+  void setLayoutFile(std::string path);
+  // The space the docked panels left for the scene last frame, in window
+  // pixels, or nothing with the UI hidden (then the scene has the window).
+  std::optional<SceneViewport> layoutSceneArea() const { return centralArea; }
+
 private:
-  enum class SidebarTab {
+  // The docked layout: each panel is an ImGui window, and the scene is the
+  // dockspace's central node, which nothing can be docked over.
+  enum class Panel {
     Scene,
     Render,
     Lighting,
-    Debug,
+    Camera,
+    Inspector,
     Physics,
     Performance,
-    Camera
+    Debug,
+    Count
   };
+  static constexpr int kPanelCount = static_cast<int>(Panel::Count);
 
   void buildUi(DebugUiContext &ui);
-  void drawTabPills();
-  void drawToolbar(DebugUiContext &ui);
+  void drawMenuBar(DebugUiContext &ui);
+  void buildDefaultLayout(unsigned int dockspace);
+  void registerPanelSettings();
   void drawInspector(DebugUiContext &ui);
+  void flushInspectorRebuild(DebugUiContext &ui);
   void drawGizmo(DebugUiContext &ui);
   void endGizmoDrag(DebugUiContext &ui);
   void finishSceneEdit(DebugUiContext &ui);
@@ -242,7 +258,12 @@ private:
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);
 
-  SidebarTab activeTab = SidebarTab::Performance;
+  bool panelOpen[kPanelCount] = {true, true, true, true,
+                                 true, true, true, true};
+  bool resetLayoutRequested = false;
+  bool focusDefaultTabs = false; // once, after the default layout is built
+  std::string layoutPath;        // ImGui keeps a pointer to it
+  std::optional<SceneViewport> centralArea;
 
   // A change that rebuilds the entry waits until no field is held, so a
   // drag rebuilds once, when it ends.

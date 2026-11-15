@@ -74,3 +74,6 @@ sticky_notes.md
 diary_notes.md
 CONTEXT.md
 DIRECTION.md
+
+# The editor's panel layout, saved by the game (ImGui's format)
+Resources/editor_layout.ini

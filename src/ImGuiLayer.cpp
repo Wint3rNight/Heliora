@@ -7,6 +7,7 @@
 #include "Spawning.h"
 
 #include <imgui.h>
+#include <imgui_internal.h> // the dock builder, for the default layout
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 #include <spdlog/spdlog.h>
@@ -16,6 +17,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <numbers>
@@ -56,6 +58,10 @@ void applyTheme() {
   ImGui::StyleColorsDark(&style); // fills any slot not set below
 
   style.WindowPadding = ImVec2(12.0f, 10.0f);
+  // Docked panels ignore per-window size limits; the dock dividers use this
+  // instead, so a panel stays wide enough for its slider labels (and the
+  // scene area keeps at least this much too).
+  style.WindowMinSize = ImVec2(240.0f, 120.0f);
   style.FramePadding = ImVec2(8.0f, 4.0f);
   style.ItemSpacing = ImVec2(8.0f, 5.0f);
   style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
@@ -183,6 +189,10 @@ void ImGuiLayer::init(GLFWwindow *window, VulkanDevice &device,
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  // No imgui.ini in whatever folder the game runs from: setLayoutFile
+  // points it at Resources before the first frame.
+  ImGui::GetIO().IniFilename = nullptr;
+  registerPanelSettings();
   applyTheme();
 
   ImGui_ImplGlfw_InitForVulkan(window, true);
@@ -267,6 +277,83 @@ void ImGuiLayer::finishSceneEdit(DebugUiContext &ui) {
   }
 }
 
+namespace {
+
+// In the View menu's order, and the names their windows (and the layout
+// file) know them by.
+constexpr const char *kPanelNames[] = {"Scene",     "Render",  "Lighting",
+                                       "Camera",    "Inspector", "Physics",
+                                       "Performance", "Debug"};
+
+// The dockspace's id, the same every run so the layout file finds it.
+ImGuiID dockspaceId() { return ImHashStr("HelioraDockspace"); }
+
+} // namespace
+
+void ImGuiLayer::setLayoutFile(std::string path) {
+  layoutPath = std::move(path);
+  ImGui::GetIO().IniFilename = layoutPath.c_str();
+}
+
+// Which panels are open, saved in the layout file next to ImGui's own
+// window and dock entries:
+//   [HelioraPanels][Open]
+//   Scene=1
+void ImGuiLayer::registerPanelSettings() {
+  ImGuiSettingsHandler handler;
+  handler.TypeName = "HelioraPanels";
+  handler.TypeHash = ImHashStr("HelioraPanels");
+  handler.UserData = this;
+  handler.ReadOpenFn = [](ImGuiContext *, ImGuiSettingsHandler *,
+                          const char *) -> void * {
+    return reinterpret_cast<void *>(1); // one entry, no state needed
+  };
+  handler.ReadLineFn = [](ImGuiContext *, ImGuiSettingsHandler *h, void *,
+                          const char *line) {
+    auto *layer = static_cast<ImGuiLayer *>(h->UserData);
+    char name[32] = {};
+    int open = 1;
+    if (std::sscanf(line, "%31[^=]=%d", name, &open) != 2)
+      return;
+    for (int i = 0; i < kPanelCount; ++i)
+      if (std::strcmp(name, kPanelNames[i]) == 0)
+        layer->panelOpen[i] = open != 0;
+  };
+  handler.WriteAllFn = [](ImGuiContext *, ImGuiSettingsHandler *h,
+                          ImGuiTextBuffer *out) {
+    const auto *layer = static_cast<const ImGuiLayer *>(h->UserData);
+    out->appendf("[%s][Open]\n", h->TypeName);
+    for (int i = 0; i < kPanelCount; ++i)
+      out->appendf("%s=%d\n", kPanelNames[i], layer->panelOpen[i] ? 1 : 0);
+    out->append("\n");
+  };
+  ImGui::AddSettingsHandler(&handler);
+}
+
+// The layout a first run (or Reset layout) gets: the old sidebar's tabs on
+// the left, the Inspector on the right above the physics and performance
+// panels, and the scene in between.
+void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::DockBuilderRemoveNode(dockspace);
+  ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+  ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
+  const float width = std::max(viewport->WorkSize.x, 1.0f);
+  ImGuiID left = 0, rest = 0, right = 0, centre = 0, top = 0, bottom = 0;
+  ImGui::DockBuilderSplitNode(dockspace, ImGuiDir_Left, 380.0f / width, &left,
+                              &rest);
+  ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right,
+                              360.0f / std::max(width - 380.0f, 1.0f), &right,
+                              &centre);
+  ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.5f, &top, &bottom);
+  for (const char *name : {"Scene", "Render", "Lighting", "Camera"})
+    ImGui::DockBuilderDockWindow(name, left);
+  ImGui::DockBuilderDockWindow("Inspector", top);
+  for (const char *name : {"Physics", "Performance", "Debug"})
+    ImGui::DockBuilderDockWindow(name, bottom);
+  ImGui::DockBuilderFinish(dockspace);
+}
+
 void ImGuiLayer::buildUi(DebugUiContext &ui) {
   // Frame-time history accumulates even while hidden so the graph shows
   // truthful recent history after un-hiding, not a stale pre-hide splice.
@@ -275,59 +362,71 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   frameTimeGraphOffset = (frameTimeGraphOffset + 1) % 128;
 
   if (!visible) {
-    // F1 screenshot mode: no windows -> empty draw list this frame
+    // F1 screenshot mode: no windows -> empty draw list this frame, and the
+    // scene gets the whole window.
+    centralArea.reset();
     gizmoHovered = false;
     endGizmoDrag(ui);
+    flushInspectorRebuild(ui);
     finishSceneEdit(ui);
     return;
   }
 
-  // One sidebar, full height, with the tabs as two rows of pills on top.
-  constexpr float kSidebarWidth = 380.0f;
-  constexpr float kLabelWidth = 150.0f; // room for the longest slider label
-  const ImVec2 display = ImGui::GetIO().DisplaySize;
-  ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(
-      ImVec2(kSidebarWidth, std::max(200.0f, display.y - 20.0f)),
-      ImGuiCond_Always);
-  ImGui::Begin("##sidebar", nullptr,
-               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                   ImGuiWindowFlags_NoScrollbar |
-                   ImGuiWindowFlags_NoScrollWithMouse);
-  drawTabPills();
-  ImGui::Separator();
-  // The tab's contents scroll on their own, so the pills stay put.
-  ImGui::BeginChild("##tab");
-  ImGui::PushItemWidth(-kLabelWidth);
-  switch (activeTab) {
-  case SidebarTab::Scene:
-    drawSceneTab(ui);
-    break;
-  case SidebarTab::Render:
-    drawRenderTab(ui);
-    break;
-  case SidebarTab::Lighting:
-    drawLightingTab(ui);
-    break;
-  case SidebarTab::Debug:
-    drawDebugTab(ui);
-    break;
-  case SidebarTab::Physics:
-    drawPhysicsTab(ui);
-    break;
-  case SidebarTab::Performance:
-    drawPerformanceTab(ui);
-    break;
-  case SidebarTab::Camera:
-    drawCameraTab(ui);
-    break;
+  // The menu bar takes the top of the window, and the dockspace the rest.
+  drawMenuBar(ui);
+  const ImGuiID dockspace = dockspaceId();
+  // A missing or unreadable layout file leaves no dockspace node to load.
+  if (resetLayoutRequested || !ImGui::DockBuilderGetNode(dockspace)) {
+    buildDefaultLayout(dockspace);
+    if (resetLayoutRequested)
+      std::fill(std::begin(panelOpen), std::end(panelOpen), true);
+    resetLayoutRequested = false;
+    focusDefaultTabs = true;
+    ImGui::MarkIniSettingsDirty();
   }
-  ImGui::PopItemWidth();
-  ImGui::EndChild();
-  ImGui::End();
-  drawToolbar(ui);
-  drawInspector(ui);
+  ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(),
+                               ImGuiDockNodeFlags_PassthruCentralNode |
+                                   ImGuiDockNodeFlags_NoDockingOverCentralNode);
+  if (const ImGuiDockNode *central =
+          ImGui::DockBuilderGetCentralNode(dockspace))
+    centralArea = SceneViewport{glm::vec2(central->Pos.x, central->Pos.y),
+                                glm::vec2(central->Size.x, central->Size.y)};
+  else
+    centralArea.reset();
+
+  constexpr float kLabelWidth = 150.0f; // room for the longest slider label
+  auto panel = [&](Panel which, auto &&draw) {
+    const int i = static_cast<int>(which);
+    if (!panelOpen[i])
+      return;
+    // The first tabs shown in the default layout.
+    if (focusDefaultTabs &&
+        (which == Panel::Scene || which == Panel::Physics))
+      ImGui::SetNextWindowFocus();
+    bool open = true;
+    if (ImGui::Begin(kPanelNames[i], &open)) {
+      ImGui::PushItemWidth(-kLabelWidth);
+      draw();
+      ImGui::PopItemWidth();
+    }
+    ImGui::End();
+    if (!open) {
+      panelOpen[i] = false;
+      ImGui::MarkIniSettingsDirty();
+    }
+  };
+  panel(Panel::Scene, [&] { drawSceneTab(ui); });
+  panel(Panel::Render, [&] { drawRenderTab(ui); });
+  panel(Panel::Lighting, [&] { drawLightingTab(ui); });
+  panel(Panel::Camera, [&] { drawCameraTab(ui); });
+  panel(Panel::Inspector, [&] { drawInspector(ui); });
+  panel(Panel::Physics, [&] { drawPhysicsTab(ui); });
+  panel(Panel::Performance, [&] { drawPerformanceTab(ui); });
+  panel(Panel::Debug, [&] { drawDebugTab(ui); });
+  focusDefaultTabs = false;
+  // Even with the Inspector closed or behind another tab.
+  flushInspectorRebuild(ui);
+
   drawGizmo(ui);
   finishSceneEdit(ui);
   drawPrompt(ui);
@@ -469,29 +568,32 @@ bool optionalFloat(const char *label, std::optional<float> &value,
 
 } // namespace
 
-// The selected entry's settings, on the right, in edit mode. Edits go to a
-// copy first and are only kept if the parser would accept them, so a saved
-// scene always loads.
+// A change that rebuilds the entry, once no field is held, so a drag
+// rebuilds once, when it ends.
+void ImGuiLayer::flushInspectorRebuild(DebugUiContext &ui) {
+  if (inspectorRebuildPending && !ImGui::IsAnyItemActive()) {
+    inspectorRebuildPending = false;
+    if (ui.onEntryChanged)
+      ui.onEntryChanged(inspectorPendingRef);
+  }
+}
+
+// The selected entry's settings, in the Inspector panel. Edits go to a copy
+// first and are only kept if the parser would accept them, so a saved scene
+// always loads.
 void ImGuiLayer::drawInspector(DebugUiContext &ui) {
-  auto flushRebuild = [&] {
-    if (inspectorRebuildPending && !ImGui::IsAnyItemActive()) {
-      inspectorRebuildPending = false;
-      if (ui.onEntryChanged)
-        ui.onEntryChanged(inspectorPendingRef);
-    }
-  };
   if (!ui.scene || !ui.selection) {
-    flushRebuild();
+    ImGui::TextDisabled(ui.playing ? "Stop (F5) to edit."
+                                   : "Nothing selected. Click an object "
+                                     "in the scene.");
     return;
   }
   const SceneEntryRef ref = *ui.selection;
   SceneDescription &scene = *ui.scene;
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
   const size_t count = isGrid ? scene.grids.size() : scene.models.size();
-  if (ref.index < 0 || ref.index >= static_cast<int>(count)) {
-    flushRebuild();
+  if (ref.index < 0 || ref.index >= static_cast<int>(count))
     return;
-  }
   if (ref != inspectorShownRef) {
     inspectorShownRef = ref;
     inspectorProblem.clear();
@@ -505,15 +607,6 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   bool split = false;
   bool deleting = false;
 
-  const ImVec2 display = ImGui::GetIO().DisplaySize;
-  ImGui::SetNextWindowPos(ImVec2(display.x - 10.0f, 10.0f), ImGuiCond_Always,
-                          ImVec2(1.0f, 0.0f));
-  // 0 height fits the contents.
-  ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
-  ImGui::Begin("##inspector", nullptr,
-               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                   ImGuiWindowFlags_NoSavedSettings);
   constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
   static constexpr const char *kShapes[] = {"box", "sphere", "capsule",
                                             "plane"};
@@ -703,7 +796,6 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   }
   ImGui::Separator();
   deleting = ImGui::Button("Delete");
-  ImGui::End();
 
   if (split || deleting) {
     // The entry is going, so a rebuild of it would be wasted.
@@ -712,29 +804,66 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
       ui.onGridSplit(ref);
     else if (deleting && ui.onEntryDeleted)
       ui.onEntryDeleted(ref);
-    return;
   }
-  flushRebuild();
 }
 
-// A small bar at the top centre: Play/Stop and which mode the game is in.
-void ImGuiLayer::drawToolbar(DebugUiContext &ui) {
-  const ImVec2 display = ImGui::GetIO().DisplaySize;
-  ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, 10.0f), ImGuiCond_Always,
-                          ImVec2(0.5f, 0.0f));
-  ImGui::Begin("##toolbar", nullptr,
-               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                   ImGuiWindowFlags_NoScrollbar |
-                   ImGuiWindowFlags_AlwaysAutoResize |
-                   ImGuiWindowFlags_NoSavedSettings);
+// The bar across the top: the File and View menus, then Play/Stop, the
+// gizmo's mode and Snap, and the scene's name on the right.
+void ImGuiLayer::drawMenuBar(DebugUiContext &ui) {
+  if (!ImGui::BeginMainMenuBar())
+    return;
+  if (ImGui::BeginMenu("File")) {
+    if (ImGui::MenuItem("Save", "Ctrl+S") && ui.onSave)
+      ui.onSave();
+    if (ImGui::MenuItem("Save as...", "Ctrl+Shift+S") && ui.onSaveAs)
+      ui.onSaveAs();
+    ImGui::Separator();
+    if (ImGui::MenuItem("Quit", "Esc") && ui.onQuit)
+      ui.onQuit();
+    ImGui::EndMenu();
+  }
+  if (ImGui::BeginMenu("View")) {
+    for (int i = 0; i < kPanelCount; ++i)
+      if (ImGui::MenuItem(kPanelNames[i], nullptr, &panelOpen[i]))
+        ImGui::MarkIniSettingsDirty();
+    ImGui::Separator();
+    if (ImGui::MenuItem("Reset layout"))
+      resetLayoutRequested = true;
+    ImGui::EndMenu();
+  }
+  ImGui::Separator();
   if (ImGui::Button(ui.playing ? "Stop" : "Play") && ui.onTogglePlay)
     ui.onTogglePlay();
-  ImGui::SameLine();
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextDisabled(ui.playing ? "Playing (F5 stops)" : "Editing (F5 plays)");
+  ImGui::SetItemTooltip(ui.playing ? "F5 stops" : "F5 plays");
+  ImGui::TextDisabled(ui.playing ? "Playing" : "Editing");
+  if (!ui.playing) {
+    // The gizmo's mode, for the touchpad as much as for keys 1, 2, 3.
+    static constexpr std::pair<GizmoMode, const char *> kModes[] = {
+        {GizmoMode::Move, "Move"},
+        {GizmoMode::Rotate, "Rotate"},
+        {GizmoMode::Scale, "Scale"}};
+    int key = 1;
+    for (const auto &[mode, label] : kModes) {
+      const bool selected = mode == gizmoMode;
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            selected ? hex(kPurple) : hex(kBase3));
+      if (ImGui::Button(label))
+        gizmoMode = mode;
+      ImGui::PopStyleColor();
+      ImGui::SetItemTooltip("Key %d", key++);
+    }
+    ImGui::Checkbox("Snap", &gizmoSnap);
+    ImGui::SetItemTooltip(
+        "Or hold Ctrl: 0.25 m steps, 15\u00b0 steps and 0.1 scale steps");
+  }
   if (ui.sceneName) {
-    ImGui::SameLine();
+    // On the right.
+    const char *unsaved = ui.sceneUnsaved ? " (unsaved)" : "";
+    const float width = ImGui::CalcTextSize(ui.sceneName->c_str()).x +
+                        ImGui::CalcTextSize(unsaved).x +
+                        ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX(),
+                             ImGui::GetWindowWidth() - width));
     ImGui::TextUnformatted(ui.sceneName->c_str());
     if (ui.sceneUnsaved) {
       ImGui::SameLine(0.0f, 4.0f);
@@ -744,29 +873,7 @@ void ImGuiLayer::drawToolbar(DebugUiContext &ui) {
       ImGui::SetItemTooltip("Ctrl+S saves");
     }
   }
-  if (!ui.playing) {
-    // The gizmo's mode, for the touchpad as much as for keys 1, 2, 3.
-    static constexpr std::pair<GizmoMode, const char *> kModes[] = {
-        {GizmoMode::Move, "Move"},
-        {GizmoMode::Rotate, "Rotate"},
-        {GizmoMode::Scale, "Scale"}};
-    int key = 1;
-    for (const auto &[mode, label] : kModes) {
-      ImGui::SameLine();
-      const bool selected = mode == gizmoMode;
-      ImGui::PushStyleColor(ImGuiCol_Button,
-                            selected ? hex(kPurple) : hex(kBase3));
-      if (ImGui::Button(label))
-        gizmoMode = mode;
-      ImGui::PopStyleColor();
-      ImGui::SetItemTooltip("Key %d", key++);
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox("Snap", &gizmoSnap);
-    ImGui::SetItemTooltip(
-        "Or hold Ctrl: 0.25 m steps, 15\u00b0 steps and 0.1 scale steps");
-  }
-  ImGui::End();
+  ImGui::EndMainMenuBar();
 }
 
 namespace {
@@ -1089,47 +1196,6 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
                     kRingSegments, hot == 0 ? 4.0f : 2.5f);
   draw->AddCircleFilled(at(*nowPixel), 3.0f, colourU32(kText));
   draw->PopClipRect();
-}
-
-// Pills wrap onto a second row when the first is full. The selected one is
-// filled purple, the rest are text until hovered.
-void ImGuiLayer::drawTabPills() {
-  static constexpr std::pair<SidebarTab, const char *> kTabs[] = {
-      {SidebarTab::Scene, "Scene"},
-      {SidebarTab::Render, "Render"},
-      {SidebarTab::Lighting, "Lighting"},
-      {SidebarTab::Debug, "Debug"},
-      {SidebarTab::Physics, "Physics"},
-      {SidebarTab::Performance, "Performance"},
-      {SidebarTab::Camera, "Camera"},
-  };
-  const ImGuiStyle &style = ImGui::GetStyle();
-  const float rowLimit = ImGui::GetContentRegionAvail().x;
-  float rowWidth = 0.0f;
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
-                      ImGui::GetFrameHeight() * 0.5f);
-  for (const auto &[tab, label] : kTabs) {
-    const float width =
-        ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
-    if (rowWidth > 0.0f &&
-        rowWidth + style.ItemSpacing.x + width <= rowLimit) {
-      ImGui::SameLine();
-      rowWidth += style.ItemSpacing.x + width;
-    } else {
-      rowWidth = width;
-    }
-    const bool selected = tab == activeTab;
-    ImGui::PushStyleColor(ImGuiCol_Text, hex(selected ? kText : kTextDim));
-    ImGui::PushStyleColor(ImGuiCol_Button,
-                          selected ? hex(kPurple) : hex(0, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          selected ? hex(kPurple) : hex(kBase3));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, hex(kPurpleBright));
-    if (ImGui::Button(label))
-      activeTab = tab;
-    ImGui::PopStyleColor(4);
-  }
-  ImGui::PopStyleVar();
 }
 
 void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {

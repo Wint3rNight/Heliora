@@ -314,6 +314,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 15. ImGui overlay
     imguiLayer.init(window, device, renderPassManager.getImGuiRenderPass(),
                     static_cast<uint32_t>(swapchain.getImageCount()));
+    // The panel layout lives next to the scenes and settings, so Debug and
+    // Release share one.
+    imguiLayer.setLayoutFile(std::filesystem::is_directory("Resources")
+                                 ? "Resources/editor_layout.ini"
+                                 : "../Resources/editor_layout.ini");
     imguiLayer.createFramebuffers(device.getLogicalDevice(),
                                   renderPassManager.getImGuiRenderPass(),
                                   swapchain.getExtent(), swapchain.getImages());
@@ -2027,11 +2032,21 @@ void VulkanRenderer::recreateSceneTargets(VkExtent2D extent) {
                    .count());
 }
 
-// Where the scene goes in the window. For now the whole window; the docked
-// editor layout narrows it to the space its panels leave.
+// Where the scene goes in the window: the space the docked panels left last
+// frame, or the whole window with the UI hidden. Window pixels are the
+// swapchain's pixels here (the game runs on X11, which doesn't scale).
 void VulkanRenderer::updateSceneArea() {
   const VkExtent2D window = swapchain.getExtent();
-  sceneArea = {glm::vec2(0.0f), glm::vec2(window.width, window.height)};
+  const glm::vec2 windowSize(window.width, window.height);
+  sceneArea = {glm::vec2(0.0f), windowSize};
+  if (const std::optional<SceneViewport> docked =
+          imguiLayer.layoutSceneArea()) {
+    const glm::vec2 lo = glm::clamp(docked->origin, glm::vec2(0.0f),
+                                    windowSize);
+    const glm::vec2 hi =
+        glm::clamp(docked->origin + docked->size, lo, windowSize);
+    sceneArea = {glm::floor(lo), glm::floor(hi) - glm::floor(lo)};
+  }
 }
 
 // The scene's finished picture into its area of the window, stretched if
@@ -3778,6 +3793,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.sceneUnsaved = sceneUnsaved;
   ui.onSave = [this] { requestSave(); };
   ui.onSaveAs = [this] { requestSaveAs(); };
+  ui.onQuit = [this] { requestQuit(); };
   ui.saveStatus = &saveStatus;
   ui.prompt = &prompt;
   ui.onPromptAnswer = [this](PromptAnswer answer, const std::string &text) {

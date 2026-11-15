@@ -234,16 +234,19 @@ void RenderPassManager::createSsgiRenderPass(VkDevice device,
 }
 
 // ---------------------------------------------------------------------------
-// Composition render pass (3 attachments: swapchain + colorBuffer + history)
+// Composition render pass (3 attachments: scene output + colorBuffer + history)
 // Subpass 0: SSR composite (samples litBuffer + G-buffer) → colorBuffer
 // Subpass 1: TAA + ACES+gamma (colorBuffer as input attachment, prev-history
-//            sampled, depth sampled) → swapchain (LDR) + history (HDR)
+//            sampled, depth sampled) → scene output (LDR) + history (HDR)
+// The scene output is the scene area's size and is copied into the window
+// afterwards, so the render pass leaves it ready to copy from.
 // ---------------------------------------------------------------------------
 void RenderPassManager::createRenderPass(VkDevice device,
                                          VkFormat swapchainFormat,
                                          VkFormat colorFormat,
                                          VkFormat historyFormat) {
-  // Attachment 0: swapchain output (LDR, post-tonemap)
+  // Attachment 0: the scene's finished picture (LDR, post-tonemap), in the
+  // swapchain's format so copying it into the window is a plain blit.
   VkAttachmentDescription swapAtt = {};
   swapAtt.format = swapchainFormat;
   swapAtt.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -252,7 +255,7 @@ void RenderPassManager::createRenderPass(VkDevice device,
   swapAtt.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   swapAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   swapAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  swapAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // ImGui renders on top before present
+  swapAtt.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
   // Attachment 1: HDR colorBuffer (written by subpass 0, read by subpass 1)
   VkAttachmentDescription colorAtt = {};
@@ -334,15 +337,18 @@ void RenderPassManager::createRenderPass(VkDevice device,
   deps[1].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
 
   // Subpass 1 → external (covers history → SHADER_READ_ONLY for next frame
-  // and the swapchain → ImGui pass).
+  // and the scene output → the copy into the window).
   deps[2].srcSubpass = 1;
   deps[2].dstSubpass = VK_SUBPASS_EXTERNAL;
   deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   deps[2].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                         VK_PIPELINE_STAGE_TRANSFER_BIT |
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
   deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+  deps[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                          VK_ACCESS_TRANSFER_READ_BIT |
+                          VK_ACCESS_MEMORY_READ_BIT;
 
   // External → subpass 1: ensure any earlier TAA fragment-shader read of the
   // history image now being written completes before we start writing it.

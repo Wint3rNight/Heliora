@@ -11,8 +11,9 @@ namespace {
 
 struct LinePush {
   glm::mat4 viewProj;
-  glm::vec2 invExtent;
+  glm::vec2 invAreaSize; // to turn a pixel in the area into a depth UV
   glm::vec2 nearFar;
+  glm::vec2 areaOrigin; // the scene area's corner in the window
 };
 
 VkShaderModule loadShader(VkDevice device, const char *path) {
@@ -224,21 +225,31 @@ void DebugLinePass::upload(const VulkanDevice &device, uint32_t imageIndex,
 }
 
 void DebugLinePass::record(VkCommandBuffer cmd, uint32_t imageIndex,
-                           VkExtent2D extent, const glm::mat4 &viewProj,
-                           float nearPlane, float farPlane) const {
-  if (imageIndex >= vertexCounts.size() || vertexCounts[imageIndex] == 0)
+                           const SceneViewport &area, VkExtent2D framebuffer,
+                           const glm::mat4 &viewProj, float nearPlane,
+                           float farPlane) const {
+  if (imageIndex >= vertexCounts.size() || vertexCounts[imageIndex] == 0 ||
+      area.size.x < 1.0f || area.size.y < 1.0f)
     return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-  const VkViewport viewport = {0.0f, 0.0f, float(extent.width),
-                               float(extent.height), 0.0f, 1.0f};
-  const VkRect2D scissor = {{0, 0}, extent};
+  // The lines land where the scene picture is, so they line up with it even
+  // while it's stretched during a resize.
+  const VkViewport viewport = {area.origin.x, area.origin.y, area.size.x,
+                               area.size.y, 0.0f, 1.0f};
+  const glm::ivec2 lo = glm::clamp(glm::ivec2(area.origin), glm::ivec2(0),
+                                   glm::ivec2(framebuffer.width,
+                                              framebuffer.height));
+  const glm::ivec2 hi = glm::clamp(glm::ivec2(area.origin + area.size),
+                                   lo, glm::ivec2(framebuffer.width,
+                                                  framebuffer.height));
+  const VkRect2D scissor = {{lo.x, lo.y},
+                            {uint32_t(hi.x - lo.x), uint32_t(hi.y - lo.y)}};
   vkCmdSetViewport(cmd, 0, 1, &viewport);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
                           &depthSets[imageIndex], 0, nullptr);
-  const LinePush push = {viewProj,
-                         glm::vec2(1.0f / extent.width, 1.0f / extent.height),
-                         glm::vec2(nearPlane, farPlane)};
+  const LinePush push = {viewProj, 1.0f / area.size,
+                         glm::vec2(nearPlane, farPlane), area.origin};
   vkCmdPushConstants(cmd, layout,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                      0, sizeof(push), &push);

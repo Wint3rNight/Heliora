@@ -101,7 +101,9 @@ public:
                            VkSampler sampler, VkSampler ssaoSampler);
 
   // (Re)creates per-swapchain-image input attachment descriptor sets.
-  void recreateInputSets(VkDevice device, const VulkanSwapchain &swapchain);
+  // One set per swap image, each the scene's HDR colour buffer for it.
+  void recreateInputSets(VkDevice device,
+                         const std::vector<VkImageView> &colorBufferViews);
 
   // (Re)creates TAA descriptor sets — historyCount * swapCount entries.
   // Layout for set s = historyIndex * swapCount + swapIdx:
@@ -174,6 +176,6 @@ private:
   void createCountSizedPools(VkDevice device, size_t swapchainImageCount);
   void createDescriptorSets(VkDevice device, size_t swapchainImageCount);
   void createVpDescriptorSets(VkDevice device, size_t swapchainImageCount);
-  void createInputDescriptorSets(VkDevice device,
-                                 const VulkanSwapchain &swapchain);
+  void createInputDescriptorSets(
+      VkDevice device, const std::vector<VkImageView> &colorBufferViews);
 };

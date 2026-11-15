@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@
 #include "RenderPassManager.h"
 #include "Scene.h"
 #include "SceneNode.h"
+#include "SceneViewport.h"
 #include "SettingsFile.h"
 #include "ShadowPass.h"
 #include "SsaoPass.h"
@@ -127,7 +129,12 @@ public:
   void redoEdit() { requestHistoryStep(HistoryStep::Redo); }
   // Left click in edit mode: selects what's under the pixel (window
   // coordinates), or nothing. A click on any copy in a grid selects the grid.
-  void selectAt(glm::vec2 pixel, glm::vec2 windowSize);
+  // A click outside the scene's area does nothing.
+  void selectAt(glm::vec2 windowPixel);
+  // Whether a window pixel is on the scene, not on a panel around it.
+  bool sceneContains(glm::vec2 windowPixel) const {
+    return sceneArea.contains(windowPixel);
+  }
 
   SceneNode &getRootNode();
   void updateCameraView(const glm::mat4 &viewMatrix,
@@ -323,6 +330,18 @@ private:
   // --- Subsystems ---
   VulkanDevice device;
   VulkanSwapchain swapchain;
+
+  // The scene has its own size and place in the window (step 1.1c): its
+  // images are sceneExtent, and each frame its finished picture is copied
+  // into sceneArea, stretched while the area is being resized.
+  VkExtent2D sceneExtent = {};
+  SceneViewport sceneArea;
+  std::optional<SceneResizeTracker> sceneResize;
+  VkFormat sceneColorFormat = VK_FORMAT_UNDEFINED; // HDR, between SSR and TAA
+  std::vector<AllocatedImage> sceneColorImages;    // one per swap image
+  std::vector<ImageViewHandle> sceneColorViews;
+  std::vector<AllocatedImage> sceneOutputImages; // the finished picture
+  std::vector<ImageViewHandle> sceneOutputViews;
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;
   VulkanPipeline pipeline;
@@ -498,6 +517,13 @@ private:
   void createThreadedCommandResources();
   void cleanupThreadedCommandResources();
   void registerSwapchainResources();
+  // Every image the scene's size decides, and what points at them.
+  void createSceneTargets();
+  void cleanupSceneTargets();
+  void recreateSceneTargets(VkExtent2D extent);
+  void createSceneColorImages();
+  void updateSceneArea();
+  void copySceneToWindow(VkCommandBuffer cmd, uint32_t imageIndex);
   void noteGBufferFinalLayouts(uint32_t imageIndex);
   void noteLitFinalLayout(uint32_t imageIndex);
   void noteCompositeFinalLayouts(uint32_t imageIndex, uint32_t historyIndex);

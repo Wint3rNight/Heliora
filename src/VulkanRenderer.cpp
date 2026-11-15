@@ -165,6 +165,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
             VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
 
     gBufferDepthFormat = shadowDepthFormat;
+    sceneColorFormat = colorFormat;
 
     VkFormat gb0Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
     VkFormat gb1Fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -185,10 +186,27 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     renderPassManager.createImGuiRenderPass(device.getLogicalDevice(),
                                             swapchainFormat);
 
-    // 4. Swapchain (images + colorBuffer + command buffers — composite
-    //     framebuffers are owned by this class and created below in step 8c)
+    // 4. Swapchain (images + command buffers). The scene starts at the
+    //    window's size, filling it, until something says otherwise.
     swapchain.init(device, window);
     registerSwapchainResources();
+    sceneExtent = swapchain.getExtent();
+    sceneArea = {glm::vec2(0.0f),
+                 glm::vec2(sceneExtent.width, sceneExtent.height)};
+    sceneResize.emplace(glm::ivec2(sceneExtent.width, sceneExtent.height));
+    {
+      // The finished picture reaches the window by a blit, stretched while
+      // the scene's area is resized.
+      VkFormatProperties props = {};
+      vkGetPhysicalDeviceFormatProperties(device.getPhysicalDevice(),
+                                          swapchainFormat, &props);
+      const VkFormatFeatureFlags needed =
+          VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      if ((props.optimalTilingFeatures & needed) != needed)
+        throw std::runtime_error(
+            "The swapchain format can't be blitted with filtering here");
+    }
 
     // 5. Shadow resources (directional + point)
     shadowPass.create(device, renderPassManager.getShadowRenderPass(),
@@ -207,7 +225,6 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                            swapchain.getImageCount(),
                            shareUboWithCompute ? sharedUboFamilies : nullptr,
                            shareUboWithCompute ? 2u : 0u);
-    descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
     descriptorManager.updateShadowMapDescriptor(
         device.getLogicalDevice(), shadowPass.csmView(),
         shadowPass.pointCubeView(), shadowPass.csmSampler(),
@@ -216,81 +233,12 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 7. Texture manager (samplers only at this point)
     textureManager.init(device, pipelineCache.get());
 
-    // 8. Lit-buffer resources (created BEFORE G-buffer set update so that
-    //    recreateGBufferSets has the lit views to bind).
-    createLitResources();
-    bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                     litViews, pipelineCache.get());
-
-    // 8a. SSGI bounce-buffer images + framebuffers. Sampled by lit.frag,
-    //     so the G-buffer descriptor set (set 1) gets a 6th binding
-    //     pointing at these views.
-    ssgiPass.create(device, swapchain.getExtent(), litFormat,
-                    renderPassManager.getSsgiRenderPass(),
-                    MAX_FRAMES_DRAWS + 1);
-    ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                    descriptorManager, pipelineCache.get());
-
-    // 8b. TAA history images. Format matches litFormat so they live in the
-    //     same HDR-precision domain.
-    createTaaResources();
-
-    // 8c. Composite framebuffers (3 attachments: swap + colorBuffer + history)
-    //     Must be created after TAA history images exist and after the
-    //     composition render pass is created.
-    {
-      std::vector<VkImageView> swapViews;
-      std::vector<VkImageView> colorViews;
-      std::vector<VkImageView> historyViews;
-      swapViews.reserve(swapchain.getImageCount());
-      colorViews.reserve(swapchain.getImageCount());
-      historyViews.reserve(taaHistoryViews.size());
-      for (size_t i = 0; i < swapchain.getImageCount(); ++i) {
-        swapViews.push_back(swapchain.getSwapImageView(i));
-        colorViews.push_back(swapchain.getColorBufferView(i));
-      }
-      for (const ImageViewHandle &view : taaHistoryViews)
-        historyViews.push_back(view.get());
-      compositePass.create(device.getLogicalDevice(),
-                           renderPassManager.getRenderPass(),
-                           swapchain.getExtent(), swapViews, colorViews,
-                           historyViews);
-    }
-
-    // 9. G-buffer images, framebuffers, descriptor sets (binds lit views too)
-    createGBuffer();
-    createLitFramebuffers();
-
-    // 9b. TAA descriptor sets (history-prev + depth + colorBuffer-current
-    //     + bloom pyramid result).
-    //     Needs taaHistory views (from createTaaResources), gBufferDepth
-    //     views (from createGBuffer), colorBuffer views (from swapchain init),
-    //     and bloom mip 0 views (from BloomPass). Order: must
-    //     follow all four.
-    {
-      std::vector<VkImageView> histViews;
-      std::vector<VkImageView> depthViews;
-      std::vector<VkImageView> colorViews;
-      std::vector<VkImageView> bloomViews;
-      histViews.reserve(taaHistoryViews.size());
-      depthViews.reserve(gBufferDepthViews.size());
-      colorViews.reserve(swapchain.getImageCount());
-      bloomViews.reserve(swapchain.getImageCount());
-      for (const auto &v : taaHistoryViews)
-        histViews.push_back(v.get());
-      for (const auto &v : gBufferDepthViews)
-        depthViews.push_back(v.get());
-      for (size_t i = 0; i < swapchain.getImageCount(); ++i)
-        colorViews.push_back(swapchain.getColorBufferView(i));
-      bloomViews = bloomPass.mip0Views();
-      descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
-                                        depthViews, colorViews, bloomViews,
-                                        taaSampler);
-      debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
-                           pipelineCache.get());
-      debugLinePass.setDepthViews(device.getLogicalDevice(), depthViews,
-                                  taaSampler);
-    }
+    // 8. Every image the scene's size decides: lit, bloom, SSGI, SSAO, TAA
+    //    history, the composite's, the G-buffer, the GPU-driven pass's HZB,
+    //    auto-exposure, and the descriptor sets that point at them.
+    debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
+                         pipelineCache.get());
+    createSceneTargets();
 
     // 10. Pipeline (needs all 5 render passes + descriptor layouts)
     pipeline.createPipelines(
@@ -299,20 +247,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         renderPassManager.getShadowRenderPass(),
         renderPassManager.getSsgiRenderPass(), swapchain.getExtent(),
         pipelineCache.get(), descriptorManager);
-    gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
-                                renderPassManager.getGBufferRenderPass(),
-                                swapchain.getExtent(), gBufferDepthViews,
-                                pipelineCache.get());
     materialProbePass.create(device, MAX_FRAMES_DRAWS, descriptorManager,
                              pipelineCache.get());
 
     // 10. IBL resources (requires textureManager and descriptorManager)
     initIBL();
-
-    // 10b. Auto-exposure compute resources. Must come after createLitResources()
-    //      (binds litViews) and after swapchain init (knows image count).
-    autoExposurePass.create(device, swapchain.getExtent(), litViews,
-                            litSampler, pipelineCache.get());
 
     // 11. Synchronization
     createSynchronization();
@@ -1228,12 +1167,15 @@ bool VulkanRenderer::entryHasBody(SceneEntryRef ref) const {
   return false;
 }
 
-void VulkanRenderer::selectAt(glm::vec2 pixel, glm::vec2 windowSize) {
-  if (playing || !physics || windowSize.x <= 0.0f || windowSize.y <= 0.0f)
+void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
+  if (playing || !physics || !sceneArea.contains(windowPixel))
     return;
-  // Unjittered, so the ray matches what's on screen on average.
-  const PickRay ray = rayFromScreen(
-      pixel, windowSize, glm::inverse(taaBaseProjection * sceneUbo.view));
+  // Unjittered, so the ray matches what's on screen on average. The area's
+  // size, not the images', so it also matches while the picture is
+  // stretched during a resize.
+  const PickRay ray =
+      rayFromScreen(sceneArea.toScene(windowPixel), sceneArea.size,
+                    glm::inverse(taaBaseProjection * sceneUbo.view));
   std::optional<SceneEntryRef> picked;
   float nearest = imguiDrawDistance;
   if (const std::optional<PhysicsRayHit> hit =
@@ -1353,27 +1295,19 @@ void VulkanRenderer::updateMaterialProbePixel() {
   double cursorX = 0.0;
   double cursorY = 0.0;
   glfwGetCursorPos(window, &cursorX, &cursorY);
-
-  int fbWidth = 0;
-  int fbHeight = 0;
-  glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-  VkExtent2D extent = swapchain.getExtent();
-  if (fbWidth <= 0 || fbHeight <= 0 || extent.width == 0 ||
-      extent.height == 0) {
-    materialProbePixel = glm::uvec2(extent.width, extent.height);
+  const glm::vec2 cursor(cursorX, cursorY);
+  // Off the scene reads nothing (the probe skips a pixel past the edge).
+  const glm::uvec2 none(sceneExtent.width, sceneExtent.height);
+  if (sceneExtent.width == 0 || sceneExtent.height == 0 ||
+      !sceneArea.contains(cursor)) {
+    materialProbePixel = none;
     return;
   }
-
-  const double scaledX = cursorX * double(extent.width) / double(fbWidth);
-  const double scaledY = cursorY * double(extent.height) / double(fbHeight);
-  if (scaledX < 0.0 || scaledY < 0.0 || scaledX >= double(extent.width) ||
-      scaledY >= double(extent.height)) {
-    materialProbePixel = glm::uvec2(extent.width, extent.height);
-    return;
-  }
-
-  materialProbePixel =
-      glm::uvec2(static_cast<uint32_t>(scaledX), static_cast<uint32_t>(scaledY));
+  // The area can be a different size from the images for a few frames
+  // while it's resized; the picture is stretched to fit it.
+  const glm::vec2 pixel = sceneArea.toScene(cursor) *
+                          glm::vec2(none) / sceneArea.size;
+  materialProbePixel = glm::min(glm::uvec2(pixel), none - 1u);
 }
 
 // Draw
@@ -1401,6 +1335,18 @@ void VulkanRenderer::draw() {
     SceneModelEntry entry = std::move(*pendingSpawn);
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
+  }
+  // The scene's area this frame, and its images rebuilt once a new size has
+  // settled (a divider let go, a window resize finished).
+  updateSceneArea();
+  {
+    const bool mouseDown =
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS ||
+        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+    if (const std::optional<glm::ivec2> size =
+            sceneResize->update(glm::ivec2(sceneArea.size), mouseDown))
+      recreateSceneTargets({uint32_t(size->x), uint32_t(size->y)});
   }
   if (historyRequest != HistoryStep::None)
     applyHistoryStep();
@@ -1589,7 +1535,7 @@ void VulkanRenderer::draw() {
   uint32_t haltonIdx = (taaFrameCounter % 8) + 1; // skip i=0 → (0,0)
   glm::vec2 jitterPx = glm::vec2(halton(haltonIdx, 2) - 0.5f,
                                  halton(haltonIdx, 3) - 0.5f);
-  VkExtent2D ext = swapchain.getExtent();
+  VkExtent2D ext = sceneExtent;
   glm::vec2 jitterNDC = glm::vec2(jitterPx.x * 2.0f / float(ext.width),
                                   jitterPx.y * 2.0f / float(ext.height));
   // prevViewProj must hold the *jittered* VP of the prev frame so that
@@ -1729,8 +1675,10 @@ void VulkanRenderer::draw() {
   }
 
   uint64_t renderFinishedSignalValue = 0; // binary signal, ignored
-  VkPipelineStageFlags postWaitStage =
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  // TRANSFER for the copy into the swap image, the first thing that writes it.
+  VkPipelineStageFlags postWaitStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT;
   VkTimelineSemaphoreSubmitInfo postTimelineInfo = {};
   postTimelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
   postTimelineInfo.waitSemaphoreValueCount = 1;
@@ -1791,10 +1739,21 @@ void VulkanRenderer::draw() {
 // Swapchain recreation
 
 void VulkanRenderer::recreateSwapChain() {
+  // Only what the window owns: its images, the UI's framebuffers and the
+  // per-image sync and uniform buffers. The scene's images follow the
+  // scene's area, which updateSceneArea and sceneResize look after, unless
+  // the number of swap images changed: everything per image is remade then.
   vkDeviceWaitIdle(device.getLogicalDevice());
-  renderResources.clear();
+  const size_t oldImageCount = swapchain.getImageCount();
+  for (size_t i = 0; i < oldImageCount; ++i)
+    renderResources.unregisterImage(swapchain.getSwapImage(i));
   cleanupAsyncFrameCommandBuffers();
   swapchain.recreate(device, window);
+  const bool imageCountChanged = swapchain.getImageCount() != oldImageCount;
+  if (imageCountChanged) {
+    cleanupSceneTargets();
+    renderResources.clear();
+  }
   registerSwapchainResources();
 
   // Present-mode toggles commonly change minImageCount; every per-image
@@ -1827,53 +1786,9 @@ void VulkanRenderer::recreateSwapChain() {
   imguiLayer.createFramebuffers(device.getLogicalDevice(),
                                 renderPassManager.getImGuiRenderPass(),
                                 swapchain.getExtent(), swapchain.getImages());
-
-  autoExposurePass.cleanup();
-  compositePass.cleanup();
-  gpuDrivenGBufferPass.cleanup();
-  cleanupLitFramebuffers();
-  cleanupGBuffer();
-  ssaoPass.cleanup();
-  bloomPass.cleanup();
-  ssgiPass.cleanup();
-  cleanupLitResources();
-  cleanupTaaResources();
-  createLitResources();
-  bloomPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                   litViews, pipelineCache.get());
-  ssgiPass.create(device, swapchain.getExtent(), litFormat,
-                  renderPassManager.getSsgiRenderPass(),
-                  MAX_FRAMES_DRAWS + 1);
-  ssaoPass.create(device, swapchain.getExtent(), swapchain.getImageCount(),
-                  descriptorManager, pipelineCache.get());
-  createTaaResources();
-  {
-    std::vector<VkImageView> swapViews;
-    std::vector<VkImageView> colorViews;
-    std::vector<VkImageView> historyViews;
-    swapViews.reserve(swapchain.getImageCount());
-    colorViews.reserve(swapchain.getImageCount());
-    historyViews.reserve(taaHistoryViews.size());
-    for (size_t i = 0; i < swapchain.getImageCount(); ++i) {
-      swapViews.push_back(swapchain.getSwapImageView(i));
-      colorViews.push_back(swapchain.getColorBufferView(i));
-    }
-    for (const ImageViewHandle &view : taaHistoryViews)
-      historyViews.push_back(view.get());
-    compositePass.create(device.getLogicalDevice(),
-                         renderPassManager.getRenderPass(),
-                         swapchain.getExtent(), swapViews, colorViews,
-                         historyViews);
-  }
-  createGBuffer();
-  createLitFramebuffers();
-  gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
-                              renderPassManager.getGBufferRenderPass(),
-                              swapchain.getExtent(), gBufferDepthViews,
-                              pipelineCache.get());
-  // Recreate auto-exposure AFTER lit (descriptors reference litViews).
-  autoExposurePass.create(device, swapchain.getExtent(), litViews, litSampler,
-                          pipelineCache.get());
+  if (imageCountChanged)
+    createSceneTargets();
+  updateSceneArea();
 
   imagesInFlight.assign(swapchain.getImageCount(), VK_NULL_HANDLE);
   frameImageInFlight.assign(MAX_FRAMES_DRAWS,
@@ -1897,38 +1812,15 @@ void VulkanRenderer::recreateSwapChain() {
     }
   }
 
-  descriptorManager.recreateInputSets(device.getLogicalDevice(), swapchain);
-  {
-    std::vector<VkImageView> histViews;
-    std::vector<VkImageView> depthViews;
-    std::vector<VkImageView> colorViews;
-    std::vector<VkImageView> bloomViews;
-    histViews.reserve(taaHistoryViews.size());
-    depthViews.reserve(gBufferDepthViews.size());
-    colorViews.reserve(swapchain.getImageCount());
-    bloomViews.reserve(swapchain.getImageCount());
-    for (const auto &v : taaHistoryViews)
-      histViews.push_back(v.get());
-    for (const auto &v : gBufferDepthViews)
-      depthViews.push_back(v.get());
-    for (size_t i = 0; i < swapchain.getImageCount(); ++i)
-      colorViews.push_back(swapchain.getColorBufferView(i));
-    bloomViews = bloomPass.mip0Views();
-    descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
-                                      depthViews, colorViews, bloomViews,
-                                      taaSampler);
-    debugLinePass.setDepthViews(device.getLogicalDevice(), depthViews,
-                                taaSampler);
-  }
-
   createAsyncFrameCommandBuffers();
-  rebuildProjection();
 }
 
 void VulkanRenderer::registerSwapchainResources() {
-  renderResources.clear();
   const size_t count = swapchain.getImageCount();
-  renderResources.resizeFrames(count);
+  // Resizing wipes every frame's targets, so only when the count changed;
+  // the scene's images are filled in by createSceneTargets.
+  if (renderResources.frameCount() != count)
+    renderResources.resizeFrames(count);
 
   const QueueFamilyIndices queues = device.getQueueFamilies();
   const uint32_t graphicsFamily = static_cast<uint32_t>(queues.graphicsFamily);
@@ -1945,16 +1837,269 @@ void VulkanRenderer::registerSwapchainResources() {
         {"swapchain[" + std::to_string(i) + "]", swapchain.getSwapImage(i),
          swapchain.getImageFormat(), VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
          VK_IMAGE_LAYOUT_UNDEFINED, swapSharing, graphicsFamily});
+    renderResources.frame(i).swapchainImage = swapchain.getSwapImage(i);
+  }
+}
+
+namespace {
+
+AllocatedImage makeSceneImage(VmaAllocator allocator, VkExtent2D extent,
+                              VkFormat format, VkImageUsageFlags usage) {
+  VkImageCreateInfo ci = {};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.extent = {extent.width, extent.height, 1};
+  ci.mipLevels = 1;
+  ci.arrayLayers = 1;
+  ci.format = format;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  ci.usage = usage;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  VmaAllocationCreateInfo aci = {};
+  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  if (vmaCreateImage(allocator, &ci, &aci, &image, &allocation, nullptr) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to create a scene image");
+  return AllocatedImage(allocator, image, allocation);
+}
+
+ImageViewHandle makeColorView(VkDevice device, VkImage image,
+                              VkFormat format) {
+  VkImageViewCreateInfo ci = {};
+  ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  ci.image = image;
+  ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  ci.format = format;
+  ci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkImageView view = VK_NULL_HANDLE;
+  if (vkCreateImageView(device, &ci, nullptr, &view) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create a scene image view");
+  return ImageViewHandle(device, view);
+}
+
+} // namespace
+
+// The composite's two images per swap image: the HDR colour buffer between
+// the SSR and TAA subpasses, and the finished picture that's copied into the
+// window.
+void VulkanRenderer::createSceneColorImages() {
+  const size_t count = swapchain.getImageCount();
+  const uint32_t graphicsFamily =
+      static_cast<uint32_t>(device.getQueueFamilies().graphicsFamily);
+  sceneColorImages.resize(count);
+  sceneColorViews.resize(count);
+  sceneOutputImages.resize(count);
+  sceneOutputViews.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    // SAMPLED is needed for TAA's 3×3 neighborhood clamp: the tonemap subpass
+    // reads the center pixel via subpassInput (zero-overhead, tile-local) and
+    // simultaneously samples 8 neighbors via a normal sampler binding. Within
+    // a single subpass it is legal to bind the same view as both input
+    // attachment AND combined-image-sampler — both read at SHADER_READ_ONLY,
+    // no writes are happening in this subpass, so there is no feedback loop.
+    sceneColorImages[i] = makeSceneImage(
+        device.getAllocator(), sceneExtent, sceneColorFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    sceneColorViews[i] = makeColorView(device.getLogicalDevice(),
+                                       sceneColorImages[i].get(),
+                                       sceneColorFormat);
+    sceneOutputImages[i] = makeSceneImage(
+        device.getAllocator(), sceneExtent, swapchain.getImageFormat(),
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    sceneOutputViews[i] = makeColorView(device.getLogicalDevice(),
+                                        sceneOutputImages[i].get(),
+                                        swapchain.getImageFormat());
+
     renderResources.registerImage(
         {"compositeColor[" + std::to_string(i) + "]",
-         swapchain.getColorBufferImage(i), swapchain.getColorBufferFormat(),
+         sceneColorImages[i].get(), sceneColorFormat,
          VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED,
          VK_SHARING_MODE_EXCLUSIVE, graphicsFamily});
-
+    renderResources.registerImage(
+        {"sceneOutput[" + std::to_string(i) + "]", sceneOutputImages[i].get(),
+         swapchain.getImageFormat(), VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
+         VK_IMAGE_LAYOUT_UNDEFINED, VK_SHARING_MODE_EXCLUSIVE,
+         graphicsFamily});
     FrameRenderTargets &targets = renderResources.frame(i);
-    targets.swapchainImage = swapchain.getSwapImage(i);
-    targets.colorBuffer = swapchain.getColorBufferImage(i);
+    targets.colorBuffer = sceneColorImages[i].get();
+    targets.sceneOutput = sceneOutputImages[i].get();
   }
+}
+
+void VulkanRenderer::createSceneTargets() {
+  createSceneColorImages();
+  createLitResources();
+  bloomPass.create(device, sceneExtent, swapchain.getImageCount(), litViews,
+                   pipelineCache.get());
+  // SSGI's bounce images are sampled by lit.frag, so the G-buffer
+  // descriptor set (made in createGBuffer) points at them.
+  ssgiPass.create(device, sceneExtent, litFormat,
+                  renderPassManager.getSsgiRenderPass(), MAX_FRAMES_DRAWS + 1);
+  ssaoPass.create(device, sceneExtent, swapchain.getImageCount(),
+                  descriptorManager, pipelineCache.get());
+  createTaaResources();
+  {
+    std::vector<VkImageView> outputViews;
+    std::vector<VkImageView> colorViews;
+    std::vector<VkImageView> historyViews;
+    for (size_t i = 0; i < swapchain.getImageCount(); ++i) {
+      outputViews.push_back(sceneOutputViews[i].get());
+      colorViews.push_back(sceneColorViews[i].get());
+    }
+    for (const ImageViewHandle &view : taaHistoryViews)
+      historyViews.push_back(view.get());
+    compositePass.create(device.getLogicalDevice(),
+                         renderPassManager.getRenderPass(), sceneExtent,
+                         outputViews, colorViews, historyViews);
+  }
+  createGBuffer();
+  createLitFramebuffers();
+  gpuDrivenGBufferPass.create(device, modelManager, descriptorManager,
+                              renderPassManager.getGBufferRenderPass(),
+                              sceneExtent, gBufferDepthViews,
+                              pipelineCache.get());
+  // After lit: its descriptors point at litViews.
+  autoExposurePass.create(device, sceneExtent, litViews, litSampler,
+                          pipelineCache.get());
+
+  std::vector<VkImageView> colorViews;
+  for (const ImageViewHandle &view : sceneColorViews)
+    colorViews.push_back(view.get());
+  descriptorManager.recreateInputSets(device.getLogicalDevice(), colorViews);
+  // TAA: history-prev + depth + colorBuffer-current + bloom pyramid result.
+  {
+    std::vector<VkImageView> histViews;
+    std::vector<VkImageView> depthViews;
+    for (const auto &v : taaHistoryViews)
+      histViews.push_back(v.get());
+    for (const auto &v : gBufferDepthViews)
+      depthViews.push_back(v.get());
+    descriptorManager.recreateTaaSets(device.getLogicalDevice(), histViews,
+                                      depthViews, colorViews,
+                                      bloomPass.mip0Views(), taaSampler);
+    debugLinePass.setDepthViews(device.getLogicalDevice(), depthViews,
+                                taaSampler);
+  }
+  rebuildProjection();
+  taaHistoryValid = false; // nothing to blend with at a new size
+}
+
+void VulkanRenderer::cleanupSceneTargets() {
+  autoExposurePass.cleanup();
+  compositePass.cleanup();
+  gpuDrivenGBufferPass.cleanup();
+  cleanupLitFramebuffers();
+  cleanupGBuffer();
+  ssaoPass.cleanup();
+  bloomPass.cleanup();
+  ssgiPass.cleanup();
+  cleanupLitResources();
+  cleanupTaaResources();
+  sceneColorViews.clear();
+  sceneColorImages.clear();
+  sceneOutputViews.clear();
+  sceneOutputImages.clear();
+}
+
+// A rebuild at a new size, once the scene's area has settled. Rare and
+// user-driven, so a full idle wait is the simple way to retire every frame
+// still using the old images.
+void VulkanRenderer::recreateSceneTargets(VkExtent2D extent) {
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  const auto start = std::chrono::steady_clock::now();
+  cleanupSceneTargets();
+  // The old images' entries go with them; the swapchain's come straight
+  // back, and the new scene images register as they're made.
+  renderResources.clear();
+  registerSwapchainResources();
+  sceneExtent = extent;
+  createSceneTargets();
+  spdlog::info("Scene images rebuilt at {}x{} in {:.1f} ms", extent.width,
+               extent.height,
+               std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - start)
+                   .count());
+}
+
+// Where the scene goes in the window. For now the whole window; the docked
+// editor layout narrows it to the space its panels leave.
+void VulkanRenderer::updateSceneArea() {
+  const VkExtent2D window = swapchain.getExtent();
+  sceneArea = {glm::vec2(0.0f), glm::vec2(window.width, window.height)};
+}
+
+// The scene's finished picture into its area of the window, stretched if
+// the area has changed size since its images were made. The rest of the
+// window is cleared for the UI to draw over.
+void VulkanRenderer::copySceneToWindow(VkCommandBuffer cmd,
+                                       uint32_t imageIndex) {
+  if (imageIndex >= renderResources.frameCount() ||
+      imageIndex >= sceneOutputImages.size())
+    return;
+  const VkImage window = renderResources.frame(imageIndex).swapchainImage;
+  const VkExtent2D windowSize = swapchain.getExtent();
+  // TRANSFER is in the post submit's wait stages, so this chains to the
+  // swap image being acquired.
+  renderResources.transition(cmd, window, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             VK_ACCESS_TRANSFER_WRITE_BIT);
+
+  const glm::ivec2 limit(windowSize.width, windowSize.height);
+  const glm::ivec2 lo = glm::clamp(glm::ivec2(sceneArea.origin),
+                                   glm::ivec2(0), limit);
+  const glm::ivec2 hi =
+      glm::clamp(glm::ivec2(sceneArea.origin + sceneArea.size), lo, limit);
+  const bool coversWindow = lo == glm::ivec2(0) && hi == limit;
+  if (!coversWindow) {
+    const VkClearColorValue background = {{0.05f, 0.045f, 0.06f, 1.0f}};
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                                           1};
+    vkCmdClearColorImage(cmd, window, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         &background, 1, &range);
+    // The blit writes over part of what the clear wrote.
+    VkMemoryBarrier2 afterClear = {};
+    afterClear.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    afterClear.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    afterClear.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    afterClear.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    afterClear.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo dependency = {};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &afterClear;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+  }
+  if (hi.x > lo.x && hi.y > lo.y) {
+    VkImageBlit blit = {};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {int32_t(sceneExtent.width),
+                          int32_t(sceneExtent.height), 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[0] = {lo.x, lo.y, 0};
+    blit.dstOffsets[1] = {hi.x, hi.y, 1};
+    // Same size is a straight copy; a stretched one gets filtered.
+    const bool sameSize = uint32_t(hi.x - lo.x) == sceneExtent.width &&
+                          uint32_t(hi.y - lo.y) == sceneExtent.height;
+    vkCmdBlitImage(cmd, sceneOutputImages[imageIndex].get(),
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, window,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   sameSize ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+  }
+  // The UI pass loads what's there and draws around and over it.
+  renderResources.transition(
+      cmd, window, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_ACCESS_TRANSFER_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 }
 
 void VulkanRenderer::noteGBufferFinalLayouts(uint32_t imageIndex) {
@@ -1997,8 +2142,8 @@ void VulkanRenderer::noteCompositeFinalLayouts(uint32_t imageIndex,
     return;
 
   const FrameRenderTargets &targets = renderResources.frame(imageIndex);
-  renderResources.noteLayout(targets.swapchainImage,
-                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  renderResources.noteLayout(targets.sceneOutput,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   renderResources.noteLayout(targets.colorBuffer,
@@ -2048,7 +2193,7 @@ void VulkanRenderer::createGBuffer() {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.extent = {sceneExtent.width, sceneExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.format = fmt;
@@ -2079,7 +2224,7 @@ void VulkanRenderer::createGBuffer() {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.extent = {sceneExtent.width, sceneExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.format = gBufferDepthFormat;
@@ -2145,8 +2290,8 @@ void VulkanRenderer::createGBuffer() {
     fbci.renderPass = renderPassManager.getGBufferRenderPass();
     fbci.attachmentCount = static_cast<uint32_t>(attachments.size());
     fbci.pAttachments = attachments.data();
-    fbci.width = swapchain.getExtent().width;
-    fbci.height = swapchain.getExtent().height;
+    fbci.width = sceneExtent.width;
+    fbci.height = sceneExtent.height;
     fbci.layers = 1;
     if (vkCreateFramebuffer(dev, &fbci, nullptr, &gBufferFramebuffers[i]) !=
         VK_SUCCESS)
@@ -2225,7 +2370,7 @@ void VulkanRenderer::createLitResources() {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.extent = {sceneExtent.width, sceneExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.format = litFormat;
@@ -2291,8 +2436,8 @@ void VulkanRenderer::createLitFramebuffers() {
     fbci.renderPass = renderPassManager.getLitRenderPass();
     fbci.attachmentCount = static_cast<uint32_t>(attachments.size());
     fbci.pAttachments = attachments.data();
-    fbci.width = swapchain.getExtent().width;
-    fbci.height = swapchain.getExtent().height;
+    fbci.width = sceneExtent.width;
+    fbci.height = sceneExtent.height;
     fbci.layers = 1;
     if (vkCreateFramebuffer(dev, &fbci, nullptr, &litFramebuffers[i]) !=
         VK_SUCCESS)
@@ -2342,7 +2487,7 @@ void VulkanRenderer::createTaaResources() {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.extent = {swapchain.getExtent().width, swapchain.getExtent().height, 1};
+    ci.extent = {sceneExtent.width, sceneExtent.height, 1};
     ci.mipLevels = 1;
     ci.arrayLayers = 1;
     ci.format = litFormat;
@@ -2568,17 +2713,8 @@ void VulkanRenderer::cleanup() {
   debugLinePass.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
-  autoExposurePass.cleanup();
-  compositePass.cleanup();
-  gpuDrivenGBufferPass.cleanup();
   materialProbePass.cleanup();
-  cleanupLitFramebuffers();
-  cleanupGBuffer();
-  ssaoPass.cleanup();
-  bloomPass.cleanup();
-  ssgiPass.cleanup();
-  cleanupLitResources();
-  cleanupTaaResources();
+  cleanupSceneTargets();
   cleanupIBL();
   shadowPass.cleanup();
 
@@ -2749,10 +2885,10 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
   vkdbgEndLabel(cmd);
 
   VkViewport viewport = {};
-  viewport.width = static_cast<float>(swapchain.getExtent().width);
-  viewport.height = static_cast<float>(swapchain.getExtent().height);
+  viewport.width = static_cast<float>(sceneExtent.width);
+  viewport.height = static_cast<float>(sceneExtent.height);
   viewport.maxDepth = 1.0f;
-  VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
+  VkRect2D scissor = {{0, 0}, sceneExtent};
 
   // Temporal history indices. Rings are larger than the number of frames in
   // flight, so an in-flight frame's previous-history read is not overwritten
@@ -2781,7 +2917,7 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getLitRenderPass();
     rpbi.framebuffer = litFramebuffers[currentImage];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.renderArea = {{0, 0}, sceneExtent};
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clear;
 
@@ -2862,10 +2998,10 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
   metrics.resetGpuQueries(cmd);
 
   VkViewport viewport = {};
-  viewport.width = static_cast<float>(swapchain.getExtent().width);
-  viewport.height = static_cast<float>(swapchain.getExtent().height);
+  viewport.width = static_cast<float>(sceneExtent.width);
+  viewport.height = static_cast<float>(sceneExtent.height);
   viewport.maxDepth = 1.0f;
-  VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
+  VkRect2D scissor = {{0, 0}, sceneExtent};
   recordGBufferPass(cmd, currentImage, viewport, scissor);
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
@@ -2926,10 +3062,10 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
     throw std::runtime_error("Failed to begin post command buffer");
 
   VkViewport viewport = {};
-  viewport.width = static_cast<float>(swapchain.getExtent().width);
-  viewport.height = static_cast<float>(swapchain.getExtent().height);
+  viewport.width = static_cast<float>(sceneExtent.width);
+  viewport.height = static_cast<float>(sceneExtent.height);
   viewport.maxDepth = 1.0f;
-  VkRect2D scissor = {{0, 0}, swapchain.getExtent()};
+  VkRect2D scissor = {{0, 0}, sceneExtent};
 
   uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
   uint32_t taaHistoryIndex =
@@ -2959,7 +3095,7 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     rpbi.renderPass = renderPassManager.getLitRenderPass();
     rpbi.framebuffer = litFramebuffers[currentImage];
-    rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+    rpbi.renderArea = {{0, 0}, sceneExtent};
     rpbi.clearValueCount = 1;
     rpbi.pClearValues = &clear;
 
@@ -3010,6 +3146,8 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
       pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
       pipeline.getSecondPipeline(), pipeline.getSecondLayout());
   noteCompositeFinalLayouts(currentImage, taaHistoryIndex);
+  // Counted with the composite: it's the last step of the scene's picture.
+  copySceneToWindow(cmd, currentImage);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
 
   vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
@@ -3150,7 +3288,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   rpbi.renderPass = renderPassManager.getGBufferRenderPass();
   rpbi.framebuffer = gBufferFramebuffers[currentImage];
-  rpbi.renderArea = {{0, 0}, swapchain.getExtent()};
+  rpbi.renderArea = {{0, 0}, sceneExtent};
   rpbi.clearValueCount = static_cast<uint32_t>(clears.size());
   rpbi.pClearValues = clears.data();
 
@@ -3503,8 +3641,8 @@ void VulkanRenderer::setCameraPresetCallback(CameraPresetCallback callback) {
 }
 
 void VulkanRenderer::rebuildProjection() {
-  float aspect = static_cast<float>(swapchain.getExtent().width) /
-                 static_cast<float>(swapchain.getExtent().height);
+  float aspect = static_cast<float>(sceneExtent.width) /
+                 static_cast<float>(sceneExtent.height);
   // Near=1.0 (not 0.1) because the scene is Crytek-scale (~3km long); a 0.1m
   // near plane burns most of the D32F depth range on the first metre and
   // leaves the rest of the hall z-fighting. 1m is below any meaningful
@@ -3628,6 +3766,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     pendingEntryOps.push_back({EntryOp::Split, ref});
   };
   ui.viewProj = taaBaseProjection * sceneUbo.view;
+  ui.sceneArea = sceneArea;
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;
   ui.onSpawn = [this](SceneModelEntry entry) {
@@ -3671,7 +3810,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       cmd, renderPassManager.getImGuiRenderPass(), swapchain.getExtent(),
       imageIndex, ui, [&](VkCommandBuffer c) {
         if (drawPhysicsLines)
-          debugLinePass.record(c, imageIndex, swapchain.getExtent(),
+          debugLinePass.record(c, imageIndex, sceneArea, swapchain.getExtent(),
                                taaBaseProjection * sceneUbo.view, kCameraNear,
                                imguiDrawDistance);
       });

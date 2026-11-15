@@ -7,8 +7,9 @@ layout(set = 0, binding = 0) uniform sampler2D sceneDepth;
 
 layout(push_constant) uniform Push {
     mat4 viewProj;
-    vec2 invExtent;
+    vec2 invAreaSize; // the scene area's size, inverted
     vec2 nearFar;
+    vec2 areaOrigin;  // its corner in the window
 } pc;
 
 // Distance from the camera for a depth-buffer value (0 to 1, standard Z).
@@ -18,7 +19,8 @@ float viewDistance(float depth) {
 }
 
 void main() {
-    float scene = viewDistance(texture(sceneDepth, gl_FragCoord.xy * pc.invExtent).r);
+    vec2 uv = (gl_FragCoord.xy - pc.areaOrigin) * pc.invAreaSize;
+    float scene = viewDistance(texture(sceneDepth, uv).r);
     float line  = viewDistance(gl_FragCoord.z);
     // A wireframe edge lies exactly on its mesh, and the scene depth was drawn
     // with TAA jitter, so allow 2 cm plus half a percent of the distance.

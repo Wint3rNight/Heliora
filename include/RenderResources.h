@@ -25,6 +25,7 @@ VkImageAspectFlags renderImageAspectMask(VkFormat format);
 
 struct FrameRenderTargets {
   VkImage swapchainImage = VK_NULL_HANDLE;
+  VkImage sceneOutput = VK_NULL_HANDLE; // the finished picture, scene-sized
   VkImage colorBuffer = VK_NULL_HANDLE;
   VkImage gBuffer0 = VK_NULL_HANDLE;
   VkImage gBuffer1 = VK_NULL_HANDLE;

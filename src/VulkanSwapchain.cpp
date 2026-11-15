@@ -30,7 +30,6 @@ VkFormat VulkanSwapchain::queryImageFormat(const VulkanDevice &device) const {
 
 void VulkanSwapchain::init(const VulkanDevice &device, GLFWwindow *window) {
   createSwapChain(device, window);
-  createColorBufferImage(device);
   createCommandBuffers(device.getLogicalDevice(),
                        device.getGraphicsCommandPool());
 }
@@ -59,7 +58,6 @@ void VulkanSwapchain::recreate(const VulkanDevice &device, GLFWwindow *window) {
 
   cleanupSwapChain(device.getLogicalDevice(), device.getAllocator());
   createSwapChain(device, window);
-  createColorBufferImage(device);
   createCommandBuffers(device.getLogicalDevice(),
                        device.getGraphicsCommandPool());
 }
@@ -113,7 +111,13 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
   ci.imageExtent = ext;
   ci.minImageCount = imageCount;
   ci.imageArrayLayers = 1;
-  ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  // Transfer destination too: the scene's finished picture is copied into
+  // its area of the window before the UI draws around it.
+  if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+    throw std::runtime_error(
+        "The swapchain can't be a copy destination on this GPU");
+  ci.imageUsage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   ci.clipped = VK_TRUE;
@@ -157,42 +161,9 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
 void VulkanSwapchain::cleanupSwapChain(VkDevice device,
                                        VmaAllocator /*allocator*/) {
   swapChainImages.clear();
-  colorBufferImage.clear();
-  colorBufferImageView.clear();
-  colorBufferFormat = VK_FORMAT_UNDEFINED;
   if (swapchain != VK_NULL_HANDLE) {
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     swapchain = VK_NULL_HANDLE;
-  }
-}
-
-void VulkanSwapchain::createColorBufferImage(const VulkanDevice &device) {
-  colorBufferImage.resize(swapChainImages.size());
-  colorBufferImageView.resize(swapChainImages.size());
-
-  VkFormat fmt = chooseSupportedFormat(
-      device.getPhysicalDevice(),
-      {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM},
-      VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
-  colorBufferFormat = fmt;
-
-  for (size_t i = 0; i < swapChainImages.size(); ++i) {
-    // SAMPLED is needed for TAA's 3×3 neighborhood clamp: the tonemap subpass
-    // reads the center pixel via subpassInput (zero-overhead, tile-local) and
-    // simultaneously samples 8 neighbors via a normal sampler binding. Within
-    // a single subpass it is legal to bind the same view as both input
-    // attachment AND combined-image-sampler — both read at SHADER_READ_ONLY,
-    // no writes are happening in this subpass, so there is no feedback loop.
-    colorBufferImage[i] =
-        createImage(device.getAllocator(), swapChainExtent.width,
-                    swapChainExtent.height, fmt, VK_IMAGE_TILING_OPTIMAL,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                        VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-                        VK_IMAGE_USAGE_SAMPLED_BIT);
-    colorBufferImageView[i] = ImageViewHandle(
-        device.getLogicalDevice(),
-        createImageView(device.getLogicalDevice(), colorBufferImage[i].get(),
-                        fmt, VK_IMAGE_ASPECT_COLOR_BIT));
   }
 }
 
@@ -267,35 +238,6 @@ VkFormat VulkanSwapchain::chooseSupportedFormat(
       return fmt;
   }
   throw std::runtime_error("Failed to find supported format");
-}
-
-AllocatedImage VulkanSwapchain::createImage(VmaAllocator allocator,
-                                            uint32_t width, uint32_t height,
-                                            VkFormat format,
-                                            VkImageTiling tiling,
-                                            VkImageUsageFlags usage) {
-  VkImageCreateInfo ci = {};
-  ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-  ci.imageType = VK_IMAGE_TYPE_2D;
-  ci.extent = {width, height, 1};
-  ci.mipLevels = 1;
-  ci.arrayLayers = 1;
-  ci.format = format;
-  ci.tiling = tiling;
-  ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  ci.usage = usage;
-  ci.samples = VK_SAMPLE_COUNT_1_BIT;
-  ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-  VmaAllocationCreateInfo aci = {};
-  aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-  aci.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
-
-  VkImage img = VK_NULL_HANDLE;
-  VmaAllocation alloc = VK_NULL_HANDLE;
-  if (vmaCreateImage(allocator, &ci, &aci, &img, &alloc, nullptr) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create image");
-  return AllocatedImage(allocator, img, alloc);
 }
 
 VkImageView VulkanSwapchain::createImageView(VkDevice device, VkImage image,

@@ -5,8 +5,9 @@ layout(location = 1) in vec4 inColor; // RGBA8, unpacked by the vertex format
 
 layout(push_constant) uniform Push {
     mat4 viewProj;   // unjittered: these lines are drawn after TAA
-    vec2 invExtent;
+    vec2 invAreaSize; // the scene area's size, inverted
     vec2 nearFar;
+    vec2 areaOrigin;  // its corner in the window
 } pc;
 
 layout(location = 0) out vec4 outColor;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PhysicsWorld.h"
+#include "SceneViewport.h"
 #include "Utilities.h"
 
 #include <glm/glm.hpp>
@@ -26,9 +27,12 @@ public:
   // image's previous frame has finished, which draw() waits for first.
   void upload(const VulkanDevice &device, uint32_t imageIndex,
               const std::vector<PhysicsDebugVertex> &lines);
-  // Inside the ImGui render pass. viewProj must be unjittered, or the lines
-  // shimmer: they're drawn after TAA, so nothing averages the jitter out.
-  void record(VkCommandBuffer cmd, uint32_t imageIndex, VkExtent2D extent,
+  // Inside the ImGui render pass, over the scene's area of the window
+  // (framebuffer is the window's size). viewProj must be unjittered, or the
+  // lines shimmer: they're drawn after TAA, so nothing averages the jitter
+  // out.
+  void record(VkCommandBuffer cmd, uint32_t imageIndex,
+              const SceneViewport &area, VkExtent2D framebuffer,
               const glm::mat4 &viewProj, float nearPlane,
               float farPlane) const;
 

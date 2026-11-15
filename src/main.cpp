@@ -167,13 +167,14 @@ int main(int argc, char **argv) {
         vulkanRenderer.toggleUiVisibility();
     }
 
-    // Only a press that starts off the panels flies; one on a panel stays
+    // Only a press that starts on the scene flies; one on a panel stays
     // with the panel. Read every frame, so a press made in camera mode
     // doesn't count as new after Tab.
     const bool rightPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
     if (!cameraMode) {
-      if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse()) {
+      if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse() &&
+          vulkanRenderer.sceneContains(inputManager.getMousePosition())) {
         rightMouseFlying = true;
         inputManager.setCursorCaptured(true);
       } else if (rightMouseFlying &&
@@ -183,17 +184,14 @@ int main(int argc, char **argv) {
       }
     }
 
-    // A left click in edit mode, with the cursor free and off the panels and
-    // the gizmo's handles, selects what's under it.
+    // A left click in edit mode, with the cursor free and on the scene (off
+    // the panels and the gizmo's handles), selects what's under it.
     const bool leftPressed =
         inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
     if (leftPressed && !cameraMode && !rightMouseFlying && !asking &&
         !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse() &&
         !vulkanRenderer.gizmoHasMouse()) {
-      int width = 0, height = 0;
-      glfwGetWindowSize(window, &width, &height);
-      vulkanRenderer.selectAt(inputManager.getMousePosition(),
-                              glm::vec2(width, height));
+      vulkanRenderer.selectAt(inputManager.getMousePosition());
     }
 
     // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer

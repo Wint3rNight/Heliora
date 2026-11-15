@@ -862,7 +862,11 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
     return;
   }
 
-  const glm::vec2 viewport(io.DisplaySize.x, io.DisplaySize.y);
+  // Everything below is in the scene area's own pixels; `at` turns one into
+  // a window position for drawing.
+  const glm::vec2 viewport = ui.sceneArea.size;
+  const glm::vec2 origin = ui.sceneArea.origin;
+  auto at = [&](glm::vec2 p) { return ImVec2(p.x + origin.x, p.y + origin.y); };
   // A grid turns about its first copy's spot, so the handles sit there.
   const glm::vec3 centre = entry->transform.position;
   const std::optional<glm::vec2> centrePixel =
@@ -878,7 +882,8 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
   const float pixelsPerMetre =
       std::abs(ui.sceneUbo.projection[1][1]) * viewport.y * 0.5f / depth;
   const float length = kGizmoPixels / pixelsPerMetre;
-  const glm::vec2 mouse(io.MousePos.x, io.MousePos.y);
+  const glm::vec2 windowMouse(io.MousePos.x, io.MousePos.y);
+  const glm::vec2 mouse = ui.sceneArea.toScene(windowMouse);
   const PickRay ray =
       rayFromScreen(mouse, viewport, glm::inverse(ui.viewProj));
   // A grid only turns about y, through its layout rotation.
@@ -897,7 +902,8 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
 
   // Which handle the cursor is on: an axis, or 0 for the scale ring.
   int hot = gizmoDrag.active ? gizmoDrag.axis : -1;
-  if (!gizmoDrag.active && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
+  if (!gizmoDrag.active && ui.sceneArea.contains(windowMouse) &&
+      !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
       !ImGui::IsAnyItemActive()) {
     float nearest = kGrabPixels;
     auto consider = [&](int handle, float distance) {
@@ -1047,6 +1053,7 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
   if (!nowPixel)
     return;
   ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  draw->PushClipRect(at(glm::vec2(0.0f)), at(viewport), true);
   auto colourOf = [&](int handle, uint32_t rgb) {
     return colourU32(handle == hot ? kGizmoHot : rgb);
   };
@@ -1063,12 +1070,9 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
       const glm::vec2 along = glm::normalize(*tip - *nowPixel);
       const glm::vec2 across(-along.y, along.x);
       const glm::vec2 point = *tip + along * 14.0f;
-      draw->AddLine(ImVec2(nowPixel->x, nowPixel->y), ImVec2(tip->x, tip->y),
-                    colour, thickness);
-      draw->AddTriangleFilled(
-          ImVec2(point.x, point.y),
-          ImVec2(tip->x + across.x * 6.0f, tip->y + across.y * 6.0f),
-          ImVec2(tip->x - across.x * 6.0f, tip->y - across.y * 6.0f), colour);
+      draw->AddLine(at(*nowPixel), at(*tip), colour, thickness);
+      draw->AddTriangleFilled(at(point), at(*tip + across * 6.0f),
+                              at(*tip - across * 6.0f), colour);
     } else {
       const auto ring =
           ringOnScreen(now, kAxes[axis], length, viewport, ui.viewProj);
@@ -1076,16 +1080,15 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
         const auto &a = ring[i];
         const auto &b = ring[(i + 1) % kRingSegments];
         if (a && b)
-          draw->AddLine(ImVec2(a->x, a->y), ImVec2(b->x, b->y), colour,
-                        thickness);
+          draw->AddLine(at(*a), at(*b), colour, thickness);
       }
     }
   }
   if (gizmoMode == GizmoMode::Scale)
-    draw->AddCircle(ImVec2(nowPixel->x, nowPixel->y), kScaleRingPixels,
-                    colourOf(0, kText), kRingSegments, hot == 0 ? 4.0f : 2.5f);
-  draw->AddCircleFilled(ImVec2(nowPixel->x, nowPixel->y), 3.0f,
-                        colourU32(kText));
+    draw->AddCircle(at(*nowPixel), kScaleRingPixels, colourOf(0, kText),
+                    kRingSegments, hot == 0 ? 4.0f : 2.5f);
+  draw->AddCircleFilled(at(*nowPixel), 3.0f, colourU32(kText));
+  draw->PopClipRect();
 }
 
 // Pills wrap onto a second row when the first is full. The selected one is

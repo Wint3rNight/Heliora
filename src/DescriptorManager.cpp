@@ -176,10 +176,10 @@ void DescriptorManager::recreateGBufferSets(
   }
 }
 
-void DescriptorManager::recreateInputSets(VkDevice device,
-                                          const VulkanSwapchain &swapchain) {
+void DescriptorManager::recreateInputSets(
+    VkDevice device, const std::vector<VkImageView> &colorBufferViews) {
   vkResetDescriptorPool(device, inputDescriptorPool, 0);
-  createInputDescriptorSets(device, swapchain);
+  createInputDescriptorSets(device, colorBufferViews);
 }
 
 void DescriptorManager::recreateTaaSets(
@@ -652,8 +652,8 @@ void DescriptorManager::createDescriptorSets(VkDevice device, size_t count) {
 }
 
 void DescriptorManager::createInputDescriptorSets(
-    VkDevice device, const VulkanSwapchain &swapchain) {
-  size_t count = swapchain.getImageCount();
+    VkDevice device, const std::vector<VkImageView> &colorBufferViews) {
+  size_t count = colorBufferViews.size();
   inputDescriptorSets.resize(count);
   std::vector<VkDescriptorSetLayout> layouts(count, inputSetLayout);
 
@@ -670,7 +670,7 @@ void DescriptorManager::createInputDescriptorSets(
   for (size_t i = 0; i < count; ++i) {
     VkDescriptorImageInfo colorInfo = {};
     colorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    colorInfo.imageView = swapchain.getColorBufferView(i);
+    colorInfo.imageView = colorBufferViews[i];
     colorInfo.sampler = VK_NULL_HANDLE;
 
     VkWriteDescriptorSet w = {};

@@ -12,6 +12,7 @@
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
 #include "Scene.h"
+#include "SceneViewport.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
@@ -156,6 +157,9 @@ struct DebugUiContext {
   // The gizmo's camera: the unjittered projection times view, the one
   // picking uses, so the handles sit where the object is on screen.
   glm::mat4 viewProj{1.0f};
+  // Where the scene is in the window: the handles are worked out in its
+  // pixels and drawn there, clipped to it.
+  SceneViewport sceneArea;
 
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
   // nothing is held any more, so it's one undo step.

@@ -3606,6 +3606,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
       },
       [this](int index) { requestSceneLoad(index); }};
   ui.physics = &physicsPanel;
+  ui.bodiesInWorld = physics ? physics->bodyCount() : 0;
+  ui.bodyLimit = physics ? physics->bodyLimit() : 0;
   ui.onSaveSettings = [this](const char *section) { saveSettings(section); };
   ui.onResetSettings = [this](const char *section) { resetSettings(section); };
   ui.settingsStatus = &settingsStatus;

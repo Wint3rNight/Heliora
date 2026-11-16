@@ -572,6 +572,221 @@ std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex) {
   return refs;
 }
 
+namespace {
+
+[[noreturn]] void parseError(int lineNumber, const std::string &what) {
+  throw std::runtime_error("scene parse error, line " +
+                           std::to_string(lineNumber) + ": " + what);
+}
+
+std::string lowered(std::string text) {
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+enum class Section { Global, Camera, Sun, Fog, Model, Grid, Ring };
+
+// What the parser carries from line to line.
+struct SceneParser {
+  SceneDescription scene;
+  Section section = Section::Global;
+  std::vector<int> modelLines; // header line of each [model], for errors
+  std::vector<int> gridLines;  // and of each [grid]
+  int sunLine = 0;
+  int fogLine = 0;
+  // Comment lines wait here for the section below them. The block at the
+  // very top is the header instead, if a blank line or a key follows it.
+  std::string pendingComment;
+  bool headerDone = false;
+  int nextOrder = 0;
+  std::string takeComment() { return std::exchange(pendingComment, {}); }
+};
+
+// A "[name]" line: the section the keys below it go to, which also gets
+// the comment block above it.
+void openSection(SceneParser &p, const std::string &line, int lineNumber) {
+  p.headerDone = true;
+  if (line.back() != ']')
+    parseError(lineNumber, "unterminated section header");
+  const std::string name = lowered(trim(line.substr(1, line.size() - 2)));
+  SceneDescription &scene = p.scene;
+  if (name == "camera") {
+    p.section = Section::Camera;
+    scene.camera.info.comment = p.takeComment();
+  } else if (name == "sun") {
+    p.section = Section::Sun;
+    scene.sun.info.comment = p.takeComment();
+    p.sunLine = lineNumber;
+  } else if (name == "fog") {
+    p.section = Section::Fog;
+    scene.fog.info.comment = p.takeComment();
+    p.fogLine = lineNumber;
+  } else if (name == "model") {
+    p.section = Section::Model;
+    scene.models.emplace_back().info = {p.nextOrder++, p.takeComment()};
+    p.modelLines.push_back(lineNumber);
+  } else if (name == "grid") {
+    p.section = Section::Grid;
+    scene.grids.emplace_back().info = {p.nextOrder++, p.takeComment()};
+    p.gridLines.push_back(lineNumber);
+  } else if (name == "ring") {
+    p.section = Section::Ring;
+    scene.rings.emplace_back().info = {p.nextOrder++, p.takeComment()};
+  } else {
+    parseError(lineNumber, "unknown section [" + name + "]");
+  }
+}
+
+void globalKey(SceneDescription &scene, const std::string &key,
+               const std::string &value, int lineNumber) {
+  if (key == "name")
+    scene.name = value;
+  else if (key == "environment")
+    scene.environmentHdr = value;
+  else
+    parseError(lineNumber, "unknown global key '" + key + "'");
+}
+
+void cameraKey(SceneCameraPose &camera, const std::string &key,
+               const std::string &value, int lineNumber) {
+  if (key == "position")
+    camera.position = parseVec3(value, lineNumber);
+  else if (key == "yaw")
+    camera.yaw = parseFloat(value, lineNumber);
+  else if (key == "pitch")
+    camera.pitch = parseFloat(value, lineNumber);
+  else if (key == "speed")
+    camera.speed = parseFloat(value, lineNumber);
+  else
+    parseError(lineNumber, "unknown camera key '" + key + "'");
+}
+
+void sunKey(SceneSun &sun, const std::string &key, const std::string &value,
+            int lineNumber) {
+  if (key == "direction")
+    sun.direction = parseVec3(value, lineNumber);
+  else if (key == "color")
+    sun.color = parseVec3(value, lineNumber);
+  else if (key == "intensity")
+    sun.intensity = parseFloat(value, lineNumber);
+  else
+    parseError(lineNumber, "unknown sun key '" + key + "'");
+}
+
+void fogKey(SceneFog &fog, const std::string &key, const std::string &value,
+            int lineNumber) {
+  if (key == "density")
+    fog.density = parseFloat(value, lineNumber);
+  else if (key == "falloff")
+    fog.falloff = parseFloat(value, lineNumber);
+  else if (key == "max")
+    fog.max = parseFloat(value, lineNumber);
+  else
+    parseError(lineNumber, "unknown fog key '" + key + "'");
+}
+
+// A grid's own keys; anything else is its model's.
+void gridKey(SceneGridEntry &grid, const std::string &key,
+             const std::string &value, int lineNumber) {
+  if (key == "count") {
+    // Checked as floats first: converting one past int's range is
+    // undefined.
+    const glm::vec3 count = parseVec3(value, lineNumber);
+    if (!allFinite(count) ||
+        glm::any(glm::lessThan(count, glm::vec3(1.0f))) ||
+        glm::any(glm::greaterThan(count, glm::vec3(kMaxCountPerAxis))))
+      parseError(lineNumber, "'count' must be 1 to " +
+                                 std::to_string(kMaxCountPerAxis) +
+                                 " on every axis");
+    grid.count = glm::ivec3(glm::round(count));
+    if (glm::any(glm::notEqual(glm::vec3(grid.count), count)))
+      parseError(lineNumber, "'count' takes whole numbers");
+  } else if (key == "spacing") {
+    grid.spacing = parseVec3(value, lineNumber);
+  } else if (key == "layout_rotation") {
+    grid.layoutRotation = parseFloat(value, lineNumber);
+  } else if (!parseModelKey(grid.model, key, value, lineNumber)) {
+    parseError(lineNumber, "unknown grid key '" + key + "'");
+  }
+}
+
+void ringKey(SceneRingEntry &ring, const std::string &key,
+             const std::string &value, int lineNumber) {
+  if (key == "path") {
+    ring.path = value;
+  } else if (key == "count") {
+    const float count = parseFloat(value, lineNumber);
+    if (count < 1.0f || count > float(kMaxCountPerAxis) ||
+        count != std::round(count))
+      parseError(lineNumber,
+                 "a ring's 'count' must be a whole number, 1 to " +
+                     std::to_string(kMaxCountPerAxis));
+    ring.count = static_cast<int>(count);
+  } else if (key == "radius") {
+    ring.radius = parseFloat(value, lineNumber);
+  } else if (key == "height") {
+    ring.height = parseFloat(value, lineNumber);
+  } else if (key == "scale") {
+    ring.scale = parseFloat(value, lineNumber);
+  } else {
+    parseError(lineNumber, "unknown ring key '" + key + "'");
+  }
+}
+
+// A "key = value" line, for the section it's in.
+void applyKey(SceneParser &p, const std::string &key, const std::string &value,
+              int lineNumber) {
+  SceneDescription &scene = p.scene;
+  switch (p.section) {
+  case Section::Global:
+    globalKey(scene, key, value, lineNumber);
+    break;
+  case Section::Camera:
+    cameraKey(scene.camera, key, value, lineNumber);
+    break;
+  case Section::Sun:
+    sunKey(scene.sun, key, value, lineNumber);
+    break;
+  case Section::Fog:
+    fogKey(scene.fog, key, value, lineNumber);
+    break;
+  case Section::Model:
+    if (!parseModelKey(scene.models.back(), key, value, lineNumber))
+      parseError(lineNumber, "unknown model key '" + key + "'");
+    break;
+  case Section::Grid:
+    gridKey(scene.grids.back(), key, value, lineNumber);
+    break;
+  case Section::Ring:
+    ringKey(scene.rings.back(), key, value, lineNumber);
+    break;
+  }
+}
+
+// Checked once the whole file is read, since keys can come in any order.
+void checkParsedScene(const SceneParser &p, const std::string &path) {
+  const SceneDescription &scene = p.scene;
+  checkSun(scene.sun, p.sunLine);
+  checkFog(scene.fog, p.fogLine);
+  for (size_t i = 0; i < scene.models.size(); ++i)
+    if (const auto problem = problemWith(scene.models[i]))
+      throw std::runtime_error("scene parse error, [model] at line " +
+                               std::to_string(p.modelLines[i]) + ": " +
+                               *problem);
+  for (size_t i = 0; i < scene.grids.size(); ++i)
+    if (const auto problem = problemWith(scene.grids[i]))
+      throw std::runtime_error("scene parse error, [grid] at line " +
+                               std::to_string(p.gridLines[i]) + ": " +
+                               *problem);
+  for (const SceneRingEntry &ring : scene.rings)
+    if (ring.path.empty())
+      throw std::runtime_error("scene file " + path +
+                               ": [ring] section is missing 'path'");
+}
+
+} // namespace
+
 namespace SceneIO {
 
 SceneDescription loadFromFile(const std::string &path) {
@@ -584,22 +799,8 @@ SceneDescription loadFromFile(const std::string &path) {
 }
 
 SceneDescription parse(std::istream &file, const std::string &path) {
-  SceneDescription scene;
-  scene.name = std::filesystem::path(path).stem().string();
-
-  enum class Section { Global, Camera, Sun, Fog, Model, Grid, Ring };
-  Section section = Section::Global;
-  std::vector<int> modelLines; // header line of each [model], for errors
-  std::vector<int> gridLines;  // and of each [grid]
-  int sunLine = 0;
-  int fogLine = 0;
-
-  // Comment lines wait here for the section below them. The block at the
-  // very top is the header instead, if a blank line or a key follows it.
-  std::string pendingComment;
-  bool headerDone = false;
-  int nextOrder = 0;
-  auto takeComment = [&] { return std::exchange(pendingComment, {}); };
+  SceneParser p;
+  p.scene.name = std::filesystem::path(path).stem().string();
 
   std::string line;
   int lineNumber = 0;
@@ -607,7 +808,7 @@ SceneDescription parse(std::istream &file, const std::string &path) {
     ++lineNumber;
     const std::string whole = trim(line);
     if (whole.starts_with('#')) {
-      pendingComment += (pendingComment.empty() ? "" : "\n") + whole;
+      p.pendingComment += (p.pendingComment.empty() ? "" : "\n") + whole;
       continue;
     }
     size_t comment = line.find('#');
@@ -615,204 +816,31 @@ SceneDescription parse(std::istream &file, const std::string &path) {
       line = line.substr(0, comment); // comments at the end of a line go
     line = trim(line);
     if (line.empty()) {
-      if (!headerDone && !pendingComment.empty()) {
-        scene.headerComment = takeComment();
-        headerDone = true;
+      if (!p.headerDone && !p.pendingComment.empty()) {
+        p.scene.headerComment = p.takeComment();
+        p.headerDone = true;
       }
       continue;
     }
-
     if (line.front() == '[') {
-      headerDone = true;
-      if (line.back() != ']')
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unterminated section header");
-      std::string name = trim(line.substr(1, line.size() - 2));
-      std::transform(name.begin(), name.end(), name.begin(),
-                     [](unsigned char c) { return std::tolower(c); });
-      if (name == "camera") {
-        section = Section::Camera;
-        scene.camera.info.comment = takeComment();
-      } else if (name == "sun") {
-        section = Section::Sun;
-        scene.sun.info.comment = takeComment();
-        sunLine = lineNumber;
-      } else if (name == "fog") {
-        section = Section::Fog;
-        scene.fog.info.comment = takeComment();
-        fogLine = lineNumber;
-      } else if (name == "model") {
-        section = Section::Model;
-        scene.models.emplace_back().info = {nextOrder++, takeComment()};
-        modelLines.push_back(lineNumber);
-      } else if (name == "grid") {
-        section = Section::Grid;
-        scene.grids.emplace_back().info = {nextOrder++, takeComment()};
-        gridLines.push_back(lineNumber);
-      } else if (name == "ring") {
-        section = Section::Ring;
-        scene.rings.emplace_back().info = {nextOrder++, takeComment()};
-      } else {
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown section [" + name + "]");
-      }
+      openSection(p, line, lineNumber);
       continue;
     }
 
     // A comment between keys belongs to no section and goes.
-    if (!headerDone)
-      scene.headerComment = takeComment();
-    headerDone = true;
-    pendingComment.clear();
+    if (!p.headerDone)
+      p.scene.headerComment = p.takeComment();
+    p.headerDone = true;
+    p.pendingComment.clear();
 
-    size_t eq = line.find('=');
+    const size_t eq = line.find('=');
     if (eq == std::string::npos)
-      throw std::runtime_error("scene parse error, line " +
-                               std::to_string(lineNumber) +
-                               ": expected 'key = value'");
-    std::string key = trim(line.substr(0, eq));
-    std::string value = trim(line.substr(eq + 1));
-    std::transform(key.begin(), key.end(), key.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-
-    switch (section) {
-    case Section::Global:
-      if (key == "name")
-        scene.name = value;
-      else if (key == "environment")
-        scene.environmentHdr = value;
-      else
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown global key '" + key + "'");
-      break;
-
-    case Section::Camera:
-      if (key == "position")
-        scene.camera.position = parseVec3(value, lineNumber);
-      else if (key == "yaw")
-        scene.camera.yaw = parseFloat(value, lineNumber);
-      else if (key == "pitch")
-        scene.camera.pitch = parseFloat(value, lineNumber);
-      else if (key == "speed")
-        scene.camera.speed = parseFloat(value, lineNumber);
-      else
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown camera key '" + key + "'");
-      break;
-
-    case Section::Sun:
-      if (key == "direction")
-        scene.sun.direction = parseVec3(value, lineNumber);
-      else if (key == "color")
-        scene.sun.color = parseVec3(value, lineNumber);
-      else if (key == "intensity")
-        scene.sun.intensity = parseFloat(value, lineNumber);
-      else
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown sun key '" + key + "'");
-      break;
-
-    case Section::Fog:
-      if (key == "density")
-        scene.fog.density = parseFloat(value, lineNumber);
-      else if (key == "falloff")
-        scene.fog.falloff = parseFloat(value, lineNumber);
-      else if (key == "max")
-        scene.fog.max = parseFloat(value, lineNumber);
-      else
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown fog key '" + key + "'");
-      break;
-
-    case Section::Model:
-      if (!parseModelKey(scene.models.back(), key, value, lineNumber))
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown model key '" + key + "'");
-      break;
-
-    case Section::Grid: {
-      SceneGridEntry &grid = scene.grids.back();
-      if (key == "count") {
-        // Checked as floats first: converting one past int's range is
-        // undefined.
-        const glm::vec3 count = parseVec3(value, lineNumber);
-        if (!allFinite(count) ||
-            glm::any(glm::lessThan(count, glm::vec3(1.0f))) ||
-            glm::any(glm::greaterThan(count, glm::vec3(kMaxCountPerAxis))))
-          throw std::runtime_error(
-              "scene parse error, line " + std::to_string(lineNumber) +
-              ": 'count' must be 1 to " + std::to_string(kMaxCountPerAxis) +
-              " on every axis");
-        grid.count = glm::ivec3(glm::round(count));
-        if (glm::any(glm::notEqual(glm::vec3(grid.count), count)))
-          throw std::runtime_error("scene parse error, line " +
-                                   std::to_string(lineNumber) +
-                                   ": 'count' takes whole numbers");
-      } else if (key == "spacing") {
-        grid.spacing = parseVec3(value, lineNumber);
-      } else if (key == "layout_rotation") {
-        grid.layoutRotation = parseFloat(value, lineNumber);
-      } else if (!parseModelKey(grid.model, key, value, lineNumber)) {
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown grid key '" + key + "'");
-      }
-      break;
-    }
-
-    case Section::Ring: {
-      SceneRingEntry &ring = scene.rings.back();
-      if (key == "path")
-        ring.path = value;
-      else if (key == "count") {
-        const float count = parseFloat(value, lineNumber);
-        if (count < 1.0f || count > float(kMaxCountPerAxis) ||
-            count != std::round(count))
-          throw std::runtime_error(
-              "scene parse error, line " + std::to_string(lineNumber) +
-              ": a ring's 'count' must be a whole number, 1 to " +
-              std::to_string(kMaxCountPerAxis));
-        ring.count = static_cast<int>(count);
-      }
-      else if (key == "radius")
-        ring.radius = parseFloat(value, lineNumber);
-      else if (key == "height")
-        ring.height = parseFloat(value, lineNumber);
-      else if (key == "scale")
-        ring.scale = parseFloat(value, lineNumber);
-      else
-        throw std::runtime_error("scene parse error, line " +
-                                 std::to_string(lineNumber) +
-                                 ": unknown ring key '" + key + "'");
-      break;
-    }
-    }
+      parseError(lineNumber, "expected 'key = value'");
+    applyKey(p, lowered(trim(line.substr(0, eq))), trim(line.substr(eq + 1)),
+             lineNumber);
   }
-
-  checkSun(scene.sun, sunLine);
-  checkFog(scene.fog, fogLine);
-  // Checked after parsing, since the keys can come in any order.
-  for (size_t i = 0; i < scene.models.size(); ++i)
-    if (const auto problem = problemWith(scene.models[i]))
-      throw std::runtime_error("scene parse error, [model] at line " +
-                               std::to_string(modelLines[i]) + ": " + *problem);
-  for (size_t i = 0; i < scene.grids.size(); ++i)
-    if (const auto problem = problemWith(scene.grids[i]))
-      throw std::runtime_error("scene parse error, [grid] at line " +
-                               std::to_string(gridLines[i]) + ": " + *problem);
-  for (const SceneRingEntry &ring : scene.rings)
-    if (ring.path.empty())
-      throw std::runtime_error("scene file " + path +
-                               ": [ring] section is missing 'path'");
-
-  return scene;
+  checkParsedScene(p, path);
+  return std::move(p.scene);
 }
 
 std::vector<SceneDescription> discover(const std::string &directory) {

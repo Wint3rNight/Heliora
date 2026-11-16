@@ -1319,9 +1319,91 @@ void VulkanRenderer::updateMaterialProbePixel() {
 
 // Draw
 
+// One frame. The UI goes first, so everything recorded afterwards sees this
+// frame's edits; then the GPU work. Each step's CPU time goes to the
+// Performance panel.
 void VulkanRenderer::draw() {
-  VkDevice logicalDevice = device.getLogicalDevice();
+  using Clock = std::chrono::high_resolution_clock;
+  using Phase = PerformanceMetrics::CpuPhase;
+  Clock::time_point start;
+  auto begin = [&] { start = Clock::now(); };
+  auto end = [&](Phase phase) {
+    metrics.recordCpuPhase(
+        phase,
+        std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+  };
 
+  // The frame time shown is draw() from here to the end; physics and input
+  // run before it, in main.
+  metrics.beginFrame();
+  updateSceneArea();
+  begin();
+  buildUi();
+  end(Phase::Ui);
+  applyPendingChanges();
+
+  begin();
+  waitForFrameSlot();
+  end(Phase::WaitFence);
+  // This slot's last frame is done: its timestamps and probe can be read.
+  metrics.collectGpuResults(device.getLogicalDevice(), currentFrame);
+  materialProbeResult = materialProbePass.read(currentFrame);
+
+  // Check resize BEFORE acquiring: a successful acquire signals
+  // imageAvailable, and returning early without consuming it would leave it
+  // signalled on the next frame.
+  if (framebufferResized) {
+    framebufferResized = false;
+    recreateSwapChain();
+    return;
+  }
+  uint32_t imageIndex = 0;
+  begin();
+  const bool acquired = acquireSwapImage(imageIndex);
+  end(Phase::Acquire);
+  if (!acquired)
+    return;
+  begin();
+  waitForSwapImage(imageIndex);
+  end(Phase::ImageFence);
+
+  begin();
+  updateFrameUniforms();
+  end(Phase::Update);
+
+  metrics.setActiveGpuQueryFrame(currentFrame);
+  begin();
+  recordFrame(imageIndex);
+  end(Phase::Record);
+
+  begin();
+  descriptorManager.updateUniformBuffer(device.getAllocator(), imageIndex,
+                                        &sceneUbo, sizeof(SceneUniformBuffer));
+  end(Phase::Upload);
+
+  begin();
+  submitFrame(imageIndex);
+  end(Phase::Submit);
+  metrics.markGpuQueriesSubmitted(currentFrame);
+
+  begin();
+  const bool presented = presentFrame(imageIndex);
+  end(Phase::Present);
+  if (!presented)
+    return;
+  currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
+  // Advance TAA frame counter AFTER this frame finishes recording so the
+  // Halton jitter index used above matches the history ring slots that
+  // recordPostCommands picked for framebuffers / descriptor sets.
+  taaFrameCounter++;
+  metrics.endFrame();
+}
+
+// What the UI and the editor asked for since the last frame, applied before
+// any of this frame's GPU work. The ones that replace GPU resources wait for
+// the device to go idle first, so nothing in flight still uses the old ones.
+void VulkanRenderer::applyPendingChanges() {
+  VkDevice logicalDevice = device.getLogicalDevice();
   // Apply a UI-requested scene switch before any of this frame's work
   // starts. loadSceneAt() waits for device idle, so nothing recorded or
   // submitted this frame can reference torn-down scene resources.
@@ -1343,9 +1425,8 @@ void VulkanRenderer::draw() {
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
   }
-  // The scene's area this frame, and its images rebuilt once a new size has
-  // settled (a divider let go, a window resize finished).
-  updateSceneArea();
+  // The scene's images rebuilt once a new size has settled (a divider let
+  // go, a window resize finished).
   {
     const bool mouseDown =
         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS ||
@@ -1365,55 +1446,37 @@ void VulkanRenderer::draw() {
     if (!playing)
       loadScene(currentScene, /*moveCamera=*/false);
   }
+}
 
-  metrics.beginFrame();
+// This frame slot's previous frame has to finish before its fence, acquire
+// semaphore, query range and exposure buffer are reused. When the CPU runs
+// ahead of the GPU this is where it waits: idle time, not renderer cost.
+void VulkanRenderer::waitForFrameSlot() {
+  vkWaitForFences(device.getLogicalDevice(), 1, &drawFences[currentFrame],
+                  VK_TRUE, std::numeric_limits<uint64_t>::max());
+}
 
-  using CpuClock = std::chrono::high_resolution_clock;
-  auto elapsedMs = [](CpuClock::time_point start) {
-    return std::chrono::duration<double, std::milli>(CpuClock::now() - start)
-        .count();
-  };
-
-  auto phaseStart = CpuClock::now();
-  vkWaitForFences(logicalDevice, 1, &drawFences[currentFrame], VK_TRUE,
-                  std::numeric_limits<uint64_t>::max());
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::WaitFence,
-                         elapsedMs(phaseStart));
-  // This is the expected frame-in-flight throttle: if the CPU finishes
-  // recording faster than the GPU can consume work, it waits here before
-  // reusing this frame slot's fence, acquire semaphore, query range, and
-  // exposure result buffer. It is idle time, not active CPU renderer cost.
-  metrics.collectGpuResults(logicalDevice, currentFrame);
-  materialProbeResult = materialProbePass.read(currentFrame);
-
-  // Check resize BEFORE acquiring — a successful acquire signals
-  // imageAvailable, and returning early without consuming it would leave it
-  // signaled on the next frame.
-  if (framebufferResized) {
-    framebufferResized = false;
-    recreateSwapChain();
-    return;
-  }
-
-  uint32_t imageIndex;
-  phaseStart = CpuClock::now();
-  VkResult acquireResult = vkAcquireNextImageKHR(
-      logicalDevice, swapchain.getSwapchain(),
+// False when the swapchain was out of date and got rebuilt instead; the
+// frame is skipped.
+bool VulkanRenderer::acquireSwapImage(uint32_t &imageIndex) {
+  const VkResult result = vkAcquireNextImageKHR(
+      device.getLogicalDevice(), swapchain.getSwapchain(),
       std::numeric_limits<uint64_t>::max(), imageAvailable[currentFrame],
       VK_NULL_HANDLE, &imageIndex);
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Acquire,
-                         elapsedMs(phaseStart));
-
-  if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-    // Failed acquire → semaphore NOT signaled per spec → safe to recreate
+  if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+    // Failed acquire: the semaphore isn't signalled, so it's safe to rebuild.
     recreateSwapChain();
-    return;
-  } else if (acquireResult != VK_SUCCESS &&
-             acquireResult != VK_SUBOPTIMAL_KHR) {
-    throw std::runtime_error("Failed to acquire swap chain image");
+    return false;
   }
+  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    throw std::runtime_error("Failed to acquire swap chain image");
+  return true;
+}
 
-  phaseStart = CpuClock::now();
+// Waits if another frame slot still renders into this swap image, then
+// hands the image to this slot's fence.
+void VulkanRenderer::waitForSwapImage(uint32_t imageIndex) {
+  VkDevice logicalDevice = device.getLogicalDevice();
   VkFence imageFence = imagesInFlight[imageIndex];
   if (imageFence != VK_NULL_HANDLE) {
     bool fenceStillOwnsImage = false;
@@ -1432,8 +1495,6 @@ void VulkanRenderer::draw() {
       imagesInFlight[imageIndex] = VK_NULL_HANDLE;
     }
   }
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::ImageFence,
-                         elapsedMs(phaseStart));
 
   const uint32_t invalidImageIndex = std::numeric_limits<uint32_t>::max();
   if (currentFrame < static_cast<int>(frameImageInFlight.size())) {
@@ -1448,53 +1509,70 @@ void VulkanRenderer::draw() {
   imagesInFlight[imageIndex] = drawFences[currentFrame];
   vkResetFences(logicalDevice, 1, &drawFences[currentFrame]);
 
-  phaseStart = CpuClock::now();
+}
+
+// Everything the shaders read this frame: sun and fog, the render settings,
+// TAA's jitter, the shadow matrices.
+void VulkanRenderer::updateFrameUniforms() {
   applySunAndFog();
-  // Day/night cycle: advance sim-hour at imguiDayNightSpeed sim-hours per
-  // real-second, then place the sun on a great-circle arc through the
-  // zenith. Sunrise at hour 6 (east horizon), zenith at hour 12, sunset at
-  // hour 18 (west horizon); below the horizon outside [6, 18].
-  if (imguiDayNightEnable) {
-    static auto lastTime = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    float dt = std::chrono::duration<float>(now - lastTime).count();
-    lastTime = now;
-    imguiDayNightHour += dt * imguiDayNightSpeed;
-    imguiDayNightHour = std::fmod(imguiDayNightHour, 24.0f);
-    if (imguiDayNightHour < 0.0f) imguiDayNightHour += 24.0f;
+  updateDayNightSun();
+  packRenderSettings();
+  applyTaaJitter();
+  shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
+                                      imguiDrawDistance);
+  shadowPass.updatePointShadowMatrices(sceneUbo);
+  updateMaterialProbePixel();
+}
 
-    float t     = (imguiDayNightHour - 6.0f) / 12.0f; // 0 at dawn, 1 at dusk
-    float angle = t * 3.1415927f;                     // 0..π over daylight
-    // Slight tilt off the X axis so shadows aren't perfectly E-W parallel.
-    glm::vec3 east = glm::normalize(glm::vec3(1.0f, 0.0f, 0.2f));
-    glm::vec3 up   = glm::vec3(0.0f, 1.0f, 0.0f);
-    glm::vec3 sunPos = east * std::cos(angle) + up * std::sin(angle);
-    sceneUbo.directionalLight.direction = glm::vec4(-sunPos, 0.0f);
-
-    // Intensity follows elevation: max at zenith, ambient floor at night.
-    // Warm tint kicks in only near the horizon, not while underground.
-    float elevation = sunPos.y;
-    float dayFactor = glm::smoothstep(-0.05f, 0.35f, elevation);
-    float horizon   = glm::clamp(1.0f - std::abs(elevation) * 3.0f, 0.0f, 1.0f) *
-                      (elevation > 0.0f ? 1.0f : 0.0f);
-    glm::vec3 dayColor(1.0f, 0.93f, 0.78f);
-    glm::vec3 duskColor(1.0f, 0.55f, 0.30f);
-    glm::vec3 color = glm::mix(dayColor, duskColor, horizon);
-    // Peak 2.5 (was 5.5), see SceneSun. Stopgap until histogram auto-exposure
-    // replaces the manual EV slider.
-    sceneUbo.directionalLight.colorIntensity =
-        glm::vec4(color, 2.5f * dayFactor + 0.05f);
-
-    // IBL/sky baked from a daytime cubemap — attenuate it with the same
-    // day factor so glossy surfaces don't keep reflecting baked daylight
-    // through the night. User's manual slider still scales on top.
-    sceneUbo.qualityToggles2.w =
-        imguiIblIntensity * (0.08f + 0.92f * dayFactor);
-  } else {
-    // Day/night cycle off: manual slider drives the ambient term directly.
+// The day/night cycle, when it's on: the hour advances at imguiDayNightSpeed
+// sim-hours per real second and the sun follows an arc through the zenith.
+// Sunrise at hour 6 (east horizon), zenith at 12, sunset at 18 (west); below
+// the horizon outside 6 to 18. Off, the ambient slider drives the sky light
+// directly.
+void VulkanRenderer::updateDayNightSun() {
+  if (!imguiDayNightEnable) {
     sceneUbo.qualityToggles2.w = imguiIblIntensity;
+    return;
   }
+  static auto lastTime = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  float dt = std::chrono::duration<float>(now - lastTime).count();
+  lastTime = now;
+  imguiDayNightHour += dt * imguiDayNightSpeed;
+  imguiDayNightHour = std::fmod(imguiDayNightHour, 24.0f);
+  if (imguiDayNightHour < 0.0f) imguiDayNightHour += 24.0f;
 
+  float t     = (imguiDayNightHour - 6.0f) / 12.0f; // 0 at dawn, 1 at dusk
+  float angle = t * 3.1415927f;                     // 0..π over daylight
+  // Slight tilt off the X axis so shadows aren't perfectly E-W parallel.
+  glm::vec3 east = glm::normalize(glm::vec3(1.0f, 0.0f, 0.2f));
+  glm::vec3 up   = glm::vec3(0.0f, 1.0f, 0.0f);
+  glm::vec3 sunPos = east * std::cos(angle) + up * std::sin(angle);
+  sceneUbo.directionalLight.direction = glm::vec4(-sunPos, 0.0f);
+
+  // Intensity follows elevation: max at zenith, ambient floor at night.
+  // Warm tint kicks in only near the horizon, not while underground.
+  float elevation = sunPos.y;
+  float dayFactor = glm::smoothstep(-0.05f, 0.35f, elevation);
+  float horizon   = glm::clamp(1.0f - std::abs(elevation) * 3.0f, 0.0f, 1.0f) *
+                    (elevation > 0.0f ? 1.0f : 0.0f);
+  glm::vec3 dayColor(1.0f, 0.93f, 0.78f);
+  glm::vec3 duskColor(1.0f, 0.55f, 0.30f);
+  glm::vec3 color = glm::mix(dayColor, duskColor, horizon);
+  // Peak 2.5 (was 5.5), see SceneSun. Stopgap until histogram auto-exposure
+  // replaces the manual EV slider.
+  sceneUbo.directionalLight.colorIntensity =
+      glm::vec4(color, 2.5f * dayFactor + 0.05f);
+
+  // IBL/sky baked from a daytime cubemap — attenuate it with the same
+  // day factor so glossy surfaces don't keep reflecting baked daylight
+  // through the night. User's manual slider still scales on top.
+  sceneUbo.qualityToggles2.w =
+      imguiIblIntensity * (0.08f + 0.92f * dayFactor);
+}
+
+// The Render and Lighting panels' settings, packed into the UBO's toggles.
+void VulkanRenderer::packRenderSettings() {
   sceneUbo.qualityToggles2.y =
       imguiUseGeomNormalOnly ? 0.0f : imguiNormalStrength;
   sceneUbo.qualityToggles2.x =
@@ -1527,7 +1605,11 @@ void VulkanRenderer::draw() {
       glm::vec4(imguiEdgeAA, imguiAlphaDither, imguiShadowSoftness,
                 imguiContactGrounding);
 
-  // --- TAA per-frame state ---
+}
+
+// TAA's per-frame state: this frame's sub-pixel jitter, last frame's matrix
+// for reprojection, and whether the history can be blended.
+void VulkanRenderer::applyTaaJitter() {
   // Halton(2,3) sub-pixel jitter for free supersampling AA + temporal noise
   // washing. We sequence over 8 samples and wrap. Convert pixel offsets in
   // [-0.5, 0.5] to NDC offsets by *2/viewport, since clip.xy is in [-w, w]
@@ -1588,30 +1670,22 @@ void VulkanRenderer::draw() {
   // the NEXT frame now that we're about to render content into the history.
   taaHistoryValid = taaEnable;
 
-  shadowPass.updateLightSpaceMatrices(sceneUbo, imguiCsmFar,
-                                      imguiDrawDistance);
-  shadowPass.updatePointShadowMatrices(sceneUbo);
-  updateMaterialProbePixel();
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Update,
-                         elapsedMs(phaseStart));
+}
 
-  metrics.setActiveGpuQueryFrame(currentFrame);
-  phaseStart = CpuClock::now();
+// The frame's four command buffers, from one collection of the scene's
+// meshes.
+void VulkanRenderer::recordFrame(uint32_t imageIndex) {
   collectMeshInstances();
   recordGBufferCommands(imageIndex);
   recordSsaoComputeCommands(ssaoCommandBuffers[imageIndex], imageIndex);
   recordShadowCommands(shadowCommandBuffers[imageIndex]);
   recordPostCommands(postCommandBuffers[imageIndex], imageIndex);
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Record,
-                         elapsedMs(phaseStart));
+}
 
-  phaseStart = CpuClock::now();
-  descriptorManager.updateUniformBuffer(device.getAllocator(), imageIndex,
-                                        &sceneUbo, sizeof(SceneUniformBuffer));
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Upload,
-                         elapsedMs(phaseStart));
-
-  phaseStart = CpuClock::now();
+// Four submits: the G-buffer, SSAO on the compute queue once the G-buffer
+// is done, the shadows, and the post chain once SSAO is done, which
+// signals the frame's fence and the semaphore present waits on.
+void VulkanRenderer::submitFrame(uint32_t imageIndex) {
   VkSemaphore timeline = asyncComputeTimeline[currentFrame];
   const uint64_t gbufferReadyValue =
       asyncComputeTimelineValue[currentFrame] + 1;
@@ -1710,10 +1784,10 @@ void VulkanRenderer::draw() {
                     drawFences[currentFrame]) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit post command buffer");
   }
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Submit,
-                         elapsedMs(phaseStart));
-  metrics.markGpuQueriesSubmitted(currentFrame);
+}
 
+// False when the swapchain had to be rebuilt.
+bool VulkanRenderer::presentFrame(uint32_t imageIndex) {
   VkPresentInfoKHR presentInfo = {};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
   presentInfo.waitSemaphoreCount = 1;
@@ -1723,25 +1797,17 @@ void VulkanRenderer::draw() {
   presentInfo.pSwapchains = &sc;
   presentInfo.pImageIndices = &imageIndex;
 
-  phaseStart = CpuClock::now();
-  VkResult result =
+  const VkResult result =
       vkQueuePresentKHR(device.getPresentationQueue(), &presentInfo);
-  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Present,
-                         elapsedMs(phaseStart));
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
       framebufferResized) {
     framebufferResized = false;
     recreateSwapChain();
-    return;
-  } else if (result != VK_SUCCESS) {
-    throw std::runtime_error("Failed to present swap chain image");
+    return false;
   }
-  currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
-  // Advance TAA frame counter AFTER this frame finishes recording so the
-  // Halton jitter index used above matches the history ring slots that
-  // recordPostCommands picked for framebuffers / descriptor sets.
-  taaFrameCounter++;
-  metrics.endFrame();
+  if (result != VK_SUCCESS)
+    throw std::runtime_error("Failed to present swap chain image");
+  return true;
 }
 
 // Swapchain recreation
@@ -3195,6 +3261,134 @@ void VulkanRenderer::collectGBufferDrawItems(
   sortGBufferDrawItemsForState(drawItems);
 }
 
+// Draws items [begin, end) into drawCmd, binding the mesh or instanced
+// pipeline and the cull mode only when they change (the items are sorted for
+// that).
+void VulkanRenderer::recordGBufferDraws(VkCommandBuffer drawCmd,
+                                        const std::vector<GBufferDrawItem> &items,
+                                        size_t begin, size_t end,
+                                        const VkViewport &viewport,
+                                        const VkRect2D &scissor,
+                                        VkDescriptorSet vpSet,
+                                        VkDescriptorSet bindlessSet) {
+  const std::array<VkDescriptorSet, 2> graphicsSets = {vpSet, bindlessSet};
+  const std::array<VkDescriptorSet, 2> instancedSets = {vpSet, bindlessSet};
+  vkCmdSetViewport(drawCmd, 0, 1, &viewport);
+  vkCmdSetScissor(drawCmd, 0, 1, &scissor);
+  GBufferDrawKind boundKind = GBufferDrawKind::Mesh;
+  bool pipelineBound = false;
+  VkCullModeFlags lastCull = VK_CULL_MODE_BACK_BIT;
+  bool cullValid = false;
+
+  for (size_t i = begin; i < end; ++i) {
+    const GBufferDrawItem &item = items[i];
+    if (!pipelineBound || boundKind != item.kind) {
+      if (item.kind == GBufferDrawKind::Mesh) {
+        vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipeline.getGraphicsPipeline());
+        vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.getGraphicsLayout(), 0, 2,
+                                graphicsSets.data(), 0, nullptr);
+      } else {
+        vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipeline.getInstancedPipeline());
+        vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline.getInstancedLayout(), 0, 2,
+                                instancedSets.data(), 0, nullptr);
+      }
+      boundKind = item.kind;
+      pipelineBound = true;
+      cullValid = false;
+    }
+
+    if (!cullValid || item.cullMode != lastCull) {
+      vkCmdSetCullMode(drawCmd, item.cullMode);
+      lastCull = item.cullMode;
+      cullValid = true;
+    }
+
+    VkBuffer vb[] = {item.mesh->getVertexBuffer()};
+    VkDeviceSize off[] = {0};
+    vkCmdBindVertexBuffers(drawCmd, 0, 1, vb, off);
+    if (item.kind == GBufferDrawKind::Instanced) {
+      VkDeviceSize instanceOff = 0;
+      vkCmdBindVertexBuffers(drawCmd, 1, 1, &item.instanceBuffer,
+                             &instanceOff);
+    }
+    vkCmdBindIndexBuffer(drawCmd, item.mesh->getIndexBuffer(item.lod), 0,
+                         VK_INDEX_TYPE_UINT32);
+    VkPipelineLayout layout =
+        item.kind == GBufferDrawKind::Mesh ? pipeline.getGraphicsLayout()
+                                           : pipeline.getInstancedLayout();
+    vkCmdPushConstants(drawCmd, layout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(ModelPushConstants), &item.push);
+    vkCmdDrawIndexed(drawCmd, item.indexCount, item.instanceCount, 0, 0, 0);
+  }
+}
+
+// The CPU path split across the worker threads: each records a share of the
+// items into its own secondary command buffer, and the primary runs them in
+// one render pass. Off by default; at a few dozen draws it didn't beat one
+// thread.
+void VulkanRenderer::recordGBufferThreaded(
+    VkCommandBuffer cmd, uint32_t currentImage, const VkRenderPassBeginInfo &rpbi,
+    const std::vector<GBufferDrawItem> &items, const VkViewport &viewport,
+    const VkRect2D &scissor, VkDescriptorSet vpSet,
+    VkDescriptorSet bindlessSet) {
+  auto &frameResources = threadedCommandFrames[currentFrame];
+  const uint32_t workerCount = std::min<uint32_t>(
+      threadedCommandWorkerCount, static_cast<uint32_t>(items.size()));
+  const GBufferStateStats stateStats =
+      estimateGBufferStateStats(items, workerCount);
+  metrics.recordPipelineBind(stateStats.pipelineBinds);
+  metrics.recordDynamicStateChange(stateStats.dynamicStateChanges);
+  std::vector<VkCommandBuffer> secondaries(workerCount, VK_NULL_HANDLE);
+
+  for (uint32_t i = 0; i < workerCount; ++i) {
+    ThreadCommandFrameResources &res = frameResources[i];
+    vkResetCommandPool(device.getLogicalDevice(), res.pool, 0);
+    secondaries[i] = res.gBufferSecondary;
+  }
+
+  const VkRenderPass gbufferPass = renderPassManager.getGBufferRenderPass();
+  const VkFramebuffer gbufferFramebuffer = gBufferFramebuffers[currentImage];
+
+  auto recordRange = [&](uint32_t workerIndex) {
+    const size_t begin =
+        (items.size() * size_t(workerIndex)) / size_t(workerCount);
+    const size_t end =
+        (items.size() * size_t(workerIndex + 1)) / size_t(workerCount);
+    VkCommandBuffer secondary = secondaries[workerIndex];
+
+    VkCommandBufferInheritanceInfo inheritance{};
+    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance.renderPass = gbufferPass;
+    inheritance.subpass = 0;
+    inheritance.framebuffer = gbufferFramebuffer;
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                      VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    beginInfo.pInheritanceInfo = &inheritance;
+    if (vkBeginCommandBuffer(secondary, &beginInfo) != VK_SUCCESS)
+      throw std::runtime_error("Failed to begin G-buffer secondary command buffer");
+
+    recordGBufferDraws(secondary, items, begin, end, viewport, scissor, vpSet,
+                       bindlessSet);
+    if (vkEndCommandBuffer(secondary) != VK_SUCCESS)
+      throw std::runtime_error("Failed to end G-buffer secondary command buffer");
+  };
+
+  commandThreadPool->dispatch(workerCount, recordRange);
+
+  vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+  vkCmdExecuteCommands(cmd, workerCount, secondaries.data());
+  vkCmdEndRenderPass(cmd);
+}
+
 void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
                                        const VkViewport &viewport,
                                        const VkRect2D &scissor) {
@@ -3231,66 +3425,6 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
 
   const VkDescriptorSet vpSet = descriptorManager.getVPSet(currentImage);
   const VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
-  const std::array<VkDescriptorSet, 2> graphicsSets = {vpSet, bindlessSet};
-  const std::array<VkDescriptorSet, 2> instancedSets = {vpSet, bindlessSet};
-
-  auto recordDrawCommands = [&](VkCommandBuffer drawCmd, size_t begin,
-                                size_t end) {
-    vkCmdSetViewport(drawCmd, 0, 1, &viewport);
-    vkCmdSetScissor(drawCmd, 0, 1, &scissor);
-    GBufferDrawKind boundKind = GBufferDrawKind::Mesh;
-    bool pipelineBound = false;
-    VkCullModeFlags lastCull = VK_CULL_MODE_BACK_BIT;
-    bool cullValid = false;
-
-    for (size_t i = begin; i < end; ++i) {
-      const GBufferDrawItem &item = drawItems[i];
-      if (!pipelineBound || boundKind != item.kind) {
-        if (item.kind == GBufferDrawKind::Mesh) {
-          vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getGraphicsPipeline());
-          vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  pipeline.getGraphicsLayout(), 0, 2,
-                                  graphicsSets.data(), 0, nullptr);
-        } else {
-          vkCmdBindPipeline(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getInstancedPipeline());
-          vkCmdBindDescriptorSets(drawCmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                  pipeline.getInstancedLayout(), 0, 2,
-                                  instancedSets.data(), 0, nullptr);
-        }
-        boundKind = item.kind;
-        pipelineBound = true;
-        cullValid = false;
-      }
-
-      if (!cullValid || item.cullMode != lastCull) {
-        vkCmdSetCullMode(drawCmd, item.cullMode);
-        lastCull = item.cullMode;
-        cullValid = true;
-      }
-
-      VkBuffer vb[] = {item.mesh->getVertexBuffer()};
-      VkDeviceSize off[] = {0};
-      vkCmdBindVertexBuffers(drawCmd, 0, 1, vb, off);
-      if (item.kind == GBufferDrawKind::Instanced) {
-        VkDeviceSize instanceOff = 0;
-        vkCmdBindVertexBuffers(drawCmd, 1, 1, &item.instanceBuffer,
-                               &instanceOff);
-      }
-      vkCmdBindIndexBuffer(drawCmd, item.mesh->getIndexBuffer(item.lod), 0,
-                           VK_INDEX_TYPE_UINT32);
-      VkPipelineLayout layout =
-          item.kind == GBufferDrawKind::Mesh ? pipeline.getGraphicsLayout()
-                                             : pipeline.getInstancedLayout();
-      vkCmdPushConstants(drawCmd, layout,
-                         VK_SHADER_STAGE_VERTEX_BIT |
-                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(ModelPushConstants), &item.push);
-      vkCmdDrawIndexed(drawCmd, item.indexCount, item.instanceCount, 0, 0, 0);
-    }
-  };
-
   const bool canRecordThreaded =
       imguiThreadedGBufferEnabled && commandThreadPool &&
       threadedCommandWorkerCount > 0 &&
@@ -3302,83 +3436,19 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     metrics.recordDynamicStateChange(2); // viewport + scissor
     gpuDrivenGBufferPass.recordIndirectGBuffer(
         cmd, currentImage, rpbi, viewport, scissor, vpSet, bindlessSet);
-    noteGBufferFinalLayouts(currentImage);
-    gpuDrivenGBufferPass.recordHzbBuild(
-        cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
-        imguiGpuDrivenEnabled, imguiHzbCullingEnabled,
-        minGpuDrivenCandidates);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
-    vkdbgEndLabel(cmd);
-    return;
-  }
-
-  if (!canRecordThreaded) {
+  } else if (canRecordThreaded) {
+    recordGBufferThreaded(cmd, currentImage, rpbi, drawItems, viewport,
+                          scissor, vpSet, bindlessSet);
+  } else {
     const GBufferStateStats stateStats =
         estimateGBufferStateStats(drawItems, 1);
     metrics.recordPipelineBind(stateStats.pipelineBinds);
     metrics.recordDynamicStateChange(stateStats.dynamicStateChanges);
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    recordDrawCommands(cmd, 0, drawItems.size());
+    recordGBufferDraws(cmd, drawItems, 0, drawItems.size(), viewport, scissor,
+                       vpSet, bindlessSet);
     vkCmdEndRenderPass(cmd);
-    noteGBufferFinalLayouts(currentImage);
-    gpuDrivenGBufferPass.recordHzbBuild(
-        cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
-        imguiGpuDrivenEnabled, imguiHzbCullingEnabled,
-        minGpuDrivenCandidates);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::GBuffer);
-    vkdbgEndLabel(cmd);
-    return;
   }
-
-  auto &frameResources = threadedCommandFrames[currentFrame];
-  const uint32_t workerCount = std::min<uint32_t>(
-      threadedCommandWorkerCount, static_cast<uint32_t>(drawItems.size()));
-  const GBufferStateStats stateStats =
-      estimateGBufferStateStats(drawItems, workerCount);
-  metrics.recordPipelineBind(stateStats.pipelineBinds);
-  metrics.recordDynamicStateChange(stateStats.dynamicStateChanges);
-  std::vector<VkCommandBuffer> secondaries(workerCount, VK_NULL_HANDLE);
-
-  for (uint32_t i = 0; i < workerCount; ++i) {
-    ThreadCommandFrameResources &res = frameResources[i];
-    vkResetCommandPool(device.getLogicalDevice(), res.pool, 0);
-    secondaries[i] = res.gBufferSecondary;
-  }
-
-  const VkRenderPass gbufferPass = renderPassManager.getGBufferRenderPass();
-  const VkFramebuffer gbufferFramebuffer = gBufferFramebuffers[currentImage];
-
-  auto recordRange = [&](uint32_t workerIndex) {
-    const size_t begin =
-        (drawItems.size() * size_t(workerIndex)) / size_t(workerCount);
-    const size_t end =
-        (drawItems.size() * size_t(workerIndex + 1)) / size_t(workerCount);
-    VkCommandBuffer secondary = secondaries[workerIndex];
-
-    VkCommandBufferInheritanceInfo inheritance{};
-    inheritance.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    inheritance.renderPass = gbufferPass;
-    inheritance.subpass = 0;
-    inheritance.framebuffer = gbufferFramebuffer;
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
-                      VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-    beginInfo.pInheritanceInfo = &inheritance;
-    if (vkBeginCommandBuffer(secondary, &beginInfo) != VK_SUCCESS)
-      throw std::runtime_error("Failed to begin G-buffer secondary command buffer");
-
-    recordDrawCommands(secondary, begin, end);
-    if (vkEndCommandBuffer(secondary) != VK_SUCCESS)
-      throw std::runtime_error("Failed to end G-buffer secondary command buffer");
-  };
-
-  commandThreadPool->dispatch(workerCount, recordRange);
-
-  vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
-  vkCmdExecuteCommands(cmd, workerCount, secondaries.data());
-  vkCmdEndRenderPass(cmd);
   noteGBufferFinalLayouts(currentImage);
   gpuDrivenGBufferPass.recordHzbBuild(
       cmd, currentImage, gBufferDepthImages, gBufferDepthFormat,
@@ -3566,7 +3636,11 @@ void VulkanRenderer::setDrawDistance(float dist) {
   rebuildProjection();
 }
 
-void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
+// This frame's ImGui frame: every panel, the gizmo and the prompts, with
+// the renderer's state and callbacks handed over in one context. It runs at
+// the start of the frame, before anything is recorded, so the frame draws
+// what the UI just changed; recordImGuiCommands only records the result.
+void VulkanRenderer::buildUi() {
   DebugUiContext ui{
       metrics,
       device.getAllocator(),
@@ -3680,7 +3754,10 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   ui.onPromptAnswer = [this](PromptAnswer answer, const std::string &text) {
     answerPrompt(answer, text);
   };
+  imguiLayer.buildFrame(ui);
+}
 
+void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
   // Debug lines go in the ImGui pass, under the panels: the physics
   // wireframes (only built while F2 is on) and, in edit mode, the
   // selection's outline. Copied together only when both are showing.
@@ -3705,7 +3782,7 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     debugLinePass.upload(device, imageIndex, *lines);
   imguiLayer.record(
       cmd, renderPassManager.getImGuiRenderPass(), swapchain.getExtent(),
-      imageIndex, ui, [&](VkCommandBuffer c) {
+      imageIndex, [&](VkCommandBuffer c) {
         if (drawPhysicsLines)
           debugLinePass.record(c, imageIndex, sceneArea, swapchain.getExtent(),
                                taaBaseProjection * sceneUbo.view, kCameraNear,

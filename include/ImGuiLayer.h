@@ -2,6 +2,7 @@
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <imgui.h>
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "PerformanceMetrics.h"
+#include "Picking.h"
 #include "PhysicsWorld.h"
 #include "Scene.h"
 #include "SceneViewport.h"
@@ -197,10 +199,13 @@ public:
                           const std::vector<SwapChainImage> &images);
   void cleanupFramebuffers(VkDevice device);
 
-  // beforeUi draws inside the same render pass, under the panels (debug
-  // lines use it).
+  // Builds this frame's UI (panels, gizmo, prompts) into ImGui's draw data.
+  // Runs at the start of the frame, before anything is recorded.
+  void buildFrame(DebugUiContext &ui);
+  // Records the draw data buildFrame made. beforeUi draws inside the same
+  // render pass, under the panels (debug lines use it).
   void record(VkCommandBuffer cmd, VkRenderPass renderPass, VkExtent2D extent,
-              uint32_t imageIndex, DebugUiContext &ui,
+              uint32_t imageIndex,
               const std::function<void(VkCommandBuffer)> &beforeUi = {});
 
   bool wantsMouse() const;
@@ -246,6 +251,9 @@ private:
   void registerPanelSettings();
   void drawInspector(DebugUiContext &ui);
   void flushInspectorRebuild(DebugUiContext &ui);
+  void commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
+                           SceneModelEntry edited, SceneGridEntry editedGrid,
+                           bool moved, bool changed);
   void drawGizmo(DebugUiContext &ui);
   void endGizmoDrag(DebugUiContext &ui);
   void finishSceneEdit(DebugUiContext &ui);
@@ -287,6 +295,32 @@ private:
   // The gizmo: handles on the selected object, in edit mode. Keys 1, 2, 3
   // or the toolbar pick the mode; Ctrl or the toolbar's Snap box snaps.
   enum class GizmoMode { Move, Rotate, Scale };
+  // The selected entry and where its handles sit this frame, in the scene
+  // area's own pixels: worked out once by gizmoView, shared by the steps
+  // after it.
+  struct GizmoView {
+    SceneModelEntry *entry = nullptr;
+    SceneGridEntry *grid = nullptr; // set when the entry is a grid's model
+    bool justSelected = false;      // selected by this frame's click
+    SceneViewport area;
+    glm::mat4 viewProj{1.0f};
+    glm::vec3 centre{0.0f};
+    glm::vec2 centrePixel{0.0f};
+    float length = 0.0f; // world length of an arrow
+    glm::vec2 windowMouse{0.0f};
+    glm::vec2 mouse{0.0f}; // in the scene area's pixels
+    PickRay ray;
+    ImVec2 at(glm::vec2 p) const;
+    bool axisShown(int axis, GizmoMode mode) const;
+    std::optional<glm::vec2> arrowTip(int axis) const;
+  };
+  std::optional<GizmoView> gizmoView(DebugUiContext &ui);
+  int hoveredHandle(const GizmoView &view) const;
+  void startGizmoDrag(DebugUiContext &ui, const GizmoView &view, int handle);
+  void dragGizmo(DebugUiContext &ui, const GizmoView &view);
+  void commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
+                       const SceneModelEntry &edited, SceneGridEntry editedGrid);
+  void drawGizmoHandles(const GizmoView &view, int hot) const;
   GizmoMode gizmoMode = GizmoMode::Move;
   bool gizmoSnap = false;
   bool gizmoHovered = false; // last frame, which is what a click goes by

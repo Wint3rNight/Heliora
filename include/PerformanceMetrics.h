@@ -39,9 +39,10 @@ public:
     Upload = 5,
     Submit = 6,
     Present = 7,
-    Physics = 8 // fixed steps plus copying moved poses into scene nodes
+    Physics = 8, // fixed steps plus copying moved poses into scene nodes
+    Ui = 9       // building the ImGui frame, before anything is recorded
   };
-  static constexpr int NUM_CPU_PHASES = 9;
+  static constexpr int NUM_CPU_PHASES = 10;
 
   // Lifecycle
   void init(VkDevice device, VkPhysicalDevice physicalDevice,

@@ -66,35 +66,22 @@ void initWindow(const std::string &wName = "Vulkan Renderer",
   inputManager.init(window);
 }
 
-int main(int argc, char **argv) {
-  initWindow("Vulkan Renderer", 1920, 1080);
-
-  if (vulkanRenderer.init(window) == EXIT_FAILURE) {
-    return EXIT_FAILURE;
-  }
-
-  // HELIORA_PHYSICS_DEBUG=1 starts with the physics wireframes on (same as
-  // F2), for runs nobody is pressing keys in.
-  if (std::getenv("HELIORA_PHYSICS_DEBUG"))
-    vulkanRenderer.togglePhysicsDebug();
-
-  camera.MovementSpeed = 15.0f;
-  vulkanRenderer.setCameraPresetCallback(
-      [](glm::vec3 position, float yaw, float pitch, float speed) {
-        camera.SetPose(position, yaw, pitch);
-        camera.MovementSpeed = speed;
-      });
-  bool cameraMode = true;  // Tab toggles between camera fly-through and ImGui
-  // In UI mode, holding the right mouse button flies too. Tab stays for the
-  // touchpad, which can't hold a right click.
+// Who has the mouse: Tab switches between flying the camera (cursor hidden)
+// and the UI (cursor free, panels live). In UI mode, holding the right mouse
+// button on the scene flies too; Tab stays for the touchpad, which can't hold
+// a right click.
+struct FlyState {
+  bool cameraMode = true;
   bool rightMouseFlying = false;
-  inputManager.setCursorCaptured(true);
+  bool flying() const { return cameraMode || rightMouseFlying; }
+};
 
-  // Scenes are data-driven: Resources/Scenes/*.scene files describe models,
-  // transforms, animations, instanced rings, and the camera pose. The ImGui
-  // Camera panel exposes a scene picker for runtime switching. An optional
-  // CLI argument selects the startup scene: an index into the discovered
-  // list, or a path to a .scene file.
+// The startup scene: argv[1] if there is one (an index into the scenes found,
+// or a path to a .scene file), otherwise the first scene found. False when
+// there's no scene at all. Scenes are data-driven: Resources/Scenes/*.scene
+// files describe the models, transforms, animations, rings and camera pose,
+// and the Scene panel switches between them.
+bool loadStartupScene(int argc, char **argv) {
   vulkanRenderer.discoverScenes("Resources/Scenes");
   vulkanRenderer.discoverModels("Resources/Models");
   bool sceneLoaded = false;
@@ -115,9 +102,141 @@ int main(int argc, char **argv) {
                 << "': " << e.what() << std::endl;
     }
   }
-  if (!sceneLoaded && vulkanRenderer.hasScenes()) {
-    vulkanRenderer.loadSceneAt(0);
-  } else if (!sceneLoaded) {
+  if (!sceneLoaded && vulkanRenderer.hasScenes())
+    sceneLoaded = vulkanRenderer.loadSceneAt(0);
+  return sceneLoaded;
+}
+
+// Tab, right-mouse flying, and a prompt taking the mouse back: a question
+// needs the cursor and the panels.
+void updateFlying(FlyState &fly, bool typing, bool asking) {
+  if (asking && fly.flying()) {
+    fly.cameraMode = false;
+    fly.rightMouseFlying = false;
+    inputManager.setCursorCaptured(false);
+  }
+  if (asking && !vulkanRenderer.isUiVisible())
+    vulkanRenderer.toggleUiVisibility();
+
+  // Tab toggles between camera fly-through (cursor hidden) and UI mode
+  // (cursor visible, ImGui panels interactive).
+  // WantCaptureMouse can't drive this because GLFW_CURSOR_DISABLED delivers
+  // only raw deltas — ImGui never sees absolute positions and can't detect
+  // hover.
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB) && !typing && !asking) {
+    fly.cameraMode = !fly.cameraMode;
+    fly.rightMouseFlying = false;
+    inputManager.setCursorCaptured(fly.cameraMode);
+    // Entering UI mode with the HUD hidden would strand the user in a
+    // dead-looking state (free cursor, nothing to click, no mouse-look) —
+    // un-hide the panels so UI mode always shows a UI.
+    if (!fly.cameraMode && !vulkanRenderer.isUiVisible())
+      vulkanRenderer.toggleUiVisibility();
+  }
+
+  // Only a press that starts on the scene flies; one on a panel stays
+  // with the panel. Read every frame, so a press made in camera mode
+  // doesn't count as new after Tab.
+  const bool rightPressed =
+      inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
+  if (!fly.cameraMode) {
+    if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse() &&
+        vulkanRenderer.sceneContains(inputManager.getMousePosition())) {
+      fly.rightMouseFlying = true;
+      inputManager.setCursorCaptured(true);
+    } else if (fly.rightMouseFlying &&
+               !inputManager.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
+      fly.rightMouseFlying = false;
+      inputManager.setCursorCaptured(false);
+    }
+  }
+}
+
+// The editor's mouse and keys: selecting with a click, undo and redo, save,
+// and the function keys.
+void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
+  // A left click in edit mode, with the cursor free and on the scene (off
+  // the panels and the gizmo's handles), selects what's under it. While a
+  // text field has the keyboard, the click only ends the typing, so the
+  // value goes to the object it was typed for.
+  const bool leftPressed =
+      inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
+  if (leftPressed && !typing && !fly.cameraMode && !fly.rightMouseFlying &&
+      !asking && !vulkanRenderer.isPlaying() &&
+      !vulkanRenderer.imguiWantsMouse() && !vulkanRenderer.gizmoHasMouse()) {
+    vulkanRenderer.selectAt(inputManager.getMousePosition());
+  }
+
+  // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer
+  // checks), unless a text box has the keyboard: it has its own undo.
+  const bool zPressed = inputManager.wasKeyJustPressed(GLFW_KEY_Z);
+  const bool sPressed = inputManager.wasKeyJustPressed(GLFW_KEY_S);
+  const bool ctrl = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
+                    inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
+  const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
+                     inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
+  const bool shortcuts = ctrl && !typing && !asking;
+  if (zPressed && shortcuts) {
+    if (shift)
+      vulkanRenderer.redoEdit();
+    else
+      vulkanRenderer.undoEdit();
+  }
+  // Ctrl+S saves the scene and Ctrl+Shift+S saves it under a new name,
+  // in either mode: what's saved is the layout.
+  if (sPressed && shortcuts) {
+    if (shift)
+      vulkanRenderer.requestSaveAs();
+    else
+      vulkanRenderer.requestSave();
+  }
+
+  // F5 switches between play mode and edit mode.
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_F5) && !asking)
+    vulkanRenderer.togglePlayMode();
+  // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_F1) && !asking)
+    vulkanRenderer.toggleUiVisibility();
+  // F2 shows the physics shapes as wireframes.
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_F2) && !asking)
+    vulkanRenderer.togglePhysicsDebug();
+  // F throws a ball where the camera looks, in camera mode only so a
+  // click-and-type in a panel never throws. Play mode only (throwBall).
+  if (fly.cameraMode && !typing && !asking &&
+      inputManager.wasKeyJustPressed(GLFW_KEY_F))
+    vulkanRenderer.throwBall(camera.Position, camera.Front);
+}
+
+void turnCamera(const FlyState &fly) {
+  // The mouse turns the camera only while flying.
+  glm::vec2 mouseDelta = inputManager.getMouseDelta();
+  if (fly.flying() && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
+    camera.ProcessMouseMovement(mouseDelta.x, mouseDelta.y);
+  }
+}
+
+int main(int argc, char **argv) {
+  initWindow("Vulkan Renderer", 1920, 1080);
+
+  if (vulkanRenderer.init(window) == EXIT_FAILURE) {
+    return EXIT_FAILURE;
+  }
+
+  // HELIORA_PHYSICS_DEBUG=1 starts with the physics wireframes on (same as
+  // F2), for runs nobody is pressing keys in.
+  if (std::getenv("HELIORA_PHYSICS_DEBUG"))
+    vulkanRenderer.togglePhysicsDebug();
+
+  camera.MovementSpeed = 15.0f;
+  vulkanRenderer.setCameraPresetCallback(
+      [](glm::vec3 position, float yaw, float pitch, float speed) {
+        camera.SetPose(position, yaw, pitch);
+        camera.MovementSpeed = speed;
+      });
+  FlyState fly;
+  inputManager.setCursorCaptured(true);
+
+  if (!loadStartupScene(argc, argv)) {
     // Nothing to show without a scene, so say why instead of opening an
     // empty world.
     std::cerr << "No .scene files found in Resources/Scenes" << std::endl;
@@ -138,111 +257,15 @@ int main(int argc, char **argv) {
       glfwSetWindowShouldClose(window, GLFW_FALSE);
       vulkanRenderer.requestQuit();
     }
+    // A text box has the keyboard, or a question waits for an answer: the
+    // game's keys wait.
     const bool typing = vulkanRenderer.imguiWantsTextInput();
-    // A question needs the cursor and the panels, and the game's keys wait
-    // until it's answered.
     const bool asking = vulkanRenderer.promptOpen();
-    if (asking && (cameraMode || rightMouseFlying)) {
-      cameraMode = false;
-      rightMouseFlying = false;
-      inputManager.setCursorCaptured(false);
-    }
-    if (asking && !vulkanRenderer.isUiVisible())
-      vulkanRenderer.toggleUiVisibility();
+    updateFlying(fly, typing, asking);
     processInput(typing);
+    handleEditorKeys(fly, typing, asking);
+    turnCamera(fly);
 
-    // Tab toggles between camera fly-through (cursor hidden) and UI mode
-    // (cursor visible, ImGui panels interactive).
-    // WantCaptureMouse can't drive this because GLFW_CURSOR_DISABLED delivers
-    // only raw deltas — ImGui never sees absolute positions and can't detect
-    // hover.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_TAB) && !typing && !asking) {
-      cameraMode = !cameraMode;
-      rightMouseFlying = false;
-      inputManager.setCursorCaptured(cameraMode);
-      // Entering UI mode with the HUD hidden would strand the user in a
-      // dead-looking state (free cursor, nothing to click, no mouse-look) —
-      // un-hide the panels so UI mode always shows a UI.
-      if (!cameraMode && !vulkanRenderer.isUiVisible())
-        vulkanRenderer.toggleUiVisibility();
-    }
-
-    // Only a press that starts on the scene flies; one on a panel stays
-    // with the panel. Read every frame, so a press made in camera mode
-    // doesn't count as new after Tab.
-    const bool rightPressed =
-        inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
-    if (!cameraMode) {
-      if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse() &&
-          vulkanRenderer.sceneContains(inputManager.getMousePosition())) {
-        rightMouseFlying = true;
-        inputManager.setCursorCaptured(true);
-      } else if (rightMouseFlying &&
-                 !inputManager.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
-        rightMouseFlying = false;
-        inputManager.setCursorCaptured(false);
-      }
-    }
-
-    // A left click in edit mode, with the cursor free and on the scene (off
-    // the panels and the gizmo's handles), selects what's under it. While a
-    // text field has the keyboard, the click only ends the typing, so the
-    // value goes to the object it was typed for.
-    const bool leftPressed =
-        inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
-    if (leftPressed && !typing && !cameraMode && !rightMouseFlying && !asking &&
-        !vulkanRenderer.isPlaying() && !vulkanRenderer.imguiWantsMouse() &&
-        !vulkanRenderer.gizmoHasMouse()) {
-      vulkanRenderer.selectAt(inputManager.getMousePosition());
-    }
-
-    // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer
-    // checks), unless a text box has the keyboard: it has its own undo.
-    const bool zPressed = inputManager.wasKeyJustPressed(GLFW_KEY_Z);
-    const bool sPressed = inputManager.wasKeyJustPressed(GLFW_KEY_S);
-    const bool ctrl = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
-                      inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
-    const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
-                       inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
-    const bool shortcuts = ctrl && !typing && !asking;
-    if (zPressed && shortcuts) {
-      if (shift)
-        vulkanRenderer.redoEdit();
-      else
-        vulkanRenderer.undoEdit();
-    }
-    // Ctrl+S saves the scene and Ctrl+Shift+S saves it under a new name,
-    // in either mode: what's saved is the layout.
-    if (sPressed && shortcuts) {
-      if (shift)
-        vulkanRenderer.requestSaveAs();
-      else
-        vulkanRenderer.requestSave();
-    }
-
-    // F5 switches between play mode and edit mode.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F5) && !asking)
-      vulkanRenderer.togglePlayMode();
-    // F1 toggles HUD-free screenshot mode (hides all ImGui panels).
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F1) && !asking)
-      vulkanRenderer.toggleUiVisibility();
-    // F2 shows the physics shapes as wireframes.
-    if (inputManager.wasKeyJustPressed(GLFW_KEY_F2) && !asking)
-      vulkanRenderer.togglePhysicsDebug();
-    // F throws a ball where the camera looks, in camera mode only so a
-    // click-and-type in a panel never throws. Play mode only (throwBall).
-    if (cameraMode && !typing && !asking &&
-        inputManager.wasKeyJustPressed(GLFW_KEY_F))
-      vulkanRenderer.throwBall(camera.Position, camera.Front);
-
-    // The mouse turns the camera only while flying.
-    glm::vec2 mouseDelta = inputManager.getMouseDelta();
-    if ((cameraMode || rightMouseFlying) &&
-        (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
-      camera.ProcessMouseMovement(mouseDelta.x, mouseDelta.y);
-    }
-
-    // Handle resize
     if (inputManager.wasResized()) {
       vulkanRenderer.notifyResize();
       inputManager.resetResizedFlag();

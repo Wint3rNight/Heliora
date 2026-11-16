@@ -550,6 +550,19 @@ private:
   void applySunAndFog();
 
   // --- Per-frame ---
+  // One frame, in the order draw() runs them.
+  void buildUi();
+  void applyPendingChanges();
+  void waitForFrameSlot();
+  bool acquireSwapImage(uint32_t &imageIndex);
+  void waitForSwapImage(uint32_t imageIndex);
+  void updateFrameUniforms();
+  void updateDayNightSun();
+  void packRenderSettings();
+  void applyTaaJitter();
+  void recordFrame(uint32_t imageIndex);
+  void submitFrame(uint32_t imageIndex);
+  bool presentFrame(uint32_t imageIndex);
   void recordGBufferCommands(uint32_t currentImage);
   void collectMeshInstances();
   bool prepareGpuDrivenFrame(uint32_t currentImage,
@@ -557,6 +570,17 @@ private:
                              uint32_t minCandidates);
   void collectGBufferDrawItems(std::vector<GBufferDrawItem> &drawItems,
                                const glm::vec4 frustumPlanes[6]);
+  void recordGBufferDraws(VkCommandBuffer drawCmd,
+                          const std::vector<GBufferDrawItem> &items,
+                          size_t begin, size_t end, const VkViewport &viewport,
+                          const VkRect2D &scissor, VkDescriptorSet vpSet,
+                          VkDescriptorSet bindlessSet);
+  void recordGBufferThreaded(VkCommandBuffer cmd, uint32_t currentImage,
+                             const VkRenderPassBeginInfo &rpbi,
+                             const std::vector<GBufferDrawItem> &items,
+                             const VkViewport &viewport,
+                             const VkRect2D &scissor, VkDescriptorSet vpSet,
+                             VkDescriptorSet bindlessSet);
   void recordShadowCommands(VkCommandBuffer cmd);
   void recordSsaoComputeCommands(VkCommandBuffer cmd, uint32_t currentImage);
   void recordPostCommands(VkCommandBuffer cmd, uint32_t currentImage);

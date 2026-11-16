@@ -465,6 +465,15 @@ TEST(bad_sun_and_fog_values_are_errors) {
         std::string::npos);
 }
 
+// A bad value is only known once the section ends, so the error points at
+// the section's header line.
+TEST(sun_and_fog_errors_name_their_header_line) {
+  CHECK(errorOf("name = x\n\n[sun]\nintensity = -1\n").find(
+            "[sun] at line 3") != std::string::npos);
+  CHECK(errorOf("[camera]\nyaw = 0\n[fog]\nmax = 1.5\n").find(
+            "[fog] at line 3") != std::string::npos);
+}
+
 TEST(grid_layout_rotation_turns_the_arrangement) {
   SceneGridEntry grid;
   grid.model.shape = PrimitiveShape::Box;

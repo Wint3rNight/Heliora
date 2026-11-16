@@ -578,6 +578,161 @@ void ImGuiLayer::flushInspectorRebuild(DebugUiContext &ui) {
   }
 }
 
+namespace {
+
+constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+constexpr const char *kShapeNames[] = {"box", "sphere", "capsule", "plane"};
+
+// An Inspector edit: moved is placement only, applied at once; changed needs
+// the entry rebuilt.
+struct InspectorEdit {
+  bool moved = false;
+  bool changed = false;
+};
+
+void transformFields(NodeTransform &t, InspectorEdit &edit) {
+  ImGui::SeparatorText("Transform");
+  edit.moved |= ImGui::DragFloat3("Position", &t.position.x, 0.05f, 0.0f, 0.0f,
+                                  "%.2f");
+  edit.moved |= ImGui::DragFloat3("Rotation", &t.rotationDeg.x, 0.5f, 0.0f,
+                                  0.0f, "%.1f\u00b0");
+  // Scale shows at once, but the body's size only changes in the rebuild.
+  if (ImGui::DragFloat("Scale", &t.scale, 0.01f, 0.01f, 100.0f, "%.2f",
+                       kClamp)) {
+    edit.moved = true;
+    edit.changed = true;
+  }
+}
+
+// A generated shape's kind, size and colour, or a model file's path.
+void shapeFields(SceneModelEntry &edited, InspectorEdit &edit) {
+  if (edited.shape) {
+    ImGui::SeparatorText("Shape");
+    int shape = static_cast<int>(*edited.shape);
+    if (ImGui::Combo("Shape", &shape, kShapeNames, 4)) {
+      edited.shape = static_cast<PrimitiveShape>(shape);
+      edit.changed = true;
+    }
+    switch (*edited.shape) {
+    case PrimitiveShape::Box:
+      edit.changed |= ImGui::DragFloat3("Size", &edited.size.x, 0.01f, 0.01f,
+                                        1000.0f, "%.2f", kClamp);
+      break;
+    case PrimitiveShape::Plane: {
+      glm::vec2 size(edited.size.x, edited.size.z);
+      if (ImGui::DragFloat2("Size", &size.x, 0.05f, 0.01f, 10000.0f, "%.2f",
+                            kClamp)) {
+        edited.size.x = size.x;
+        edited.size.z = size.y;
+        edit.changed = true;
+      }
+      break;
+    }
+    case PrimitiveShape::Capsule:
+      edit.changed |= ImGui::DragFloat("Height", &edited.height, 0.01f, 0.02f,
+                                       1000.0f, "%.2f", kClamp);
+      [[fallthrough]];
+    case PrimitiveShape::Sphere:
+      edit.changed |= ImGui::DragFloat("Radius", &edited.radius, 0.01f, 0.01f,
+                                       1000.0f, "%.2f", kClamp);
+      break;
+    }
+    edit.changed |= ImGui::ColorEdit3("Colour", &edited.color.x);
+  } else {
+    ImGui::SeparatorText("Model file");
+    ImGui::TextWrapped("%s", edited.path.c_str());
+  }
+}
+
+// The body, its material and the numbers that override it, with what's in
+// use right now shown in the empty fields.
+void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
+                   bool isGrid, InspectorEdit &edit) {
+  ImGui::SeparatorText("Physics");
+  static constexpr const char *kBodies[] = {"none", "static", "dynamic",
+                                            "kinematic"};
+  int body = edited.body ? 1 + static_cast<int>(*edited.body) : 0;
+  if (ImGui::Combo("Body", &body, kBodies, 4)) {
+    if (body == 0) {
+      // These only mean something with a body.
+      edited.body.reset();
+      edited.mass.reset();
+      edited.density.reset();
+      edited.material.reset();
+      edited.friction.reset();
+      edited.restitution.reset();
+      edited.collider.reset();
+    } else {
+      edited.body = static_cast<PhysicsMotion>(body - 1);
+    }
+    edit.changed = true;
+  }
+  if (edited.body) {
+    const std::span<const PhysicsMaterial> materials = physicsMaterials();
+    const char *materialName =
+        edited.material ? edited.material->c_str() : "none";
+    if (ImGui::BeginCombo("Material", materialName)) {
+      if (ImGui::Selectable("none", !edited.material)) {
+        edited.material.reset();
+        edit.changed = true;
+      }
+      for (const PhysicsMaterial &m : materials)
+        if (ImGui::Selectable(m.name, edited.material == m.name)) {
+          edited.material = m.name;
+          edit.changed = true;
+        }
+      ImGui::EndCombo();
+    }
+    // What the body gets from its material and the defaults right now.
+    const PhysicsBodyDesc inUse = bodyDescFor(
+        edited, nullptr, ui.physics ? ui.physics->defaultFriction : 0.2f);
+    // The weight Jolt gave it; a body that doesn't exist yet (just given
+    // one, not rebuilt) starts from 1 kg, since 0 isn't allowed.
+    const float massInUse = ui.selectionMass > 0.0f ? ui.selectionMass
+                            : inUse.mass > 0.0f     ? inUse.mass
+                                                    : 1.0f;
+    edit.changed |= optionalFloat("Mass", edited.mass, massInUse, 0.5f, 0.01f,
+                                  1.0e6f, "%.1f kg");
+    edit.changed |= optionalFloat("Density", edited.density, inUse.density,
+                                  5.0f, 1.0f, 30000.0f, "%.0f kg/m\u00b3");
+    edit.changed |= optionalFloat("Friction", edited.friction, inUse.friction,
+                                  0.01f, 0.0f, 10.0f, "%.2f");
+    edit.changed |= optionalFloat("Restitution", edited.restitution,
+                                  inUse.restitution, 0.01f, 0.0f, 1.0f, "%.2f");
+    if (!edited.shape) {
+      static constexpr const char *kColliders[] = {"auto", "hull", "mesh",
+                                                   "box"};
+      int collider =
+          static_cast<int>(edited.collider.value_or(SceneCollider::Auto));
+      if (ImGui::Combo("Collider", &collider, kColliders, 4)) {
+        // auto is the default, so it's left out of the file.
+        if (collider == 0)
+          edited.collider.reset();
+        else
+          edited.collider = static_cast<SceneCollider>(collider);
+        edit.changed = true;
+      }
+    }
+    if (ui.selectionMass > 0.0f)
+      ImGui::TextDisabled(isGrid ? "Weighs %.1f kg each" : "Weighs %.1f kg",
+                          ui.selectionMass);
+  }
+}
+
+// A grid's count, spacing and layout rotation. True when Split was pressed.
+bool gridFields(SceneGridEntry &grid, InspectorEdit &edit) {
+  ImGui::SeparatorText("Grid");
+  edit.changed |= ImGui::DragInt3("Count", &grid.count.x, 0.1f, 1, 64, "%d",
+                                  kClamp);
+  edit.moved |= ImGui::DragFloat3("Spacing", &grid.spacing.x, 0.01f, 0.01f,
+                                  100.0f, "%.2f", kClamp);
+  edit.moved |= ImGui::DragFloat("Layout rotation", &grid.layoutRotation, 0.5f,
+                                 -360.0f, 360.0f, "%.1f\u00b0", kClamp);
+  return ImGui::Button("Split into objects");
+}
+
+} // namespace
+
 // The selected entry's settings, in the Inspector panel. Edits go to a copy
 // first and are only kept if the parser would accept them, so a saved scene
 // always loads.
@@ -602,20 +757,12 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   // can't carry over to another entry when the selection changes.
   ImGui::PushID(static_cast<int>(ref.kind));
   ImGui::PushID(ref.index);
-  SceneGridEntry *grid = isGrid ? &scene.grids[ref.index] : nullptr;
-  SceneModelEntry &entry = isGrid ? grid->model : scene.models[ref.index];
-  SceneModelEntry edited = entry;
+  const SceneGridEntry *grid = isGrid ? &scene.grids[ref.index] : nullptr;
+  SceneModelEntry edited = isGrid ? grid->model : scene.models[ref.index];
   SceneGridEntry editedGrid = isGrid ? *grid : SceneGridEntry{};
-  bool moved = false;   // placement only: applied at once
-  bool changed = false; // needs the entry rebuilt
-  bool split = false;
-  bool deleting = false;
 
-  constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
-  static constexpr const char *kShapes[] = {"box", "sphere", "capsule",
-                                            "plane"};
   const std::string what =
-      edited.shape ? kShapes[static_cast<int>(*edited.shape)]
+      edited.shape ? kShapeNames[static_cast<int>(*edited.shape)]
                    : std::filesystem::path(edited.path).filename().string();
   if (isGrid) {
     const glm::ivec3 n = grid->count;
@@ -625,181 +772,22 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     ImGui::Text("Model %d: %s", ref.index, what.c_str());
   }
   ImGui::PushItemWidth(-110.0f);
-
-  ImGui::SeparatorText("Transform");
-  moved |= ImGui::DragFloat3("Position", &edited.transform.position.x, 0.05f,
-                             0.0f, 0.0f, "%.2f");
-  moved |= ImGui::DragFloat3("Rotation", &edited.transform.rotationDeg.x,
-                             0.5f, 0.0f, 0.0f, "%.1f\u00b0");
-  // Scale shows at once, but the body's size only changes in the rebuild.
-  if (ImGui::DragFloat("Scale", &edited.transform.scale, 0.01f, 0.01f, 100.0f,
-                       "%.2f", kClamp)) {
-    moved = true;
-    changed = true;
-  }
-
-  if (edited.shape) {
-    ImGui::SeparatorText("Shape");
-    int shape = static_cast<int>(*edited.shape);
-    if (ImGui::Combo("Shape", &shape, kShapes, 4)) {
-      edited.shape = static_cast<PrimitiveShape>(shape);
-      changed = true;
-    }
-    switch (*edited.shape) {
-    case PrimitiveShape::Box:
-      changed |= ImGui::DragFloat3("Size", &edited.size.x, 0.01f, 0.01f,
-                                   1000.0f, "%.2f", kClamp);
-      break;
-    case PrimitiveShape::Plane: {
-      glm::vec2 size(edited.size.x, edited.size.z);
-      if (ImGui::DragFloat2("Size", &size.x, 0.05f, 0.01f, 10000.0f, "%.2f",
-                            kClamp)) {
-        edited.size.x = size.x;
-        edited.size.z = size.y;
-        changed = true;
-      }
-      break;
-    }
-    case PrimitiveShape::Capsule:
-      changed |= ImGui::DragFloat("Height", &edited.height, 0.01f, 0.02f,
-                                  1000.0f, "%.2f", kClamp);
-      [[fallthrough]];
-    case PrimitiveShape::Sphere:
-      changed |= ImGui::DragFloat("Radius", &edited.radius, 0.01f, 0.01f,
-                                  1000.0f, "%.2f", kClamp);
-      break;
-    }
-    changed |= ImGui::ColorEdit3("Colour", &edited.color.x);
-  } else {
-    ImGui::SeparatorText("Model file");
-    ImGui::TextWrapped("%s", edited.path.c_str());
-  }
-
-  ImGui::SeparatorText("Physics");
-  static constexpr const char *kBodies[] = {"none", "static", "dynamic",
-                                            "kinematic"};
-  int body = edited.body ? 1 + static_cast<int>(*edited.body) : 0;
-  if (ImGui::Combo("Body", &body, kBodies, 4)) {
-    if (body == 0) {
-      // These only mean something with a body.
-      edited.body.reset();
-      edited.mass.reset();
-      edited.density.reset();
-      edited.material.reset();
-      edited.friction.reset();
-      edited.restitution.reset();
-      edited.collider.reset();
-    } else {
-      edited.body = static_cast<PhysicsMotion>(body - 1);
-    }
-    changed = true;
-  }
-  if (edited.body) {
-    const std::span<const PhysicsMaterial> materials = physicsMaterials();
-    const char *materialName =
-        edited.material ? edited.material->c_str() : "none";
-    if (ImGui::BeginCombo("Material", materialName)) {
-      if (ImGui::Selectable("none", !edited.material)) {
-        edited.material.reset();
-        changed = true;
-      }
-      for (const PhysicsMaterial &m : materials)
-        if (ImGui::Selectable(m.name, edited.material == m.name)) {
-          edited.material = m.name;
-          changed = true;
-        }
-      ImGui::EndCombo();
-    }
-    // What the body gets from its material and the defaults right now.
-    const PhysicsBodyDesc inUse = bodyDescFor(
-        edited, nullptr, ui.physics ? ui.physics->defaultFriction : 0.2f);
-    // The weight Jolt gave it; a body that doesn't exist yet (just given
-    // one, not rebuilt) starts from 1 kg, since 0 isn't allowed.
-    const float massInUse = ui.selectionMass > 0.0f ? ui.selectionMass
-                            : inUse.mass > 0.0f     ? inUse.mass
-                                                    : 1.0f;
-    changed |= optionalFloat("Mass", edited.mass, massInUse, 0.5f, 0.01f,
-                             1.0e6f, "%.1f kg");
-    changed |= optionalFloat("Density", edited.density, inUse.density, 5.0f,
-                             1.0f, 30000.0f, "%.0f kg/m\u00b3");
-    changed |= optionalFloat("Friction", edited.friction, inUse.friction,
-                             0.01f, 0.0f, 10.0f, "%.2f");
-    changed |= optionalFloat("Restitution", edited.restitution,
-                             inUse.restitution, 0.01f, 0.0f, 1.0f, "%.2f");
-    if (!edited.shape) {
-      static constexpr const char *kColliders[] = {"auto", "hull", "mesh",
-                                                   "box"};
-      int collider = static_cast<int>(
-          edited.collider.value_or(SceneCollider::Auto));
-      if (ImGui::Combo("Collider", &collider, kColliders, 4)) {
-        // auto is the default, so it's left out of the file.
-        if (collider == 0)
-          edited.collider.reset();
-        else
-          edited.collider = static_cast<SceneCollider>(collider);
-        changed = true;
-      }
-    }
-    if (ui.selectionMass > 0.0f)
-      ImGui::TextDisabled(isGrid ? "Weighs %.1f kg each" : "Weighs %.1f kg",
-                          ui.selectionMass);
-  }
-
-  if (isGrid) {
-    ImGui::SeparatorText("Grid");
-    changed |= ImGui::DragInt3("Count", &editedGrid.count.x, 0.1f, 1, 64,
-                               "%d", kClamp);
-    moved |= ImGui::DragFloat3("Spacing", &editedGrid.spacing.x, 0.01f, 0.01f,
-                               100.0f, "%.2f", kClamp);
-    moved |= ImGui::DragFloat("Layout rotation", &editedGrid.layoutRotation,
-                              0.5f, -360.0f, 360.0f, "%.1f\u00b0", kClamp);
-    split = ImGui::Button("Split into objects");
-  }
+  InspectorEdit edit;
+  transformFields(edited.transform, edit);
+  shapeFields(edited, edit);
+  physicsFields(ui, edited, isGrid, edit);
+  const bool split = isGrid && gridFields(editedGrid, edit);
   ImGui::PopItemWidth();
 
-  if (moved || changed) {
-    std::optional<std::string> problem;
-    if (isGrid) {
-      editedGrid.model = edited;
-      problem = problemWith(editedGrid);
-      // Every body in the world counts, against the live world's limit
-      // (the Physics tab's only applies at the next load). What the world
-      // holds for this grid now, not the scene's count: a drag of Count
-      // changes the scene every frame but the world only at its end.
-      const glm::ivec3 n = editedGrid.count;
-      const uint32_t after =
-          edited.body ? uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z) : 0u;
-      if (!problem && !gridFitsBodyLimit(ui.bodiesInWorld, ui.selectionBodies,
-                                         after, ui.bodyLimit))
-        problem = std::format("more bodies than the physics world holds ({})",
-                              ui.bodyLimit);
-    } else {
-      problem = problemWith(edited);
-    }
-    if (problem) {
-      inspectorProblem = *problem;
-    } else {
-      inspectorProblem.clear();
-      sceneEditOpen = true;
-      if (isGrid)
-        *grid = editedGrid;
-      else
-        entry = edited;
-      if (moved && ui.onEntryMoved)
-        ui.onEntryMoved(ref);
-      if (changed) {
-        inspectorRebuildPending = true;
-        inspectorPendingRef = ref;
-      }
-    }
-  }
+  if (edit.moved || edit.changed)
+    commitInspectorEdit(ui, ref, edited, editedGrid, edit.moved, edit.changed);
   if (!inspectorProblem.empty()) {
     ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
     ImGui::TextWrapped("%s", inspectorProblem.c_str());
     ImGui::PopStyleColor();
   }
   ImGui::Separator();
-  deleting = ImGui::Button("Delete");
+  const bool deleting = ImGui::Button("Delete");
   ImGui::PopID();
   ImGui::PopID();
 
@@ -810,6 +798,49 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
       ui.onGridSplit(ref);
     else if (deleting && ui.onEntryDeleted)
       ui.onEntryDeleted(ref);
+  }
+}
+
+// Keeps an Inspector edit if the parser would take it (and, for a grid, if
+// the physics world has room for its bodies), otherwise shows why not.
+void ImGuiLayer::commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
+                                     SceneModelEntry edited,
+                                     SceneGridEntry editedGrid, bool moved,
+                                     bool changed) {
+  const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  std::optional<std::string> problem;
+  if (isGrid) {
+    editedGrid.model = edited;
+    problem = problemWith(editedGrid);
+    // Every body in the world counts, against the live world's limit
+    // (the Physics tab's only applies at the next load). What the world
+    // holds for this grid now, not the scene's count: a drag of Count
+    // changes the scene every frame but the world only at its end.
+    const glm::ivec3 n = editedGrid.count;
+    const uint32_t after =
+        edited.body ? uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z) : 0u;
+    if (!problem && !gridFitsBodyLimit(ui.bodiesInWorld, ui.selectionBodies,
+                                       after, ui.bodyLimit))
+      problem = std::format("more bodies than the physics world holds ({})",
+                            ui.bodyLimit);
+  } else {
+    problem = problemWith(edited);
+  }
+  if (problem) {
+    inspectorProblem = *problem;
+  } else {
+    inspectorProblem.clear();
+    sceneEditOpen = true;
+    if (isGrid)
+      ui.scene->grids[ref.index] = editedGrid;
+    else
+      ui.scene->models[ref.index] = edited;
+    if (moved && ui.onEntryMoved)
+      ui.onEntryMoved(ref);
+    if (changed) {
+      inspectorRebuildPending = true;
+      inspectorPendingRef = ref;
+    }
   }
 }
 
@@ -945,135 +976,17 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
       gizmoMode = GizmoMode::Scale;
   }
 
-  // The selected entry. The renderer only passes a selection in edit mode.
-  SceneGridEntry *grid = nullptr;
-  SceneModelEntry *entry = nullptr;
-  if (ui.scene && ui.selection) {
-    const SceneEntryRef ref = *ui.selection;
-    if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
-        ref.index < static_cast<int>(ui.scene->grids.size())) {
-      grid = &ui.scene->grids[ref.index];
-      entry = &grid->model;
-    } else if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
-               ref.index < static_cast<int>(ui.scene->models.size())) {
-      entry = &ui.scene->models[ref.index];
-    }
-  }
-  // main.cpp selects before the UI runs, so on the click that selected this
-  // object its handles are new, and the click mustn't grab one.
-  const std::optional<SceneEntryRef> selected =
-      entry ? ui.selection : std::nullopt;
-  const bool justSelected = selected != gizmoLastSelection;
-  gizmoLastSelection = selected;
-  // While flying, the cursor is hidden and its position means nothing.
-  const bool cursorFree =
-      window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
-  const bool asking = ui.prompt && ui.prompt->kind != UiPrompt::Kind::None;
-  if (!entry || !cursorFree || asking || !ImGui::IsMousePosValid() ||
-      (gizmoDrag.active && gizmoDrag.ref != *ui.selection)) {
+  const std::optional<GizmoView> view = gizmoView(ui);
+  if (!view) {
     endGizmoDrag(ui);
     return;
   }
-
-  // Everything below is in the scene area's own pixels; `at` turns one into
-  // a window position for drawing.
-  const glm::vec2 viewport = ui.sceneArea.size;
-  const glm::vec2 origin = ui.sceneArea.origin;
-  auto at = [&](glm::vec2 p) { return ImVec2(p.x + origin.x, p.y + origin.y); };
-  // A grid turns about its first copy's spot, so the handles sit there.
-  const glm::vec3 centre = entry->transform.position;
-  const std::optional<glm::vec2> centrePixel =
-      screenFromWorld(centre, viewport, ui.viewProj);
-  if (!centrePixel || viewport.y <= 0.0f) {
-    endGizmoDrag(ui); // behind the camera
-    return;
-  }
-  // The world length that shows as kGizmoPixels at the centre's depth (w):
-  // the projection's y scale times half the viewport's height is how many
-  // pixels one metre covers one metre away.
-  const float depth = (ui.viewProj * glm::vec4(centre, 1.0f)).w;
-  const float pixelsPerMetre =
-      std::abs(ui.sceneUbo.projection[1][1]) * viewport.y * 0.5f / depth;
-  const float length = kGizmoPixels / pixelsPerMetre;
-  const glm::vec2 windowMouse(io.MousePos.x, io.MousePos.y);
-  const glm::vec2 mouse = ui.sceneArea.toScene(windowMouse);
-  const PickRay ray =
-      rayFromScreen(mouse, viewport, glm::inverse(ui.viewProj));
-  // A grid only turns about y, through its layout rotation.
-  auto axisShown = [&](int axis) {
-    return !(gizmoMode == GizmoMode::Rotate && grid && axis != 1);
-  };
-  // An arrow pointing almost straight at the camera is too short to grab
-  // or drag sensibly, so it's hidden.
-  auto arrowTip = [&](int axis) -> std::optional<glm::vec2> {
-    const std::optional<glm::vec2> tip =
-        screenFromWorld(centre + kAxes[axis] * length, viewport, ui.viewProj);
-    if (!tip || glm::distance(*tip, *centrePixel) < 0.2f * kGizmoPixels)
-      return std::nullopt;
-    return tip;
-  };
-
-  // Which handle the cursor is on: an axis, or 0 for the scale ring.
-  int hot = gizmoDrag.active ? gizmoDrag.axis : -1;
-  if (!gizmoDrag.active && ui.sceneArea.contains(windowMouse) &&
-      !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
-      !ImGui::IsAnyItemActive()) {
-    float nearest = kGrabPixels;
-    auto consider = [&](int handle, float distance) {
-      if (distance < nearest) {
-        nearest = distance;
-        hot = handle;
-      }
-    };
-    for (int axis = 0; axis < 3; ++axis) {
-      if (!axisShown(axis))
-        continue;
-      if (gizmoMode == GizmoMode::Move) {
-        if (const std::optional<glm::vec2> tip = arrowTip(axis))
-          consider(axis, distanceToSegment(mouse, *centrePixel, *tip));
-      } else if (gizmoMode == GizmoMode::Rotate) {
-        const auto ring =
-            ringOnScreen(centre, kAxes[axis], length, viewport, ui.viewProj);
-        for (int i = 0; i < kRingSegments; ++i) {
-          const auto &a = ring[i];
-          const auto &b = ring[(i + 1) % kRingSegments];
-          if (a && b)
-            consider(axis, distanceToSegment(mouse, *a, *b));
-        }
-      }
-    }
-    if (gizmoMode == GizmoMode::Scale)
-      consider(0, std::abs(glm::distance(mouse, *centrePixel) -
-                           kScaleRingPixels));
-  }
+  const int hot = gizmoDrag.active ? gizmoDrag.axis : hoveredHandle(*view);
   gizmoHovered = hot >= 0;
 
-  if (!gizmoDrag.active && hot >= 0 && !justSelected &&
-      ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-    GizmoDrag drag;
-    drag.active = true;
-    drag.axis = hot;
-    drag.ref = *ui.selection;
-    drag.start = entry->transform;
-    drag.startLayoutRotation = grid ? grid->layoutRotation : 0.0f;
-    drag.grabbedPixel = mouse;
-    drag.centrePixel = *centrePixel;
-    bool grabbed = true;
-    if (gizmoMode == GizmoMode::Move) {
-      const std::optional<glm::vec3> point =
-          closestPointOnAxis(ray, centre, kAxes[hot]);
-      grabbed = point.has_value();
-      drag.grabbed = point.value_or(centre);
-    } else if (gizmoMode == GizmoMode::Rotate) {
-      const std::optional<float> angle =
-          angleAroundAxis(ray, centre, kAxes[hot]);
-      grabbed = angle.has_value();
-      drag.lastAngle = angle.value_or(0.0f);
-    }
-    if (grabbed)
-      gizmoDrag = drag;
-  }
-
+  if (!gizmoDrag.active && hot >= 0 && !view->justSelected &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    startGizmoDrag(ui, *view, hot);
   if (gizmoDrag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
     endGizmoDrag(ui);
   } else if (gizmoDrag.active &&
@@ -1081,126 +994,290 @@ void ImGuiLayer::drawGizmo(DebugUiContext &ui) {
     // Nothing moves until the cursor has gone ImGui's drag distance (6 px)
     // from where it grabbed, so a plain click, or a tap that wobbles a
     // pixel, changes nothing: no snapping, no unsaved marker, no undo step.
-    const bool snapping = gizmoSnap || io.KeyCtrl;
-    const int axis = gizmoDrag.axis;
-    SceneGridEntry editedGrid = grid ? *grid : SceneGridEntry{};
-    SceneModelEntry edited = *entry;
-    NodeTransform &t = edited.transform;
-    switch (gizmoMode) {
-    case GizmoMode::Move:
-      // The line through the object along the axis doesn't change as it
-      // slides along it, so the current position works as well as the
-      // start.
-      if (const std::optional<glm::vec3> point =
-              closestPointOnAxis(ray, centre, kAxes[axis])) {
-        t.position = gizmoDrag.start.position + (*point - gizmoDrag.grabbed);
-        // Snapped onto the 0.25 m grid, not by 0.25 m steps, so things
-        // line up with each other.
-        if (snapping)
-          t.position[axis] = snap(t.position[axis], kMoveSnap);
-      }
-      break;
-    case GizmoMode::Rotate: {
-      if (const std::optional<float> angle =
-              angleAroundAxis(ray, centre, kAxes[axis])) {
-        // The change since last frame, taken the short way round, so
-        // passing the -180/180 seam doesn't jump a full turn.
-        gizmoDrag.turned += std::remainder(*angle - gizmoDrag.lastAngle,
-                                           2.0f * std::numbers::pi_v<float>);
-        gizmoDrag.lastAngle = *angle;
-      }
-      float degrees = glm::degrees(gizmoDrag.turned);
-      if (snapping)
-        degrees = snap(degrees, kRotateSnap); // by 15 degree steps
-      if (grid) {
-        editedGrid.layoutRotation =
-            std::remainder(gizmoDrag.startLayoutRotation + degrees, 360.0f);
-      } else if (axis == 1) {
-        // About world y it's just more yaw, since rotationFromDegrees
-        // applies y first, so the other two numbers stay as typed.
-        t.rotationDeg = gizmoDrag.start.rotationDeg;
-        t.rotationDeg.y = std::remainder(t.rotationDeg.y + degrees, 360.0f);
-      } else {
-        t.rotationDeg = degreesFromRotation(
-            glm::angleAxis(glm::radians(degrees), kAxes[axis]) *
-            rotationFromDegrees(gizmoDrag.start.rotationDeg));
-      }
-      break;
-    }
-    case GizmoMode::Scale: {
-      float scale = gizmoDrag.start.scale *
-                    scaleFromDrag(gizmoDrag.centrePixel,
-                                  gizmoDrag.grabbedPixel, mouse);
-      if (snapping)
-        scale = snap(scale, kScaleSnap); // onto 0.1 steps
-      t.scale = glm::clamp(scale, 0.01f, 100.0f);
-      break;
-    }
-    }
-    // Kept only if the parser would take it, as in the Inspector.
-    bool changed = false;
-    if (grid) {
-      editedGrid.model = edited;
-      if (editedGrid != *grid && !problemWith(editedGrid)) {
-        *grid = editedGrid;
-        changed = true;
-      }
-    } else if (edited != *entry && !problemWith(edited)) {
-      *entry = edited;
-      changed = true;
-    }
-    if (changed) {
-      sceneEditOpen = true;
-      gizmoDrag.scaled |= gizmoMode == GizmoMode::Scale;
-      if (ui.onEntryMoved)
-        ui.onEntryMoved(gizmoDrag.ref);
-    }
+    dragGizmo(ui, *view);
   }
   if (gizmoHovered)
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  drawGizmoHandles(*view, hot);
+}
 
+// A point in the scene area's pixels, as a window position for drawing.
+ImVec2 ImGuiLayer::GizmoView::at(glm::vec2 p) const {
+  return ImVec2(p.x + area.origin.x, p.y + area.origin.y);
+}
+
+// A grid only turns about y, through its layout rotation.
+bool ImGuiLayer::GizmoView::axisShown(int axis, GizmoMode mode) const {
+  return !(mode == GizmoMode::Rotate && grid && axis != 1);
+}
+
+// An arrow pointing almost straight at the camera is too short to grab or
+// drag sensibly, so it's hidden.
+std::optional<glm::vec2> ImGuiLayer::GizmoView::arrowTip(int axis) const {
+  const std::optional<glm::vec2> tip =
+      screenFromWorld(centre + kAxes[axis] * length, area.size, viewProj);
+  if (!tip || glm::distance(*tip, centrePixel) < 0.2f * kGizmoPixels)
+    return std::nullopt;
+  return tip;
+}
+
+// The selected entry and where its handles sit this frame, in the scene
+// area's own pixels. Nothing when there are no handles to show: no
+// selection, the cursor captured for flying, a prompt open, a drag that lost
+// its object, or the object behind the camera.
+std::optional<ImGuiLayer::GizmoView> ImGuiLayer::gizmoView(DebugUiContext &ui) {
+  GizmoView view;
+  // The selected entry. The renderer only passes a selection in edit mode.
+  if (ui.scene && ui.selection) {
+    const SceneEntryRef ref = *ui.selection;
+    if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
+        ref.index < static_cast<int>(ui.scene->grids.size())) {
+      view.grid = &ui.scene->grids[ref.index];
+      view.entry = &view.grid->model;
+    } else if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
+               ref.index < static_cast<int>(ui.scene->models.size())) {
+      view.entry = &ui.scene->models[ref.index];
+    }
+  }
+  // main.cpp selects before the UI runs, so on the click that selected this
+  // object its handles are new, and the click mustn't grab one.
+  const std::optional<SceneEntryRef> selected =
+      view.entry ? ui.selection : std::nullopt;
+  view.justSelected = selected != gizmoLastSelection;
+  gizmoLastSelection = selected;
+  // While flying, the cursor is hidden and its position means nothing.
+  const bool cursorFree =
+      window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
+  const bool asking = ui.prompt && ui.prompt->kind != UiPrompt::Kind::None;
+  if (!view.entry || !cursorFree || asking || !ImGui::IsMousePosValid() ||
+      (gizmoDrag.active && gizmoDrag.ref != *ui.selection))
+    return std::nullopt;
+
+  view.area = ui.sceneArea;
+  view.viewProj = ui.viewProj;
+  // A grid turns about its first copy's spot, so the handles sit there.
+  view.centre = view.entry->transform.position;
+  const std::optional<glm::vec2> centrePixel =
+      screenFromWorld(view.centre, view.area.size, view.viewProj);
+  if (!centrePixel || view.area.size.y <= 0.0f)
+    return std::nullopt; // behind the camera
+  view.centrePixel = *centrePixel;
+  // The world length that shows as kGizmoPixels at the centre's depth (w):
+  // the projection's y scale times half the viewport's height is how many
+  // pixels one metre covers one metre away.
+  const float depth = (view.viewProj * glm::vec4(view.centre, 1.0f)).w;
+  const float pixelsPerMetre =
+      std::abs(ui.sceneUbo.projection[1][1]) * view.area.size.y * 0.5f / depth;
+  view.length = kGizmoPixels / pixelsPerMetre;
+  const ImGuiIO &io = ImGui::GetIO();
+  view.windowMouse = glm::vec2(io.MousePos.x, io.MousePos.y);
+  view.mouse = view.area.toScene(view.windowMouse);
+  view.ray = rayFromScreen(view.mouse, view.area.size,
+                           glm::inverse(view.viewProj));
+  return view;
+}
+
+// Which handle the cursor is on, the nearest within kGrabPixels: an axis, 0
+// for the scale ring, or -1 for none. None while the cursor is off the scene,
+// on a panel, or using a widget.
+int ImGuiLayer::hoveredHandle(const GizmoView &view) const {
+  if (!view.area.contains(view.windowMouse) ||
+      ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
+      ImGui::IsAnyItemActive())
+    return -1;
+  int hot = -1;
+  float nearest = kGrabPixels;
+  auto consider = [&](int handle, float distance) {
+    if (distance < nearest) {
+      nearest = distance;
+      hot = handle;
+    }
+  };
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!view.axisShown(axis, gizmoMode))
+      continue;
+    if (gizmoMode == GizmoMode::Move) {
+      if (const std::optional<glm::vec2> tip = view.arrowTip(axis))
+        consider(axis, distanceToSegment(view.mouse, view.centrePixel, *tip));
+    } else if (gizmoMode == GizmoMode::Rotate) {
+      const auto ring = ringOnScreen(view.centre, kAxes[axis], view.length,
+                                     view.area.size, view.viewProj);
+      for (int i = 0; i < kRingSegments; ++i) {
+        const auto &a = ring[i];
+        const auto &b = ring[(i + 1) % kRingSegments];
+        if (a && b)
+          consider(axis, distanceToSegment(view.mouse, *a, *b));
+      }
+    }
+  }
+  if (gizmoMode == GizmoMode::Scale)
+    consider(0, std::abs(glm::distance(view.mouse, view.centrePixel) -
+                         kScaleRingPixels));
+  return hot;
+}
+
+// Grabs a handle: remembers where the object started and where on the axis
+// or ring the cursor took hold, so the drag moves it by the difference.
+void ImGuiLayer::startGizmoDrag(DebugUiContext &ui, const GizmoView &view,
+                                int handle) {
+  GizmoDrag drag;
+  drag.active = true;
+  drag.axis = handle;
+  drag.ref = *ui.selection;
+  drag.start = view.entry->transform;
+  drag.startLayoutRotation = view.grid ? view.grid->layoutRotation : 0.0f;
+  drag.grabbedPixel = view.mouse;
+  drag.centrePixel = view.centrePixel;
+  bool grabbed = true;
+  if (gizmoMode == GizmoMode::Move) {
+    const std::optional<glm::vec3> point =
+        closestPointOnAxis(view.ray, view.centre, kAxes[handle]);
+    grabbed = point.has_value();
+    drag.grabbed = point.value_or(view.centre);
+  } else if (gizmoMode == GizmoMode::Rotate) {
+    const std::optional<float> angle =
+        angleAroundAxis(view.ray, view.centre, kAxes[handle]);
+    grabbed = angle.has_value();
+    drag.lastAngle = angle.value_or(0.0f);
+  }
+  if (grabbed)
+    gizmoDrag = drag;
+}
+
+// The object follows the cursor: along the axis, around the ring, or by the
+// scale ring's distance, snapped while snapping is on or Ctrl is held.
+void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
+  const bool snapping = gizmoSnap || ImGui::GetIO().KeyCtrl;
+  const int axis = gizmoDrag.axis;
+  SceneGridEntry editedGrid = view.grid ? *view.grid : SceneGridEntry{};
+  SceneModelEntry edited = *view.entry;
+  NodeTransform &t = edited.transform;
+  switch (gizmoMode) {
+  case GizmoMode::Move:
+    // The line through the object along the axis doesn't change as it
+    // slides along it, so the current position works as well as the
+    // start.
+    if (const std::optional<glm::vec3> point =
+            closestPointOnAxis(view.ray, view.centre, kAxes[axis])) {
+      t.position = gizmoDrag.start.position + (*point - gizmoDrag.grabbed);
+      // Snapped onto the 0.25 m grid, not by 0.25 m steps, so things
+      // line up with each other.
+      if (snapping)
+        t.position[axis] = snap(t.position[axis], kMoveSnap);
+    }
+    break;
+  case GizmoMode::Rotate: {
+    if (const std::optional<float> angle =
+            angleAroundAxis(view.ray, view.centre, kAxes[axis])) {
+      // The change since last frame, taken the short way round, so
+      // passing the -180/180 seam doesn't jump a full turn.
+      gizmoDrag.turned += std::remainder(*angle - gizmoDrag.lastAngle,
+                                         2.0f * std::numbers::pi_v<float>);
+      gizmoDrag.lastAngle = *angle;
+    }
+    float degrees = glm::degrees(gizmoDrag.turned);
+    if (snapping)
+      degrees = snap(degrees, kRotateSnap); // by 15 degree steps
+    if (view.grid) {
+      editedGrid.layoutRotation =
+          std::remainder(gizmoDrag.startLayoutRotation + degrees, 360.0f);
+    } else if (axis == 1) {
+      // About world y it's just more yaw, since rotationFromDegrees
+      // applies y first, so the other two numbers stay as typed.
+      t.rotationDeg = gizmoDrag.start.rotationDeg;
+      t.rotationDeg.y = std::remainder(t.rotationDeg.y + degrees, 360.0f);
+    } else {
+      t.rotationDeg = degreesFromRotation(
+          glm::angleAxis(glm::radians(degrees), kAxes[axis]) *
+          rotationFromDegrees(gizmoDrag.start.rotationDeg));
+    }
+    break;
+  }
+  case GizmoMode::Scale: {
+    float scale = gizmoDrag.start.scale *
+                  scaleFromDrag(gizmoDrag.centrePixel,
+                                gizmoDrag.grabbedPixel, view.mouse);
+    if (snapping)
+      scale = snap(scale, kScaleSnap); // onto 0.1 steps
+    t.scale = glm::clamp(scale, 0.01f, 100.0f);
+    break;
+  }
+  }
+  commitGizmoEdit(ui, view, edited, editedGrid);
+}
+
+// The dragged values go into the scene only if the parser would take them,
+// as in the Inspector; then the renderer moves the object to match.
+void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
+                                 const SceneModelEntry &edited,
+                                 SceneGridEntry editedGrid) {
+  bool changed = false;
+  if (view.grid) {
+    editedGrid.model = edited;
+    if (editedGrid != *view.grid && !problemWith(editedGrid)) {
+      *view.grid = editedGrid;
+      changed = true;
+    }
+  } else if (edited != *view.entry && !problemWith(edited)) {
+    *view.entry = edited;
+    changed = true;
+  }
+  if (changed) {
+    sceneEditOpen = true;
+    gizmoDrag.scaled |= gizmoMode == GizmoMode::Scale;
+    if (ui.onEntryMoved)
+      ui.onEntryMoved(gizmoDrag.ref);
+  }
+}
+
+// The handles at the object's spot after this frame's edit, the hovered or
+// dragged one highlighted.
+void ImGuiLayer::drawGizmoHandles(const GizmoView &view, int hot) const {
   // Drawn after the edit, so the handles sit on the object's new spot.
-  const glm::vec3 now = entry->transform.position;
+  const glm::vec3 now = view.entry->transform.position;
   const std::optional<glm::vec2> nowPixel =
-      screenFromWorld(now, viewport, ui.viewProj);
+      screenFromWorld(now, view.area.size, view.viewProj);
   if (!nowPixel)
     return;
   ImDrawList *draw = ImGui::GetBackgroundDrawList();
-  draw->PushClipRect(at(glm::vec2(0.0f)), at(viewport), true);
+  draw->PushClipRect(view.at(glm::vec2(0.0f)), view.at(view.area.size),
+                     true);
   auto colourOf = [&](int handle, uint32_t rgb) {
     return colourU32(handle == hot ? kGizmoHot : rgb);
   };
   for (int axis = 0; axis < 3 && gizmoMode != GizmoMode::Scale; ++axis) {
-    if (!axisShown(axis))
+    if (!view.axisShown(axis, gizmoMode))
       continue;
     const ImU32 colour = colourOf(axis, kAxisColours[axis]);
     const float thickness = axis == hot ? 4.0f : 2.5f;
     if (gizmoMode == GizmoMode::Move) {
       const std::optional<glm::vec2> tip =
-          screenFromWorld(now + kAxes[axis] * length, viewport, ui.viewProj);
+          screenFromWorld(now + kAxes[axis] * view.length, view.area.size,
+                          view.viewProj);
       if (!tip || glm::distance(*tip, *nowPixel) < 0.2f * kGizmoPixels)
         continue;
       const glm::vec2 along = glm::normalize(*tip - *nowPixel);
       const glm::vec2 across(-along.y, along.x);
       const glm::vec2 point = *tip + along * 14.0f;
-      draw->AddLine(at(*nowPixel), at(*tip), colour, thickness);
-      draw->AddTriangleFilled(at(point), at(*tip + across * 6.0f),
-                              at(*tip - across * 6.0f), colour);
+      draw->AddLine(view.at(*nowPixel), view.at(*tip), colour, thickness);
+      draw->AddTriangleFilled(view.at(point), view.at(*tip + across * 6.0f),
+                              view.at(*tip - across * 6.0f), colour);
     } else {
       const auto ring =
-          ringOnScreen(now, kAxes[axis], length, viewport, ui.viewProj);
+          ringOnScreen(now, kAxes[axis], view.length, view.area.size,
+                       view.viewProj);
       for (int i = 0; i < kRingSegments; ++i) {
         const auto &a = ring[i];
         const auto &b = ring[(i + 1) % kRingSegments];
         if (a && b)
-          draw->AddLine(at(*a), at(*b), colour, thickness);
+          draw->AddLine(view.at(*a), view.at(*b), colour, thickness);
       }
     }
   }
   if (gizmoMode == GizmoMode::Scale)
-    draw->AddCircle(at(*nowPixel), kScaleRingPixels, colourOf(0, kText),
+    draw->AddCircle(view.at(*nowPixel), kScaleRingPixels, colourOf(0, kText),
                     kRingSegments, hot == 0 ? 4.0f : 2.5f);
-  draw->AddCircleFilled(at(*nowPixel), 3.0f, colourU32(kText));
+  draw->AddCircleFilled(view.at(*nowPixel), 3.0f, colourU32(kText));
   draw->PopClipRect();
 }
 
@@ -1596,7 +1673,8 @@ void ImGuiLayer::drawPerformanceTab(DebugUiContext &ui) {
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Acquire),
               ui.metrics.getCpuPhaseTimeMs(
                   PerformanceMetrics::CpuPhase::Present));
-  ImGui::Text("CPU phys/upd/rec/sub: %.2f | %.2f | %.2f | %.2f ms",
+  ImGui::Text("CPU ui/phys/upd/rec/sub: %.2f | %.2f | %.2f | %.2f | %.2f ms",
+              ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Ui),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Physics),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
@@ -1630,22 +1708,23 @@ void ImGuiLayer::drawCameraTab(DebugUiContext &ui) {
     ui.onProjectionChanged();
 }
 
+void ImGuiLayer::buildFrame(DebugUiContext &ui) {
+  if (!initialized)
+    return;
+  ImGui_ImplVulkan_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+  buildUi(ui);
+  ImGui::Render();
+}
+
 void ImGuiLayer::record(VkCommandBuffer cmd, VkRenderPass renderPass,
                         VkExtent2D extent, uint32_t imageIndex,
-                        DebugUiContext &ui,
                         const std::function<void(VkCommandBuffer)> &beforeUi) {
   if (!initialized)
     return;
   if (imageIndex >= framebuffers.size())
     throw std::runtime_error("Invalid ImGui framebuffer index");
-
-  ImGui_ImplVulkan_NewFrame();
-  ImGui_ImplGlfw_NewFrame();
-  ImGui::NewFrame();
-
-  buildUi(ui);
-
-  ImGui::Render();
 
   VkClearValue clear = {};
   VkRenderPassBeginInfo rpbi = {};

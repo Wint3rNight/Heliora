@@ -341,7 +341,11 @@ int VulkanRenderer::createMeshModel(const std::string &modelFile) {
   return modelId;
 }
 
-int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
+namespace {
+
+// The model cache's name for a generated shape: shape, size, colour and the
+// world grid. Entries with the same key share one model.
+std::string primitiveModelKey(const SceneModelEntry &entry) {
   const glm::vec3 c = entry.color;
   std::string key;
   switch (*entry.shape) {
@@ -362,9 +366,17 @@ int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
   key += std::format(" color {} {} {}", c.r, c.g, c.b);
   // A static box and a dynamic one can't share a model: only one has the
   // grid.
-  const bool worldGrid = showsWorldGrid(entry);
-  if (worldGrid)
+  if (showsWorldGrid(entry))
     key += " grid";
+  return key;
+}
+
+} // namespace
+
+int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
+  const glm::vec3 c = entry.color;
+  const std::string key = primitiveModelKey(entry);
+  const bool worldGrid = showsWorldGrid(entry);
   if (int cached = modelManager.findModel(key); cached >= 0)
     return cached;
 
@@ -406,6 +418,8 @@ void VulkanRenderer::loadSettings() {
                      : "../Resources/settings.cfg";
   PhysicsPanel &p = physicsPanel;
   PhysicsWorld::Config &c = physicsPanel.config;
+  CharacterTuning &ch = characterPanel.character;
+  ThirdPersonCameraTuning &cam = characterPanel.camera;
   settingBindings = {
       {"render", "spec_aa_variance", &imguiSpecAAVariance, 0, 4},
       {"render", "spec_aa_threshold", &imguiSpecAAThreshold, 0, 1},
@@ -455,10 +469,52 @@ void VulkanRenderer::loadSettings() {
       {"physics", "max_body_pairs", &c.maxBodyPairs, 64, 1 << 22},
       {"physics", "max_contact_constraints", &c.maxContactConstraints, 64,
        1 << 17},
+      // Angles in radians, as the code keeps them; the tab shows degrees.
+      {"character", "run_speed", &ch.runSpeed, 0.5, 20},
+      {"character", "sprint_speed", &ch.sprintSpeed, 0.5, 30},
+      {"character", "crouch_speed", &ch.crouchSpeed, 0.2, 10},
+      {"character", "ground_acceleration", &ch.groundAcceleration, 1, 200},
+      {"character", "ground_braking", &ch.groundBraking, 1, 200},
+      {"character", "air_acceleration", &ch.airAcceleration, 0, 100},
+      {"character", "turn_rate", &ch.turnRate, 0.5, 63},
+      {"character", "jump_height", &ch.jumpHeight, 0.1, 5},
+      {"character", "coyote_time", &ch.coyoteTime, 0, 0.5},
+      {"character", "jump_buffer", &ch.jumpBuffer, 0, 0.5},
+      {"character", "dodge_distance", &ch.dodgeDistance, 0, 20},
+      {"character", "dodge_time", &ch.dodgeTime, 0.05, 1},
+      {"character", "dodge_cooldown", &ch.dodgeCooldown, 0, 5},
+      {"character", "max_slope", &ch.maxSlope, 0.08, 1.4},
+      {"character", "step_up", &ch.stepUp, 0, 1},
+      {"character", "stick_down", &ch.stickDown, 0, 2},
+      {"character", "push_strength", &ch.pushStrength, 0, 5000},
+      {"character", "radius", &ch.radius, 0.1, 1},
+      {"character", "height", &ch.height, 0.5, 3},
+      {"character", "crouch_height", &ch.crouchHeight, 0.3, 3},
+      {"character", "mass", &ch.mass, 1, 1000},
+      {"character", "camera_shoulder_height", &cam.pivotHeight, 0, 3},
+      {"character", "camera_distance", &cam.distance, 0.5, 30},
+      {"character", "camera_closest", &cam.minDistance, 0.5, 20},
+      {"character", "camera_furthest", &cam.maxDistance, 0.5, 30},
+      {"character", "camera_zoom_step", &cam.zoomStep, 0.05, 5},
+      {"character", "camera_lowest_look", &cam.minPitch, -1.553, 0},
+      {"character", "camera_highest_look", &cam.maxPitch, 0, 1.553},
+      {"character", "camera_mouse_sensitivity", &cam.mouseSensitivity, 0.0002,
+       0.02},
+      {"character", "camera_aim_right", &cam.aimRight, -2, 2},
+      {"character", "camera_aim_up", &cam.aimUp, -1, 2},
+      {"character", "camera_aim_distance", &cam.aimDistance, 0.5, 10},
+      {"character", "camera_aim_time", &cam.aimTime, 0.01, 1},
+      {"character", "camera_follow_time", &cam.followTime, 0, 1},
+      {"character", "camera_most_lag", &cam.maxLag, 0, 5},
+      {"character", "camera_wall_margin", &cam.collisionRadius, 0.01, 1},
+      {"character", "camera_ease_out_time", &cam.easeOutTime, 0, 3},
   };
   writeSettings(settingsDefaults, settingBindings);
   settingsFile = SettingsFile::load(settingsPath);
   readSettings(settingsFile, settingBindings);
+  // A hand-edited file can hold values that don't fit together.
+  ch = consistent(ch);
+  cam = consistent(cam);
 }
 
 bool VulkanRenderer::saveSettings(std::string_view section) {
@@ -483,7 +539,7 @@ std::vector<std::string> VulkanRenderer::unsavedSettingsSections() const {
     if (!(imguiDayNightEnable && b.key == "day_night_hour"))
       checked.push_back(b);
   std::vector<std::string> sections;
-  for (const char *section : {"render", "physics"})
+  for (const char *section : {"render", "physics", "character"})
     if (hasUnsavedSettings(settingsFile, checked, section, settingsDefaults))
       sections.push_back(section);
   return sections;
@@ -495,9 +551,12 @@ void VulkanRenderer::resetSettings(std::string_view section) {
   rebuildProjection();
   taaHistoryValid = false;
   physicsPanel.settingsChanged = true;
-  settingsStatus = std::format("{} settings are back to the defaults, not "
-                               "saved yet",
-                               section == "render" ? "Render" : "Physics");
+  characterPanel.changed = true;
+  const char *name = section == "render"    ? "Render"
+                     : section == "physics" ? "Physics"
+                                            : "Character";
+  settingsStatus =
+      std::format("{} settings are back to the defaults, not saved yet", name);
 }
 
 void VulkanRenderer::discoverScenes(const std::string &directory) {
@@ -605,15 +664,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
   }
   // The character's capsules, standing and crouched, for the same reason.
-  try {
-    const CharacterTuning tuning;
-    playerModelId = createPrimitiveModel(playerCapsuleEntry(tuning.height));
-    crouchedPlayerModelId =
-        createPrimitiveModel(playerCapsuleEntry(tuning.crouchHeight));
-  } catch (const std::exception &e) {
-    playerModelId = crouchedPlayerModelId = -1;
-    spdlog::error("Couldn't make the character's capsule: {}", e.what());
-  }
+  ensurePlayerModels();
   if (playing)
     spawnPlayer();
   rootNode.update(glm::mat4(1.0f), 0.0f);
@@ -862,7 +913,7 @@ void VulkanRenderer::placePlayerStart() {
   const PickRay ray =
       rayFromScreen(glm::vec2(0.5f), glm::vec2(1.0f),
                     glm::inverse(taaBaseProjection * sceneUbo.view));
-  const CharacterTuning tuning;
+  const CharacterTuning &tuning = characterPanel.character;
   ScenePlayerStart start = playerStartAt(
       ray, physics->castRay(ray.origin, ray.direction, kSpawnReach),
       tuning.radius, tuning.height);
@@ -1116,6 +1167,12 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
         physicsClock.maxStepsPerFrame() != physicsPanel.maxCatchUpSteps)
       physicsClock = FixedStepClock(step, physicsPanel.maxCatchUpSteps);
   }
+  if (characterPanel.changed) {
+    characterPanel.changed = false;
+    if (player)
+      player->setTuning(characterPanel.character, characterPanel.camera);
+    updateEditorLines(); // the player start's outline is the body's size
+  }
   const auto start = std::chrono::steady_clock::now();
   int steps;
   float alpha;
@@ -1188,20 +1245,43 @@ SceneModelEntry VulkanRenderer::thrownBallEntry() {
   return ball;
 }
 
-SceneModelEntry VulkanRenderer::playerCapsuleEntry(float height) {
+SceneModelEntry VulkanRenderer::playerCapsuleEntry(float radius,
+                                                   float height) {
   SceneModelEntry capsule;
   capsule.shape = PrimitiveShape::Capsule;
-  capsule.radius = CharacterTuning{}.radius;
+  capsule.radius = radius;
   capsule.height = height;
   capsule.color = glm::vec3(0.62f, 0.16f, 0.2f); // the UI's crimson
   return capsule;
 }
 
+void VulkanRenderer::ensurePlayerModels() {
+  const CharacterTuning &tuning = characterPanel.character;
+  const SceneModelEntry standing =
+      playerCapsuleEntry(tuning.radius, tuning.height);
+  const SceneModelEntry crouched =
+      playerCapsuleEntry(tuning.radius, tuning.crouchHeight);
+  // The Play after a change of body size needs new meshes, uploaded while
+  // nothing in flight can be drawing.
+  if (modelManager.findModel(primitiveModelKey(standing)) < 0 ||
+      modelManager.findModel(primitiveModelKey(crouched)) < 0)
+    vkDeviceWaitIdle(device.getLogicalDevice());
+  try {
+    playerModelId = createPrimitiveModel(standing);
+    crouchedPlayerModelId = createPrimitiveModel(crouched);
+  } catch (const std::exception &e) {
+    playerModelId = crouchedPlayerModelId = -1;
+    spdlog::error("Couldn't make the character's capsule: {}", e.what());
+  }
+}
+
 // At the scene's [player], or on the ground below the fly camera facing its
-// way. Its capsule is a plain node: not in the scene file, not selectable.
+// way, with the Character tab's tuning. Its capsule is a plain node: not in
+// the scene file, not selectable.
 void VulkanRenderer::spawnPlayer() {
   if (!physics || player)
     return;
+  ensurePlayerModels();
   glm::vec3 feet = flyCameraPosition;
   float yaw;
   if (currentScene.player) {
@@ -1215,7 +1295,9 @@ void VulkanRenderer::spawnPlayer() {
     // the character's 0 does.
     yaw = -glm::radians(flyCameraYaw) - glm::half_pi<float>();
   }
-  player = std::make_unique<Player>(*physics, feet, yaw);
+  player = std::make_unique<Player>(*physics, feet, yaw,
+                                    characterPanel.character,
+                                    characterPanel.camera);
   if (playerModelId >= 0) {
     auto node = std::make_unique<SceneNode>();
     node->setModelId(playerModelId);
@@ -1351,7 +1433,7 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
   }
   // The player start has no body or mesh, only the character's capsule.
   if (currentScene.player) {
-    const CharacterTuning tuning;
+    const CharacterTuning &tuning = characterPanel.character;
     const std::optional<float> distance = rayHitsPlayerStart(
         ray, *currentScene.player, tuning.radius, tuning.height);
     if (distance && *distance < nearest) {
@@ -1383,7 +1465,7 @@ void VulkanRenderer::updateEditorLines() {
   const bool startSelected =
       selection && selection->kind == SceneEntryRef::Kind::Player;
   if (currentScene.player) {
-    const CharacterTuning tuning;
+    const CharacterTuning &tuning = characterPanel.character;
     appendPlayerStartLines(editorLines, *currentScene.player, tuning.radius,
                            tuning.height,
                            startSelected ? kSelectionColor : kPlayerStartColor);
@@ -4025,6 +4107,7 @@ void VulkanRenderer::buildUi() {
       },
       [this](int index) { requestSceneLoad(index); }};
   ui.physics = &physicsPanel;
+  ui.character = &characterPanel;
   ui.bodiesInWorld = physics ? physics->bodyCount() : 0;
   ui.bodyLimit = physics ? physics->bodyLimit() : 0;
   ui.onSaveSettings = [this](const char *section) { saveSettings(section); };

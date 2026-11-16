@@ -193,3 +193,11 @@ glm::vec3 CharacterController::drawnPosition(float alpha) const {
 float CharacterController::drawnYaw(float alpha) const {
   return previous.yaw + angleBetween(previous.yaw, current.yaw) * alpha;
 }
+
+CharacterTuning consistent(CharacterTuning tuning) {
+  // 5 cm of straight side at the least, so the capsule is still a capsule.
+  const float shortest = 2.0f * tuning.radius + 0.05f;
+  tuning.height = std::max(tuning.height, shortest);
+  tuning.crouchHeight = std::clamp(tuning.crouchHeight, shortest, tuning.height);
+  return tuning;
+}

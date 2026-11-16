@@ -40,6 +40,11 @@ struct ThirdPersonCameraTuning {
   float easeOutTime = 0.4f;
 };
 
+// The same values, made to fit together: the closest zoom no further than
+// the furthest, the starting distance between them, and the pitch limits
+// either side of level.
+ThirdPersonCameraTuning consistent(ThirdPersonCameraTuning tuning);
+
 glm::vec3 cameraForward(float yaw, float pitch);
 
 class ThirdPersonCamera {

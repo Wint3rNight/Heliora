@@ -281,9 +281,9 @@ namespace {
 
 // In the View menu's order, and the names their windows (and the layout
 // file) know them by.
-constexpr const char *kPanelNames[] = {"Scene",     "Render",  "Lighting",
+constexpr const char *kPanelNames[] = {"Scene",     "Render",    "Lighting",
                                        "Camera",    "Inspector", "Physics",
-                                       "Performance", "Debug"};
+                                       "Character", "Performance", "Debug"};
 
 // The dockspace's id, the same every run so the layout file finds it.
 ImGuiID dockspaceId() { return ImHashStr("HelioraDockspace"); }
@@ -331,8 +331,8 @@ void ImGuiLayer::registerPanelSettings() {
 }
 
 // The layout a first run (or Reset layout) gets: the old sidebar's tabs on
-// the left, the Inspector on the right above the physics and performance
-// panels, and the scene in between.
+// the left, the Inspector and Character tabs on the right above the physics
+// and performance panels, and the scene in between.
 void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
   const ImGuiViewport *viewport = ImGui::GetMainViewport();
   ImGui::DockBuilderRemoveNode(dockspace);
@@ -348,7 +348,10 @@ void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
   ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.5f, &top, &bottom);
   for (const char *name : {"Scene", "Render", "Lighting", "Camera"})
     ImGui::DockBuilderDockWindow(name, left);
-  ImGui::DockBuilderDockWindow("Inspector", top);
+  // The Inspector edits objects, in edit mode; the Character tab tunes the
+  // character, while playing.
+  for (const char *name : {"Inspector", "Character"})
+    ImGui::DockBuilderDockWindow(name, top);
   for (const char *name : {"Physics", "Performance", "Debug"})
     ImGui::DockBuilderDockWindow(name, bottom);
   ImGui::DockBuilderFinish(dockspace);
@@ -421,6 +424,13 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   panel(Panel::Camera, [&] { drawCameraTab(ui); });
   panel(Panel::Inspector, [&] { drawInspector(ui); });
   panel(Panel::Physics, [&] { drawPhysicsTab(ui); });
+  // A layout saved before the Character tab existed has no place for it, so
+  // the first time it's shown it joins the Inspector's group instead of
+  // floating over the scene.
+  if (const ImGuiWindow *inspector = ImGui::FindWindowByName("Inspector");
+      inspector && inspector->DockId != 0)
+    ImGui::SetNextWindowDockID(inspector->DockId, ImGuiCond_FirstUseEver);
+  panel(Panel::Character, [&] { drawCharacterTab(ui); });
   panel(Panel::Performance, [&] { drawPerformanceTab(ui); });
   panel(Panel::Debug, [&] { drawDebugTab(ui); });
   focusDefaultTabs = false;
@@ -1663,6 +1673,99 @@ void ImGuiLayer::drawDebugTab(DebugUiContext &ui) {
                 probe.geomVarianceFinal.y, probe.geomVarianceFinal.x);
   } else {
     ImGui::TextDisabled("Material Probe: no surface");
+  }
+}
+
+// The character's and the camera's tuning. Movement and the camera change
+// while playing; the body waits for the next Play. Values that don't fit
+// together (a crouch taller than standing, the closest zoom past the
+// furthest) are pulled into line as they're dragged.
+void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
+  if (!ui.character)
+    return;
+  CharacterPanel &panel = *ui.character;
+  CharacterTuning &c = panel.character;
+  ThirdPersonCameraTuning &cam = panel.camera;
+  drawSettingsButtons(ui, "character");
+  ImGui::TextDisabled(ui.playing ? "Changes apply as you play."
+                                 : "Changes apply when you play (F5).");
+  constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
+  auto slider = [&](const char *label, float *value, float lo, float hi,
+                    const char *format) {
+    return ImGui::SliderFloat(label, value, lo, hi, format, kClamp);
+  };
+  auto angle = [&](const char *label, float *radians, float lo, float hi,
+                   const char *format) {
+    return ImGui::SliderAngle(label, radians, lo, hi, format, kClamp);
+  };
+  bool changed = false;
+  ImGui::SeparatorText("Moving");
+  changed |= slider("Run speed", &c.runSpeed, 0.5f, 20.0f, "%.1f m/s");
+  changed |= slider("Sprint speed", &c.sprintSpeed, 0.5f, 30.0f, "%.1f m/s");
+  changed |= slider("Crouch speed", &c.crouchSpeed, 0.2f, 10.0f, "%.1f m/s");
+  changed |= slider("Acceleration", &c.groundAcceleration, 1.0f, 200.0f,
+                    "%.0f m/s\u00b2");
+  changed |= slider("Braking", &c.groundBraking, 1.0f, 200.0f,
+                    "%.0f m/s\u00b2");
+  changed |= slider("Air control", &c.airAcceleration, 0.0f, 100.0f,
+                    "%.1f m/s\u00b2");
+  ImGui::SetItemTooltip("Acceleration and braking in the air");
+  changed |= angle("Turn rate", &c.turnRate, 30.0f, 3600.0f, "%.0f\u00b0/s");
+  ImGui::SeparatorText("Jumping");
+  changed |= slider("Jump height", &c.jumpHeight, 0.1f, 5.0f, "%.2f m");
+  changed |= slider("Coyote time", &c.coyoteTime, 0.0f, 0.5f, "%.2f s");
+  ImGui::SetItemTooltip("How long after walking off a ledge a jump still "
+                        "works");
+  changed |= slider("Jump buffer", &c.jumpBuffer, 0.0f, 0.5f, "%.2f s");
+  ImGui::SetItemTooltip("How long before landing a jump press still counts");
+  ImGui::SeparatorText("Dodge");
+  changed |= slider("Dodge distance", &c.dodgeDistance, 0.0f, 20.0f, "%.1f m");
+  changed |= slider("Dodge time", &c.dodgeTime, 0.05f, 1.0f, "%.2f s");
+  changed |= slider("Dodge cooldown", &c.dodgeCooldown, 0.0f, 5.0f, "%.2f s");
+  ImGui::SetItemTooltip("From the start of one dodge to the next");
+  ImGui::SeparatorText("Ground");
+  changed |= angle("Steepest slope", &c.maxSlope, 5.0f, 80.0f, "%.0f\u00b0");
+  changed |= slider("Step up", &c.stepUp, 0.0f, 1.0f, "%.2f m");
+  ImGui::SetItemTooltip("Steps about 10 cm higher than this still climb, as "
+                        "the rounded bottom slides over");
+  changed |= slider("Stick down", &c.stickDown, 0.0f, 2.0f, "%.2f m");
+  ImGui::SetItemTooltip("How far it follows the ground down slopes and "
+                        "stairs instead of flying off");
+  changed |= slider("Push strength", &c.pushStrength, 0.0f, 5000.0f, "%.0f N");
+  ImGui::SeparatorText("Camera");
+  changed |= slider("Shoulder height", &cam.pivotHeight, 0.0f, 3.0f, "%.2f m");
+  changed |= slider("Distance", &cam.distance, 0.5f, 30.0f, "%.1f m");
+  ImGui::SetItemTooltip("Where the wheel starts at each Play");
+  changed |= slider("Closest", &cam.minDistance, 0.5f, 20.0f, "%.1f m");
+  changed |= slider("Furthest", &cam.maxDistance, 0.5f, 30.0f, "%.1f m");
+  changed |= slider("Zoom step", &cam.zoomStep, 0.05f, 5.0f, "%.2f m");
+  changed |= angle("Lowest look", &cam.minPitch, -89.0f, 0.0f, "%.0f\u00b0");
+  changed |= angle("Highest look", &cam.maxPitch, 0.0f, 89.0f, "%.0f\u00b0");
+  changed |= ImGui::SliderFloat("Mouse sensitivity", &cam.mouseSensitivity,
+                                0.0002f, 0.02f, "%.4f rad/px",
+                                kClamp | ImGuiSliderFlags_Logarithmic);
+  changed |= slider("Aim right", &cam.aimRight, -2.0f, 2.0f, "%.2f m");
+  changed |= slider("Aim up", &cam.aimUp, -1.0f, 2.0f, "%.2f m");
+  changed |= slider("Aim distance", &cam.aimDistance, 0.5f, 10.0f, "%.1f m");
+  changed |= slider("Aim time", &cam.aimTime, 0.01f, 1.0f, "%.2f s");
+  changed |= slider("Follow time", &cam.followTime, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("How quickly it catches up with the character");
+  changed |= slider("Most lag", &cam.maxLag, 0.0f, 5.0f, "%.2f m");
+  changed |= slider("Wall margin", &cam.collisionRadius, 0.01f, 1.0f,
+                    "%.2f m");
+  ImGui::SetItemTooltip("The ball swept from the shoulders that keeps it out "
+                        "of walls");
+  changed |= slider("Ease out time", &cam.easeOutTime, 0.0f, 3.0f, "%.2f s");
+  ImGui::SetItemTooltip("How quickly it moves back out after a wall");
+  ImGui::SeparatorText("Body, from the next Play");
+  changed |= slider("Radius", &c.radius, 0.1f, 1.0f, "%.2f m");
+  changed |= slider("Height", &c.height, 0.5f, 3.0f, "%.2f m");
+  changed |= slider("Crouch height", &c.crouchHeight, 0.3f, 3.0f, "%.2f m");
+  changed |= slider("Mass", &c.mass, 1.0f, 1000.0f, "%.0f kg");
+  if (changed) {
+    c = consistent(c);
+    cam = consistent(cam);
+    panel.changed = true;
   }
 }
 

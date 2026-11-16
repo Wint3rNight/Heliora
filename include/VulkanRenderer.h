@@ -206,7 +206,10 @@ private:
   int crouchedPlayerModelId = -1;
   glm::vec3 flyCameraPosition{0.0f};
   float flyCameraYaw = -90.0f; // degrees, Camera's convention
-  static SceneModelEntry playerCapsuleEntry(float height);
+  static SceneModelEntry playerCapsuleEntry(float radius, float height);
+  // The capsules for the Character tab's body sizes, made if they aren't
+  // yet. A new mesh waits for the GPU to go idle first.
+  void ensurePlayerModels();
   void spawnPlayer();
   void posePlayer(float alpha, float frameSeconds);
   bool playing = true;
@@ -271,6 +274,9 @@ private:
   std::vector<PhysicsLink> physicsLinks;
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;
+  // The character's and its camera's tuning (the Character tab). The player
+  // start's outline and clicks use its body sizes too.
+  CharacterPanel characterPanel;
   // Sums for the [physics] log line, printed every 120 frames.
   struct PhysicsLogWindow {
     int frames = 0;

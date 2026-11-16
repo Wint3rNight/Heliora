@@ -289,7 +289,8 @@ int main(int argc, char **argv) {
   // moves) with the panels hidden and no input, saves the picture after
   // HELIORA_CAPTURE_FRAMES frames (300 by default, so TAA and exposure
   // settle) and quits. Two builds captured the same way can be compared.
-  // HELIORA_CAPTURE_PLAY=1 stays in play mode instead, character and all.
+  // HELIORA_CAPTURE_PLAY=1 stays in play mode instead, character and all,
+  // and HELIORA_CAPTURE_UI=1 keeps the panels, to check the editor itself.
   const char *capturePath = std::getenv("HELIORA_CAPTURE");
   const char *captureFramesText = std::getenv("HELIORA_CAPTURE_FRAMES");
   const int captureFrames =
@@ -297,7 +298,8 @@ int main(int argc, char **argv) {
   if (capturePath) {
     if (!std::getenv("HELIORA_CAPTURE_PLAY"))
       vulkanRenderer.togglePlayMode();
-    vulkanRenderer.toggleUiVisibility();
+    if (!std::getenv("HELIORA_CAPTURE_UI"))
+      vulkanRenderer.toggleUiVisibility();
     inputManager.setCursorCaptured(false);
   }
   int frameNumber = 0;

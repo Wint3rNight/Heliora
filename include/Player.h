@@ -37,6 +37,12 @@ public:
   void step(float dt);
   // The camera follows where the character is drawn this frame.
   void follow(float alpha, float frameSeconds);
+  // The Character tab's values, while playing. Movement and the camera
+  // change at once; the body (radius, heights, mass) keeps what it was
+  // spawned with until the next spawn, since the capsule in the physics
+  // world was made at that size.
+  void setTuning(const CharacterTuning &character,
+                 const ThirdPersonCameraTuning &camera);
 
   const CharacterController &character() const { return controller; }
   const ThirdPersonCamera &camera() const { return view; }

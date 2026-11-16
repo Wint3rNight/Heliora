@@ -43,6 +43,11 @@ struct CharacterTuning {
   float pushStrength = 100.0f; // N
 };
 
+// The same values, made to fit together: the height leaves room for the
+// two rounded ends, and the crouch height sits between them and the full
+// height. The Character tab and a hand-edited settings file go through it.
+CharacterTuning consistent(CharacterTuning tuning);
+
 // What the player asks for in one physics step.
 struct CharacterInput {
   // World space and flat, length 0 to 1: WASD turned by the camera's yaw.

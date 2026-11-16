@@ -43,3 +43,15 @@ void Player::step(float dt) {
 void Player::follow(float alpha, float frameSeconds) {
   view.update(world, controller.drawnPosition(alpha), held.aim, frameSeconds);
 }
+
+void Player::setTuning(const CharacterTuning &character,
+                       const ThirdPersonCameraTuning &camera) {
+  CharacterTuning tuning = character;
+  const CharacterTuning &spawned = controller.tuning();
+  tuning.radius = spawned.radius;
+  tuning.height = spawned.height;
+  tuning.crouchHeight = spawned.crouchHeight;
+  tuning.mass = spawned.mass;
+  controller.setTuning(tuning);
+  view.setTuning(camera);
+}

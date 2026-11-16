@@ -178,3 +178,20 @@ TEST(view_looks_from_the_eye_along_forward) {
   CHECK_NEAR(glm::length(eye), 0.0, 1e-4);
   CHECK_NEAR(near(ahead, glm::vec3(0, 0, -1)), 0.0, 1e-4);
 }
+
+TEST(camera_tuning_is_kept_consistent) {
+  ThirdPersonCameraTuning fine;
+  CHECK(consistent(fine).minDistance == fine.minDistance);
+  CHECK(consistent(fine).maxDistance == fine.maxDistance);
+  CHECK(consistent(fine).distance == fine.distance);
+  ThirdPersonCameraTuning crossed;
+  crossed.minDistance = 6.0f;
+  crossed.maxDistance = 3.0f;
+  crossed.distance = 10.0f;
+  crossed.minPitch = 0.5f;  // above level
+  crossed.maxPitch = -0.5f; // below level
+  const ThirdPersonCameraTuning fixed = consistent(crossed);
+  CHECK(fixed.minDistance <= fixed.maxDistance);
+  CHECK(fixed.distance >= fixed.minDistance && fixed.distance <= fixed.maxDistance);
+  CHECK(fixed.minPitch <= 0.0f && fixed.maxPitch >= 0.0f);
+}

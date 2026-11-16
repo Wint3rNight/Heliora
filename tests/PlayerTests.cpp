@@ -171,3 +171,47 @@ TEST(camera_starts_behind_the_character) {
   CHECK_NEAR(player.camera().yaw(), 0.5 * kPi, 1e-5);
   CHECK(player.camera().position().x > 4.0f); // behind it, on the +x side
 }
+
+TEST(new_movement_tuning_applies_while_playing) {
+  PhysicsWorld world;
+  addFloor(world);
+  Player player(world, glm::vec3(0.0f), 0.0f);
+  CharacterTuning slower;
+  slower.runSpeed = 3.0f;
+  player.setTuning(slower, ThirdPersonCameraTuning{});
+  frames(world, player, pressing(&PlayerControls::forward), 60);
+  CHECK_NEAR(-player.character().velocity().z, 3.0, 0.05);
+}
+
+TEST(new_body_sizes_wait_for_the_next_spawn) {
+  // The capsule in the physics world was made at the old size; changing it
+  // under a moving character isn't safe, so Play picks it up next time.
+  PhysicsWorld world;
+  addFloor(world);
+  Player player(world, glm::vec3(0.0f), 0.0f);
+  CharacterTuning shorter;
+  shorter.height = 1.2f;
+  shorter.crouchHeight = 0.8f;
+  shorter.radius = 0.2f;
+  shorter.mass = 40.0f;
+  shorter.jumpHeight = 2.0f; // this one does apply
+  player.setTuning(shorter, ThirdPersonCameraTuning{});
+  const CharacterTuning &now = player.character().tuning();
+  CHECK_NEAR(now.height, 1.8, 1e-6);
+  CHECK_NEAR(now.crouchHeight, 1.1, 1e-6);
+  CHECK_NEAR(now.radius, 0.3, 1e-6);
+  CHECK_NEAR(now.mass, 70.0, 1e-6);
+  CHECK_NEAR(now.jumpHeight, 2.0, 1e-6);
+  frames(world, player, PlayerControls{}, 10);
+  CHECK_NEAR(player.character().height(), 1.8, 1e-5);
+}
+
+TEST(new_camera_tuning_applies_while_playing) {
+  PhysicsWorld world;
+  addFloor(world);
+  Player player(world, glm::vec3(0.0f), 0.0f);
+  ThirdPersonCameraTuning close;
+  close.maxDistance = 3.0f;
+  player.setTuning(CharacterTuning{}, close);
+  CHECK_NEAR(player.camera().distance(), 3.0, 1e-5); // was 4, now the most
+}

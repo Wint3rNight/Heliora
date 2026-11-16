@@ -456,3 +456,22 @@ TEST(tuning_reaches_the_physics_character) {
     CHECK((stepsInAir == 0) == (stickDown > 0.0f));
   }
 }
+
+TEST(tuning_is_kept_consistent) {
+  // A capsule needs more height than its two rounded ends, and crouching
+  // can't make it taller. Values that already fit stay as they are.
+  CharacterTuning fine;
+  CHECK(consistent(fine).height == fine.height);
+  CHECK(consistent(fine).crouchHeight == fine.crouchHeight);
+  CharacterTuning squat;
+  squat.radius = 0.5f;
+  squat.height = 0.6f;
+  squat.crouchHeight = 0.4f;
+  const CharacterTuning fixed = consistent(squat);
+  CHECK(fixed.height > 2.0f * fixed.radius);
+  CHECK(fixed.crouchHeight > 2.0f * fixed.radius);
+  CHECK(fixed.crouchHeight <= fixed.height);
+  CharacterTuning tallCrouch;
+  tallCrouch.crouchHeight = 2.5f;
+  CHECK(consistent(tallCrouch).crouchHeight == tallCrouch.height);
+}

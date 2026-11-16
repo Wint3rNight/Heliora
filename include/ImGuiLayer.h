@@ -11,11 +11,13 @@
 #include <string>
 #include <vector>
 
+#include "CharacterController.h"
 #include "PerformanceMetrics.h"
 #include "Picking.h"
 #include "PhysicsWorld.h"
 #include "Scene.h"
 #include "SceneViewport.h"
+#include "ThirdPersonCamera.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 
@@ -38,6 +40,16 @@ struct PhysicsPanel {
   int maxCatchUpSteps = 4; // steps a slow frame may run before time slips
   float defaultFriction = 0.2f;
   bool settingsChanged = false;
+};
+
+// The Character tab: the character's and its camera's tuning, saved in the
+// settings file under [character]. The renderer hands them to the character
+// when changed is set; the body (radius, heights, mass) waits for the next
+// Play, since the capsule in the physics world was made at its size.
+struct CharacterPanel {
+  CharacterTuning character;
+  ThirdPersonCameraTuning camera;
+  bool changed = false;
 };
 
 // A question that has to be answered before something can happen: unsaved
@@ -131,12 +143,13 @@ struct DebugUiContext {
   std::function<void(int)> onSceneSelected;
 
   PhysicsPanel *physics = nullptr; // no panel when null
+  CharacterPanel *character = nullptr; // likewise
   // The live physics world's bodies and limit, for the grid count check.
   uint32_t bodiesInWorld = 0;
   uint32_t bodyLimit = 0;
 
   // The Save settings and Reset to defaults buttons, for one section of the
-  // settings file: "render" or "physics".
+  // settings file: "render", "physics" or "character".
   std::function<void(const char *)> onSaveSettings;
   std::function<void(const char *)> onResetSettings;
   const std::string *settingsStatus = nullptr; // the last button's result
@@ -242,6 +255,7 @@ private:
     Camera,
     Inspector,
     Physics,
+    Character,
     Performance,
     Debug,
     Count
@@ -267,11 +281,12 @@ private:
   void drawLightingTab(DebugUiContext &ui);
   void drawDebugTab(DebugUiContext &ui);
   void drawPhysicsTab(DebugUiContext &ui);
+  void drawCharacterTab(DebugUiContext &ui);
   void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);
 
-  bool panelOpen[kPanelCount] = {true, true, true, true,
+  bool panelOpen[kPanelCount] = {true, true, true, true, true,
                                  true, true, true, true};
   bool resetLayoutRequested = false;
   bool focusDefaultTabs = false; // once, after the default layout is built

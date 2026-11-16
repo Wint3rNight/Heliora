@@ -101,3 +101,12 @@ void ThirdPersonCamera::place(const PhysicsWorld &world, bool snap, float dt) {
 glm::mat4 ThirdPersonCamera::view() const {
   return glm::lookAt(eye, eye + forward(), kUp);
 }
+
+ThirdPersonCameraTuning consistent(ThirdPersonCameraTuning tuning) {
+  tuning.maxDistance = std::max(tuning.maxDistance, tuning.minDistance);
+  tuning.distance =
+      std::clamp(tuning.distance, tuning.minDistance, tuning.maxDistance);
+  tuning.minPitch = std::min(tuning.minPitch, 0.0f);
+  tuning.maxPitch = std::max(tuning.maxPitch, 0.0f);
+  return tuning;
+}

@@ -1739,7 +1739,7 @@ void VulkanRenderer::draw() {
   currentFrame = (currentFrame + 1) % MAX_FRAMES_DRAWS;
   // Advance TAA frame counter AFTER this frame finishes recording so the
   // Halton jitter index used above matches the history ring slots that
-  // recordCommands picked for framebuffers / descriptor sets.
+  // recordPostCommands picked for framebuffers / descriptor sets.
   taaFrameCounter++;
   metrics.endFrame();
 }
@@ -2677,7 +2677,7 @@ void VulkanRenderer::addInstancedModel(
   }
 
   // Compute a world-space bounding sphere covering every instance.
-  // Used in recordCommands to cull/LOD the entire batch.
+  // Used to cull and pick the LOD for the entire batch.
   MeshModel *mdl = modelManager.getModel(modelId);
   float modelRadius = mdl ? mdl->boundingRadius : 1.0f;
   glm::vec3 modelCenter = mdl ? mdl->boundingCenter : glm::vec3(0.0f);
@@ -2856,133 +2856,6 @@ static GBufferStateStats estimateGBufferStateStats(
   return stats;
 }
 
-void VulkanRenderer::recordCommands(uint32_t currentImage) {
-  VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
-  vkResetCommandBuffer(cmd, 0);
-
-  VkCommandBufferBeginInfo beginInfo = {};
-  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
-    throw std::runtime_error("Failed to begin recording command buffer");
-
-  metrics.resetGpuQueries(cmd);
-
-  vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  shadowPass.recordCsm(cmd, frameMeshes, pipeline, descriptorManager, sceneUbo,
-                       imguiShadowFrontFaceCull, imguiCullShadowCasters);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  vkdbgEndLabel(cmd);
-
-  vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  shadowPass.recordPoint(cmd, frameMeshes, pipeline, descriptorManager,
-                         imguiShadowFrontFaceCull, imguiCullShadowCasters);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  vkdbgEndLabel(cmd);
-
-  VkViewport viewport = {};
-  viewport.width = static_cast<float>(sceneExtent.width);
-  viewport.height = static_cast<float>(sceneExtent.height);
-  viewport.maxDepth = 1.0f;
-  VkRect2D scissor = {{0, 0}, sceneExtent};
-
-  // Temporal history indices. Rings are larger than the number of frames in
-  // flight, so an in-flight frame's previous-history read is not overwritten
-  // by a later CPU submission.
-  uint32_t ssgiHistoryIndex = ssgiPass.historyIndex(taaFrameCounter);
-  uint32_t taaHistoryIndex =
-      static_cast<uint32_t>(taaFrameCounter % taaHistoryViews.size());
-
-  recordGBufferPass(cmd, currentImage, viewport, scissor);
-
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-  ssgiPass.record(cmd, ssgiHistoryIndex,
-                  descriptorManager.getVPSet(currentImage),
-                  descriptorManager.getGBufferSet(ssgiHistoryIndex,
-                                                  currentImage),
-                  descriptorManager.getSsgiPrevSet(ssgiHistoryIndex),
-                  pipeline.getSsgiPipeline(), pipeline.getSsgiLayout());
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::SSGI);
-
-  // --- Lit pass (PBR + IBL + SSAO + FXAA + fog → litBuffer) ---
-  {
-    VkClearValue clear = {};
-    clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
-
-    VkRenderPassBeginInfo rpbi = {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPassManager.getLitRenderPass();
-    rpbi.framebuffer = litFramebuffers[currentImage];
-    rpbi.renderArea = {{0, 0}, sceneExtent};
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clear;
-
-    vkdbgBeginLabel(cmd, "Deferred Lighting (PBR+IBL+SSAO)", 0.1f, 0.8f,
-                    0.3f);
-    metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      pipeline.getLitPipeline());
-    std::array<VkDescriptorSet, 2> litSets = {
-        descriptorManager.getVPSet(currentImage),
-        descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage)};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.getLitLayout(), 0, 2, litSets.data(), 0,
-                            nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
-    recordTransparentPass(cmd, currentImage, viewport, scissor);
-    vkCmdEndRenderPass(cmd);
-    noteLitFinalLayout(currentImage);
-    metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);
-    vkdbgEndLabel(cmd);
-  }
-
-  // --- Bloom pyramid (compute) ---
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-  const bool bloomRecorded =
-      bloomPass.record(cmd, currentImage, litImages, imguiEnableBloom,
-                       imguiDebugMode, imguiBloomThreshold, imguiBloomRadius,
-                       imguiBloomIntensity);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Bloom);
-
-  // --- Auto-exposure (compute) ---
-  // Runs between lit and composite: lit is now in SHADER_READ_ONLY_OPTIMAL
-  // (the render pass's finalLayout). Pass 1 histograms it; pass 2 reduces
-  // and writes one float into a host-visible buffer that next frame's CPU
-  // reads to drive eye adaptation.
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
-  autoExposurePass.record(cmd, currentImage, currentFrame, litImages,
-                          autoExpEnabled, bloomRecorded);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::AutoExposure);
-
-  const size_t compositeFbIdx =
-      compositePass.framebufferIndex(taaHistoryIndex, currentImage);
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-  compositePass.record(
-      cmd, currentImage, taaHistoryIndex,
-      descriptorManager.getVPSet(currentImage),
-      descriptorManager.getGBufferSet(ssgiHistoryIndex, currentImage),
-      descriptorManager.getInputSet(currentImage),
-      descriptorManager.getTaaSet(compositeFbIdx),
-      pipeline.getDeferredPipeline(), pipeline.getDeferredLayout(),
-      pipeline.getSecondPipeline(), pipeline.getSecondLayout());
-  noteCompositeFinalLayouts(currentImage, taaHistoryIndex);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Composite);
-
-  vkdbgBeginLabel(cmd, "ImGui Pass", 0.9f, 0.8f, 0.1f);
-  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
-  recordImGuiCommands(cmd, currentImage);
-  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
-  vkdbgEndLabel(cmd);
-
-  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
-    throw std::runtime_error("Failed to stop recording command buffer");
-}
-
 void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
   VkCommandBuffer cmd = swapchain.getCommandBuffer(currentImage);
   vkResetCommandBuffer(cmd, 0);
@@ -3005,11 +2878,12 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
     throw std::runtime_error("Failed to end G-buffer command buffer");
 }
 
-// Every opaque mesh in the scene with its world bounding sphere, once a frame
-// for the G-buffer and shadow passes (blended ones belong to the transparent
-// pass). The vector keeps its memory between frames.
+// Every mesh in the scene with its world bounding sphere, once a frame: the
+// opaque ones for the G-buffer and shadow passes, the blended ones for the
+// transparent pass. The vectors keep their memory between frames.
 void VulkanRenderer::collectMeshInstances() {
   frameMeshes.clear();
+  frameBlendedMeshes.clear();
   const glm::vec3 camera = glm::vec3(sceneUbo.cameraPosition);
   auto visit = [&](auto &self, const SceneNode &node) -> void {
     if (MeshModel *model = modelManager.getModel(node.getModelId())) {
@@ -3022,9 +2896,10 @@ void VulkanRenderer::collectMeshInstances() {
           glm::vec3(world * glm::vec4(model->boundingCenter, 1.0f)) - camera);
       for (size_t k = 0; k < model->getMeshCount(); ++k) {
         const Mesh *mesh = model->getMesh(k);
-        if (mesh->getMaterial().alphaBlended)
-          continue;
-        frameMeshes.push_back(
+        std::vector<MeshInstance> &list = mesh->getMaterial().alphaBlended
+                                              ? frameBlendedMeshes
+                                              : frameMeshes;
+        list.push_back(
             {&node, mesh,
              glm::vec3(world * glm::vec4(mesh->boundingCenter, 1.0f)),
              mesh->boundingRadius * maxScale, modelDistance});
@@ -3523,62 +3398,26 @@ void VulkanRenderer::recordTransparentPass(VkCommandBuffer cmd,
   extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
   const glm::vec3 cameraPos = glm::vec3(sceneUbo.cameraPosition);
 
-  auto appendNode = [&](auto &self, SceneNode *node) -> void {
-    if (node->getModelId() >= 0) {
-      MeshModel *mdl = modelManager.getModel(node->getModelId());
-      if (mdl) {
-        glm::mat4 model = node->getGlobalTransform();
-        glm::vec3 wCenter =
-            glm::vec3(model * glm::vec4(mdl->boundingCenter, 1.0f));
-        float maxScale =
-            glm::max(glm::length(glm::vec3(model[0])),
-                     glm::max(glm::length(glm::vec3(model[1])),
-                              glm::length(glm::vec3(model[2]))));
-        if (sphereInFrustum(frustumPlanes, wCenter,
-                            mdl->boundingRadius * maxScale)) {
-          float camDist = glm::length(wCenter - cameraPos);
-          int lod = (camDist < imguiLodNear)  ? 0
-                    : (camDist < imguiLodFar) ? 1
-                                              : 2;
-
-          ModelPushConstants basePush{};
-          basePush.model = model;
-          basePush.normal = node->getNormalMatrix();
-
-          for (size_t k = 0; k < mdl->getMeshCount(); ++k) {
-            const Mesh *mesh = mdl->getMesh(k);
-            const Material &mat = mesh->getMaterial();
-            if (!mat.alphaBlended)
-              continue;
-
-            glm::vec3 meshWCenter =
-                glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
-            if (!sphereInFrustum(frustumPlanes, meshWCenter,
-                                 mesh->boundingRadius * maxScale))
-              continue;
-
-            TransparentDrawItem item{};
-            item.kind = GBufferDrawKind::Mesh;
-            item.mesh = mesh;
-            item.lod = std::min(lod, mesh->getLodCount() - 1);
-            item.push = basePush;
-            item.push.texIdx0 = materialTextureIndices0(mat);
-            item.push.texIdx1 = materialTextureIndices1(mat);
-            item.cullMode =
-                mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-            item.indexCount =
-                static_cast<uint32_t>(mesh->getIndexCount(item.lod));
-            const glm::vec3 toCamera = meshWCenter - cameraPos;
-            item.distanceSq = glm::dot(toCamera, toCamera);
-            drawItems.push_back(item);
-          }
-        }
-      }
-    }
-    for (auto &child : node->getChildren())
-      self(self, child.get());
-  };
-  appendNode(appendNode, &rootNode);
+  for (const MeshInstance &instance : frameBlendedMeshes) {
+    if (!sphereInFrustum(frustumPlanes, instance.center, instance.radius))
+      continue;
+    const Mesh *mesh = instance.mesh;
+    const Material &mat = mesh->getMaterial();
+    TransparentDrawItem item{};
+    item.kind = GBufferDrawKind::Mesh;
+    item.mesh = mesh;
+    item.lod =
+        lodForDistance(instance.modelDistance, imguiLodNear, imguiLodFar, *mesh);
+    item.push.model = instance.node->getGlobalTransform();
+    item.push.normal = instance.node->getNormalMatrix();
+    item.push.texIdx0 = materialTextureIndices0(mat);
+    item.push.texIdx1 = materialTextureIndices1(mat);
+    item.cullMode = mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+    const glm::vec3 toCamera = instance.center - cameraPos;
+    item.distanceSq = glm::dot(toCamera, toCamera);
+    drawItems.push_back(item);
+  }
 
   for (const InstancedDrawable &drawable : instancedDrawables) {
     MeshModel *mdl = modelManager.getModel(drawable.modelId);

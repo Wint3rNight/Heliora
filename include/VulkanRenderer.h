@@ -314,8 +314,10 @@ private:
 
   // --- Instanced drawables ---
   std::vector<InstancedDrawable> instancedDrawables;
-  // This frame's opaque meshes with their world bounds (collectMeshInstances).
+  // This frame's meshes with their world bounds (collectMeshInstances):
+  // opaque, and blended for the transparent pass.
   std::vector<MeshInstance> frameMeshes;
+  std::vector<MeshInstance> frameBlendedMeshes;
 
   // --- GPU-driven rendering controls (Phase 7.6) ---
   bool imguiGpuDrivenEnabled = true;
@@ -548,7 +550,6 @@ private:
   void applySunAndFog();
 
   // --- Per-frame ---
-  void recordCommands(uint32_t currentImage);
   void recordGBufferCommands(uint32_t currentImage);
   void collectMeshInstances();
   bool prepareGpuDrivenFrame(uint32_t currentImage,

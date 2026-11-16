@@ -138,9 +138,9 @@ private:
 
 class SceneNode;
 
-// One opaque mesh of one scene node with its world bounding sphere. The
-// renderer collects them once a frame (collectMeshInstances) for the shadow
-// and G-buffer passes, so neither walks the scene tree on its own.
+// One mesh of one scene node with its world bounding sphere. The renderer
+// collects them once a frame (collectMeshInstances) for the shadow, G-buffer
+// and transparent passes, so none of them walks the scene tree on its own.
 struct MeshInstance {
   const SceneNode *node = nullptr;
   const Mesh *mesh = nullptr;

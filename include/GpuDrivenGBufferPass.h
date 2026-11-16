@@ -55,19 +55,35 @@ public:
               VkRenderPass gBufferRenderPass, VkExtent2D extent,
               const std::vector<ImageViewHandle> &gBufferDepthViews,
               VkPipelineCache pipelineCache);
+  // Frees everything sized to the scene; the geometry arena stays, so a
+  // rebuild doesn't upload every model again.
   void cleanup();
+  // The arena, at shutdown.
+  void releaseGeometry();
 
+  // Adds a model's meshes to the arena and uploads only them.
   void registerModelGeometry(int modelId, ModelManager &modelManager);
   // Scene switches must call this: the depth pyramid still holds the OLD
   // scene's depth, and occlusion-testing the new scene's AABBs against it
-  // wrongly culls visible meshes for the first frame per swap image.
-  void invalidateHzb() { hzbValid.assign(hzbValid.size(), false); }
+  // wrongly culls visible meshes for the first frame.
+  void invalidateHzb() { hzbValid = false; }
+  // A frame on the GPU-driven path: beginFrame with the number of opaque
+  // meshes in the scene, then if beginRecords says the pass can take them,
+  // addMesh and addInstanced for every one (no culling or order needed, the
+  // compute shader culls), then uploadRecords. The add calls return false
+  // for a mesh whose geometry was never registered; it isn't drawn.
   void beginFrame(uint32_t candidateCount);
-  bool prepareFrame(uint32_t imageIndex,
-                    const std::vector<GBufferDrawItem> &drawItems,
-                    const glm::vec4 frustumPlanes[6],
-                    const glm::mat4 &viewProj, bool enabled,
-                    bool hzbEnabled, uint32_t minCandidates);
+  bool beginRecords(uint32_t imageIndex, bool enabled, uint32_t minCandidates);
+  bool addMesh(const Mesh *mesh, int lod, const glm::mat4 &model,
+               const glm::mat4 &normal, const glm::uvec4 &texIdx0,
+               const glm::uvec4 &texIdx1, glm::vec3 aabbMin, glm::vec3 aabbMax,
+               VkCullModeFlags cullMode);
+  bool addInstanced(const Mesh *mesh, int lod,
+                    const std::vector<InstanceData> &instances,
+                    const glm::uvec4 &texIdx0, const glm::uvec4 &texIdx1,
+                    glm::vec3 aabbMin, glm::vec3 aabbMax);
+  void uploadRecords(uint32_t imageIndex, const glm::vec4 frustumPlanes[6],
+                     const glm::mat4 &viewProj, bool hzbEnabled);
   bool canRecordIndirect(uint32_t imageIndex, bool enabled,
                          uint32_t minCandidates) const;
   void recordIndirectGBuffer(VkCommandBuffer cmd, uint32_t imageIndex,
@@ -114,8 +130,10 @@ private:
                     VmaAllocationCreateFlags memoryFlags =
                         RENDER_UPLOAD_ALLOCATION_FLAGS);
   const GeometryRange *findGeometry(const Mesh *mesh, int lod) const;
-  void registerModelGeometryInternal(int modelId, ModelManager &modelManager);
-  void uploadStaticGeometry();
+  bool appendModelGeometry(int modelId, ModelManager &modelManager);
+  bool growArenaBuffer(AllocatedBuffer &buffer, VkDeviceSize &capacity,
+                       VkDeviceSize needed, VkBufferUsageFlags usage);
+  void syncGeometry();
   void uploadMeshRecords(FrameResources &frame, const void *records,
                          VkDeviceSize bytes, uint32_t recordCount);
   void updateDescriptorSet(uint32_t imageIndex);
@@ -131,8 +149,12 @@ private:
   AllocatedBuffer staticIndexBuffer;
   VkDeviceSize staticVertexBufferSize = 0;
   VkDeviceSize staticIndexBufferSize = 0;
+  // The arena's CPU copy, and how much of it is on the GPU already.
   std::vector<Vertex> staticVertices;
   std::vector<uint32_t> staticIndices;
+  size_t uploadedVertexCount = 0;
+  size_t uploadedIndexCount = 0;
+  std::unordered_map<const Mesh *, int32_t> meshVertexOffsets;
   std::vector<GeometryRange> geometryRanges;
   // (mesh pointer, lod) → index into geometryRanges. lod < 8 always, so it
   // packs into the pointer's low bits (allocations are ≥ 8-byte aligned).
@@ -141,15 +163,15 @@ private:
            static_cast<uint64_t>(lod & 7);
   }
   std::unordered_map<uint64_t, size_t> geometryRangeLookup;
-  std::vector<int> registeredModelIds;
   // Persistent per-frame scratch (avoids re-allocating every frame).
   std::vector<GpuDrivenMeshRecord> frameMeshRecords;
   std::vector<GpuDrivenTransformRecord> frameTransforms;
 
-  std::vector<AllocatedImage> hzbImages;
-  std::vector<ImageViewHandle> hzbViews;
-  std::vector<std::vector<ImageViewHandle>> hzbMipViews;
-  std::vector<bool> hzbValid;
+  // One pyramid shared by every swap image (see create()).
+  AllocatedImage hzbImage;
+  ImageViewHandle hzbView;
+  std::vector<ImageViewHandle> hzbMipViews;
+  bool hzbValid = false;
   VkExtent2D hzbExtent = {};
   uint32_t hzbMipCount = 0;
   VkFormat hzbFormat = VK_FORMAT_UNDEFINED;

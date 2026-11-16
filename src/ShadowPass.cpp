@@ -1,4 +1,5 @@
 #include "ShadowPass.h"
+#include "Frustum.h"
 #include "ShadowCascades.h"
 
 #include "VulkanDebug.h"
@@ -10,27 +11,6 @@
 #include <stdexcept>
 
 namespace {
-void extractFrustumPlanes(const glm::mat4 &vp, glm::vec4 planes[6]) {
-  glm::mat4 t = glm::transpose(vp);
-  planes[0] = t[3] + t[0];
-  planes[1] = t[3] - t[0];
-  planes[2] = t[3] + t[1];
-  planes[3] = t[3] - t[1];
-  planes[4] = t[3] + t[2];
-  planes[5] = t[3] - t[2];
-  for (int i = 0; i < 6; i++)
-    planes[i] /= glm::length(glm::vec3(planes[i]));
-}
-
-bool sphereInFrustum(const glm::vec4 planes[6], glm::vec3 center,
-                     float radius) {
-  for (int i = 0; i < 6; i++) {
-    if (glm::dot(glm::vec3(planes[i]), center) + planes[i].w < -radius)
-      return false;
-  }
-  return true;
-}
-
 uint32_t shadowMaterialFlags(const Material &material) {
   return (material.isCloth ? 1u : 0u) | (material.alphaMasked ? 2u : 0u);
 }
@@ -270,8 +250,57 @@ void ShadowPass::updatePointShadowMatrices(SceneUniformBuffer &sceneUbo) {
     sceneUbo.pointShadowMatrices[i] = pointShadowMatrices[i];
 }
 
-void ShadowPass::recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
-                           ModelManager &modelManager,
+// Draws the casters into the render pass that's open. With planes, only
+// those whose bounding sphere touches the light's clip volume: the rest
+// would be clipped by the rasterizer anyway.
+void ShadowPass::drawCasters(VkCommandBuffer cmd,
+                             const std::vector<MeshInstance> &meshes,
+                             const glm::vec4 *planes,
+                             const glm::mat4 &lightMatrix,
+                             const VulkanPipeline &pipeline,
+                             VkCullModeFlags defaultCull) {
+  VkCullModeFlags lastCull = defaultCull;
+  vkCmdSetCullMode(cmd, defaultCull);
+  const Mesh *boundMesh = nullptr;
+  for (const MeshInstance &instance : meshes) {
+    if (planes && !sphereInFrustum(planes, instance.center, instance.radius))
+      continue;
+
+    const Mesh *mesh = instance.mesh;
+    const Material &material = mesh->getMaterial();
+    const VkCullModeFlags wantCull =
+        material.doubleSided ? VK_CULL_MODE_NONE : defaultCull;
+    if (wantCull != lastCull) {
+      vkCmdSetCullMode(cmd, wantCull);
+      lastCull = wantCull;
+    }
+
+    ShadowPushConstants push{};
+    push.model = instance.node->getGlobalTransform();
+    push.lightSpaceMatrix = lightMatrix;
+    push.albedoIdx = static_cast<uint32_t>(material.albedoTextureId);
+    push.materialFlags = shadowMaterialFlags(material);
+    push.alphaCutoff255 = alphaCutoff255(material);
+    vkCmdPushConstants(cmd, pipeline.getShadowLayout(),
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(ShadowPushConstants), &push);
+    // Shadows always use LOD 0: Sponza's thin casters lost exactly the
+    // triangles that should block the sun at lower LODs. Copies of one shape
+    // share a mesh, so the buffers are only bound when it changes.
+    if (mesh != boundMesh) {
+      VkBuffer vertexBuffer[] = {mesh->getVertexBuffer()};
+      VkDeviceSize offset[] = {0};
+      vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffer, offset);
+      vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(0), 0,
+                           VK_INDEX_TYPE_UINT32);
+      boundMesh = mesh;
+    }
+    vkCmdDrawIndexed(cmd, mesh->getIndexCount(0), 1, 0, 0, 0);
+  }
+}
+
+void ShadowPass::recordCsm(VkCommandBuffer cmd,
+                           const std::vector<MeshInstance> &meshes,
                            const VulkanPipeline &pipeline,
                            const DescriptorManager &descriptorManager,
                            const SceneUniformBuffer &sceneUbo,
@@ -284,74 +313,10 @@ void ShadowPass::recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
                          1};
   VkRect2D scissor = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
 
-  // Sponza has thin shadow casters; reduced LODs can remove the exact
-  // triangles that should block the sun, so keep CSM rendering at LOD0.
-  auto cascadeLod = [](int cascade) {
-    (void)cascade;
-    return 0;
-  };
-
   // Off means no culling, not back-face culling: authored wall winding is not
   // reliable enough for single-sided shadow casters.
-  VkCullModeFlags defaultCull =
+  const VkCullModeFlags defaultCull =
       frontFaceCull ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE;
-  VkCullModeFlags lastCull = defaultCull;
-
-  auto renderNodeShadow = [&](auto &self, SceneNode *node, const glm::mat4 &lsm,
-                              const glm::vec4 casterPlanes[6],
-                              int lodIndex) -> void {
-    if (node->getModelId() >= 0) {
-      MeshModel *model = modelManager.getModel(node->getModelId());
-      if (model) {
-        const glm::mat4 transform = node->getGlobalTransform();
-        float maxScale =
-            glm::max(glm::length(glm::vec3(transform[0])),
-                     glm::max(glm::length(glm::vec3(transform[1])),
-                              glm::length(glm::vec3(transform[2]))));
-        for (size_t meshIndex = 0; meshIndex < model->getMeshCount();
-             ++meshIndex) {
-          const Mesh *mesh = model->getMesh(meshIndex);
-          glm::vec3 meshCenter = glm::vec3(
-              transform * glm::vec4(mesh->boundingCenter, 1.0f));
-          if (cullShadowCasters &&
-              !sphereInFrustum(casterPlanes, meshCenter,
-                               mesh->boundingRadius * maxScale)) {
-            continue;
-          }
-
-          const Material &material = mesh->getMaterial();
-          if (material.alphaBlended)
-            continue;
-          VkCullModeFlags wantCull =
-              material.doubleSided ? VK_CULL_MODE_NONE : defaultCull;
-          if (wantCull != lastCull) {
-            vkCmdSetCullMode(cmd, wantCull);
-            lastCull = wantCull;
-          }
-
-          ShadowPushConstants push{};
-          push.model = transform;
-          push.lightSpaceMatrix = lsm;
-          push.albedoIdx = static_cast<uint32_t>(material.albedoTextureId);
-          push.materialFlags = shadowMaterialFlags(material);
-          push.alphaCutoff255 = alphaCutoff255(material);
-          vkCmdPushConstants(cmd, pipeline.getShadowLayout(),
-                             VK_SHADER_STAGE_VERTEX_BIT |
-                                 VK_SHADER_STAGE_FRAGMENT_BIT,
-                             0, sizeof(ShadowPushConstants), &push);
-          int useLod = std::min(lodIndex, mesh->getLodCount() - 1);
-          VkBuffer vertexBuffer[] = {mesh->getVertexBuffer()};
-          VkDeviceSize offset[] = {0};
-          vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffer, offset);
-          vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
-                               VK_INDEX_TYPE_UINT32);
-          vkCmdDrawIndexed(cmd, mesh->getIndexCount(useLod), 1, 0, 0, 0);
-        }
-      }
-    }
-    for (auto &child : node->getChildren())
-      self(self, child.get(), lsm, casterPlanes, lodIndex);
-  };
 
   for (int cascade = 0; cascade < NUM_CSM_CASCADES; cascade++) {
     VkClearValue clearValue{};
@@ -371,8 +336,6 @@ void ShadowPass::recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdSetCullMode(cmd, defaultCull);
-    lastCull = defaultCull;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
     VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
@@ -381,24 +344,33 @@ void ShadowPass::recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
                             nullptr);
     glm::vec4 casterPlanes[6];
     extractFrustumPlanes(sceneUbo.lightSpaceMatrices[cascade], casterPlanes);
-    renderNodeShadow(renderNodeShadow, &rootNode,
-                     sceneUbo.lightSpaceMatrices[cascade], casterPlanes,
-                     cascadeLod(cascade));
+    drawCasters(cmd, meshes, cullShadowCasters ? casterPlanes : nullptr,
+                sceneUbo.lightSpaceMatrices[cascade], pipeline, defaultCull);
     vkCmdEndRenderPass(cmd);
     vkdbgEndLabel(cmd);
   }
 }
 
-void ShadowPass::recordPoint(VkCommandBuffer cmd, SceneNode &rootNode,
-                             ModelManager &modelManager,
+void ShadowPass::recordPoint(VkCommandBuffer cmd,
+                             const std::vector<MeshInstance> &meshes,
                              const VulkanPipeline &pipeline,
                              const DescriptorManager &descriptorManager,
-                             bool frontFaceCull) {
+                             bool frontFaceCull, bool cullShadowCasters) {
   if (pointShadowMatrices.size() < 6)
     return;
 
   VkClearValue clearValue{};
   clearValue.depthStencil.depth = 1.0f;
+  const VkViewport viewport = {0,
+                               0,
+                               static_cast<float>(POINT_SHADOW_MAP_SIZE),
+                               static_cast<float>(POINT_SHADOW_MAP_SIZE),
+                               0,
+                               1};
+  const VkRect2D scissor = {{0, 0},
+                            {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE}};
+  const VkCullModeFlags defaultCull =
+      frontFaceCull ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE;
 
   for (uint32_t face = 0; face < 6; ++face) {
     char faceLabel[32];
@@ -413,70 +385,18 @@ void ShadowPass::recordPoint(VkCommandBuffer cmd, SceneNode &rootNode,
     rpbi.pClearValues = &clearValue;
 
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport viewport = {0,
-                           0,
-                           static_cast<float>(POINT_SHADOW_MAP_SIZE),
-                           static_cast<float>(POINT_SHADOW_MAP_SIZE),
-                           0,
-                           1};
-    VkRect2D scissor = {{0, 0},
-                        {POINT_SHADOW_MAP_SIZE, POINT_SHADOW_MAP_SIZE}};
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    VkCullModeFlags defaultCull =
-        frontFaceCull ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE;
-    vkCmdSetCullMode(cmd, defaultCull);
-    VkCullModeFlags lastCull = defaultCull;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       pipeline.getShadowPipeline());
     VkDescriptorSet bindlessSet = descriptorManager.getBindlessSet();
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.getShadowLayout(), 0, 1, &bindlessSet, 0,
                             nullptr);
-
-    auto renderNodeShadow = [&](auto &self, SceneNode *node) -> void {
-      if (node->getModelId() >= 0) {
-        MeshModel *model = modelManager.getModel(node->getModelId());
-        if (model) {
-          for (size_t meshIndex = 0; meshIndex < model->getMeshCount();
-               ++meshIndex) {
-            const Mesh *mesh = model->getMesh(meshIndex);
-            const Material &material = mesh->getMaterial();
-            if (material.alphaBlended)
-              continue;
-            VkCullModeFlags wantCull =
-                material.doubleSided ? VK_CULL_MODE_NONE : defaultCull;
-            if (wantCull != lastCull) {
-              vkCmdSetCullMode(cmd, wantCull);
-              lastCull = wantCull;
-            }
-
-            ShadowPushConstants push{};
-            push.model = node->getGlobalTransform();
-            push.lightSpaceMatrix = pointShadowMatrices[face];
-            push.albedoIdx = static_cast<uint32_t>(material.albedoTextureId);
-            push.materialFlags = shadowMaterialFlags(material);
-            push.alphaCutoff255 = alphaCutoff255(material);
-            vkCmdPushConstants(cmd, pipeline.getShadowLayout(),
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(ShadowPushConstants), &push);
-            int useLod = 0;
-            VkBuffer vertexBuffer[] = {mesh->getVertexBuffer()};
-            VkDeviceSize offset[] = {0};
-            vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffer, offset);
-            vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(useLod), 0,
-                                 VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, mesh->getIndexCount(useLod), 1, 0, 0, 0);
-          }
-        }
-      }
-      for (auto &child : node->getChildren())
-        self(self, child.get());
-    };
-
-    renderNodeShadow(renderNodeShadow, &rootNode);
+    glm::vec4 facePlanes[6];
+    extractFrustumPlanes(pointShadowMatrices[face], facePlanes);
+    drawCasters(cmd, meshes, cullShadowCasters ? facePlanes : nullptr,
+                pointShadowMatrices[face], pipeline, defaultCull);
     vkCmdEndRenderPass(cmd);
     vkdbgEndLabel(cmd);
   }

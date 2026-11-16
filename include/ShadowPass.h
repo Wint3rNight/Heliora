@@ -21,15 +21,18 @@ public:
                                 float drawDistance);
   void updatePointShadowMatrices(SceneUniformBuffer &sceneUbo);
 
-  void recordCsm(VkCommandBuffer cmd, SceneNode &rootNode,
-                 ModelManager &modelManager, const VulkanPipeline &pipeline,
+  // Both draw the frame's opaque meshes (VulkanRenderer::frameMeshes). With
+  // cullShadowCasters, each cascade or cube face skips the meshes outside its
+  // clip volume.
+  void recordCsm(VkCommandBuffer cmd, const std::vector<MeshInstance> &meshes,
+                 const VulkanPipeline &pipeline,
                  const DescriptorManager &descriptorManager,
                  const SceneUniformBuffer &sceneUbo, bool frontFaceCull,
                  bool cullShadowCasters);
-  void recordPoint(VkCommandBuffer cmd, SceneNode &rootNode,
-                   ModelManager &modelManager, const VulkanPipeline &pipeline,
+  void recordPoint(VkCommandBuffer cmd, const std::vector<MeshInstance> &meshes,
+                   const VulkanPipeline &pipeline,
                    const DescriptorManager &descriptorManager,
-                   bool frontFaceCull);
+                   bool frontFaceCull, bool cullShadowCasters);
 
   VkImageView csmView() const { return csmArrayView.get(); }
   VkImageView pointCubeView() const { return pointShadowCubeView.get(); }
@@ -37,6 +40,10 @@ public:
   VkSampler csmSampler() const { return csmShadowSampler; }
 
 private:
+  void drawCasters(VkCommandBuffer cmd, const std::vector<MeshInstance> &meshes,
+                   const glm::vec4 *planes, const glm::mat4 &lightMatrix,
+                   const VulkanPipeline &pipeline, VkCullModeFlags defaultCull);
+
   VulkanDevice *device = nullptr;
   VkRenderPass renderPass = VK_NULL_HANDLE;
   VkFormat depthFormat = VK_FORMAT_UNDEFINED;

@@ -120,6 +120,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SettingsFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Spawning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Frustum.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -173,6 +174,7 @@ add_executable(heliora_tests
         tests/main.cpp
         tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp
+        tests/FrustumTests.cpp
         tests/GizmoTests.cpp
         tests/PhysicsWorldTests.cpp
         tests/PickingTests.cpp

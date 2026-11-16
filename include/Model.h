@@ -135,3 +135,16 @@ public:
 private:
   std::vector<Mesh> meshList;
 };
+
+class SceneNode;
+
+// One opaque mesh of one scene node with its world bounding sphere. The
+// renderer collects them once a frame (collectMeshInstances) for the shadow
+// and G-buffer passes, so neither walks the scene tree on its own.
+struct MeshInstance {
+  const SceneNode *node = nullptr;
+  const Mesh *mesh = nullptr;
+  glm::vec3 center = glm::vec3(0.0f);
+  float radius = 0.0f;
+  float modelDistance = 0.0f; // camera to the model's centre, picks the LOD
+};

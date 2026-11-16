@@ -69,64 +69,106 @@ GpuDrivenGBufferPass::findGeometry(const Mesh *mesh, int lod) const {
   return &geometryRanges[it->second];
 }
 
-void GpuDrivenGBufferPass::uploadStaticGeometry() {
+// Room for the whole arena in one of its buffers. It doubles, so a session
+// of edits grows it a few times rather than once per new model. Frames in
+// flight may still read the old buffer, so growing waits for the GPU; true
+// means the new buffer is empty and everything has to be uploaded again.
+bool GpuDrivenGBufferPass::growArenaBuffer(AllocatedBuffer &buffer,
+                                           VkDeviceSize &capacity,
+                                           VkDeviceSize needed,
+                                           VkBufferUsageFlags usage) {
+  if (buffer && capacity >= needed)
+    return false;
+  if (buffer)
+    vkDeviceWaitIdle(device->getLogicalDevice());
+  const VkDeviceSize newCapacity = std::max(needed, capacity * 2);
+  buffer.reset();
+  createBuffer(device->getAllocator(), newCapacity,
+               usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+               RENDER_DEVICE_ALLOCATION_FLAGS, &buffer);
+  capacity = newCapacity;
+  return true;
+}
+
+// Puts the arena's new geometry on the GPU. New geometry only ever goes on
+// the end, after what frames in flight are reading, so the copy doesn't have
+// to wait for them; the barrier makes it visible to later frames' vertex
+// input.
+void GpuDrivenGBufferPass::syncGeometry() {
   if (!device || staticVertices.empty() || staticIndices.empty())
     return;
+  if (growArenaBuffer(staticVertexBuffer, staticVertexBufferSize,
+                      staticVertices.size() * sizeof(Vertex),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
+    uploadedVertexCount = 0;
+  if (growArenaBuffer(staticIndexBuffer, staticIndexBufferSize,
+                      staticIndices.size() * sizeof(uint32_t),
+                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT))
+    uploadedIndexCount = 0;
 
+  const VkDeviceSize vertexOffset = uploadedVertexCount * sizeof(Vertex);
   const VkDeviceSize vertexBytes =
-      static_cast<VkDeviceSize>(staticVertices.size() * sizeof(Vertex));
+      (staticVertices.size() - uploadedVertexCount) * sizeof(Vertex);
+  const VkDeviceSize indexOffset = uploadedIndexCount * sizeof(uint32_t);
   const VkDeviceSize indexBytes =
-      static_cast<VkDeviceSize>(staticIndices.size() * sizeof(uint32_t));
+      (staticIndices.size() - uploadedIndexCount) * sizeof(uint32_t);
+  if (vertexBytes == 0 && indexBytes == 0)
+    return;
 
-  ensureBuffer(staticVertexBuffer, staticVertexBufferSize, vertexBytes,
-               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-               RENDER_DEVICE_ALLOCATION_FLAGS);
-  ensureBuffer(staticIndexBuffer, staticIndexBufferSize, indexBytes,
-               VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-               RENDER_DEVICE_ALLOCATION_FLAGS);
-
+  VkDevice dev = device->getLogicalDevice();
   AllocatedBuffer vertexStaging;
-  createBuffer(device->getAllocator(), vertexBytes,
-               VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
-               RENDER_UPLOAD_ALLOCATION_FLAGS, &vertexStaging);
-  uploadToAllocation(device->getAllocator(), vertexStaging.getAllocation(),
-                     staticVertices.data(), vertexBytes);
-  copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
-             device->getGraphicsCommandPool(), vertexStaging.get(),
-             staticVertexBuffer.get(), vertexBytes);
-
   AllocatedBuffer indexStaging;
-  createBuffer(device->getAllocator(), indexBytes,
-               VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
-               RENDER_UPLOAD_ALLOCATION_FLAGS, &indexStaging);
-  uploadToAllocation(device->getAllocator(), indexStaging.getAllocation(),
-                     staticIndices.data(), indexBytes);
-  copyBuffer(device->getLogicalDevice(), device->getGraphicsQueue(),
-             device->getGraphicsCommandPool(), indexStaging.get(),
-             staticIndexBuffer.get(), indexBytes);
+  VkCommandBuffer cmd = beginCommandBuffer(dev, device->getGraphicsCommandPool());
+  if (vertexBytes > 0) {
+    createBuffer(device->getAllocator(), vertexBytes,
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
+                 RENDER_UPLOAD_ALLOCATION_FLAGS, &vertexStaging);
+    uploadToAllocation(device->getAllocator(), vertexStaging.getAllocation(),
+                       staticVertices.data() + uploadedVertexCount,
+                       vertexBytes);
+    const VkBufferCopy region{0, vertexOffset, vertexBytes};
+    vkCmdCopyBuffer(cmd, vertexStaging.get(), staticVertexBuffer.get(), 1,
+                    &region);
+  }
+  if (indexBytes > 0) {
+    createBuffer(device->getAllocator(), indexBytes,
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
+                 RENDER_UPLOAD_ALLOCATION_FLAGS, &indexStaging);
+    uploadToAllocation(device->getAllocator(), indexStaging.getAllocation(),
+                       staticIndices.data() + uploadedIndexCount, indexBytes);
+    const VkBufferCopy region{0, indexOffset, indexBytes};
+    vkCmdCopyBuffer(cmd, indexStaging.get(), staticIndexBuffer.get(), 1,
+                    &region);
+  }
+  VkMemoryBarrier toVertexInput{};
+  toVertexInput.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+  toVertexInput.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  toVertexInput.dstAccessMask =
+      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1,
+                       &toVertexInput, 0, nullptr, 0, nullptr);
+  // Waits for the copy, so the staging buffers can go.
+  endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),
+                            device->getGraphicsQueue(), cmd);
+  uploadedVertexCount = staticVertices.size();
+  uploadedIndexCount = staticIndices.size();
 }
 
 void GpuDrivenGBufferPass::registerModelGeometry(int modelId,
                                                  ModelManager &modelManager) {
-  if (std::find(registeredModelIds.begin(), registeredModelIds.end(),
-                modelId) == registeredModelIds.end()) {
-    registeredModelIds.push_back(modelId);
-  }
-  registerModelGeometryInternal(modelId, modelManager);
+  if (appendModelGeometry(modelId, modelManager))
+    syncGeometry();
 }
 
-void GpuDrivenGBufferPass::registerModelGeometryInternal(
-    int modelId, ModelManager &modelManager) {
-  if (!device)
-    return;
-
+// Adds the model's meshes to the arena's CPU copy; true if anything was new.
+// Before the pass is created (no device yet) that's all: create() uploads.
+bool GpuDrivenGBufferPass::appendModelGeometry(int modelId,
+                                               ModelManager &modelManager) {
   MeshModel *model = modelManager.getModel(modelId);
   if (!model)
-    return;
+    return false;
 
   bool changed = false;
   for (size_t meshIndex = 0; meshIndex < model->getMeshCount(); ++meshIndex) {
@@ -135,12 +177,8 @@ void GpuDrivenGBufferPass::registerModelGeometryInternal(
       continue;
 
     int32_t vertexOffset = -1;
-    for (const GeometryRange &range : geometryRanges) {
-      if (range.mesh == mesh) {
-        vertexOffset = range.vertexOffset;
-        break;
-      }
-    }
+    if (auto it = meshVertexOffsets.find(mesh); it != meshVertexOffsets.end())
+      vertexOffset = it->second;
     if (vertexOffset < 0) {
       const std::vector<Vertex> &vertices = mesh->getCpuVertices();
       if (vertices.empty())
@@ -152,6 +190,7 @@ void GpuDrivenGBufferPass::registerModelGeometryInternal(
       vertexOffset = static_cast<int32_t>(staticVertices.size());
       staticVertices.insert(staticVertices.end(), vertices.begin(),
                             vertices.end());
+      meshVertexOffsets[mesh] = vertexOffset;
       changed = true;
     }
 
@@ -178,13 +217,7 @@ void GpuDrivenGBufferPass::registerModelGeometryInternal(
       changed = true;
     }
   }
-
-  if (!changed)
-    return;
-
-  if (staticVertexBuffer || staticIndexBuffer)
-    vkDeviceWaitIdle(device->getLogicalDevice());
-  uploadStaticGeometry();
+  return changed;
 }
 
 void GpuDrivenGBufferPass::uploadMeshRecords(FrameResources &frame,
@@ -280,16 +313,17 @@ void GpuDrivenGBufferPass::create(
     ++hzbMipCount;
   }
 
-  hzbImages.resize(swapCount);
-  hzbViews.resize(swapCount);
-  hzbMipViews.resize(swapCount);
-  hzbValid.assign(swapCount, false);
+  // One depth pyramid for every swap image: each frame's cull tests against
+  // the depth the frame before built. One per swap image made it the depth
+  // from a whole swap cycle back. The queue runs the frames in order, and
+  // the build's barriers order it against the next frame's cull.
+  hzbValid = false;
   frames.resize(swapCount);
 
   VmaAllocationCreateInfo hzbAlloc{};
   hzbAlloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   hzbAlloc.flags = RENDER_DEVICE_ALLOCATION_FLAGS;
-  for (size_t i = 0; i < swapCount; ++i) {
+  {
     VkImageCreateInfo imageCI{};
     imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageCI.imageType = VK_IMAGE_TYPE_2D;
@@ -306,11 +340,11 @@ void GpuDrivenGBufferPass::create(
     if (vmaCreateImage(device->getAllocator(), &imageCI, &hzbAlloc, &rawImage,
                        &rawAlloc, nullptr) != VK_SUCCESS)
       throw std::runtime_error("Failed to create GPU-driven HZB image");
-    hzbImages[i] = AllocatedImage(device->getAllocator(), rawImage, rawAlloc);
+    hzbImage = AllocatedImage(device->getAllocator(), rawImage, rawAlloc);
 
     VkImageViewCreateInfo viewCI{};
     viewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewCI.image = hzbImages[i].get();
+    viewCI.image = hzbImage.get();
     viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewCI.format = hzbFormat;
     viewCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, hzbMipCount, 0,
@@ -318,25 +352,23 @@ void GpuDrivenGBufferPass::create(
     VkImageView fullView = VK_NULL_HANDLE;
     if (vkCreateImageView(dev, &viewCI, nullptr, &fullView) != VK_SUCCESS)
       throw std::runtime_error("Failed to create HZB image view");
-    hzbViews[i] = ImageViewHandle(dev, fullView);
+    hzbView = ImageViewHandle(dev, fullView);
 
-    hzbMipViews[i].resize(hzbMipCount);
+    hzbMipViews.resize(hzbMipCount);
     for (uint32_t mip = 0; mip < hzbMipCount; ++mip) {
       VkImageViewCreateInfo mipViewCI = viewCI;
       mipViewCI.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
       VkImageView mipView = VK_NULL_HANDLE;
       if (vkCreateImageView(dev, &mipViewCI, nullptr, &mipView) != VK_SUCCESS)
         throw std::runtime_error("Failed to create HZB mip view");
-      hzbMipViews[i][mip] = ImageViewHandle(dev, mipView);
+      hzbMipViews[mip] = ImageViewHandle(dev, mipView);
     }
   }
 
   {
     VkCommandBuffer cmd =
         beginCommandBuffer(dev, device->getGraphicsCommandPool());
-    std::vector<VkImageMemoryBarrier> initBarriers;
-    initBarriers.reserve(hzbImages.size());
-    for (const AllocatedImage &image : hzbImages) {
+    {
       VkImageMemoryBarrier barrier{};
       barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
       barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -345,15 +377,12 @@ void GpuDrivenGBufferPass::create(
       barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
       barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
       barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      barrier.image = image.get();
+      barrier.image = hzbImage.get();
       barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, hzbMipCount,
                                   0, 1};
-      initBarriers.push_back(barrier);
+      recordImageBarrier2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, barrier);
     }
-    recordImageBarriers2(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         static_cast<uint32_t>(initBarriers.size()),
-                         initBarriers.data());
     endAndSubmitCommandBuffer(dev, device->getGraphicsCommandPool(),
                               device->getGraphicsQueue(), cmd);
   }
@@ -469,10 +498,10 @@ void GpuDrivenGBufferPass::create(
       srcInfo.sampler = hzbSampler;
       srcInfo.imageView =
           (mip == 0) ? gBufferDepthViews[image].get()
-                     : hzbMipViews[image][mip - 1].get();
+                     : hzbMipViews[mip - 1].get();
       VkDescriptorImageInfo dstInfo{};
       dstInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-      dstInfo.imageView = hzbMipViews[image][mip].get();
+      dstInfo.imageView = hzbMipViews[mip].get();
       std::array<VkWriteDescriptorSet, 2> writes{};
       writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[0].dstSet = hzbBuildSets[setIndex];
@@ -675,8 +704,9 @@ void GpuDrivenGBufferPass::create(
     vkDestroyShaderModule(dev, vertMod, nullptr);
   }
 
-  for (int modelId : registeredModelIds)
-    registerModelGeometryInternal(modelId, modelManager);
+  // The arena outlives scene-image rebuilds, so this only uploads geometry
+  // registered before the first create(), when there was no device yet.
+  syncGeometry();
 }
 
 void GpuDrivenGBufferPass::cleanup() {
@@ -725,19 +755,11 @@ void GpuDrivenGBufferPass::cleanup() {
   descriptorSets.clear();
   hzbBuildSets.clear();
   hzbMipViews.clear();
-  hzbViews.clear();
-  hzbImages.clear();
-  hzbValid.clear();
+  hzbView.reset();
+  hzbImage.reset();
+  hzbValid = false;
 
   frames.clear();
-  staticVertexBuffer.reset();
-  staticIndexBuffer.reset();
-  staticVertexBufferSize = 0;
-  staticIndexBufferSize = 0;
-  staticVertices.clear();
-  staticIndices.clear();
-  geometryRanges.clear();
-  geometryRangeLookup.clear();
   renderExtent = {};
   hzbExtent = {};
   hzbMipCount = 0;
@@ -748,9 +770,25 @@ void GpuDrivenGBufferPass::cleanup() {
   device = nullptr;
 }
 
+// The geometry arena doesn't depend on the scene's size, so cleanup() keeps
+// it through rebuilds; it goes at shutdown.
+void GpuDrivenGBufferPass::releaseGeometry() {
+  staticVertexBuffer.reset();
+  staticIndexBuffer.reset();
+  staticVertexBufferSize = 0;
+  staticIndexBufferSize = 0;
+  uploadedVertexCount = 0;
+  uploadedIndexCount = 0;
+  staticVertices.clear();
+  staticIndices.clear();
+  geometryRanges.clear();
+  geometryRangeLookup.clear();
+  meshVertexOffsets.clear();
+}
+
 void GpuDrivenGBufferPass::updateDescriptorSet(uint32_t imageIndex) {
   if (!device || imageIndex >= descriptorSets.size() ||
-      imageIndex >= frames.size() || hzbViews.size() != descriptorSets.size())
+      imageIndex >= frames.size() || !hzbView)
     return;
 
   FrameResources &frame = frames[imageIndex];
@@ -772,7 +810,7 @@ void GpuDrivenGBufferPass::updateDescriptorSet(uint32_t imageIndex) {
 
   VkDescriptorImageInfo hzbInfo{};
   hzbInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  hzbInfo.imageView = hzbViews[imageIndex].get();
+  hzbInfo.imageView = hzbView.get();
   hzbInfo.sampler = hzbSampler;
 
   std::array<VkWriteDescriptorSet, 8> writes{};
@@ -803,64 +841,69 @@ void GpuDrivenGBufferPass::beginFrame(uint32_t candidateCount) {
   lastFrameUsedValue = false;
 }
 
-bool GpuDrivenGBufferPass::prepareFrame(
-    uint32_t imageIndex, const std::vector<GBufferDrawItem> &drawItems,
-    const glm::vec4 frustumPlanes[6], const glm::mat4 &viewProj, bool enabled,
-    bool hzbEnabled, uint32_t minCandidates) {
-  if (!device || !enabled || imageIndex >= frames.size() ||
-      candidateCountValue < minCandidates || cullPipeline == VK_NULL_HANDLE ||
-      gBufferPipeline == VK_NULL_HANDLE ||
-      gBufferNoCullPipeline == VK_NULL_HANDLE ||
-      imageIndex >= descriptorSets.size() || !hasStaticGeometry()) {
-    meshCountValue = 0;
+bool GpuDrivenGBufferPass::beginRecords(uint32_t imageIndex, bool enabled,
+                                        uint32_t minCandidates) {
+  frameMeshRecords.clear();
+  frameTransforms.clear();
+  return device && enabled && imageIndex < frames.size() &&
+         imageIndex < descriptorSets.size() &&
+         candidateCountValue >= minCandidates &&
+         cullPipeline != VK_NULL_HANDLE &&
+         gBufferPipeline != VK_NULL_HANDLE &&
+         gBufferNoCullPipeline != VK_NULL_HANDLE && hasStaticGeometry();
+}
+
+bool GpuDrivenGBufferPass::addMesh(const Mesh *mesh, int lod,
+                                   const glm::mat4 &model,
+                                   const glm::mat4 &normal,
+                                   const glm::uvec4 &texIdx0,
+                                   const glm::uvec4 &texIdx1,
+                                   glm::vec3 aabbMin, glm::vec3 aabbMax,
+                                   VkCullModeFlags cullMode) {
+  const GeometryRange *range = findGeometry(mesh, lod);
+  if (!range)
     return false;
-  }
+  const uint32_t baseInstance = static_cast<uint32_t>(frameTransforms.size());
+  frameTransforms.push_back({model, normal, texIdx0, texIdx1});
+  frameMeshRecords.push_back(
+      {glm::vec4(aabbMin, 0.0f), glm::vec4(aabbMax, 0.0f),
+       glm::uvec4(range->firstIndex, range->indexCount,
+                  static_cast<uint32_t>(range->vertexOffset), baseInstance),
+       glm::uvec4(1u, static_cast<uint32_t>(lod),
+                  static_cast<uint32_t>(GBufferDrawKind::Mesh),
+                  static_cast<uint32_t>(cullMode))});
+  return true;
+}
 
+bool GpuDrivenGBufferPass::addInstanced(
+    const Mesh *mesh, int lod, const std::vector<InstanceData> &instances,
+    const glm::uvec4 &texIdx0, const glm::uvec4 &texIdx1, glm::vec3 aabbMin,
+    glm::vec3 aabbMax) {
+  const GeometryRange *range = findGeometry(mesh, lod);
+  if (!range || instances.empty())
+    return false;
+  const uint32_t baseInstance = static_cast<uint32_t>(frameTransforms.size());
+  for (const InstanceData &instance : instances)
+    frameTransforms.push_back(
+        {instance.model, instance.normal, texIdx0, texIdx1});
+  frameMeshRecords.push_back(
+      {glm::vec4(aabbMin, 0.0f), glm::vec4(aabbMax, 0.0f),
+       glm::uvec4(range->firstIndex, range->indexCount,
+                  static_cast<uint32_t>(range->vertexOffset), baseInstance),
+       glm::uvec4(static_cast<uint32_t>(instances.size()),
+                  static_cast<uint32_t>(lod),
+                  static_cast<uint32_t>(GBufferDrawKind::Instanced),
+                  static_cast<uint32_t>(VK_CULL_MODE_BACK_BIT))});
+  return true;
+}
+
+void GpuDrivenGBufferPass::uploadRecords(uint32_t imageIndex,
+                                         const glm::vec4 frustumPlanes[6],
+                                         const glm::mat4 &viewProj,
+                                         bool hzbEnabled) {
   FrameResources &frame = frames[imageIndex];
-  // Persistent scratch: cleared, not reallocated, every frame.
-  std::vector<GpuDrivenMeshRecord> &meshRecords = frameMeshRecords;
-  std::vector<GpuDrivenTransformRecord> &transforms = frameTransforms;
-  meshRecords.clear();
-  transforms.clear();
-  meshRecords.reserve(drawItems.size());
-  transforms.reserve(drawItems.size());
-
-  for (const GBufferDrawItem &item : drawItems) {
-    const GeometryRange *range = findGeometry(item.mesh, item.lod);
-    if (!range)
-      continue;
-
-    uint32_t baseInstance = static_cast<uint32_t>(transforms.size());
-    if (item.kind == GBufferDrawKind::Instanced && item.instances) {
-      for (const InstanceData &instance : *item.instances) {
-        GpuDrivenTransformRecord tr{};
-        tr.model = instance.model;
-        tr.normal = instance.normal;
-        tr.texIdx0 = item.push.texIdx0;
-        tr.texIdx1 = item.push.texIdx1;
-        transforms.push_back(tr);
-      }
-    } else {
-      GpuDrivenTransformRecord tr{};
-      tr.model = item.push.model;
-      tr.normal = item.push.normal;
-      tr.texIdx0 = item.push.texIdx0;
-      tr.texIdx1 = item.push.texIdx1;
-      transforms.push_back(tr);
-    }
-
-    GpuDrivenMeshRecord record{};
-    record.aabbMin = glm::vec4(item.aabbMin, 0.0f);
-    record.aabbMax = glm::vec4(item.aabbMax, 0.0f);
-    record.draw = glm::uvec4(range->firstIndex, range->indexCount,
-                             static_cast<uint32_t>(range->vertexOffset),
-                             baseInstance);
-    record.flags = glm::uvec4(item.instanceCount,
-                              static_cast<uint32_t>(item.lod),
-                              static_cast<uint32_t>(item.kind),
-                              static_cast<uint32_t>(item.cullMode));
-    meshRecords.push_back(record);
-  }
+  const std::vector<GpuDrivenMeshRecord> &meshRecords = frameMeshRecords;
+  const std::vector<GpuDrivenTransformRecord> &transforms = frameTransforms;
 
   const VkDeviceSize transformBytes = static_cast<VkDeviceSize>(
       transforms.size() * sizeof(GpuDrivenTransformRecord));
@@ -908,16 +951,13 @@ bool GpuDrivenGBufferPass::prepareFrame(
   for (int i = 0; i < 6; ++i)
     frustumData.planes[i] = frustumPlanes[i];
   frustumData.viewProj = viewProj;
-  const bool hzbReady = hzbEnabled && imageIndex < hzbValid.size() &&
-                        hzbValid[imageIndex];
+  const bool hzbReady = hzbEnabled && hzbValid;
   frustumData.hzbParams = glm::vec4(
       static_cast<float>(hzbExtent.width), static_cast<float>(hzbExtent.height),
       static_cast<float>(hzbMipCount), hzbReady ? 1.0f : 0.0f);
   frustumData.meshCount = meshCountValue;
   upload(frame.frustumBuffer, &frustumData, sizeof(frustumData));
   updateDescriptorSet(imageIndex);
-
-  return meshCountValue > 0;
 }
 
 bool GpuDrivenGBufferPass::canRecordIndirect(uint32_t imageIndex, bool enabled,
@@ -1025,13 +1065,12 @@ void GpuDrivenGBufferPass::recordHzbBuild(
     uint32_t minCandidates) {
   if (!enabled || !hzbEnabled || candidateCountValue == 0 ||
       candidateCountValue < minCandidates) {
-    if (imageIndex < hzbValid.size())
-      hzbValid[imageIndex] = false;
+    hzbValid = false;
     return;
   }
 
   if (!device || hzbBuildPipeline == VK_NULL_HANDLE ||
-      imageIndex >= hzbImages.size() || imageIndex >= gBufferDepthImages.size() ||
+      !hzbImage || imageIndex >= gBufferDepthImages.size() ||
       hzbMipCount == 0 || hzbBuildSets.empty())
     return;
 
@@ -1052,21 +1091,19 @@ void GpuDrivenGBufferPass::recordHzbBuild(
   recordImageBarrier2(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, depthReadBarrier);
 
-  const bool valid = imageIndex < hzbValid.size() && hzbValid[imageIndex];
   for (uint32_t mip = 0; mip < hzbMipCount; ++mip) {
     VkImageMemoryBarrier toGeneral{};
     toGeneral.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     toGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    toGeneral.srcAccessMask = valid ? VK_ACCESS_SHADER_READ_BIT : 0;
+    // After this frame's cull read it (and the last frame's build wrote it).
+    toGeneral.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toGeneral.image = hzbImages[imageIndex].get();
+    toGeneral.image = hzbImage.get();
     toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
-    recordImageBarrier2(cmd,
-                        valid ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                              : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toGeneral);
 
     const size_t setIndex = imageIndex * hzbMipCount + mip;
@@ -1085,13 +1122,12 @@ void GpuDrivenGBufferPass::recordHzbBuild(
     toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toRead.image = hzbImages[imageIndex].get();
+    toRead.image = hzbImage.get();
     toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
     recordImageBarrier2(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, toRead);
   }
 
-  if (imageIndex < hzbValid.size())
-    hzbValid[imageIndex] = true;
+  hzbValid = true;
   vkdbgEndLabel(cmd);
 }

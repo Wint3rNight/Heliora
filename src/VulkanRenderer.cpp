@@ -1,4 +1,5 @@
 #include "VulkanRenderer.h"
+#include "Frustum.h"
 #include "Model.h"
 #include "Picking.h"
 #include "Spawning.h"
@@ -1596,6 +1597,7 @@ void VulkanRenderer::draw() {
 
   metrics.setActiveGpuQueryFrame(currentFrame);
   phaseStart = CpuClock::now();
+  collectMeshInstances();
   recordGBufferCommands(imageIndex);
   recordSsaoComputeCommands(ssaoCommandBuffers[imageIndex], imageIndex);
   recordShadowCommands(shadowCommandBuffers[imageIndex]);
@@ -2731,6 +2733,7 @@ void VulkanRenderer::cleanup() {
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   materialProbePass.cleanup();
   cleanupSceneTargets();
+  gpuDrivenGBufferPass.releaseGeometry();
   cleanupIBL();
   shadowPass.cleanup();
 
@@ -2762,27 +2765,6 @@ void VulkanRenderer::cleanup() {
 VulkanRenderer::~VulkanRenderer() {}
 
 // Command recording
-
-static void extractFrustumPlanes(const glm::mat4 &vp, glm::vec4 planes[6]) {
-  // Gribb-Hartmann: GLM is column-major, so transpose to access rows as columns
-  glm::mat4 t = glm::transpose(vp);
-  planes[0] = t[3] + t[0]; // left
-  planes[1] = t[3] - t[0]; // right
-  planes[2] = t[3] + t[1]; // bottom
-  planes[3] = t[3] - t[1]; // top
-  planes[4] = t[3] + t[2]; // near
-  planes[5] = t[3] - t[2]; // far
-  for (int i = 0; i < 6; i++)
-    planes[i] /= glm::length(glm::vec3(planes[i]));
-}
-
-static bool sphereInFrustum(const glm::vec4 planes[6], glm::vec3 center,
-                            float radius) {
-  for (int i = 0; i < 6; i++)
-    if (glm::dot(glm::vec3(planes[i]), center) + planes[i].w < -radius)
-      return false;
-  return true;
-}
 
 static glm::uvec4 materialTextureIndices0(const Material &mat) {
   return glm::uvec4(static_cast<uint32_t>(mat.albedoTextureId),
@@ -2887,16 +2869,15 @@ void VulkanRenderer::recordCommands(uint32_t currentImage) {
 
   vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  shadowPass.recordCsm(cmd, rootNode, modelManager, pipeline, descriptorManager,
-                       sceneUbo, imguiShadowFrontFaceCull,
-                       imguiCullShadowCasters);
+  shadowPass.recordCsm(cmd, frameMeshes, pipeline, descriptorManager, sceneUbo,
+                       imguiShadowFrontFaceCull, imguiCullShadowCasters);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   vkdbgEndLabel(cmd);
 
   vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
-  shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
-                         descriptorManager, imguiShadowFrontFaceCull);
+  shadowPass.recordPoint(cmd, frameMeshes, pipeline, descriptorManager,
+                         imguiShadowFrontFaceCull, imguiCullShadowCasters);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   vkdbgEndLabel(cmd);
 
@@ -3024,6 +3005,37 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
     throw std::runtime_error("Failed to end G-buffer command buffer");
 }
 
+// Every opaque mesh in the scene with its world bounding sphere, once a frame
+// for the G-buffer and shadow passes (blended ones belong to the transparent
+// pass). The vector keeps its memory between frames.
+void VulkanRenderer::collectMeshInstances() {
+  frameMeshes.clear();
+  const glm::vec3 camera = glm::vec3(sceneUbo.cameraPosition);
+  auto visit = [&](auto &self, const SceneNode &node) -> void {
+    if (MeshModel *model = modelManager.getModel(node.getModelId())) {
+      const glm::mat4 world = node.getGlobalTransform();
+      const float maxScale =
+          glm::max(glm::length(glm::vec3(world[0])),
+                   glm::max(glm::length(glm::vec3(world[1])),
+                            glm::length(glm::vec3(world[2]))));
+      const float modelDistance = glm::length(
+          glm::vec3(world * glm::vec4(model->boundingCenter, 1.0f)) - camera);
+      for (size_t k = 0; k < model->getMeshCount(); ++k) {
+        const Mesh *mesh = model->getMesh(k);
+        if (mesh->getMaterial().alphaBlended)
+          continue;
+        frameMeshes.push_back(
+            {&node, mesh,
+             glm::vec3(world * glm::vec4(mesh->boundingCenter, 1.0f)),
+             mesh->boundingRadius * maxScale, modelDistance});
+      }
+    }
+    for (const auto &child : node.getChildren())
+      self(self, *child);
+  };
+  visit(visit, rootNode);
+}
+
 void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
   vkResetCommandBuffer(cmd, 0);
 
@@ -3034,9 +3046,8 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
 
   vkdbgBeginLabel(cmd, "CSM Shadow Pass", 1.0f, 0.4f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
-  shadowPass.recordCsm(cmd, rootNode, modelManager, pipeline, descriptorManager,
-                       sceneUbo, imguiShadowFrontFaceCull,
-                       imguiCullShadowCasters);
+  shadowPass.recordCsm(cmd, frameMeshes, pipeline, descriptorManager, sceneUbo,
+                       imguiShadowFrontFaceCull, imguiCullShadowCasters);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Shadow);
   vkdbgEndLabel(cmd);
 
@@ -3049,8 +3060,8 @@ void VulkanRenderer::recordShadowCommands(VkCommandBuffer cmd) {
   vkdbgBeginLabel(cmd, "Point Shadow Pass", 1.0f, 0.6f, 0.1f);
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
   if (pointShadowNeeded || !pointShadowMapInitialized) {
-    shadowPass.recordPoint(cmd, rootNode, modelManager, pipeline,
-                           descriptorManager, imguiShadowFrontFaceCull);
+    shadowPass.recordPoint(cmd, frameMeshes, pipeline, descriptorManager,
+                           imguiShadowFrontFaceCull, imguiCullShadowCasters);
     pointShadowMapInitialized = true;
   }
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::PointShadow);
@@ -3176,76 +3187,106 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
     throw std::runtime_error("Failed to end post command buffer");
 }
 
-void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
-                                       const VkViewport &viewport,
-                                       const VkRect2D &scissor) {
-  std::vector<GBufferDrawItem> drawItems;
-  drawItems.reserve(128);
+static int lodForDistance(float distance, float lodNear, float lodFar,
+                          const Mesh &mesh) {
+  const int lod = distance < lodNear ? 0 : distance < lodFar ? 1 : 2;
+  return std::min(lod, mesh.getLodCount() - 1);
+}
 
-  glm::vec4 frustumPlanes[6];
-  extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
+// Hands every opaque mesh and instanced group to the GPU-driven pass when
+// the scene has at least minCandidates of them and the pass is ready. False
+// means the CPU path draws this frame.
+bool VulkanRenderer::prepareGpuDrivenFrame(uint32_t currentImage,
+                                           const glm::vec4 frustumPlanes[6],
+                                           uint32_t minCandidates) {
+  uint32_t candidates = static_cast<uint32_t>(frameMeshes.size());
+  for (const InstancedDrawable &drawable : instancedDrawables) {
+    const MeshModel *mdl = modelManager.getModel(drawable.modelId);
+    if (!mdl || drawable.instances.empty())
+      continue;
+    for (size_t k = 0; k < mdl->getMeshCount(); k++)
+      if (!mdl->getMesh(k)->getMaterial().alphaBlended)
+        ++candidates;
+  }
+  gpuDrivenGBufferPass.beginFrame(candidates);
+  if (!gpuDrivenGBufferPass.beginRecords(currentImage, imguiGpuDrivenEnabled,
+                                         minCandidates))
+    return false;
 
-  auto appendNode = [&](auto &self, SceneNode *node) -> void {
-    if (node->getModelId() >= 0) {
-      MeshModel *mdl = modelManager.getModel(node->getModelId());
-      if (mdl) {
-        glm::mat4 model = node->getGlobalTransform();
-        glm::vec3 wCenter =
-            glm::vec3(model * glm::vec4(mdl->boundingCenter, 1.0f));
-        float maxScale =
-            glm::max(glm::length(glm::vec3(model[0])),
-                     glm::max(glm::length(glm::vec3(model[1])),
-                              glm::length(glm::vec3(model[2]))));
-        if (sphereInFrustum(frustumPlanes, wCenter,
-                            mdl->boundingRadius * maxScale)) {
-          float camDist =
-              glm::length(wCenter - glm::vec3(sceneUbo.cameraPosition));
-          int lod = (camDist < imguiLodNear)  ? 0
-                    : (camDist < imguiLodFar) ? 1
-                                              : 2;
+  for (const MeshInstance &instance : frameMeshes) {
+    const Mesh &mesh = *instance.mesh;
+    const Material &mat = mesh.getMaterial();
+    const int lod =
+        lodForDistance(instance.modelDistance, imguiLodNear, imguiLodFar, mesh);
+    const glm::vec3 radius(instance.radius);
+    if (gpuDrivenGBufferPass.addMesh(
+            &mesh, lod, instance.node->getGlobalTransform(),
+            instance.node->getNormalMatrix(), materialTextureIndices0(mat),
+            materialTextureIndices1(mat), instance.center - radius,
+            instance.center + radius,
+            mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT))
+      metrics.recordDrawCall(static_cast<uint32_t>(mesh.getIndexCount(lod)));
+  }
 
-          ModelPushConstants basePush{};
-          basePush.model = model;
-          basePush.normal = node->getNormalMatrix();
-
-          for (size_t k = 0; k < mdl->getMeshCount(); k++) {
-            const Mesh *mesh = mdl->getMesh(k);
-            glm::vec3 meshWCenter =
-                glm::vec3(model * glm::vec4(mesh->boundingCenter, 1.0f));
-            if (!sphereInFrustum(frustumPlanes, meshWCenter,
-                                 mesh->boundingRadius * maxScale))
-              continue;
-
-            const Material &mat = mesh->getMaterial();
-            if (mat.alphaBlended)
-              continue;
-            GBufferDrawItem item{};
-            item.kind = GBufferDrawKind::Mesh;
-            item.mesh = mesh;
-            item.lod = std::min(lod, mesh->getLodCount() - 1);
-            item.push = basePush;
-            item.push.texIdx0 = materialTextureIndices0(mat);
-            item.push.texIdx1 = materialTextureIndices1(mat);
-            glm::vec3 radiusVec(mesh->boundingRadius * maxScale);
-            item.aabbMin = meshWCenter - radiusVec;
-            item.aabbMax = meshWCenter + radiusVec;
-            item.cullMode =
-                mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-            item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
-            item.materialId = static_cast<uint32_t>(drawItems.size());
-            item.transformId = static_cast<uint32_t>(drawItems.size());
-            drawItems.push_back(item);
-          }
-        }
-      }
+  const glm::vec3 camera(sceneUbo.cameraPosition);
+  for (const InstancedDrawable &drawable : instancedDrawables) {
+    const MeshModel *mdl = modelManager.getModel(drawable.modelId);
+    if (!mdl || drawable.instances.empty())
+      continue;
+    const float distance = glm::length(drawable.groupCenter - camera);
+    const glm::vec3 radius(drawable.groupRadius);
+    for (size_t k = 0; k < mdl->getMeshCount(); k++) {
+      const Mesh &mesh = *mdl->getMesh(k);
+      const Material &mat = mesh.getMaterial();
+      if (mat.alphaBlended)
+        continue;
+      const int lod = lodForDistance(distance, imguiLodNear, imguiLodFar, mesh);
+      if (gpuDrivenGBufferPass.addInstanced(
+              &mesh, lod, drawable.instances, materialTextureIndices0(mat),
+              materialTextureIndices1(mat), drawable.groupCenter - radius,
+              drawable.groupCenter + radius))
+        metrics.recordDrawCall(static_cast<uint32_t>(
+            mesh.getIndexCount(lod) * drawable.instances.size()));
     }
-    for (auto &child : node->getChildren())
-      self(self, child.get());
-  };
-  appendNode(appendNode, &rootNode);
+  }
+
+  gpuDrivenGBufferPass.uploadRecords(currentImage, frustumPlanes,
+                                     sceneUbo.projection * sceneUbo.view,
+                                     imguiHzbCullingEnabled);
+  return gpuDrivenGBufferPass.canRecordIndirect(
+      currentImage, imguiGpuDrivenEnabled, minCandidates);
+}
+
+// The CPU path: the meshes in view, sorted to keep pipeline and buffer
+// changes down. Instanced groups are culled and LOD-picked as a whole.
+void VulkanRenderer::collectGBufferDrawItems(
+    std::vector<GBufferDrawItem> &drawItems, const glm::vec4 frustumPlanes[6]) {
+  drawItems.reserve(128);
+  for (const MeshInstance &instance : frameMeshes) {
+    if (!sphereInFrustum(frustumPlanes, instance.center, instance.radius))
+      continue;
+    const Mesh *mesh = instance.mesh;
+    const Material &mat = mesh->getMaterial();
+    GBufferDrawItem item{};
+    item.kind = GBufferDrawKind::Mesh;
+    item.mesh = mesh;
+    item.lod =
+        lodForDistance(instance.modelDistance, imguiLodNear, imguiLodFar, *mesh);
+    item.push.model = instance.node->getGlobalTransform();
+    item.push.normal = instance.node->getNormalMatrix();
+    item.push.texIdx0 = materialTextureIndices0(mat);
+    item.push.texIdx1 = materialTextureIndices1(mat);
+    const glm::vec3 radius(instance.radius);
+    item.aabbMin = instance.center - radius;
+    item.aabbMax = instance.center + radius;
+    item.cullMode = mat.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+    item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
+    drawItems.push_back(item);
+  }
 
   // Instanced drawables still become ordinary draw items here. The secondary
   // command buffer recorder switches to the instanced pipeline for these items.
+  const glm::vec3 camera(sceneUbo.cameraPosition);
   for (const InstancedDrawable &drawable : instancedDrawables) {
     MeshModel *mdl = modelManager.getModel(drawable.modelId);
     if (!mdl || drawable.instances.empty())
@@ -3253,12 +3294,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
     if (!sphereInFrustum(frustumPlanes, drawable.groupCenter,
                          drawable.groupRadius))
       continue;
-
-    float groupDist =
-        glm::length(drawable.groupCenter - glm::vec3(sceneUbo.cameraPosition));
-    int instLod = (groupDist < imguiLodNear)  ? 0
-                  : (groupDist < imguiLodFar) ? 1
-                                              : 2;
+    const float distance = glm::length(drawable.groupCenter - camera);
     for (size_t k = 0; k < mdl->getMeshCount(); k++) {
       const Mesh *mesh = mdl->getMesh(k);
       const Material &mat = mesh->getMaterial();
@@ -3267,35 +3303,42 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       GBufferDrawItem item{};
       item.kind = GBufferDrawKind::Instanced;
       item.mesh = mesh;
-      item.lod = std::min(instLod, mesh->getLodCount() - 1);
+      item.lod = lodForDistance(distance, imguiLodNear, imguiLodFar, *mesh);
       item.push.texIdx0 = materialTextureIndices0(mat);
       item.push.texIdx1 = materialTextureIndices1(mat);
-      glm::vec3 radiusVec(drawable.groupRadius);
-      item.aabbMin = drawable.groupCenter - radiusVec;
-      item.aabbMax = drawable.groupCenter + radiusVec;
+      const glm::vec3 radius(drawable.groupRadius);
+      item.aabbMin = drawable.groupCenter - radius;
+      item.aabbMax = drawable.groupCenter + radius;
       item.cullMode = VK_CULL_MODE_BACK_BIT;
       item.instanceBuffer = drawable.instanceBuffer.get();
       item.instances = &drawable.instances;
       item.instanceCount = static_cast<uint32_t>(drawable.instances.size());
       item.indexCount = static_cast<uint32_t>(mesh->getIndexCount(item.lod));
-      item.materialId = static_cast<uint32_t>(drawItems.size());
-      item.transformId = static_cast<uint32_t>(drawItems.size());
       drawItems.push_back(item);
     }
   }
-
   sortGBufferDrawItemsForState(drawItems);
+}
 
+void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImage,
+                                       const VkViewport &viewport,
+                                       const VkRect2D &scissor) {
+  glm::vec4 frustumPlanes[6];
+  extractFrustumPlanes(sceneUbo.projection * sceneUbo.view, frustumPlanes);
   const uint32_t minGpuDrivenCandidates =
       static_cast<uint32_t>(std::max(0, imguiGpuDrivenMinCandidates));
-  gpuDrivenGBufferPass.beginFrame(static_cast<uint32_t>(drawItems.size()));
-  gpuDrivenGBufferPass.prepareFrame(
-      currentImage, drawItems, frustumPlanes,
-      sceneUbo.projection * sceneUbo.view, imguiGpuDrivenEnabled,
-      imguiHzbCullingEnabled, minGpuDrivenCandidates);
 
-  for (const GBufferDrawItem &item : drawItems)
-    metrics.recordDrawCall(item.indexCount * item.instanceCount);
+  // Big scenes go to the GPU-driven pass whole: its compute shader culls, so
+  // the CPU neither culls nor sorts them. Small ones are culled, sorted and
+  // drawn here.
+  const bool useGpuDriven =
+      prepareGpuDrivenFrame(currentImage, frustumPlanes, minGpuDrivenCandidates);
+  std::vector<GBufferDrawItem> drawItems;
+  if (!useGpuDriven) {
+    collectGBufferDrawItems(drawItems, frustumPlanes);
+    for (const GBufferDrawItem &item : drawItems)
+      metrics.recordDrawCall(item.indexCount * item.instanceCount);
+  }
 
   std::array<VkClearValue, 4> clears{};
   clears[3].depthStencil = {1.0f, 0};
@@ -3378,9 +3421,6 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
       threadedCommandWorkerCount > 0 &&
       currentFrame < static_cast<int>(threadedCommandFrames.size()) &&
       !threadedCommandFrames[currentFrame].empty() && !drawItems.empty();
-
-  const bool useGpuDriven = gpuDrivenGBufferPass.canRecordIndirect(
-      currentImage, imguiGpuDrivenEnabled, minGpuDrivenCandidates);
 
   if (useGpuDriven) {
     metrics.recordPipelineBind(3);      // cull compute + two G-buffer pipelines

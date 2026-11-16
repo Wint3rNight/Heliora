@@ -314,6 +314,8 @@ private:
 
   // --- Instanced drawables ---
   std::vector<InstancedDrawable> instancedDrawables;
+  // This frame's opaque meshes with their world bounds (collectMeshInstances).
+  std::vector<MeshInstance> frameMeshes;
 
   // --- GPU-driven rendering controls (Phase 7.6) ---
   bool imguiGpuDrivenEnabled = true;
@@ -429,10 +431,12 @@ private:
                                            // + receiver-plane gradient
                                            // already handle the acne that
                                            // front-cull was protecting.
-  bool imguiCullShadowCasters = false;      // opt-in only: tight CSM caster
-                                           // culling can remove off-slice
-                                           // occluders that still cast into
-                                           // the cascade.
+  bool imguiCullShadowCasters = true;       // skip casters outside a
+                                           // cascade's (or cube face's) clip
+                                           // volume; each cascade reaches
+                                           // csmFar towards the sun, so only
+                                           // what the rasterizer would clip
+                                           // goes (tests/FrustumTests.cpp).
   float imguiCsmFar = 80.0f;               // cascade far plane (metric world)
   float imguiIblIntensity = 1.0f;          // manual IBL/sky multiplier
   // Exposure stops applied BEFORE the ACES tonemap in second.frag. ACES has
@@ -546,6 +550,12 @@ private:
   // --- Per-frame ---
   void recordCommands(uint32_t currentImage);
   void recordGBufferCommands(uint32_t currentImage);
+  void collectMeshInstances();
+  bool prepareGpuDrivenFrame(uint32_t currentImage,
+                             const glm::vec4 frustumPlanes[6],
+                             uint32_t minCandidates);
+  void collectGBufferDrawItems(std::vector<GBufferDrawItem> &drawItems,
+                               const glm::vec4 frustumPlanes[6]);
   void recordShadowCommands(VkCommandBuffer cmd);
   void recordSsaoComputeCommands(VkCommandBuffer cmd, uint32_t currentImage);
   void recordPostCommands(VkCommandBuffer cmd, uint32_t currentImage);

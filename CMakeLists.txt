@@ -108,6 +108,7 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 # once. Jolt is PUBLIC so everything linking this gets the same Jolt defines
 # and CPU flags.
 set(HELIORA_CORE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AnimationClip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EditHistory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/GizmoMath.cpp
@@ -115,12 +116,14 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Picking.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Player.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PlayerStart.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PoseBlend.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PrimitiveMesh.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Scene.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneNode.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ScenePhysics.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneViewport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SettingsFile.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Skeleton.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Spawning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ThirdPersonCamera.cpp
@@ -176,6 +179,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer imgui_lib)
 enable_testing()
 add_executable(heliora_tests
         tests/main.cpp
+        tests/AnimationClipTests.cpp
         tests/CharacterControllerTests.cpp
         tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp
@@ -186,12 +190,14 @@ add_executable(heliora_tests
         tests/PickingTests.cpp
         tests/PlayerStartTests.cpp
         tests/PlayerTests.cpp
+        tests/PoseBlendTests.cpp
         tests/PrimitiveMeshTests.cpp
         tests/SceneNodeTests.cpp
         tests/ScenePhysicsTests.cpp
         tests/SceneViewportTests.cpp
         tests/SceneTests.cpp
         tests/SettingsFileTests.cpp
+        tests/SkeletonTests.cpp
         tests/SpawningTests.cpp
         tests/ShadowCascadesTests.cpp
         tests/ThirdPersonCameraTests.cpp

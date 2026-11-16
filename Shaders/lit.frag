@@ -191,17 +191,16 @@ float shadowFactor(vec3 worldPos, vec3 viewPos, vec3 N, vec3 L) {
         shadow = sampleCascade(c, worldPos, N, L);
         if (shadow >= 0.0) { cascade = c; break; }
     }
-    // Past all cascades: we have no info about whether this fragment is
-    // occluded from the sun. The old default (return 0 = lit) was wrong
-    // for indoor scenes — a corridor whose far end falls past CSM far
-    // would suddenly go fully lit, producing a brilliant unshaded patch
-    // where the cascade ran out. Returning 1.0 (assumed shadowed) is the
-    // safe interior choice: the fragment loses sun direct contribution
-    // entirely, and the IBL skyOcclusion proxy further dims its ambient.
-    // Real fix for outdoor scenes would be a distance-based fade or a
-    // bigger CSM far; for Sponza-scale interiors, conservative shadow is
-    // the right call.
-    if (shadow < 0.0) return 1.0;  // outside all cascades — assume shadowed
+    // Past all cascades there's no shadow information. The game is all
+    // outdoors, under open sky, so it's lit there, and the last cascade
+    // fades out over its final 15% so the shadows end without a line.
+    // (Until 2026-11-17 it was taken as shadowed, which suited Sponza's
+    // corridors but turned the ground past 80 m dark from up high.)
+    if (shadow < 0.0) return 0.0;
+    if (cascade == 3) {
+        float fadeStart = mix(scene.cascadeSplits.z, scene.cascadeSplits.w, 0.85);
+        shadow *= 1.0 - smoothstep(fadeStart, scene.cascadeSplits.w, viewDepth);
+    }
 
     // Blend with the next cascade in the last 15% of this cascade's range
     // to hide hard popping at boundaries.

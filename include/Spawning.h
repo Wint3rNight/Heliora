@@ -35,3 +35,8 @@ SceneModelEntry newModelFileEntry(const std::string &path);
 glm::vec3 spawnPosition(const PickRay &ray,
                         const std::optional<PhysicsRayHit> &hit,
                         glm::vec3 boundsMin, glm::vec3 boundsMax);
+
+// Where Duplicate puts the copy, from the original: one width of its box
+// (lo to hi, in the world) along the world axis, x or z, that points most
+// the camera's right way, so the copy shows up beside it and lines up.
+glm::vec3 duplicateOffset(glm::vec3 lo, glm::vec3 hi, glm::vec3 cameraRight);

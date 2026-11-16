@@ -157,6 +157,7 @@ struct DebugUiContext {
   std::function<void(SceneEntryRef)> onEntryChanged;
   std::function<void(SceneEntryRef)> onEntryDeleted;
   std::function<void(SceneEntryRef)> onGridSplit;
+  std::function<void()> onDuplicate; // the selection, beside itself
 
   // The gizmo's camera: the unjittered projection times view, the one
   // picking uses, so the handles sit where the object is on screen.
@@ -171,8 +172,10 @@ struct DebugUiContext {
 
   // The Scene tab's spawn list: the model files under Resources/Models, and
   // what was picked, which the renderer adds at the top of the next frame.
+  // Player start places the scene's one start, or moves it.
   const std::vector<std::string> *modelFiles = nullptr;
   std::function<void(SceneModelEntry)> onSpawn;
+  std::function<void()> onSpawnPlayerStart;
   std::function<void()> onRescanModels;
 
   // Saving: the scene's name and the toolbar's unsaved marker, the Save and
@@ -250,6 +253,7 @@ private:
   void buildDefaultLayout(unsigned int dockspace);
   void registerPanelSettings();
   void drawInspector(DebugUiContext &ui);
+  void drawPlayerStartInspector(DebugUiContext &ui);
   void flushInspectorRebuild(DebugUiContext &ui);
   void commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
                            SceneModelEntry edited, SceneGridEntry editedGrid,
@@ -301,7 +305,9 @@ private:
   struct GizmoView {
     SceneModelEntry *entry = nullptr;
     SceneGridEntry *grid = nullptr; // set when the entry is a grid's model
-    bool justSelected = false;      // selected by this frame's click
+    // Or the player start, which only moves and turns about y.
+    ScenePlayerStart *player = nullptr;
+    bool justSelected = false; // selected by this frame's click
     SceneViewport area;
     glm::mat4 viewProj{1.0f};
     glm::vec3 centre{0.0f};
@@ -312,14 +318,18 @@ private:
     PickRay ray;
     ImVec2 at(glm::vec2 p) const;
     bool axisShown(int axis, GizmoMode mode) const;
+    bool scales() const { return player == nullptr; }
     std::optional<glm::vec2> arrowTip(int axis) const;
+    // What's selected, as a placement: the player start's yaw is a turn
+    // about y and its scale is 1.
+    NodeTransform transform() const;
   };
   std::optional<GizmoView> gizmoView(DebugUiContext &ui);
   int hoveredHandle(const GizmoView &view) const;
   void startGizmoDrag(DebugUiContext &ui, const GizmoView &view, int handle);
   void dragGizmo(DebugUiContext &ui, const GizmoView &view);
   void commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
-                       const SceneModelEntry &edited, SceneGridEntry editedGrid);
+                       const NodeTransform &placement, float layoutRotation);
   void drawGizmoHandles(const GizmoView &view, int hot) const;
   GizmoMode gizmoMode = GizmoMode::Move;
   bool gizmoSnap = false;

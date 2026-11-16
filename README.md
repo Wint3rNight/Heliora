@@ -4,7 +4,7 @@ A modular Vulkan renderer focused on the rendering architecture itself: deferred
 
 ## What It Renders
 
-Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is a physics sandbox (Jolt rigid bodies) built from shapes generated in code (boxes, spheres, capsules, a ground plane), with no model files. Two stress scenes drop 1,000 and 5,000 boxes to measure physics and draw cost. A fly camera and the ImGui overlay handle runtime tuning.
+Scenes are data-driven: `.scene` files in `Resources/Scenes/` declare the environment HDRI, camera, model placement, instanced rings, and per-object animation (spin / orbit / bob), and can be switched at runtime from the ImGui panel without restarting. The default scene is a physics sandbox (Jolt rigid bodies) built from shapes generated in code (boxes, spheres, capsules, a ground plane), with no model files. `01_climb.scene` is a climbing course for the character: four laps of a spiral of static boxes up to a gold platform 34 m up, each lap harder, every jump checked against what the character can really do. Two stress scenes drop 1,000 and 5,000 boxes to measure physics and draw cost. A fly camera and the ImGui overlay handle runtime tuning.
 
 At a high level, one frame looks like this:
 
@@ -231,13 +231,14 @@ Two things worth noting. The frame is dominated by the screen-space lighting pas
 | `1`, `2`, `3` | Move, rotate or scale handles for the selected object |
 | `Ctrl` while dragging a handle | Snap to 0.25 m, 15° or 0.1 scale steps (also the Snap box in the toolbar) |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo (edit mode) |
+| `Ctrl+D` | Duplicate the selected object or grid, placed beside it (edit mode; also in the Inspector) |
 | `Ctrl+S`, `Ctrl+Shift+S` | Save, Save as (not while the character has the mouse: `Ctrl` is crouch) |
 | `F1` | Hide the menu bar and panels; the scene takes the whole window |
 | `F2` | Show physics collision shapes as wireframes |
 | `F` | Throw a ball where the camera looks (camera mode, play mode) |
 | `Esc` | Quit, asking first if something isn't saved |
 
-The game starts in play mode. Play puts a capsule character at the scene's `[player]` start (or on the ground below the camera) with a third-person camera behind it; Stop removes it and gives the editor camera back where it was. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector, add shapes and model files from the Scene panel, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell.
+The game starts in play mode. Play puts a capsule character at the scene's `[player]` start (or on the ground below the camera) with a third-person camera behind it; Stop removes it and gives the editor camera back where it was. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector, add shapes and model files from the Scene panel, and save. The player start shows as a red capsule outline with an arrow for the way it faces; click it to move and turn it like an object, or press Player start in the Scene panel to put it where the camera looks. Static generated shapes, the pieces a level is built from, show a 1 m grid fixed in the world, so sizes and distances read while there's no art. Stop puts everything back to the layout, and Save always writes the layout, never where things fell.
 
 The window is a docked editor: a menu bar on top (File: Save, Save as, Quit; View: show or hide each panel, Reset layout; then Play/Stop, the handle modes and Snap) and panels down the sides, with the scene in the space they leave. Drag a panel's tab to another side, onto another panel's tabs, or out to float it; drag a divider to resize. The arrangement is saved to `Resources/editor_layout.ini` when you quit. The Render and Physics panels save their settings to `Resources/settings.cfg`, read at startup.
 

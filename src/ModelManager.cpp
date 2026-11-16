@@ -100,15 +100,17 @@ int ModelManager::loadModel(const std::string &modelFile,
 }
 
 int ModelManager::createModel(const std::string &key, MeshData mesh,
-                              bool withLods, const VulkanDevice &device,
+                              bool withLods, bool worldGrid,
+                              const VulkanDevice &device,
                               TextureManager &textureManager,
                               DescriptorManager &descriptorManager) {
   if (int id = findModel(key); id >= 0)
     return id;
   // Empty names give the default material: white albedo (the shape's vertex
   // colour tints it), flat normal, roughness 1, metallic 0.
-  const Material material = textureManager.loadMaterial(
-      "", "", "", "", "", device, descriptorManager);
+  Material material = textureManager.loadMaterial("", "", "", "", "", device,
+                                                  descriptorManager);
+  material.worldGrid = worldGrid;
   Mesh newMesh(device.getAllocator(), device.getLogicalDevice(),
                device.getGraphicsQueue(), device.getGraphicsCommandPool(),
                &mesh.vertices, &mesh.indices, material);

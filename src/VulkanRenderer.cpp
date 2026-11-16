@@ -4,6 +4,7 @@
 #include "Frustum.h"
 #include "Model.h"
 #include "Picking.h"
+#include "PlayerStart.h"
 #include "Spawning.h"
 #include "ScenePhysics.h"
 #include "Utilities.h"
@@ -359,6 +360,11 @@ int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
     break;
   }
   key += std::format(" color {} {} {}", c.r, c.g, c.b);
+  // A static box and a dynamic one can't share a model: only one has the
+  // grid.
+  const bool worldGrid = showsWorldGrid(entry);
+  if (worldGrid)
+    key += " grid";
   if (int cached = modelManager.findModel(key); cached >= 0)
     return cached;
 
@@ -380,8 +386,9 @@ int VulkanRenderer::createPrimitiveModel(const SceneModelEntry &entry) {
     mesh = makePlane(entry.size.x, entry.size.z, c);
     break;
   }
-  const int modelId = modelManager.createModel(
-      key, std::move(mesh), withLods, device, textureManager, descriptorManager);
+  const int modelId =
+      modelManager.createModel(key, std::move(mesh), withLods, worldGrid,
+                               device, textureManager, descriptorManager);
   gpuDrivenGBufferPass.registerModelGeometry(modelId, modelManager);
   return modelId;
 }
@@ -610,7 +617,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   if (playing)
     spawnPlayer();
   rootNode.update(glm::mat4(1.0f), 0.0f);
-  updateSelectionLines();
+  updateEditorLines();
 
   if (!desc.environmentHdr.empty() &&
       desc.environmentHdr != activeEnvironmentHdr) {
@@ -716,6 +723,10 @@ void VulkanRenderer::removeEntryNodes(SceneEntryRef ref) {
 }
 
 void VulkanRenderer::placeEntry(SceneEntryRef ref) {
+  if (ref.kind == SceneEntryRef::Kind::Player) {
+    updateEditorLines(); // it's only lines
+    return;
+  }
   auto place = [&](SceneNode &node, const SceneModelEntry &entry) {
     node.setTransform(entry.transform);
     if (node.physicsLink() >= 0) {
@@ -736,7 +747,7 @@ void VulkanRenderer::placeEntry(SceneEntryRef ref) {
     if (node->entry() == ref && next < copies.size())
       place(*node, copies[next++]);
   rootNode.update(glm::mat4(1.0f), playSeconds);
-  updateSelectionLines();
+  updateEditorLines();
 }
 
 void VulkanRenderer::shiftEntryRefs(SceneEntryRef::Kind kind, int from,
@@ -751,6 +762,15 @@ void VulkanRenderer::shiftEntryRefs(SceneEntryRef::Kind kind, int from,
 }
 
 void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
+  // The player start has nothing to rebuild or split, only to delete.
+  if (ref.kind == SceneEntryRef::Kind::Player) {
+    if (op == EntryOp::Delete && currentScene.player) {
+      removeEntry(currentScene, ref);
+      selection.reset();
+      recordEdit();
+    }
+    return;
+  }
   const size_t count = ref.kind == SceneEntryRef::Kind::Grid
                            ? currentScene.grids.size()
                            : currentScene.models.size();
@@ -826,11 +846,35 @@ void VulkanRenderer::spawnEntry(SceneModelEntry entry) {
   addEntry(ref);
   rootNode.update(glm::mat4(1.0f), playSeconds);
   selection = ref;
-  updateSelectionLines();
+  updateEditorLines();
   recordEdit();
   sceneError.clear();
   spdlog::info("Added [model] {}{}", ref.index,
                hit ? "" : ", 5 m ahead with no surface in reach");
+}
+
+// The spawn list's Player start: where the camera looks, facing away from
+// it, like a new object. A scene has one, so an existing start moves (and
+// keeps its comment). One undo step either way.
+void VulkanRenderer::placePlayerStart() {
+  if (playing || !physics)
+    return;
+  const PickRay ray =
+      rayFromScreen(glm::vec2(0.5f), glm::vec2(1.0f),
+                    glm::inverse(taaBaseProjection * sceneUbo.view));
+  const CharacterTuning tuning;
+  ScenePlayerStart start = playerStartAt(
+      ray, physics->castRay(ray.origin, ray.direction, kSpawnReach),
+      tuning.radius, tuning.height);
+  if (currentScene.player)
+    start.info = currentScene.player->info;
+  currentScene.player = start;
+  selection = SceneEntryRef{SceneEntryRef::Kind::Player, 0};
+  updateEditorLines();
+  recordEdit();
+  spdlog::info("Player start at ({:.2f}, {:.2f}, {:.2f}), facing {:.0f} degrees",
+               start.position.x, start.position.y, start.position.z,
+               start.yaw);
 }
 
 void VulkanRenderer::requestHistoryStep(HistoryStep step) {
@@ -850,8 +894,11 @@ void VulkanRenderer::applyHistoryStep() {
     return;
   }
   // The same index is the same object only if no entry came or went.
+  const bool startGone = selection &&
+                         selection->kind == SceneEntryRef::Kind::Player &&
+                         !scene->player;
   if (scene->models.size() != currentScene.models.size() ||
-      scene->grids.size() != currentScene.grids.size())
+      scene->grids.size() != currentScene.grids.size() || startGone)
     selection.reset();
   // The file and name are where the scene is saved, not part of the edits,
   // so undoing past a Save as still saves to the new file.
@@ -1225,6 +1272,10 @@ namespace {
 // The UI's bright purple (kPurpleBright, 0x9a63b8) as RGBA8 bytes.
 constexpr uint32_t kSelectionColor = 0x9au | 0x63u << 8 | 0xb8u << 16 |
                                      0xffu << 24;
+// The player start while it isn't selected: the UI's bright red
+// (kRedBright, 0xc93a50), close to the character's crimson.
+constexpr uint32_t kPlayerStartColor = 0xc9u | 0x3au << 8 | 0x50u << 16 |
+                                       0xffu << 24;
 
 // Corner i has bit 0 set for max x, bit 1 for max y, bit 2 for max z.
 std::array<glm::vec3, 8> boxCorners(glm::vec3 lo, glm::vec3 hi,
@@ -1298,24 +1349,46 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
       picked = ref;
     }
   }
+  // The player start has no body or mesh, only the character's capsule.
+  if (currentScene.player) {
+    const CharacterTuning tuning;
+    const std::optional<float> distance = rayHitsPlayerStart(
+        ray, *currentScene.player, tuning.radius, tuning.height);
+    if (distance && *distance < nearest) {
+      nearest = *distance;
+      picked = SceneEntryRef{SceneEntryRef::Kind::Player, 0};
+    }
+  }
   if (picked && picked->kind == SceneEntryRef::Kind::None)
     picked.reset(); // a thrown ball, which isn't part of the layout
   selection = picked;
-  updateSelectionLines();
-  if (selection)
+  updateEditorLines();
+  if (!selection)
+    spdlog::info("Selection cleared");
+  else if (selection->kind == SceneEntryRef::Kind::Player)
+    spdlog::info("Selected [player]");
+  else
     spdlog::info("Selected {} {}",
                  selection->kind == SceneEntryRef::Kind::Model ? "[model]"
                                                                : "[grid]",
                  selection->index);
-  else
-    spdlog::info("Selection cleared");
 }
 
-void VulkanRenderer::updateSelectionLines() {
-  selectionLines.clear();
+// The player start, always there in edit mode, and the selection's
+// outline.
+void VulkanRenderer::updateEditorLines() {
+  editorLines.clear();
   selectionMass = 0.0f;
   selectionBodies = 0;
-  if (!selection)
+  const bool startSelected =
+      selection && selection->kind == SceneEntryRef::Kind::Player;
+  if (currentScene.player) {
+    const CharacterTuning tuning;
+    appendPlayerStartLines(editorLines, *currentScene.player, tuning.radius,
+                           tuning.height,
+                           startSelected ? kSelectionColor : kPlayerStartColor);
+  }
+  if (!selection || startSelected)
     return;
   for (const PhysicsLink &link : physicsLinks)
     if (link.node && link.node->entry() == *selection) {
@@ -1340,7 +1413,7 @@ void VulkanRenderer::updateSelectionLines() {
         boxCorners(bounds->min - kMargin, bounds->max + kMargin,
                    node->getGlobalTransform());
     if (selection->kind == SceneEntryRef::Kind::Model) {
-      appendBoxLines(selectionLines, corners, kSelectionColor);
+      appendBoxLines(editorLines, corners, kSelectionColor);
       return;
     }
     for (const glm::vec3 &corner : corners) {
@@ -1350,8 +1423,68 @@ void VulkanRenderer::updateSelectionLines() {
     any = true;
   }
   if (any)
-    appendBoxLines(selectionLines, boxCorners(lo, hi, glm::mat4(1.0f)),
+    appendBoxLines(editorLines, boxCorners(lo, hi, glm::mat4(1.0f)),
                    kSelectionColor);
+}
+
+// The copy goes one width of the original's box (around every copy, for a
+// grid) along the world axis nearest the camera's right, so it shows up
+// beside it. Its nodes and bodies are added like a spawn's; one undo step.
+// Refused when the physics world has no room for its bodies.
+void VulkanRenderer::applyDuplicate() {
+  if (playing || !selection || !physics)
+    return;
+  const SceneEntryRef ref = *selection;
+  const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  if (ref.kind != SceneEntryRef::Kind::Model && !isGrid)
+    return;
+  glm::vec3 lo(std::numeric_limits<float>::max());
+  glm::vec3 hi(std::numeric_limits<float>::lowest());
+  bool any = false;
+  for (const auto &node : rootNode.getChildren()) {
+    if (node->entry() != ref)
+      continue;
+    const std::optional<ModelManager::Bounds> bounds =
+        modelManager.localBounds(node->getModelId());
+    if (!bounds)
+      continue;
+    for (const glm::vec3 &corner :
+         boxCorners(bounds->min, bounds->max, node->getGlobalTransform())) {
+      lo = glm::min(lo, corner);
+      hi = glm::max(hi, corner);
+    }
+    any = true;
+  }
+  if (!any)
+    return;
+  uint32_t bodies = 0;
+  if (entryHasBody(ref)) {
+    const glm::ivec3 n = isGrid ? currentScene.grids[ref.index].count
+                                : glm::ivec3(1);
+    bodies = uint32_t(n.x) * uint32_t(n.y) * uint32_t(n.z);
+  }
+  if (physics->bodyCount() + bodies > physics->bodyLimit()) {
+    sceneError = std::format("No room for a copy: the physics world holds {} "
+                             "bodies",
+                             physics->bodyLimit());
+    spdlog::warn("{}", sceneError);
+    return;
+  }
+  // The camera's right, out of the inverse view.
+  const std::optional<SceneEntryRef> copy =
+      duplicateEntry(currentScene, ref,
+                     duplicateOffset(lo, hi, glm::vec3(sceneUbo.invView[0])));
+  if (!copy)
+    return;
+  addEntry(*copy);
+  physics->optimizeBroadPhase();
+  rootNode.update(glm::mat4(1.0f), playSeconds);
+  selection = copy;
+  updateEditorLines();
+  recordEdit();
+  sceneError.clear();
+  spdlog::info("Duplicated {} {} as {}", isGrid ? "[grid]" : "[model]",
+               ref.index, copy->index);
 }
 
 void VulkanRenderer::updateScene(float frameSeconds) {
@@ -1507,13 +1640,19 @@ void VulkanRenderer::applyPendingChanges() {
     for (const auto &[op, ref] : std::exchange(pendingEntryOps, {}))
       applyEntryOp(op, ref);
     rootNode.update(glm::mat4(1.0f), playSeconds);
-    updateSelectionLines();
+    updateEditorLines();
   }
   if (pendingSpawn) {
     vkDeviceWaitIdle(logicalDevice);
     SceneModelEntry entry = std::move(*pendingSpawn);
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
+  }
+  if (std::exchange(pendingPlayerStart, false))
+    placePlayerStart();
+  if (std::exchange(duplicateRequested, false)) {
+    vkDeviceWaitIdle(logicalDevice);
+    applyDuplicate();
   }
   // The scene's images rebuilt once a new size has settled (a divider let
   // go, a window resize finished).
@@ -2268,8 +2407,6 @@ void VulkanRenderer::copySceneToWindow(VkCommandBuffer cmd,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    sameSize ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
   }
-  if (captureState == CaptureState::Requested)
-    recordCapture(cmd, sceneOutputImages[imageIndex].get());
   // The UI pass loads what's there and draws around and over it.
   renderResources.transition(
       cmd, window, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -2281,14 +2418,26 @@ void VulkanRenderer::copySceneToWindow(VkCommandBuffer cmd,
 }
 
 void VulkanRenderer::requestCapture(const std::string &path) {
+  if (!swapchain.canCopyFrom()) {
+    spdlog::error("This GPU can't copy out of the window's images, so there's "
+                  "no capture");
+    return;
+  }
   capturePath = path;
   captureState = CaptureState::Requested;
 }
 
-// The picture is already in TRANSFER_SRC for the blit, and a second read
-// needs no barrier. The one after makes the copy visible to the CPU.
-void VulkanRenderer::recordCapture(VkCommandBuffer cmd, VkImage image) {
-  captureExtent = sceneExtent;
+// The whole window as it will be shown: the scene, the editor's lines and
+// any UI. Out of PRESENT_SRC for the copy and back, and a barrier that makes
+// the copy visible to the CPU.
+void VulkanRenderer::recordCapture(VkCommandBuffer cmd, uint32_t imageIndex) {
+  const VkImage image = renderResources.frame(imageIndex).swapchainImage;
+  renderResources.transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                             VK_ACCESS_TRANSFER_READ_BIT);
+  captureExtent = swapchain.getExtent();
   createBuffer(device.getAllocator(),
                VkDeviceSize(captureExtent.width) * captureExtent.height * 4,
                VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -2298,6 +2447,10 @@ void VulkanRenderer::recordCapture(VkCommandBuffer cmd, VkImage image) {
   region.imageExtent = {captureExtent.width, captureExtent.height, 1};
   vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          captureBuffer.get(), 1, &region);
+  renderResources.transition(cmd, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             VK_ACCESS_TRANSFER_READ_BIT, 0);
   VkMemoryBarrier2 toHost = {};
   toHost.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
   toHost.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -2998,7 +3151,7 @@ static glm::uvec4 materialTextureIndices0(const Material &mat) {
 static glm::uvec4 materialTextureIndices1(const Material &mat) {
   const uint32_t materialFlags =
       (mat.isCloth ? 1u : 0u) | (mat.alphaMasked ? 2u : 0u) |
-      (mat.alphaBlended ? 4u : 0u);
+      (mat.alphaBlended ? 4u : 0u) | (mat.worldGrid ? 8u : 0u);
   const uint32_t alphaCutoff255 = static_cast<uint32_t>(
       glm::clamp(mat.alphaCutoff, 0.0f, 1.0f) * 255.0f + 0.5f);
   return glm::uvec4(static_cast<uint32_t>(mat.aoTextureId), materialFlags,
@@ -3279,6 +3432,8 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   recordImGuiCommands(cmd, currentImage);
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::ImGui);
   vkdbgEndLabel(cmd);
+  if (captureState == CaptureState::Requested)
+    recordCapture(cmd, currentImage);
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
     throw std::runtime_error("Failed to end post command buffer");
@@ -3900,6 +4055,11 @@ void VulkanRenderer::buildUi() {
     if (!playing)
       pendingSpawn = std::move(entry);
   };
+  ui.onDuplicate = [this] { duplicateSelection(); };
+  ui.onSpawnPlayerStart = [this] {
+    if (!playing)
+      pendingPlayerStart = true;
+  };
   ui.onRescanModels = [this] { discoverModels(); };
   ui.sceneName = &currentScene.name;
   ui.sceneUnsaved = sceneUnsaved;
@@ -3916,10 +4076,11 @@ void VulkanRenderer::buildUi() {
 
 void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
   // Debug lines go in the ImGui pass, under the panels: the physics
-  // wireframes (only built while F2 is on) and, in edit mode, the
-  // selection's outline. Copied together only when both are showing.
+  // wireframes (only built while F2 is on) and, in edit mode, the player
+  // start and the selection's outline. Copied together only when both are
+  // showing.
   const bool showWireframes = physicsPanel.showWireframes && physics;
-  const bool showSelection = !playing && !selectionLines.empty();
+  const bool showSelection = !playing && !editorLines.empty();
   const std::vector<PhysicsDebugVertex> *lines = nullptr;
   if (showWireframes) {
     const std::vector<PhysicsDebugVertex> &wireframes =
@@ -3927,12 +4088,12 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     lines = &wireframes;
     if (showSelection) {
       debugLineScratch = wireframes;
-      debugLineScratch.insert(debugLineScratch.end(), selectionLines.begin(),
-                              selectionLines.end());
+      debugLineScratch.insert(debugLineScratch.end(), editorLines.begin(),
+                              editorLines.end());
       lines = &debugLineScratch;
     }
   } else if (showSelection) {
-    lines = &selectionLines;
+    lines = &editorLines;
   }
   const bool drawPhysicsLines = lines != nullptr;
   if (drawPhysicsLines)

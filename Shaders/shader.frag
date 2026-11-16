@@ -71,6 +71,29 @@ bool alphaTestPass(float alpha, float cutoff) {
     return alpha >= threshold;
 }
 
+// The 1 m world grid on level pieces (material flag bit 3): 1 at a line, 0
+// between. Lines run where the world coordinates across the face are whole
+// metres, taken from the two axes the face doesn't point along. Ben Golus's
+// "pristine grid": the lines keep a steady width on screen, never go
+// thinner than a pixel (they fade instead), and blend into their average
+// colour far away, so they don't shimmer. shader.frag and shader_gpu.frag
+// carry the same copy.
+float worldGridLine(vec3 worldPos, vec3 faceNormal) {
+    const float lineWidth = 0.03; // of a metre
+    vec3 n = abs(faceNormal);
+    vec2 uv = n.y >= max(n.x, n.z) ? worldPos.xz
+            : (n.x >= n.z ? worldPos.zy : worldPos.xy);
+    vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));
+    vec2 uvDeriv = vec2(length(uvDDXY.xz), length(uvDDXY.yw));
+    vec2 drawWidth = clamp(vec2(lineWidth), uvDeriv, vec2(0.5));
+    vec2 lineAA = uvDeriv * 1.5;
+    vec2 gridUV = 1.0 - abs(fract(uv) * 2.0 - 1.0);
+    vec2 grid2 = smoothstep(drawWidth + lineAA, drawWidth - lineAA, gridUV);
+    grid2 *= clamp(lineWidth / drawWidth, 0.0, 1.0);
+    grid2 = mix(grid2, vec2(lineWidth), clamp(uvDeriv * 2.0 - 1.0, 0.0, 1.0));
+    return mix(grid2.x, 1.0, grid2.y);
+}
+
 void main() {
     vec4 albedoSample = texture(textures[nonuniformEXT(push.texIdx0.x)], fragTex);
     bool alphaMasked = (push.texIdx1.y & 2u) != 0u;
@@ -102,6 +125,10 @@ void main() {
                                        max(normalTex.z, 0.001)));
     vec3 worldNormal = normalize(fragTBN * normalSample);
     vec3 geomNormal  = normalize(fragTBN[2]);   // interpolated vertex normal
+    // Level pieces: darker lines every world metre, so sizes and distances
+    // read while there's no art.
+    if ((push.texIdx1.y & 8u) != 0u)
+        albedo *= mix(1.0, 0.55, worldGridLine(fragWorldPos, geomNormal));
 
     // Toksvig-style safety net: strong normal-map deviation and high local
     // normal variance imply unresolved microfacets. Fold that into roughness

@@ -114,6 +114,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Picking.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Player.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PlayerStart.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PrimitiveMesh.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Scene.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneNode.cpp
@@ -183,6 +184,7 @@ add_executable(heliora_tests
         tests/PhysicsCharacterTests.cpp
         tests/PhysicsWorldTests.cpp
         tests/PickingTests.cpp
+        tests/PlayerStartTests.cpp
         tests/PlayerTests.cpp
         tests/PrimitiveMeshTests.cpp
         tests/SceneNodeTests.cpp

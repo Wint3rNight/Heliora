@@ -775,3 +775,90 @@ TEST(bad_player_starts_are_errors) {
         std::string::npos);
   CHECK(errorOf("[player]\nyaw = inf\n").find("line 2") != std::string::npos);
 }
+
+TEST(removing_the_player_start_keeps_the_rest) {
+  SceneDescription scene = parseText("[model]\nshape = box\n"
+                                     "[player]\nposition = 1 0 2\nyaw = 90\n");
+  removeEntry(scene, {SceneEntryRef::Kind::Player, 0});
+  CHECK(!scene.player);
+  CHECK(scene.models.size() == 1);
+}
+
+TEST(player_start_edits_must_be_ordinary_numbers) {
+  // The Inspector checks with it: the parser turns these down, so a scene
+  // saved with them wouldn't load again.
+  ScenePlayerStart start;
+  start.position = glm::vec3(1.0f, 2.0f, 3.0f);
+  start.yaw = 45.0f;
+  CHECK(!problemWith(start));
+  ScenePlayerStart lost = start;
+  lost.position.y = std::numeric_limits<float>::quiet_NaN();
+  CHECK(problemWith(lost));
+  ScenePlayerStart spun = start;
+  spun.yaw = std::numeric_limits<float>::infinity();
+  CHECK(problemWith(spun));
+}
+
+TEST(duplicating_a_model_adds_a_copy_moved_by_the_offset) {
+  SceneDescription scene = parseText("# The first step\n"
+                                     "[model]\nshape = box\nsize = 2 0.5 1\n"
+                                     "position = 1 0 0\nbody = static\n"
+                                     "[model]\nshape = sphere\n");
+  const std::optional<SceneEntryRef> copy = duplicateEntry(
+      scene, {SceneEntryRef::Kind::Model, 0}, glm::vec3(2.0f, 0.0f, 0.0f));
+  CHECK((copy == SceneEntryRef{SceneEntryRef::Kind::Model, 2}));
+  CHECK(scene.models.size() == 3);
+  const SceneModelEntry &original = scene.models[0];
+  const SceneModelEntry &duplicate = scene.models.back();
+  CHECK(original.transform.position == glm::vec3(1.0f, 0.0f, 0.0f));
+  CHECK(duplicate.transform.position == glm::vec3(3.0f, 0.0f, 0.0f));
+  CHECK(duplicate.size == original.size);
+  CHECK(duplicate.body == original.body);
+  CHECK(duplicate.info.comment.empty()); // the note stays with the original
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(duplicating_a_grid_copies_the_whole_grid) {
+  SceneDescription scene = parseText("[grid]\nshape = box\ncount = 3 2 1\n"
+                                     "position = 0 0.5 0\nbody = dynamic\n");
+  const std::optional<SceneEntryRef> copy = duplicateEntry(
+      scene, {SceneEntryRef::Kind::Grid, 0}, glm::vec3(0.0f, 0.0f, -2.0f));
+  CHECK((copy == SceneEntryRef{SceneEntryRef::Kind::Grid, 1}));
+  CHECK(scene.grids.size() == 2);
+  CHECK(scene.grids.back().count == glm::ivec3(3, 2, 1));
+  CHECK(scene.grids.back().model.transform.position ==
+        glm::vec3(0.0f, 0.5f, -2.0f));
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(the_player_start_and_missing_entries_arent_duplicated) {
+  SceneDescription scene = parseText("[model]\nshape = box\n"
+                                     "[player]\nposition = 0 0 0\n");
+  const SceneDescription before = scene;
+  CHECK(!duplicateEntry(scene, {SceneEntryRef::Kind::Player, 0}, glm::vec3(1)));
+  CHECK(!duplicateEntry(scene, {SceneEntryRef::Kind::Model, 5}, glm::vec3(1)));
+  CHECK(!duplicateEntry(scene, {SceneEntryRef::Kind::None, 0}, glm::vec3(1)));
+  CHECK(scene == before);
+}
+
+TEST(static_generated_shapes_get_the_world_grid) {
+  // The level is built from them; things that move would slide under a
+  // world-fixed grid, and model files have their own look.
+  SceneModelEntry box;
+  box.shape = PrimitiveShape::Box;
+  box.body = PhysicsMotion::Static;
+  CHECK(showsWorldGrid(box));
+  SceneModelEntry dynamicBox = box;
+  dynamicBox.body = PhysicsMotion::Dynamic;
+  CHECK(!showsWorldGrid(dynamicBox));
+  SceneModelEntry platform = box;
+  platform.body = PhysicsMotion::Kinematic;
+  CHECK(!showsWorldGrid(platform));
+  SceneModelEntry decoration = box;
+  decoration.body.reset();
+  CHECK(!showsWorldGrid(decoration));
+  SceneModelEntry rock;
+  rock.path = "Resources/Models/boulder_01/boulder_01_1k.gltf";
+  rock.body = PhysicsMotion::Static;
+  CHECK(!showsWorldGrid(rock));
+}

@@ -25,3 +25,8 @@ PickRay rayFromScreen(glm::vec2 pixel, glm::vec2 viewport,
 // sphere around the camera doesn't beat everything in front of it.
 std::optional<float> rayHitsSphere(const PickRay &ray, glm::vec3 centre,
                                    float radius);
+
+// The same for a capsule: the points within radius of the segment from a to
+// b (the centres of its rounded ends). Meant for rays that start outside it.
+std::optional<float> rayHitsCapsule(const PickRay &ray, glm::vec3 a,
+                                    glm::vec3 b, float radius);

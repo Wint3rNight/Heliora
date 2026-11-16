@@ -20,4 +20,8 @@ struct Material {
   bool alphaMasked = false;
   bool alphaBlended = false;
   float alphaCutoff = 0.5f;
+  // A 1 m grid fixed in the world, drawn over the colour by the G-buffer
+  // shaders, for level pieces (showsWorldGrid in Scene.h): it shows sizes and
+  // distances while there's no art.
+  bool worldGrid = false;
 };

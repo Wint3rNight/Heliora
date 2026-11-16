@@ -118,6 +118,10 @@ void VulkanSwapchain::createSwapChain(const VulkanDevice &device,
         "The swapchain can't be a copy destination on this GPU");
   ci.imageUsage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  // And a copy source where it can be, for captures of the finished frame.
+  copySource = caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if (copySource)
+    ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   ci.preTransform = caps.currentTransform;
   ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   ci.clipped = VK_TRUE;

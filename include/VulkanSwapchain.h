@@ -36,6 +36,8 @@ public:
   void setPreferMailbox(bool prefer) { preferMailboxPresent = prefer; }
   bool getPreferMailbox() const { return preferMailboxPresent; }
   VkPresentModeKHR getActivePresentMode() const { return activePresentMode; }
+  // Whether the images can be copied out, which HELIORA_CAPTURE needs.
+  bool canCopyFrom() const { return copySource; }
 
   VkFormat queryImageFormat(const VulkanDevice &device) const;
   VkFormat chooseSupportedFormat(VkPhysicalDevice physicalDevice,
@@ -52,6 +54,7 @@ private:
   std::vector<VkCommandBuffer> commandBuffers;
 
   bool preferMailboxPresent = true;
+  bool copySource = false;
   VkPresentModeKHR activePresentMode = VK_PRESENT_MODE_FIFO_KHR;
 
   void createSwapChain(const VulkanDevice &device, GLFWwindow *window);

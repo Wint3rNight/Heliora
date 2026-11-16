@@ -85,6 +85,10 @@ struct SceneModelEntry {
   bool operator==(const SceneModelEntry &) const = default;
 };
 
+// Whether it's drawn with the 1 m world grid over its colour: generated
+// shapes with a static body, the pieces a level is built from.
+bool showsWorldGrid(const SceneModelEntry &entry);
+
 // An instanced ring layout (the stress-test arrangement): `count` copies of
 // one model placed on a circle, drawn with one indexed draw per mesh.
 struct SceneRingEntry {
@@ -115,10 +119,12 @@ struct SceneGridEntry {
 // One SceneModelEntry per copy of the grid.
 std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid);
 
-// Which entry of a SceneDescription a scene node was built from. Every copy
-// of a grid points at the grid, so clicking one brick selects all of them.
+// Which entry of a SceneDescription a scene node was built from, or what the
+// editor has selected. Every copy of a grid points at the grid, so clicking
+// one brick selects all of them. The player start has no nodes; there's one
+// per scene at most, so its index is always 0.
 struct SceneEntryRef {
-  enum class Kind : uint8_t { None, Model, Grid };
+  enum class Kind : uint8_t { None, Model, Grid, Player };
   Kind kind = Kind::None;
   int index = -1; // into SceneDescription::models or ::grids
   bool operator==(const SceneEntryRef &) const = default;
@@ -191,9 +197,12 @@ std::optional<std::string> problemWith(const SceneGridEntry &grid);
 // The same for the sun and fog, which the Lighting tab edits.
 std::optional<std::string> problemWith(const SceneSun &sun);
 std::optional<std::string> problemWith(const SceneFog &fog);
+// And the player start, which the Inspector and the gizmo edit.
+std::optional<std::string> problemWith(const ScenePlayerStart &start);
 
-// Takes the entry out. The others keep their order in the file, but entries
-// of the same kind after it move down one index.
+// Takes the entry out (for the player start, the scene's [player]). The
+// others keep their order in the file, but entries of the same kind after it
+// move down one index.
 void removeEntry(SceneDescription &scene, SceneEntryRef ref);
 
 // Turns a grid into one [model] per copy, where the grid was in the file;
@@ -205,6 +214,14 @@ std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex);
 // Adds a model after everything else in the file and returns where it went:
 // the end of the models list.
 SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model);
+
+// A copy of a model or a whole grid, moved by offset, added after
+// everything else in the file like addModel. The comment above the original
+// stays with it. Nothing for the player start (one per scene) or an entry
+// that isn't there.
+std::optional<SceneEntryRef> duplicateEntry(SceneDescription &scene,
+                                            SceneEntryRef ref,
+                                            glm::vec3 offset);
 
 // Save as: the file name for a scene name, like "My_level.scene". Letters,
 // digits, - and _ are kept, spaces become _, and the ends are trimmed. Nothing

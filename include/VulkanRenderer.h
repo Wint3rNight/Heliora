@@ -142,6 +142,14 @@ public:
   // not in the middle of a drag.
   void undoEdit() { requestHistoryStep(HistoryStep::Undo); }
   void redoEdit() { requestHistoryStep(HistoryStep::Redo); }
+  // Ctrl+D and the Inspector's Duplicate: a copy of the selected object or
+  // grid, beside it on the camera's right, then selected. Edit mode only,
+  // not in the middle of a drag; made at the top of the next draw(), like a
+  // spawn.
+  void duplicateSelection() {
+    if (!playing && selection && !imguiLayer.editInProgress())
+      duplicateRequested = true;
+  }
   // Left click in edit mode: selects what's under the pixel (window
   // coordinates), or nothing. A click on any copy in a grid selects the grid.
   // A click outside the scene's area does nothing.
@@ -206,17 +214,17 @@ private:
   // Animation time. Runs only while playing, and goes back to 0 with the
   // layout. double for the same reason as main.cpp's frame clock.
   double playSeconds = 0.0;
-  // What's selected in edit mode, and its outline for DebugLinePass. The
-  // outline is worked out when the selection or the layout changes, not
-  // every frame.
+  // What's selected in edit mode. Its outline and the player start's are
+  // the editor's lines for DebugLinePass, worked out when the selection or
+  // the layout changes, not every frame.
   std::optional<SceneEntryRef> selection;
-  std::vector<PhysicsDebugVertex> selectionLines;
+  std::vector<PhysicsDebugVertex> editorLines;
   std::vector<PhysicsDebugVertex> debugLineScratch; // wireframes + outline
   float selectionMass = 0.0f; // kg, of one copy for a grid; 0 if no body
   // Bodies the world holds for the selection now (a grid's copies), which
   // a drag of its Count runs ahead of until the rebuild.
   uint32_t selectionBodies = 0;
-  void updateSelectionLines();
+  void updateEditorLines();
   bool entryHasBody(SceneEntryRef ref) const;
 
   // Building and changing single entries of currentScene, so an edit never
@@ -251,6 +259,10 @@ private:
   std::vector<std::string> modelFiles;
   std::optional<SceneModelEntry> pendingSpawn;
   void spawnEntry(SceneModelEntry entry);
+  bool pendingPlayerStart = false; // the list's Player start, same timing
+  void placePlayerStart();
+  bool duplicateRequested = false; // Ctrl+D, same timing
+  void applyDuplicate();
   // A removed body leaves an empty slot, so the others keep their index.
   struct PhysicsLink {
     SceneNode *node = nullptr;
@@ -383,14 +395,15 @@ private:
   std::vector<AllocatedImage> sceneColorImages;    // one per swap image
   std::vector<ImageViewHandle> sceneColorViews;
   std::vector<AllocatedImage> sceneOutputImages; // the finished picture
-  // A requested capture: Requested until copySceneToWindow records the copy
-  // into captureBuffer, Recorded until finishCapture writes it out.
+  // A requested capture: Requested until the frame records the copy of the
+  // window into captureBuffer, after the UI pass, Recorded until
+  // finishCapture writes it out.
   enum class CaptureState { None, Requested, Recorded };
   CaptureState captureState = CaptureState::None;
   std::string capturePath;
   AllocatedBuffer captureBuffer;
   VkExtent2D captureExtent = {};
-  void recordCapture(VkCommandBuffer cmd, VkImage image);
+  void recordCapture(VkCommandBuffer cmd, uint32_t imageIndex);
   std::vector<ImageViewHandle> sceneOutputViews;
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;

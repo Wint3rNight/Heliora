@@ -66,3 +66,46 @@ TEST(ray_from_inside_sphere_hits_its_far_side) {
       rayHitsSphere(ray, glm::vec3(0.0f, 0.0f, -1.0f), 3.0f);
   CHECK_NEAR(distance.value_or(-1.0f), 4.0, 1e-4);
 }
+
+namespace {
+
+// A standing character's capsule: 1.8 m tall, 0.3 m radius, feet at 0.
+constexpr glm::vec3 kCapsuleBottom(0.0f, 0.3f, 0.0f);
+constexpr glm::vec3 kCapsuleTop(0.0f, 1.5f, 0.0f);
+
+} // namespace
+
+TEST(ray_hits_capsule_side) {
+  const PickRay ray{glm::vec3(0.0f, 1.0f, 5.0f), glm::vec3(0.0f, 0.0f, -1.0f)};
+  CHECK_NEAR(rayHitsCapsule(ray, kCapsuleBottom, kCapsuleTop, 0.3f)
+                 .value_or(-1.0f),
+             4.7, 1e-4);
+}
+
+TEST(ray_straight_down_hits_capsule_top) {
+  // Along the capsule's axis, where the side's equation has no answer.
+  const PickRay ray{glm::vec3(0.0f, 10.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)};
+  CHECK_NEAR(rayHitsCapsule(ray, kCapsuleBottom, kCapsuleTop, 0.3f)
+                 .value_or(-1.0f),
+             8.2, 1e-4);
+}
+
+TEST(ray_hits_capsule_rounded_end) {
+  // 10 cm up, below where the side starts: it meets the bottom sphere,
+  // sqrt(0.3^2 - 0.2^2) in front of the axis.
+  const PickRay ray{glm::vec3(0.0f, 0.1f, 5.0f), glm::vec3(0.0f, 0.0f, -1.0f)};
+  CHECK_NEAR(rayHitsCapsule(ray, kCapsuleBottom, kCapsuleTop, 0.3f)
+                 .value_or(-1.0f),
+             5.0 - std::sqrt(0.05), 1e-4);
+}
+
+TEST(ray_misses_capsule_beside_and_behind) {
+  const glm::vec3 back(0.0f, 0.0f, -1.0f);
+  CHECK(!rayHitsCapsule({glm::vec3(1.0f, 1.0f, 5.0f), back}, kCapsuleBottom,
+                        kCapsuleTop, 0.3f));
+  CHECK(!rayHitsCapsule({glm::vec3(0.0f, 1.0f, -5.0f), back}, kCapsuleBottom,
+                        kCapsuleTop, 0.3f));
+  // Over the top, close to the axis but higher than the rounded end.
+  CHECK(!rayHitsCapsule({glm::vec3(0.0f, 1.85f, 5.0f), back}, kCapsuleBottom,
+                        kCapsuleTop, 0.3f));
+}

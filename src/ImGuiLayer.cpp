@@ -743,6 +743,10 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
                                      "in the scene.");
     return;
   }
+  if (ui.selection->kind == SceneEntryRef::Kind::Player) {
+    drawPlayerStartInspector(ui);
+    return;
+  }
   const SceneEntryRef ref = *ui.selection;
   SceneDescription &scene = *ui.scene;
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
@@ -787,9 +791,15 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     ImGui::PopStyleColor();
   }
   ImGui::Separator();
+  const bool duplicating = ImGui::Button("Duplicate");
+  ImGui::SetItemTooltip("Ctrl+D: a copy beside it");
+  ImGui::SameLine();
   const bool deleting = ImGui::Button("Delete");
   ImGui::PopID();
   ImGui::PopID();
+
+  if (duplicating && ui.onDuplicate)
+    ui.onDuplicate();
 
   if (split || deleting) {
     // The entry is going, so a rebuild of it would be wasted.
@@ -799,6 +809,58 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     else if (deleting && ui.onEntryDeleted)
       ui.onEntryDeleted(ref);
   }
+}
+
+// The player start's place and facing. It has no shape or body of its own:
+// the character's capsule stands there when Play starts. Its edits only
+// move it, so they never wait for a rebuild.
+void ImGuiLayer::drawPlayerStartInspector(DebugUiContext &ui) {
+  if (!ui.scene->player)
+    return;
+  const SceneEntryRef ref = *ui.selection;
+  if (ref != inspectorShownRef) {
+    inspectorShownRef = ref;
+    inspectorProblem.clear();
+  }
+  ImGui::PushID("player start");
+  ImGui::TextUnformatted("Player start");
+  ImGui::TextDisabled("Play (F5) puts the character here.");
+  ScenePlayerStart edited = *ui.scene->player;
+  ImGui::PushItemWidth(-110.0f);
+  ImGui::SeparatorText("Transform");
+  bool moved = ImGui::DragFloat3("Position", &edited.position.x, 0.05f, 0.0f,
+                                 0.0f, "%.2f");
+  if (ImGui::DragFloat("Facing", &edited.yaw, 0.5f, 0.0f, 0.0f,
+                       "%.1f\u00b0")) {
+    edited.yaw = std::remainder(edited.yaw, 360.0f);
+    moved = true;
+  }
+  ImGui::SetItemTooltip("Degrees about the vertical axis, like the gizmo's "
+                        "green ring. 0 faces -z.");
+  ImGui::PopItemWidth();
+  if (moved) {
+    if (const std::optional<std::string> problem = problemWith(edited)) {
+      inspectorProblem = *problem;
+    } else {
+      inspectorProblem.clear();
+      *ui.scene->player = edited;
+      sceneEditOpen = true;
+      if (ui.onEntryMoved)
+        ui.onEntryMoved(ref);
+    }
+  }
+  if (!inspectorProblem.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
+    ImGui::TextWrapped("%s", inspectorProblem.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
+  const bool deleting = ImGui::Button("Delete");
+  ImGui::SetItemTooltip("Without one, Play starts the character on the ground "
+                        "below the camera.");
+  ImGui::PopID();
+  if (deleting && ui.onEntryDeleted)
+    ui.onEntryDeleted(ref);
 }
 
 // Keeps an Inspector edit if the parser would take it (and, for a grid, if
@@ -1006,9 +1068,19 @@ ImVec2 ImGuiLayer::GizmoView::at(glm::vec2 p) const {
   return ImVec2(p.x + area.origin.x, p.y + area.origin.y);
 }
 
-// A grid only turns about y, through its layout rotation.
+// A grid only turns about y, through its layout rotation, and the player
+// start only through its yaw.
 bool ImGuiLayer::GizmoView::axisShown(int axis, GizmoMode mode) const {
-  return !(mode == GizmoMode::Rotate && grid && axis != 1);
+  return !(mode == GizmoMode::Rotate && (grid || player) && axis != 1);
+}
+
+NodeTransform ImGuiLayer::GizmoView::transform() const {
+  if (!player)
+    return entry->transform;
+  NodeTransform t;
+  t.position = player->position;
+  t.rotationDeg.y = player->yaw;
+  return t;
 }
 
 // An arrow pointing almost straight at the camera is too short to grab or
@@ -1037,26 +1109,30 @@ std::optional<ImGuiLayer::GizmoView> ImGuiLayer::gizmoView(DebugUiContext &ui) {
     } else if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
                ref.index < static_cast<int>(ui.scene->models.size())) {
       view.entry = &ui.scene->models[ref.index];
+    } else if (ref.kind == SceneEntryRef::Kind::Player && ui.scene->player) {
+      view.player = &*ui.scene->player;
     }
   }
+  const bool found = view.entry || view.player;
   // main.cpp selects before the UI runs, so on the click that selected this
   // object its handles are new, and the click mustn't grab one.
   const std::optional<SceneEntryRef> selected =
-      view.entry ? ui.selection : std::nullopt;
+      found ? ui.selection : std::nullopt;
   view.justSelected = selected != gizmoLastSelection;
   gizmoLastSelection = selected;
   // While flying, the cursor is hidden and its position means nothing.
   const bool cursorFree =
       window && glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_NORMAL;
   const bool asking = ui.prompt && ui.prompt->kind != UiPrompt::Kind::None;
-  if (!view.entry || !cursorFree || asking || !ImGui::IsMousePosValid() ||
+  if (!found || !cursorFree || asking || !ImGui::IsMousePosValid() ||
       (gizmoDrag.active && gizmoDrag.ref != *ui.selection))
     return std::nullopt;
 
   view.area = ui.sceneArea;
   view.viewProj = ui.viewProj;
-  // A grid turns about its first copy's spot, so the handles sit there.
-  view.centre = view.entry->transform.position;
+  // A grid turns about its first copy's spot, so the handles sit there. The
+  // player start's sit at its feet.
+  view.centre = view.transform().position;
   const std::optional<glm::vec2> centrePixel =
       screenFromWorld(view.centre, view.area.size, view.viewProj);
   if (!centrePixel || view.area.size.y <= 0.0f)
@@ -1110,7 +1186,7 @@ int ImGuiLayer::hoveredHandle(const GizmoView &view) const {
       }
     }
   }
-  if (gizmoMode == GizmoMode::Scale)
+  if (gizmoMode == GizmoMode::Scale && view.scales())
     consider(0, std::abs(glm::distance(view.mouse, view.centrePixel) -
                          kScaleRingPixels));
   return hot;
@@ -1124,7 +1200,7 @@ void ImGuiLayer::startGizmoDrag(DebugUiContext &ui, const GizmoView &view,
   drag.active = true;
   drag.axis = handle;
   drag.ref = *ui.selection;
-  drag.start = view.entry->transform;
+  drag.start = view.transform();
   drag.startLayoutRotation = view.grid ? view.grid->layoutRotation : 0.0f;
   drag.grabbedPixel = view.mouse;
   drag.centrePixel = view.centrePixel;
@@ -1149,9 +1225,8 @@ void ImGuiLayer::startGizmoDrag(DebugUiContext &ui, const GizmoView &view,
 void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
   const bool snapping = gizmoSnap || ImGui::GetIO().KeyCtrl;
   const int axis = gizmoDrag.axis;
-  SceneGridEntry editedGrid = view.grid ? *view.grid : SceneGridEntry{};
-  SceneModelEntry edited = *view.entry;
-  NodeTransform &t = edited.transform;
+  NodeTransform t = view.transform();
+  float layoutRotation = view.grid ? view.grid->layoutRotation : 0.0f;
   switch (gizmoMode) {
   case GizmoMode::Move:
     // The line through the object along the axis doesn't change as it
@@ -1179,7 +1254,7 @@ void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
     if (snapping)
       degrees = snap(degrees, kRotateSnap); // by 15 degree steps
     if (view.grid) {
-      editedGrid.layoutRotation =
+      layoutRotation =
           std::remainder(gizmoDrag.startLayoutRotation + degrees, 360.0f);
     } else if (axis == 1) {
       // About world y it's just more yaw, since rotationFromDegrees
@@ -1194,6 +1269,8 @@ void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
     break;
   }
   case GizmoMode::Scale: {
+    if (!view.scales())
+      break;
     float scale = gizmoDrag.start.scale *
                   scaleFromDrag(gizmoDrag.centrePixel,
                                 gizmoDrag.grabbedPixel, view.mouse);
@@ -1203,24 +1280,38 @@ void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
     break;
   }
   }
-  commitGizmoEdit(ui, view, edited, editedGrid);
+  commitGizmoEdit(ui, view, t, layoutRotation);
 }
 
 // The dragged values go into the scene only if the parser would take them,
 // as in the Inspector; then the renderer moves the object to match.
 void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
-                                 const SceneModelEntry &edited,
-                                 SceneGridEntry editedGrid) {
+                                 const NodeTransform &placement,
+                                 float layoutRotation) {
   bool changed = false;
-  if (view.grid) {
-    editedGrid.model = edited;
-    if (editedGrid != *view.grid && !problemWith(editedGrid)) {
-      *view.grid = editedGrid;
+  if (view.player) {
+    ScenePlayerStart edited = *view.player;
+    edited.position = placement.position;
+    edited.yaw = placement.rotationDeg.y;
+    if (edited != *view.player && !problemWith(edited)) {
+      *view.player = edited;
       changed = true;
     }
-  } else if (edited != *view.entry && !problemWith(edited)) {
-    *view.entry = edited;
-    changed = true;
+  } else if (view.grid) {
+    SceneGridEntry edited = *view.grid;
+    edited.model.transform = placement;
+    edited.layoutRotation = layoutRotation;
+    if (edited != *view.grid && !problemWith(edited)) {
+      *view.grid = edited;
+      changed = true;
+    }
+  } else {
+    SceneModelEntry edited = *view.entry;
+    edited.transform = placement;
+    if (edited != *view.entry && !problemWith(edited)) {
+      *view.entry = edited;
+      changed = true;
+    }
   }
   if (changed) {
     sceneEditOpen = true;
@@ -1234,7 +1325,7 @@ void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
 // dragged one highlighted.
 void ImGuiLayer::drawGizmoHandles(const GizmoView &view, int hot) const {
   // Drawn after the edit, so the handles sit on the object's new spot.
-  const glm::vec3 now = view.entry->transform.position;
+  const glm::vec3 now = view.transform().position;
   const std::optional<glm::vec2> nowPixel =
       screenFromWorld(now, view.area.size, view.viewProj);
   if (!nowPixel)
@@ -1274,7 +1365,7 @@ void ImGuiLayer::drawGizmoHandles(const GizmoView &view, int hot) const {
       }
     }
   }
-  if (gizmoMode == GizmoMode::Scale)
+  if (gizmoMode == GizmoMode::Scale && view.scales())
     draw->AddCircle(view.at(*nowPixel), kScaleRingPixels, colourOf(0, kText),
                     kRingSegments, hot == 0 ? 4.0f : 2.5f);
   draw->AddCircleFilled(view.at(*nowPixel), 3.0f, colourU32(kText));
@@ -1336,6 +1427,11 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
     if (ImGui::Button(label) && ui.onSpawn)
       ui.onSpawn(newShapeEntry(shape));
   }
+  if (ImGui::Button("Player start") && ui.onSpawnPlayerStart)
+    ui.onSpawnPlayerStart();
+  ImGui::SetItemTooltip(ui.scene && ui.scene->player
+                            ? "Moves the scene's player start here"
+                            : "Where Play (F5) puts the character");
   if (ui.modelFiles) {
     for (const std::string &file : *ui.modelFiles) {
       const std::string name =

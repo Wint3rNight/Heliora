@@ -176,6 +176,7 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
   // checks), unless a text box has the keyboard: it has its own undo.
   const bool zPressed = inputManager.wasKeyJustPressed(GLFW_KEY_Z);
   const bool sPressed = inputManager.wasKeyJustPressed(GLFW_KEY_S);
+  const bool dPressed = inputManager.wasKeyJustPressed(GLFW_KEY_D);
   const bool ctrl = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
                     inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
   const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
@@ -190,6 +191,9 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
     else
       vulkanRenderer.undoEdit();
   }
+  // Ctrl+D duplicates the selection, in edit mode (the renderer checks).
+  if (dPressed && shortcuts)
+    vulkanRenderer.duplicateSelection();
   // Ctrl+S saves the scene and Ctrl+Shift+S saves it under a new name,
   // in either mode: what's saved is the layout.
   if (sPressed && shortcuts) {

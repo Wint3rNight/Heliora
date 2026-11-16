@@ -1,0 +1,553 @@
+# A climbing course: four laps of a square spiral, each harder than the
+# last, up to the gold platform. Every piece is a static box, so it
+# gets the 1 m grid. The character walks up 40 cm steps, gets onto
+# ledges up to 1.5 m, and jumps about 5 m running and 8 m sprinting.
+# Fall and you land on the lap below, or the ground. F5 twice starts
+# over.
+
+name = Climb
+environment = Resources/HDRIs/kloppenheim_02_1k.hdr
+
+[camera]
+position = 28 18 34
+yaw = -130
+pitch = 0
+speed = 10
+
+# Ground, 160 x 160 m
+[model]
+shape = plane
+size = 160 1 160
+color = 0.45
+body = static
+
+# Lap 1, side 1: steps of 20 and 30 cm walk up; the two 45 cm
+# ones need a jump (the character walks up 40 cm at most).
+[model]
+shape = box
+size = 3 0.5 3
+position = -6.5 -0.05 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 2
+position = -4.75 0.15 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 2
+position = -4.25 0.35 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 2
+position = -3.75 0.55 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.6 0.5 2
+position = -3.2 0.85 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.6 0.5 2
+position = -2.6 1.15 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.6 0.5 2
+position = -2 1.45 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 1 0.5 2
+position = -1.2 1.9 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 1 0.5 2
+position = -0.2 2.35 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = 2.8 2.35 8
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 6.8 2.85 8
+color = 0.42 0.52 0.68
+body = static
+
+# Lap 1, side 2: a 40 degree ramp walks up; under the slab, crouch
+# (Ctrl); the 50 degree ramp is too steep, jump past it.
+[model]
+shape = box
+size = 2 0.3 3.111
+position = 6.8 3.985 5.212
+rotation = 40 0 0
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.5 4
+position = 6.8 4.85 2.116
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.3 3
+position = 6.8 6.5 2.116
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = 6.8 4.85 -2.384
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.3 1.566
+position = 6.8 5.604 -4.002
+rotation = 50 0 0
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 3 0.5 5
+position = 6.8 6.05 -6.89
+color = 0.42 0.52 0.68
+body = static
+
+# Lap 1, side 3: three jumps, each a bit longer and higher.
+[model]
+shape = box
+size = 2 0.5 2
+position = 2.3 6.55 -6.89
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -2.2 7.05 -6.89
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -7.2 7.55 -6.89
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -11.7 8.05 -6.89
+color = 0.42 0.52 0.68
+body = static
+
+# Lap 1, side 4: a walkway that narrows to a 40 cm beam.
+[model]
+shape = box
+size = 0.8 0.5 4
+position = -11.7 8.05 -3.39
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 0.4 0.5 4
+position = -11.7 8.05 0.61
+color = 0.42 0.52 0.68
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -11.7 8.85 5.61
+color = 0.42 0.52 0.68
+body = static
+
+# Lap 2, side 1: a 30 cm beam, then two run jumps and a ledge.
+[model]
+shape = box
+size = 4 0.5 0.3
+position = -8.2 8.85 5.61
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -1.7 8.85 5.61
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = 3.3 9.35 5.61
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 6.8 10.55 5.61
+color = 0.42 0.62 0.45
+body = static
+
+# Lap 2, side 2: stepping stones, left and right.
+[model]
+shape = box
+size = 0.8 0.5 0.8
+position = 6.3 10.85 2.71
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 0.8 0.5 0.8
+position = 7.3 11.15 0.91
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 0.8 0.5 0.8
+position = 6.3 11.45 -0.89
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 0.8 0.5 0.8
+position = 7.3 11.75 -2.69
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = 6.8 12.75 -6.59
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 6.8 13.25 -10.59
+color = 0.42 0.62 0.45
+body = static
+
+# Lap 2, side 3: a long 25 cm beam, then a run jump.
+[model]
+shape = box
+size = 6 0.5 0.25
+position = 2.3 13.25 -10.59
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -5.2 13.25 -10.59
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -9.7 14.25 -10.59
+color = 0.42 0.62 0.45
+body = static
+
+# Lap 2, side 4: drop down, then climb a 1.4 m ledge.
+[model]
+shape = box
+size = 2 0.5 2
+position = -9.7 13.25 -4.09
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -9.7 14.65 -1.09
+color = 0.42 0.62 0.45
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -9.7 15.65 3.41
+color = 0.42 0.62 0.45
+body = static
+
+# Lap 3, side 1: climb, then the first sprint jump (hold Shift).
+[model]
+shape = box
+size = 2 0.5 2
+position = -6.2 17.05 3.41
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3.5 0.5 2
+position = -2.45 17.55 3.41
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 6.8 18.05 3.41
+color = 0.8 0.56 0.32
+body = static
+
+# Lap 3, side 2: small stones, then a sprint jump up.
+[model]
+shape = box
+size = 0.7 0.5 0.7
+position = 6.4 18.45 0.36
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 0.7 0.5 0.7
+position = 7.2 18.85 -1.54
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 0.7 0.5 0.7
+position = 6.4 19.25 -3.44
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 2 0.5 3.5
+position = 6.8 19.55 -6.54
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 6.8 20.55 -14.99
+color = 0.8 0.56 0.32
+body = static
+
+# Lap 3, side 3: beams with gaps between them.
+[model]
+shape = box
+size = 3 0.5 0.3
+position = 2.3 20.95 -14.99
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 0.3
+position = -2.2 21.35 -14.99
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 2 0.5 0.3
+position = -6.7 21.85 -14.99
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -11.7 22.35 -14.99
+color = 0.8 0.56 0.32
+body = static
+
+# Lap 3, side 4: a long sprint jump down, then a high ledge.
+[model]
+shape = box
+size = 2 0.5 4
+position = -11.7 23.55 -10.49
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 2 0.5 3
+position = -11.7 22.55 0.01
+color = 0.8 0.56 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -11.7 23.95 4.01
+color = 0.8 0.56 0.32
+body = static
+
+# Lap 4, side 1: posts, 50 cm across, zigzagging up.
+[model]
+shape = box
+size = 0.5 0.5 0.5
+position = -8.55 24.4 3.56
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 0.5
+position = -6.65 24.85 4.46
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 0.5
+position = -4.75 25.3 3.56
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 0.5 0.5 0.5
+position = -2.85 25.75 4.46
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 2
+position = 0.9 26.25 4.01
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 7.1 26.75 4.01
+color = 0.74 0.3 0.32
+body = static
+
+# Lap 4, side 2: a 20 cm beam, then a sprint jump near the limit.
+[model]
+shape = box
+size = 0.2 0.5 5
+position = 7.1 27.25 -0.99
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 2 0.5 3
+position = 7.1 27.65 -5.99
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = 7.1 28.65 -14.89
+color = 0.74 0.3 0.32
+body = static
+
+# Lap 4, side 3: tiny posts, then a high ledge off a short run.
+[model]
+shape = box
+size = 0.4 0.5 0.4
+position = 3.9 29.05 -14.54
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 0.4 0.5 0.4
+position = 2 29.45 -15.24
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 0.4 0.5 0.4
+position = 0.1 29.85 -14.54
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 2 0.5 2
+position = -2.6 30.35 -14.89
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 3 0.5 3
+position = -7.7 31.75 -14.89
+color = 0.74 0.3 0.32
+body = static
+
+# Lap 4, side 4: the last sprint jump, then the gold platform.
+[model]
+shape = box
+size = 2 0.5 4
+position = -7.7 32.75 -10.39
+color = 0.74 0.3 0.32
+body = static
+
+[model]
+shape = box
+size = 2.5 0.5 2.5
+position = -7.7 32.75 0.46
+color = 0.74 0.3 0.32
+body = static
+
+# The top. Well done.
+[model]
+shape = box
+size = 4 0.5 4
+position = -7.7 34.15 4.71
+color = 0.95 0.75 0.25
+body = static
+
+# Where Play starts the character: on the ground, facing the first
+# steps.
+[player]
+position = -12 0 8
+yaw = -90

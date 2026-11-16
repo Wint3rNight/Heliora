@@ -118,3 +118,18 @@ TEST(unreadable_folders_are_skipped) {
   CHECK(!threw);
   CHECK(found.size() == 1);
 }
+
+TEST(duplicate_goes_beside_on_the_cameras_right) {
+  // A 2 x 1 x 3 box. With the camera's right along +x the copy goes one
+  // width over that way.
+  const glm::vec3 lo(-1.0f, 0.0f, -1.5f);
+  const glm::vec3 hi(1.0f, 1.0f, 1.5f);
+  CHECK(duplicateOffset(lo, hi, glm::vec3(1.0f, 0.0f, 0.0f)) ==
+        glm::vec3(2.0f, 0.0f, 0.0f));
+  // Turned so its right is mostly -z: one depth over, along -z.
+  CHECK(duplicateOffset(lo, hi, glm::normalize(glm::vec3(0.3f, 0.0f, -1.0f))) ==
+        glm::vec3(0.0f, 0.0f, -3.0f));
+  // Mostly -x.
+  CHECK(duplicateOffset(lo, hi, glm::normalize(glm::vec3(-1.0f, 0.0f, 0.4f))) ==
+        glm::vec3(-2.0f, 0.0f, 0.0f));
+}

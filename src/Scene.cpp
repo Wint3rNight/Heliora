@@ -492,6 +492,12 @@ std::optional<std::string> problemWith(const SceneFog &fog) {
   return fogProblem(fog);
 }
 
+std::optional<std::string> problemWith(const ScenePlayerStart &start) {
+  if (!allFinite(start.position) || !std::isfinite(start.yaw))
+    return "'position' and 'yaw' must be ordinary numbers";
+  return std::nullopt;
+}
+
 std::optional<std::string> problemWith(const SceneGridEntry &grid) {
   if (std::optional<std::string> problem = modelProblem(grid.model))
     return problem;
@@ -509,7 +515,15 @@ std::optional<std::string> problemWith(const SceneGridEntry &grid) {
   return std::nullopt;
 }
 
+bool showsWorldGrid(const SceneModelEntry &entry) {
+  return entry.shape && entry.body == PhysicsMotion::Static;
+}
+
 void removeEntry(SceneDescription &scene, SceneEntryRef ref) {
+  if (ref.kind == SceneEntryRef::Kind::Player) {
+    scene.player.reset(); // not numbered with the others
+    return;
+  }
   if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
       ref.index < static_cast<int>(scene.models.size()))
     scene.models.erase(scene.models.begin() + ref.index);
@@ -545,6 +559,35 @@ SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model) {
   scene.models.push_back(std::move(model));
   renumberSections(scene);
   return {SceneEntryRef::Kind::Model, static_cast<int>(scene.models.size()) - 1};
+}
+
+std::optional<SceneEntryRef> duplicateEntry(SceneDescription &scene,
+                                            SceneEntryRef ref,
+                                            glm::vec3 offset) {
+  // The copy keeps no comment and goes past every section, then everything
+  // is numbered back into 0, 1, 2...
+  const SceneSectionInfo last{std::numeric_limits<int>::max(), ""};
+  if (ref.kind == SceneEntryRef::Kind::Model && ref.index >= 0 &&
+      ref.index < static_cast<int>(scene.models.size())) {
+    SceneModelEntry copy = scene.models[ref.index];
+    copy.transform.position += offset;
+    copy.info = last;
+    scene.models.push_back(std::move(copy));
+    renumberSections(scene);
+    return SceneEntryRef{SceneEntryRef::Kind::Model,
+                         static_cast<int>(scene.models.size()) - 1};
+  }
+  if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
+      ref.index < static_cast<int>(scene.grids.size())) {
+    SceneGridEntry copy = scene.grids[ref.index];
+    copy.model.transform.position += offset;
+    copy.info = last;
+    scene.grids.push_back(std::move(copy));
+    renumberSections(scene);
+    return SceneEntryRef{SceneEntryRef::Kind::Grid,
+                         static_cast<int>(scene.grids.size()) - 1};
+  }
+  return std::nullopt;
 }
 
 std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex) {

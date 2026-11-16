@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <system_error>
 
@@ -68,4 +69,11 @@ glm::vec3 spawnPosition(const PickRay &ray,
   for (int i = 0; i < 3; ++i)
     reach += std::max(into[i] * boundsMin[i], into[i] * boundsMax[i]);
   return ray.origin + ray.direction * hit->distance + hit->normal * reach;
+}
+
+glm::vec3 duplicateOffset(glm::vec3 lo, glm::vec3 hi, glm::vec3 cameraRight) {
+  const glm::vec3 size = hi - lo;
+  if (std::abs(cameraRight.x) >= std::abs(cameraRight.z))
+    return glm::vec3(std::copysign(size.x, cameraRight.x), 0.0f, 0.0f);
+  return glm::vec3(0.0f, 0.0f, std::copysign(size.z, cameraRight.z));
 }

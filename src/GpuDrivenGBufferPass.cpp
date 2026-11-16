@@ -99,9 +99,11 @@ bool GpuDrivenGBufferPass::growArenaBuffer(AllocatedBuffer &buffer,
 void GpuDrivenGBufferPass::syncGeometry() {
   if (!device || staticVertices.empty() || staticIndices.empty())
     return;
+  // Storage too: the skinning pass writes skinned meshes' vertices here.
   if (growArenaBuffer(staticVertexBuffer, staticVertexBufferSize,
                       staticVertices.size() * sizeof(Vertex),
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
     uploadedVertexCount = 0;
   if (growArenaBuffer(staticIndexBuffer, staticIndexBufferSize,
                       staticIndices.size() * sizeof(uint32_t),

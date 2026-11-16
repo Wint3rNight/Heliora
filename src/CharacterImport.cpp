@@ -145,13 +145,9 @@ void computeBounds(CharacterAsset &asset) {
   glm::vec3 lo(std::numeric_limits<float>::max());
   glm::vec3 hi(std::numeric_limits<float>::lowest());
   for (size_t i = 0; i < asset.mesh.vertices.size(); ++i) {
-    const VertexSkin &skin = asset.skin[i];
-    glm::vec4 p(0.0f);
-    for (int k = 0; k < 4; ++k)
-      p += skin.weights[k] *
-           (skinning[skin.bones[k]] * glm::vec4(asset.mesh.vertices[i].pos, 1.0f));
-    lo = glm::min(lo, glm::vec3(p));
-    hi = glm::max(hi, glm::vec3(p));
+    const glm::vec3 p = skinVertex(asset.mesh.vertices[i], asset.skin[i], skinning).pos;
+    lo = glm::min(lo, p);
+    hi = glm::max(hi, p);
   }
   asset.boundsMin = lo;
   asset.boundsMax = hi;

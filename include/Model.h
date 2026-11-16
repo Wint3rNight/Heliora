@@ -106,6 +106,9 @@ public:
 
   size_t getMeshCount() const;
   const Mesh *getMesh(size_t index) const;
+  // For a skinned mesh, whose bind-pose sphere doesn't hold its other poses:
+  // the model's and every mesh's culling sphere.
+  void setBoundingSphere(glm::vec3 center, float radius);
 
   void destroyMeshModel();
 

@@ -125,6 +125,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneViewport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SettingsFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Skeleton.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Skinning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Spawning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ThirdPersonCamera.cpp
@@ -200,6 +201,7 @@ add_executable(heliora_tests
         tests/SceneTests.cpp
         tests/SettingsFileTests.cpp
         tests/SkeletonTests.cpp
+        tests/SkinningTests.cpp
         tests/SpawningTests.cpp
         tests/ShadowCascadesTests.cpp
         tests/ThirdPersonCameraTests.cpp

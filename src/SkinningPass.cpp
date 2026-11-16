@@ -1,0 +1,239 @@
+#include "SkinningPass.h"
+
+#include "VulkanDebug.h"
+
+#include <array>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+
+namespace {
+
+struct SkinningPush {
+  uint32_t vertexCount;
+  uint32_t arenaFirstVertex;
+  uint32_t writeArena;
+};
+
+VkShaderModule loadComputeSpv(VkDevice device, const std::string &relPath) {
+  std::string found;
+  for (const std::string &candidate : {relPath, "../" + relPath})
+    if (std::filesystem::exists(candidate)) {
+      found = candidate;
+      break;
+    }
+  if (found.empty())
+    throw std::runtime_error("Compute shader not found: " + relPath);
+  const std::vector<char> code = readFile(found);
+  VkShaderModuleCreateInfo ci{};
+  ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  ci.codeSize = code.size();
+  ci.pCode = reinterpret_cast<const uint32_t *>(code.data());
+  VkShaderModule module = VK_NULL_HANDLE;
+  if (vkCreateShaderModule(device, &ci, nullptr, &module) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create shader module: " + found);
+  return module;
+}
+
+// Device-local storage holding data, through a staging copy.
+void uploadStorage(VulkanDevice &device, const void *data, VkDeviceSize size,
+                   AllocatedBuffer &out) {
+  AllocatedBuffer staging;
+  createBuffer(device.getAllocator(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+               VMA_MEMORY_USAGE_AUTO, RENDER_UPLOAD_ALLOCATION_FLAGS, &staging);
+  uploadToAllocation(device.getAllocator(), staging.getAllocation(), data, size);
+  createBuffer(device.getAllocator(), size,
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, RENDER_DEVICE_ALLOCATION_FLAGS,
+               &out);
+  copyBuffer(device.getLogicalDevice(), device.getGraphicsQueue(),
+             device.getGraphicsCommandPool(), staging.get(), out.get(), size);
+}
+
+void barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage,
+             VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage,
+             VkAccessFlags2 dstAccess) {
+  VkMemoryBarrier2 b{};
+  b.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  b.srcStageMask = srcStage;
+  b.srcAccessMask = srcAccess;
+  b.dstStageMask = dstStage;
+  b.dstAccessMask = dstAccess;
+  VkDependencyInfo dependency{};
+  dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dependency.memoryBarrierCount = 1;
+  dependency.pMemoryBarriers = &b;
+  vkCmdPipelineBarrier2(cmd, &dependency);
+}
+
+} // namespace
+
+void SkinningPass::create(VulkanDevice &newDevice, VkPipelineCache pipelineCache) {
+  cleanup();
+  device = &newDevice;
+  const VkDevice dev = device->getLogicalDevice();
+
+  std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+  for (uint32_t i = 0; i < bindings.size(); ++i) {
+    bindings[i].binding = i;
+    bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[i].descriptorCount = 1;
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo layoutCI{};
+  layoutCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layoutCI.bindingCount = static_cast<uint32_t>(bindings.size());
+  layoutCI.pBindings = bindings.data();
+  if (vkCreateDescriptorSetLayout(dev, &layoutCI, nullptr, &setLayout) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create the skinning set layout");
+
+  VkPushConstantRange push{};
+  push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  push.size = sizeof(SkinningPush);
+  VkPipelineLayoutCreateInfo pipelineLayoutCI{};
+  pipelineLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pipelineLayoutCI.setLayoutCount = 1;
+  pipelineLayoutCI.pSetLayouts = &setLayout;
+  pipelineLayoutCI.pushConstantRangeCount = 1;
+  pipelineLayoutCI.pPushConstantRanges = &push;
+  if (vkCreatePipelineLayout(dev, &pipelineLayoutCI, nullptr, &pipelineLayout) !=
+      VK_SUCCESS)
+    throw std::runtime_error("Failed to create the skinning pipeline layout");
+
+  const VkShaderModule shader = loadComputeSpv(dev, "Shaders/skinning.comp.spv");
+  VkComputePipelineCreateInfo pipelineCI{};
+  pipelineCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipelineCI.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  pipelineCI.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  pipelineCI.stage.module = shader;
+  pipelineCI.stage.pName = "main";
+  pipelineCI.layout = pipelineLayout;
+  const VkResult result =
+      vkCreateComputePipelines(dev, pipelineCache, 1, &pipelineCI, nullptr, &pipeline);
+  vkDestroyShaderModule(dev, shader, nullptr);
+  if (result != VK_SUCCESS)
+    throw std::runtime_error("Failed to create the skinning pipeline");
+
+  VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                static_cast<uint32_t>(5 * MAX_FRAMES_DRAWS)};
+  VkDescriptorPoolCreateInfo poolCI{};
+  poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  poolCI.maxSets = MAX_FRAMES_DRAWS;
+  poolCI.poolSizeCount = 1;
+  poolCI.pPoolSizes = &poolSize;
+  if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &descriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create the skinning descriptor pool");
+  std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_DRAWS, setLayout);
+  VkDescriptorSetAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool = descriptorPool;
+  allocInfo.descriptorSetCount = MAX_FRAMES_DRAWS;
+  allocInfo.pSetLayouts = layouts.data();
+  sets.resize(MAX_FRAMES_DRAWS);
+  if (vkAllocateDescriptorSets(dev, &allocInfo, sets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate the skinning descriptor sets");
+}
+
+void SkinningPass::cleanup() {
+  if (!device)
+    return;
+  const VkDevice dev = device->getLogicalDevice();
+  bindBuffer.reset();
+  skinBuffer.reset();
+  matrixBuffers.clear();
+  if (descriptorPool)
+    vkDestroyDescriptorPool(dev, descriptorPool, nullptr);
+  if (pipeline)
+    vkDestroyPipeline(dev, pipeline, nullptr);
+  if (pipelineLayout)
+    vkDestroyPipelineLayout(dev, pipelineLayout, nullptr);
+  if (setLayout)
+    vkDestroyDescriptorSetLayout(dev, setLayout, nullptr);
+  descriptorPool = VK_NULL_HANDLE;
+  pipeline = VK_NULL_HANDLE;
+  pipelineLayout = VK_NULL_HANDLE;
+  setLayout = VK_NULL_HANDLE;
+  sets.clear();
+  vertexCount = 0;
+  device = nullptr;
+}
+
+void SkinningPass::setMesh(const std::vector<Vertex> &bindVertices,
+                           const std::vector<VertexSkin> &skin, size_t boneCount) {
+  if (!device || bindVertices.empty() || skin.size() != bindVertices.size())
+    return;
+  uploadStorage(*device, bindVertices.data(), sizeof(Vertex) * bindVertices.size(),
+                bindBuffer);
+  uploadStorage(*device, skin.data(), sizeof(VertexSkin) * skin.size(), skinBuffer);
+  matrixBuffers.clear();
+  matrixBuffers.resize(MAX_FRAMES_DRAWS);
+  matrixCount = std::max<size_t>(boneCount, 1);
+  const std::vector<glm::mat4> identity(matrixCount, glm::mat4(1.0f));
+  for (AllocatedBuffer &buffer : matrixBuffers) {
+    createBuffer(device->getAllocator(), sizeof(glm::mat4) * matrixCount,
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                 RENDER_UPLOAD_ALLOCATION_FLAGS, &buffer);
+    uploadToAllocation(device->getAllocator(), buffer.getAllocation(),
+                       identity.data(), sizeof(glm::mat4) * matrixCount);
+  }
+  vertexCount = static_cast<uint32_t>(bindVertices.size());
+}
+
+void SkinningPass::updateMatrices(int frame, const std::vector<glm::mat4> &skinning) {
+  if (!hasMesh() || skinning.size() < matrixCount)
+    return;
+  uploadToAllocation(device->getAllocator(), matrixBuffers[frame].getAllocation(),
+                     skinning.data(), sizeof(glm::mat4) * matrixCount);
+}
+
+void SkinningPass::record(VkCommandBuffer cmd, int frame, VkBuffer meshVertices,
+                          VkBuffer arena, int32_t arenaFirstVertex) {
+  if (!hasMesh() || meshVertices == VK_NULL_HANDLE)
+    return;
+  const bool writeArena = arena != VK_NULL_HANDLE && arenaFirstVertex >= 0;
+  // This slot's set was last used by the frame two before, which its fence
+  // has finished; the shared buffer may have been replaced since.
+  const std::array<VkDescriptorBufferInfo, 5> infos = {{
+      {bindBuffer.get(), 0, VK_WHOLE_SIZE},
+      {skinBuffer.get(), 0, VK_WHOLE_SIZE},
+      {matrixBuffers[frame].get(), 0, VK_WHOLE_SIZE},
+      {meshVertices, 0, VK_WHOLE_SIZE},
+      {writeArena ? arena : meshVertices, 0, VK_WHOLE_SIZE},
+  }};
+  std::array<VkWriteDescriptorSet, 5> writes{};
+  for (uint32_t i = 0; i < writes.size(); ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = sets[frame];
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+  }
+  vkUpdateDescriptorSets(device->getLogicalDevice(),
+                         static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                         nullptr);
+
+  vkdbgBeginLabel(cmd, "Skinning", 0.9f, 0.5f, 0.2f);
+  // The frames before drew from these vertices (vertex input) on this queue;
+  // they're done reading before the shader writes.
+  barrier(cmd,
+          VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
+              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
+                          1, &sets[frame], 0, nullptr);
+  const SkinningPush push{vertexCount,
+                          static_cast<uint32_t>(std::max(arenaFirstVertex, 0)),
+                          writeArena ? 1u : 0u};
+  vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                     sizeof(push), &push);
+  vkCmdDispatch(cmd, (vertexCount + 63) / 64, 1, 1);
+  // This frame's G-buffer and, later on this queue, its shadows read them.
+  barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+          VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT |
+              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+  vkdbgEndLabel(cmd);
+}

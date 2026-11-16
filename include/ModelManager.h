@@ -32,10 +32,13 @@ public:
   // material, plus the world grid if asked. key names the shape, size,
   // colour and grid; check findModel(key) first so the mesh isn't generated
   // again for a shape that's cached.
+  // material, when given, replaces the default one (a skinned character's
+  // embedded texture).
   int createModel(const std::string &key, MeshData mesh, bool withLods,
                   bool worldGrid, const VulkanDevice &device,
                   TextureManager &textureManager,
-                  DescriptorManager &descriptorManager);
+                  DescriptorManager &descriptorManager,
+                  const Material *material = nullptr);
   // -1 if nothing has been loaded or created under this key.
   int findModel(const std::string &key) const;
 

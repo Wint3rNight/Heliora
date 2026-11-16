@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <random>
 #include <stdexcept>
 
@@ -333,6 +334,48 @@ Material TextureManager::loadMaterial(const std::string &albedoFilename,
   regBindless(mat.metallicTextureId);
   regBindless(mat.roughnessTextureId);
   regBindless(mat.aoTextureId);
+  return mat;
+}
+
+Material TextureManager::loadMaterialFromMemory(
+    const std::string &key, const std::vector<unsigned char> &bytes,
+    const VulkanDevice &device, DescriptorManager &descriptorManager) {
+  int albedo = -1;
+  if (const auto it = textureMap.find(key); it != textureMap.end()) {
+    albedo = it->second;
+  } else if (!bytes.empty()) {
+    int w = 0, h = 0, channels = 0;
+    unsigned char *pixels =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w,
+                              &h, &channels, STBI_rgb_alpha);
+    if (pixels) {
+      albedo = createTextureImageFromPixels(key, pixels, w, h, device);
+      stbi_image_free(pixels);
+    } else {
+      std::cerr << "Couldn't decode the embedded texture " << key << ": "
+                << stbi_failure_reason() << std::endl;
+    }
+  }
+  // The other maps are loadMaterial's flat defaults.
+  Material mat;
+  mat.albedoTextureId =
+      albedo >= 0 ? albedo
+                  : getOrCreateFlatTexture("__flat_white__", 255, 255, 255, 255,
+                                           device);
+  mat.normalTextureId =
+      getOrCreateFlatTexture("__flat_normal__", 128, 128, 255, 255, device);
+  mat.metallicTextureId =
+      getOrCreateFlatTexture("__flat_black__", 0, 0, 0, 255, device);
+  mat.roughnessTextureId =
+      getOrCreateFlatTexture("__flat_white__", 255, 255, 255, 255, device);
+  mat.aoTextureId =
+      getOrCreateFlatTexture("__flat_white_ao__", 255, 255, 255, 255, device);
+  for (const int id : {mat.albedoTextureId, mat.normalTextureId,
+                       mat.metallicTextureId, mat.roughnessTextureId,
+                       mat.aoTextureId})
+    descriptorManager.registerBindlessTexture(
+        device.getLogicalDevice(), static_cast<uint32_t>(id),
+        textureImageViews[id].get(), textureSampler);
   return mat;
 }
 

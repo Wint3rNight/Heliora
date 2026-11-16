@@ -45,6 +45,15 @@ Mesh::Mesh(VmaAllocator newAllocator, VkDevice newDevice, VkQueue transferQueue,
   createIndexBuffer(transferQueue, transferCommandPool, indices);
 }
 
+void MeshModel::setBoundingSphere(glm::vec3 center, float radius) {
+  boundingCenter = center;
+  boundingRadius = radius;
+  for (Mesh &mesh : meshList) {
+    mesh.boundingCenter = center;
+    mesh.boundingRadius = radius;
+  }
+}
+
 void Mesh::generateLods(VkQueue transferQueue,
                         VkCommandPool transferCommandPool) {
   if (cpuIndices.size() < 12)
@@ -154,9 +163,12 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
   uploadToAllocation(allocator, stagingBuffer.getAllocation(),
                      vertices->data(), bufferSize);
 
+  // Storage too, so the skinning pass can write a skinned mesh's vertices
+  // over it every frame.
   createBuffer(allocator, bufferSize,
                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &vertexBuffer);
 
   copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),

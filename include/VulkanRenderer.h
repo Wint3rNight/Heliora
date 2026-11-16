@@ -18,6 +18,7 @@
 #include "CompositePass.h"
 #include "CharacterImport.h"
 #include "DebugLinePass.h"
+#include "SkinningPass.h"
 #include "DescriptorManager.h"
 #include "EditHistory.h"
 #include "FixedStepClock.h"
@@ -212,11 +213,22 @@ private:
   // read once at startup. Without its files there's none, and the capsule
   // stays.
   std::optional<CharacterAsset> characterAsset;
+  int characterModelId = -1; // made at the first scene load, kept after
   double characterClipTime = 0.0; // seconds into the clip playing
+  // This frame's skinning matrices, worked out while posing and uploaded
+  // in draw() once the frame slot's fence says it's free.
+  std::vector<glm::mat4> characterSkinning;
   std::vector<PhysicsDebugVertex> skeletonLines; // Show skeleton, play mode
+  SkinningPass skinningPass;
   void loadCharacter();
+  void createCharacterModel();
+  // The scale from the model file's units to the spawned body's height.
+  float characterScale() const;
+  // Each bone in the skeleton's space, for this frame.
+  std::vector<glm::mat4> characterPose() const;
   // The character's skeleton as lines where it's drawn this frame.
-  void updateSkeletonLines(const glm::mat4 &placement);
+  void updateSkeletonLines(const glm::mat4 &placement,
+                           const std::vector<glm::mat4> &model);
   // The capsules for the Character tab's body sizes, made if they aren't
   // yet. A new mesh waits for the GPU to go idle first.
   void ensurePlayerModels();

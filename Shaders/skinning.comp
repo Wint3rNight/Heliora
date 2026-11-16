@@ -1,0 +1,86 @@
+#version 450
+
+// Linear blend skinning, once a frame, before the G-buffer and shadows: each
+// bind-pose vertex moved by its four bones' matrices mixed by weight, written
+// over the mesh's own vertex buffer (the direct G-buffer and shadow passes
+// draw it) and its copy in the GPU-driven pass's shared buffer. The same
+// maths as skinVertex in src/Skinning.cpp.
+
+layout(local_size_x = 64) in;
+
+// Vertex: 17 floats, tightly packed: position 0-2, colour 3-5, uv 6-7,
+// normal 8-10, tangent 11-13, bitangent 14-16. Read and written as floats,
+// since std430 would pad a vec3.
+const uint kFloats = 17u;
+
+layout(set = 0, binding = 0, std430) readonly buffer BindVertices {
+    float bindData[];
+};
+
+struct Skin {
+    uvec4 bones;
+    vec4 weights;
+};
+layout(set = 0, binding = 1, std430) readonly buffer Skins {
+    Skin skins[];
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer Matrices {
+    mat4 matrices[];
+};
+
+layout(set = 0, binding = 3, std430) writeonly buffer MeshVertices {
+    float meshData[];
+};
+
+layout(set = 0, binding = 4, std430) writeonly buffer ArenaVertices {
+    float arenaData[];
+};
+
+layout(push_constant) uniform Push {
+    uint vertexCount;
+    uint arenaFirstVertex;
+    uint writeArena; // 0 when the mesh isn't in the shared buffer
+} pc;
+
+vec3 load3(uint at) {
+    return vec3(bindData[at], bindData[at + 1u], bindData[at + 2u]);
+}
+
+vec3 unit(vec3 v, vec3 fallback) {
+    float len = length(v);
+    return len > 1e-12 ? v / len : fallback;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertexCount)
+        return;
+    Skin s = skins[i];
+    mat4 m = matrices[s.bones.x] * s.weights.x +
+             matrices[s.bones.y] * s.weights.y +
+             matrices[s.bones.z] * s.weights.z +
+             matrices[s.bones.w] * s.weights.w;
+    mat3 turn = mat3(m);
+    uint at = i * kFloats;
+
+    float v[17];
+    vec3 p = (m * vec4(load3(at), 1.0)).xyz;
+    vec3 n = unit(turn * load3(at + 8u), load3(at + 8u));
+    vec3 t = unit(turn * load3(at + 11u), load3(at + 11u));
+    vec3 b = unit(turn * load3(at + 14u), load3(at + 14u));
+    v[0] = p.x; v[1] = p.y; v[2] = p.z;
+    for (uint k = 3u; k < 8u; ++k)
+        v[k] = bindData[at + k]; // colour and uv as they are
+    v[8] = n.x;  v[9] = n.y;  v[10] = n.z;
+    v[11] = t.x; v[12] = t.y; v[13] = t.z;
+    v[14] = b.x; v[15] = b.y; v[16] = b.z;
+
+    for (uint k = 0u; k < kFloats; ++k)
+        meshData[at + k] = v[k];
+    if (pc.writeArena != 0u) {
+        uint arenaAt = (pc.arenaFirstVertex + i) * kFloats;
+        for (uint k = 0u; k < kFloats; ++k)
+            arenaData[arenaAt + k] = v[k];
+    }
+}

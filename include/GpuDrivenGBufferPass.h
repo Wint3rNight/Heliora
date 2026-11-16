@@ -158,6 +158,19 @@ private:
   size_t uploadedVertexCount = 0;
   size_t uploadedIndexCount = 0;
   std::unordered_map<const Mesh *, int32_t> meshVertexOffsets;
+
+public:
+  // The shared vertex buffer, and where a mesh's vertices start in it
+  // (counted in vertices), or -1 if it isn't in it: the skinning pass writes
+  // a skinned mesh's vertices over its copy here every frame. The buffer
+  // can be replaced when the arena grows, so ask each frame.
+  VkBuffer arenaVertexBuffer() const { return staticVertexBuffer.get(); }
+  int32_t arenaFirstVertex(const Mesh *mesh) const {
+    const auto it = meshVertexOffsets.find(mesh);
+    return it == meshVertexOffsets.end() ? -1 : it->second;
+  }
+
+private:
   std::vector<GeometryRange> geometryRanges;
   // (mesh pointer, lod) → index into geometryRanges. lod < 8 always, so it
   // packs into the pointer's low bits (allocations are ≥ 8-byte aligned).

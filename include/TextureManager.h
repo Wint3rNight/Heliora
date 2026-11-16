@@ -34,6 +34,14 @@ public:
                         const VulkanDevice &device,
                         DescriptorManager &descriptorManager);
 
+  // A material whose albedo is an image file's bytes in memory (a texture
+  // embedded in a model file: PNG or JPEG), cached under key; the other maps
+  // are the flat defaults. Without usable bytes the albedo is plain white.
+  Material loadMaterialFromMemory(const std::string &key,
+                                  const std::vector<unsigned char> &bytes,
+                                  const VulkanDevice &device,
+                                  DescriptorManager &descriptorManager);
+
   int loadSkybox(const std::string &filename, const VulkanDevice &device,
                  DescriptorManager &descriptorManager);
 

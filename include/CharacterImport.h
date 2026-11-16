@@ -4,6 +4,7 @@
 #include "CharacterFile.h"
 #include "PrimitiveMesh.h"
 #include "Skeleton.h"
+#include "Skinning.h"
 
 #include <array>
 #include <optional>
@@ -13,13 +14,6 @@
 // Reading a .character's model and clips with Assimp into the animation
 // types of heliora_core. The game's side, since heliora_core doesn't use
 // Assimp.
-
-// The bones that move a vertex and how much: up to four, by skeleton bone,
-// the weights adding up to 1.
-struct VertexSkin {
-  glm::uvec4 bones{0u};
-  glm::vec4 weights{0.0f};
-};
 
 struct CharacterClipData {
   AnimationClip clip;

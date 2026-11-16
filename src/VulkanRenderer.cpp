@@ -241,6 +241,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // 8. Every image the scene's size decides: lit, bloom, SSGI, SSAO, TAA
     //    history, the composite's, the G-buffer, the GPU-driven pass's HZB,
     //    auto-exposure, and the descriptor sets that point at them.
+    skinningPass.create(device, pipelineCache.get());
     debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
                          pipelineCache.get());
     createSceneTargets();
@@ -1264,8 +1265,9 @@ void VulkanRenderer::ensurePlayerModels() {
       playerCapsuleEntry(tuning.radius, tuning.crouchHeight);
   // The Play after a change of body size needs new meshes, uploaded while
   // nothing in flight can be drawing.
+  const bool newCharacter = characterAsset && characterModelId < 0;
   if (modelManager.findModel(primitiveModelKey(standing)) < 0 ||
-      modelManager.findModel(primitiveModelKey(crouched)) < 0)
+      modelManager.findModel(primitiveModelKey(crouched)) < 0 || newCharacter)
     vkDeviceWaitIdle(device.getLogicalDevice());
   try {
     playerModelId = createPrimitiveModel(standing);
@@ -1274,6 +1276,54 @@ void VulkanRenderer::ensurePlayerModels() {
     playerModelId = crouchedPlayerModelId = -1;
     spdlog::error("Couldn't make the character's capsule: {}", e.what());
   }
+  if (newCharacter)
+    createCharacterModel();
+}
+
+// The character's mesh as a model with its embedded texture, in the
+// GPU-driven pass's shared buffer too, and handed to the skinning pass.
+// Once: it doesn't change with the scene.
+void VulkanRenderer::createCharacterModel() {
+  const CharacterAsset &asset = *characterAsset;
+  try {
+    const Material material = textureManager.loadMaterialFromMemory(
+        "character|" + asset.albedoName, asset.albedo, device, descriptorManager);
+    characterModelId =
+        modelManager.createModel("#character", asset.mesh, false, false, device,
+                                 textureManager, descriptorManager, &material);
+  } catch (const std::exception &e) {
+    characterModelId = -1;
+    spdlog::error("Couldn't make the character's model, keeping the capsule: {}",
+                  e.what());
+    return;
+  }
+  // The bind-pose sphere doesn't hold a crouch or a roll: one around the
+  // whole height, wide enough for the arms out, so culling never drops him.
+  const float height = asset.boundsMax.y - asset.boundsMin.y;
+  modelManager.getModel(characterModelId)
+      ->setBoundingSphere(glm::vec3(0.0f, asset.boundsMin.y + 0.5f * height, 0.0f),
+                          0.75f * height);
+  gpuDrivenGBufferPass.registerModelGeometry(characterModelId, modelManager);
+  skinningPass.setMesh(asset.mesh.vertices, asset.skin,
+                       asset.skeleton.bones.size());
+}
+
+float VulkanRenderer::characterScale() const {
+  const float modelHeight = characterAsset->boundsMax.y - characterAsset->boundsMin.y;
+  return modelHeight > 0.0f && player
+             ? player->character().tuning().height / modelHeight
+             : 1.0f;
+}
+
+// For now the idle clip; the state machine (step 8) picks and blends.
+std::vector<glm::mat4> VulkanRenderer::characterPose() const {
+  const Skeleton &skeleton = characterAsset->skeleton;
+  Pose pose = bindPose(skeleton);
+  if (const CharacterClipData *idle = characterAsset->clip(ClipSlot::Idle))
+    sampleClip(idle->clip, skeleton,
+               static_cast<float>(characterClipTime) + idle->start, idle->loop,
+               pose);
+  return modelSpace(skeleton, pose);
 }
 
 // At the scene's [player], or on the ground below the fly camera facing its
@@ -1299,9 +1349,16 @@ void VulkanRenderer::spawnPlayer() {
   player = std::make_unique<Player>(*physics, feet, yaw,
                                     characterPanel.character,
                                     characterPanel.camera);
-  if (playerModelId >= 0) {
+  const bool animated = characterModelId >= 0;
+  if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
     auto node = std::make_unique<SceneNode>();
-    node->setModelId(playerModelId);
+    node->setModelId(model);
+    if (animated) {
+      // Posing keeps the node's scale: the model file's units to the body's.
+      NodeTransform scaled;
+      scaled.scale = characterScale();
+      node->setTransform(scaled);
+    }
     playerNode = node.get();
     rootNode.addChild(std::move(node));
   }
@@ -1315,29 +1372,35 @@ void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
   if (!playerNode)
     return;
   const CharacterController &character = player->character();
+  const glm::vec3 feet = character.drawnPosition(alpha);
+  skeletonLines.clear();
+  if (characterModelId >= 0) {
+    characterClipTime += frameSeconds;
+    const std::vector<glm::mat4> model = characterPose();
+    characterSkinning = skinningMatrices(characterAsset->skeleton, model);
+    // Show skeleton draws the bones instead of the body.
+    const bool skeleton = characterPanel.showSkeleton;
+    const int shown = skeleton ? -1 : characterModelId;
+    if (playerNode->getModelId() != shown)
+      playerNode->setModelId(shown);
+    // Feet on the capsule's feet, turned to its facing: Mixamo models face
+    // +z, the character's yaw 0 faces -z.
+    const glm::quat facing = glm::angleAxis(
+        character.drawnYaw(alpha) + glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
+    playerNode->setPose(feet, facing);
+    if (skeleton)
+      updateSkeletonLines(glm::translate(glm::mat4(1.0f), feet) *
+                              glm::mat4_cast(facing) *
+                              glm::scale(glm::mat4(1.0f), glm::vec3(characterScale())),
+                          model);
+    return;
+  }
   const float height = character.height();
-  const bool skeleton = characterAsset && characterPanel.showSkeleton;
-  // Show skeleton draws the bones instead of the body.
-  const int model = skeleton ? -1
-                    : height < character.tuning().height && crouchedPlayerModelId >= 0
+  const int model = height < character.tuning().height && crouchedPlayerModelId >= 0
                         ? crouchedPlayerModelId
                         : playerModelId;
   if (playerNode->getModelId() != model)
     playerNode->setModelId(model);
-  characterClipTime += frameSeconds;
-  skeletonLines.clear();
-  if (skeleton) {
-    // Feet on the capsule's feet, turned to its facing (Mixamo models face
-    // +z, the character's yaw 0 faces -z) and scaled to its height.
-    const float modelHeight = characterAsset->boundsMax.y - characterAsset->boundsMin.y;
-    const float scale = modelHeight > 0.0f ? character.tuning().height / modelHeight : 1.0f;
-    const glm::mat4 placement =
-        glm::translate(glm::mat4(1.0f), character.drawnPosition(alpha)) *
-        glm::mat4_cast(glm::angleAxis(character.drawnYaw(alpha) + glm::pi<float>(),
-                                      glm::vec3(0.0f, 1.0f, 0.0f))) *
-        glm::scale(glm::mat4(1.0f), glm::vec3(scale));
-    updateSkeletonLines(placement);
-  }
   // The capsule mesh is centred on its middle, the character's position is
   // its feet.
   playerNode->setPose(character.drawnPosition(alpha) +
@@ -1365,15 +1428,10 @@ void VulkanRenderer::loadCharacter() {
 }
 
 // Each bone joined to its parent, the rig's own bones only (not the file's
-// root or mesh nodes), posed by the idle clip.
-void VulkanRenderer::updateSkeletonLines(const glm::mat4 &placement) {
+// root or mesh nodes).
+void VulkanRenderer::updateSkeletonLines(const glm::mat4 &placement,
+                                         const std::vector<glm::mat4> &model) {
   const Skeleton &skeleton = characterAsset->skeleton;
-  Pose pose = bindPose(skeleton);
-  if (const CharacterClipData *idle = characterAsset->clip(ClipSlot::Idle))
-    sampleClip(idle->clip, skeleton,
-               static_cast<float>(characterClipTime) + idle->start, idle->loop,
-               pose);
-  const std::vector<glm::mat4> model = modelSpace(skeleton, pose);
   // The UI's warm yellow (kGizmoHot, 0xf5d36b) as RGBA8 bytes.
   constexpr uint32_t kBoneColor = 0xf5u | 0xd3u << 8 | 0x6bu << 16 | 0xffu << 24;
   auto isRig = [&](int i) {
@@ -3246,6 +3304,7 @@ void VulkanRenderer::cleanup() {
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
+  skinningPass.cleanup();
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   materialProbePass.cleanup();
@@ -3383,6 +3442,17 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
     throw std::runtime_error("Failed to begin G-buffer command buffer");
 
   metrics.resetGpuQueries(cmd);
+
+  // The character bent for this frame, before anything draws it.
+  if (player && characterModelId >= 0 && skinningPass.hasMesh())
+    if (const MeshModel *character = modelManager.getModel(characterModelId);
+        character && character->getMeshCount() > 0) {
+      const Mesh *mesh = character->getMesh(0);
+      skinningPass.updateMatrices(currentFrame, characterSkinning);
+      skinningPass.record(cmd, currentFrame, mesh->getVertexBuffer(),
+                          gpuDrivenGBufferPass.arenaVertexBuffer(),
+                          gpuDrivenGBufferPass.arenaFirstVertex(mesh));
+    }
 
   VkViewport viewport = {};
   viewport.width = static_cast<float>(sceneExtent.width);

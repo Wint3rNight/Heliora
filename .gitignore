@@ -77,3 +77,8 @@ DIRECTION.md
 
 # The editor's panel layout, saved by the game (ImGui's format)
 Resources/editor_layout.ini
+
+# Mixamo characters and animations: free to use in the game, but the
+# licence forbids sharing the raw files, and this repository is public.
+# They stay on this machine (download them from mixamo.com to rebuild).
+Resources/Characters/mixamo/

@@ -50,6 +50,10 @@ struct CharacterPanel {
   CharacterTuning character;
   ThirdPersonCameraTuning camera;
   bool changed = false;
+  // Draws the animated character's bones as lines in play mode, instead of
+  // its body. Not saved: a debug view (HELIORA_SHOW_SKELETON=1 starts with it).
+  bool showSkeleton = false;
+  bool characterLoaded = false; // whether there's a skeleton to show
 };
 
 // A question that has to be answered before something can happen: unsaved

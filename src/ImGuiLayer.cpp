@@ -1689,6 +1689,12 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   drawSettingsButtons(ui, "character");
   ImGui::TextDisabled(ui.playing ? "Changes apply as you play."
                                  : "Changes apply when you play (F5).");
+  ImGui::BeginDisabled(!panel.characterLoaded);
+  ImGui::Checkbox("Show skeleton", &panel.showSkeleton);
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip(panel.characterLoaded
+                            ? "The animated character's bones instead of its body"
+                            : "No character loaded: its Mixamo files aren't here");
   constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
   auto slider = [&](const char *label, float *value, float lo, float hi,
                     const char *format) {

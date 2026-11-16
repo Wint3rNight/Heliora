@@ -1,0 +1,105 @@
+# Ganfaul M Aure, the player character, and the clip for each move.
+# Every file here comes from Mixamo (mixamo.com, a free Adobe account) and
+# lives in Resources/Characters/mixamo/, which git ignores: Mixamo's licence
+# allows using them in the game but not sharing the raw files. Without
+# them the game keeps the capsule.
+model = Resources/Characters/mixamo/packs/Male Locomotion Pack/Ganfaul M Aure.fbx
+
+# Standing still, walking and running ahead: the plain Male locomotion pack.
+[clip]
+slot = idle
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/idle.fbx
+
+[clip]
+slot = walk_forward
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/walking.fbx
+
+[clip]
+slot = run_forward
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/standard run.fbx
+
+[clip]
+slot = sprint
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Sprint Forward.fbx
+
+# The other directions, used while aiming: the Magic locomotion pack, a
+# ready stance for the powers.
+[clip]
+slot = walk_back
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Walk Back.fbx
+
+[clip]
+slot = walk_left
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Walk Left.fbx
+
+[clip]
+slot = walk_right
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Walk Right.fbx
+
+[clip]
+slot = run_back
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Run Back.fbx
+
+[clip]
+slot = run_left
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Run Left.fbx
+
+[clip]
+slot = run_right
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Run Right.fbx
+
+# In the air.
+[clip]
+slot = jump
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Jump.fbx
+
+[clip]
+slot = fall
+file = Resources/Characters/mixamo/clips/Falling Idle.fbx
+
+[clip]
+slot = land
+file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Land To Standing Idle.fbx
+
+# Crouching: the Pro Magic pack.
+[clip]
+slot = crouch_idle
+file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Idle.fbx
+
+[clip]
+slot = crouch_forward
+file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Walk Forward.fbx
+
+[clip]
+slot = crouch_back
+file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Walk Back.fbx
+
+[clip]
+slot = crouch_left
+file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Walk Left.fbx
+
+[clip]
+slot = crouch_right
+file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Walk Right.fbx
+
+# Dodging: the roll when not aiming, a step in the pressed direction while
+# aiming. These keep their root motion: the dodge moves as the clip does.
+[clip]
+slot = roll
+file = Resources/Characters/mixamo/clips/Sprinting Forward Roll.fbx
+
+[clip]
+slot = dodge_forward
+file = Resources/Characters/mixamo/clips/Standing Dodge Forward.fbx
+
+[clip]
+slot = dodge_back
+file = Resources/Characters/mixamo/clips/Standing Dodge Backward.fbx
+
+[clip]
+slot = dodge_left
+file = Resources/Characters/mixamo/clips/Standing Dodge Left.fbx
+
+[clip]
+slot = dodge_right
+file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx

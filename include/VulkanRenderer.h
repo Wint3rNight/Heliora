@@ -16,6 +16,7 @@
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "CompositePass.h"
+#include "CharacterImport.h"
 #include "DebugLinePass.h"
 #include "DescriptorManager.h"
 #include "EditHistory.h"
@@ -207,6 +208,15 @@ private:
   glm::vec3 flyCameraPosition{0.0f};
   float flyCameraYaw = -90.0f; // degrees, Camera's convention
   static SceneModelEntry playerCapsuleEntry(float radius, float height);
+  // The player's look and moves, from Resources/Characters/ganfaul.character,
+  // read once at startup. Without its files there's none, and the capsule
+  // stays.
+  std::optional<CharacterAsset> characterAsset;
+  double characterClipTime = 0.0; // seconds into the clip playing
+  std::vector<PhysicsDebugVertex> skeletonLines; // Show skeleton, play mode
+  void loadCharacter();
+  // The character's skeleton as lines where it's drawn this frame.
+  void updateSkeletonLines(const glm::mat4 &placement);
   // The capsules for the Character tab's body sizes, made if they aren't
   // yet. A new mesh waits for the GPU to go idle first.
   void ensurePlayerModels();

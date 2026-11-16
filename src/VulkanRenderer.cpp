@@ -146,6 +146,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
   window = newWindow;
   // First, so everything set up below starts from the saved values.
   loadSettings();
+  loadCharacter();
 
   try {
     // 1. Device
@@ -1315,17 +1316,76 @@ void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
     return;
   const CharacterController &character = player->character();
   const float height = character.height();
-  const int model = height < character.tuning().height && crouchedPlayerModelId >= 0
+  const bool skeleton = characterAsset && characterPanel.showSkeleton;
+  // Show skeleton draws the bones instead of the body.
+  const int model = skeleton ? -1
+                    : height < character.tuning().height && crouchedPlayerModelId >= 0
                         ? crouchedPlayerModelId
                         : playerModelId;
   if (playerNode->getModelId() != model)
     playerNode->setModelId(model);
+  characterClipTime += frameSeconds;
+  skeletonLines.clear();
+  if (skeleton) {
+    // Feet on the capsule's feet, turned to its facing (Mixamo models face
+    // +z, the character's yaw 0 faces -z) and scaled to its height.
+    const float modelHeight = characterAsset->boundsMax.y - characterAsset->boundsMin.y;
+    const float scale = modelHeight > 0.0f ? character.tuning().height / modelHeight : 1.0f;
+    const glm::mat4 placement =
+        glm::translate(glm::mat4(1.0f), character.drawnPosition(alpha)) *
+        glm::mat4_cast(glm::angleAxis(character.drawnYaw(alpha) + glm::pi<float>(),
+                                      glm::vec3(0.0f, 1.0f, 0.0f))) *
+        glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+    updateSkeletonLines(placement);
+  }
   // The capsule mesh is centred on its middle, the character's position is
   // its feet.
   playerNode->setPose(character.drawnPosition(alpha) +
                           glm::vec3(0.0f, 0.5f * height, 0.0f),
                       glm::angleAxis(character.drawnYaw(alpha),
                                      glm::vec3(0.0f, 1.0f, 0.0f)));
+}
+
+void VulkanRenderer::loadCharacter() {
+  const std::string path = resolveCharacterPath("Resources/Characters/ganfaul.character");
+  if (path.empty()) {
+    spdlog::info("No Resources/Characters/ganfaul.character: the character is a capsule");
+    return;
+  }
+  std::string error;
+  try {
+    characterAsset = importCharacter(CharacterIO::loadFromFile(path), error);
+  } catch (const std::exception &e) {
+    error = e.what();
+  }
+  if (!characterAsset)
+    spdlog::warn("Character not loaded, keeping the capsule: {}", error);
+  if (std::getenv("HELIORA_SHOW_SKELETON"))
+    characterPanel.showSkeleton = true;
+}
+
+// Each bone joined to its parent, the rig's own bones only (not the file's
+// root or mesh nodes), posed by the idle clip.
+void VulkanRenderer::updateSkeletonLines(const glm::mat4 &placement) {
+  const Skeleton &skeleton = characterAsset->skeleton;
+  Pose pose = bindPose(skeleton);
+  if (const CharacterClipData *idle = characterAsset->clip(ClipSlot::Idle))
+    sampleClip(idle->clip, skeleton,
+               static_cast<float>(characterClipTime) + idle->start, idle->loop,
+               pose);
+  const std::vector<glm::mat4> model = modelSpace(skeleton, pose);
+  // The UI's warm yellow (kGizmoHot, 0xf5d36b) as RGBA8 bytes.
+  constexpr uint32_t kBoneColor = 0xf5u | 0xd3u << 8 | 0x6bu << 16 | 0xffu << 24;
+  auto isRig = [&](int i) {
+    return skeleton.bones[i].name.rfind("mixamorig", 0) == 0;
+  };
+  for (size_t i = 0; i < skeleton.bones.size(); ++i) {
+    const int parent = skeleton.bones[i].parent;
+    if (parent < 0 || !isRig(static_cast<int>(i)) || !isRig(parent))
+      continue;
+    skeletonLines.push_back({glm::vec3(placement * model[parent][3]), kBoneColor});
+    skeletonLines.push_back({glm::vec3(placement * model[i][3]), kBoneColor});
+  }
 }
 
 void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
@@ -4107,6 +4167,7 @@ void VulkanRenderer::buildUi() {
       },
       [this](int index) { requestSceneLoad(index); }};
   ui.physics = &physicsPanel;
+  characterPanel.characterLoaded = characterAsset.has_value();
   ui.character = &characterPanel;
   ui.bodiesInWorld = physics ? physics->bodyCount() : 0;
   ui.bodyLimit = physics ? physics->bodyLimit() : 0;
@@ -4162,21 +4223,22 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
   // wireframes (only built while F2 is on) and, in edit mode, the player
   // start and the selection's outline. Copied together only when both are
   // showing.
-  const bool showWireframes = physicsPanel.showWireframes && physics;
-  const bool showSelection = !playing && !editorLines.empty();
+  std::vector<const std::vector<PhysicsDebugVertex> *> sources;
+  if (physicsPanel.showWireframes && physics)
+    sources.push_back(&physics->debugLines(glm::vec3(sceneUbo.cameraPosition)));
+  if (!playing && !editorLines.empty())
+    sources.push_back(&editorLines);
+  if (playing && !skeletonLines.empty())
+    sources.push_back(&skeletonLines);
   const std::vector<PhysicsDebugVertex> *lines = nullptr;
-  if (showWireframes) {
-    const std::vector<PhysicsDebugVertex> &wireframes =
-        physics->debugLines(glm::vec3(sceneUbo.cameraPosition));
-    lines = &wireframes;
-    if (showSelection) {
-      debugLineScratch = wireframes;
-      debugLineScratch.insert(debugLineScratch.end(), editorLines.begin(),
-                              editorLines.end());
-      lines = &debugLineScratch;
-    }
-  } else if (showSelection) {
-    lines = &editorLines;
+  if (sources.size() == 1) {
+    lines = sources.front();
+  } else if (sources.size() > 1) {
+    debugLineScratch.clear();
+    for (const auto *source : sources)
+      debugLineScratch.insert(debugLineScratch.end(), source->begin(),
+                              source->end());
+    lines = &debugLineScratch;
   }
   const bool drawPhysicsLines = lines != nullptr;
   if (drawPhysicsLines)

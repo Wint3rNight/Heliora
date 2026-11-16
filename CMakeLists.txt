@@ -110,6 +110,7 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AnimationClip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EditHistory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/GizmoMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
@@ -181,6 +182,7 @@ add_executable(heliora_tests
         tests/main.cpp
         tests/AnimationClipTests.cpp
         tests/CharacterControllerTests.cpp
+        tests/CharacterFileTests.cpp
         tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp
         tests/FrustumTests.cpp

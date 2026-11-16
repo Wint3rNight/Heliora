@@ -121,6 +121,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SettingsFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Spawning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ThirdPersonCamera.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Frustum.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
@@ -189,6 +190,7 @@ add_executable(heliora_tests
         tests/SettingsFileTests.cpp
         tests/SpawningTests.cpp
         tests/ShadowCascadesTests.cpp
+        tests/ThirdPersonCameraTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
 add_test(NAME heliora_tests COMMAND heliora_tests)

@@ -8,16 +8,20 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Constraints/ContactConstraintManager.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -40,10 +44,12 @@
 namespace {
 
 // Static bodies never test against each other, which cuts most pairs in a
-// world that's mostly static.
+// world that's mostly static. Character is the body inside each character:
+// only moving bodies hit it, and queries pass through it.
 namespace Layers {
 constexpr JPH::ObjectLayer NonMoving = 0;
 constexpr JPH::ObjectLayer Moving = 1;
+constexpr JPH::ObjectLayer Character = 2;
 } // namespace Layers
 
 // One broad phase tree per layer, so moving bodies never touch the static
@@ -74,8 +80,9 @@ class ObjectVsBroadPhaseFilter final : public JPH::ObjectVsBroadPhaseLayerFilter
 public:
   bool ShouldCollide(JPH::ObjectLayer layer,
                      JPH::BroadPhaseLayer broadPhaseLayer) const override {
-    // A static body only needs to look in the moving tree.
-    return layer != Layers::NonMoving ||
+    // Static bodies and characters' bodies only meet moving bodies, so they
+    // only look in the moving tree.
+    return layer == Layers::Moving ||
            broadPhaseLayer == BroadPhaseLayers::Moving;
   }
 };
@@ -84,6 +91,14 @@ class ObjectPairFilter final : public JPH::ObjectLayerPairFilter {
 public:
   bool ShouldCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) const override {
     return a == Layers::Moving || b == Layers::Moving;
+  }
+};
+
+// For rays and sweeps that should pass through characters.
+class IgnoreCharactersFilter final : public JPH::ObjectLayerFilter {
+public:
+  bool ShouldCollide(JPH::ObjectLayer layer) const override {
+    return layer != Layers::Character;
   }
 };
 
@@ -253,6 +268,64 @@ JPH::ShapeRefC makeTriangleMesh(const PhysicsMeshParts &parts) {
   return makeHulls(parts);
 }
 
+// A capsule standing on the origin, so a character's position is its feet.
+JPH::ShapeRefC makeCharacterShape(float radius, float height) {
+  const float halfCylinder = std::max(0.5f * height - radius, 0.01f);
+  return JPH::RotatedTranslatedShapeSettings(
+             JPH::Vec3(0.0f, halfCylinder + radius, 0.0f),
+             JPH::Quat::sIdentity(), new JPH::CapsuleShape(halfCylinder, radius))
+      .Create()
+      .Get();
+}
+
+// Dynamic bodies don't shove characters: Jolt would carry a character along
+// at their speed, so a thrown ball took a 70 kg character with it. They hit
+// its body instead, and it still pushes them.
+class CharacterContacts final : public JPH::CharacterContactListener {
+public:
+  void OnContactAdded(const JPH::CharacterVirtual *,
+                      const JPH::CharacterContact &contact,
+                      JPH::CharacterContactSettings &settings) override {
+    settings.mCanPushCharacter = contact.mMotionTypeB != JPH::EMotionType::Dynamic;
+  }
+  void OnContactPersisted(const JPH::CharacterVirtual *character,
+                          const JPH::CharacterContact &contact,
+                          JPH::CharacterContactSettings &settings) override {
+    OnContactAdded(character, contact, settings);
+  }
+};
+
+// Jolt moves a character by the velocity it's given and keeps that velocity
+// as it was, even pushing into a wall. Take away what pushed into anything
+// it collided with, relative to that thing's own motion, so a fall stops on
+// landing and a jump stops at a ceiling.
+JPH::Vec3 velocityAfterContacts(const JPH::CharacterVirtual &character) {
+  JPH::Vec3 velocity = character.GetLinearVelocity();
+  for (const JPH::CharacterContact &contact : character.GetActiveContacts()) {
+    if (!contact.mHadCollision || contact.mWasDiscarded)
+      continue;
+    const float into =
+        (velocity - contact.mLinearVelocity).Dot(contact.mContactNormal);
+    if (into < 0.0f)
+      velocity -= into * contact.mContactNormal;
+  }
+  return velocity;
+}
+
+PhysicsGround toGround(JPH::CharacterBase::EGroundState state) {
+  switch (state) {
+  case JPH::CharacterBase::EGroundState::OnGround:
+    return PhysicsGround::OnGround;
+  case JPH::CharacterBase::EGroundState::OnSteepGround:
+    return PhysicsGround::OnSteepGround;
+  case JPH::CharacterBase::EGroundState::NotSupported:
+    return PhysicsGround::NotSupported;
+  case JPH::CharacterBase::EGroundState::InAir:
+    break;
+  }
+  return PhysicsGround::InAir;
+}
+
 #ifdef JPH_DEBUG_RENDERER
 // Collects Jolt's debug drawing as line end points. Triangles arrive as
 // their three edges (DebugRendererSimple does that), text is dropped.
@@ -336,6 +409,40 @@ struct PhysicsWorld::Impl {
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
   bool warnedFull = false;
 
+  // Declared after system, so they go first: each removes its body from it.
+  CharacterContacts characterContacts;
+  struct CharacterSlot {
+    JPH::Ref<JPH::CharacterVirtual> character; // null once removed
+    float radius = 0.0f;
+    float height = 0.0f;
+    glm::vec3 velocity{0.0f}; // after the last move, see velocityAfterContacts
+  };
+  std::vector<CharacterSlot> characters; // PhysicsCharacterId is the index
+  // By body index: 1 for a character's body. Those are left out of the moved
+  // list, since the character, not the body, says where it is.
+  std::vector<uint8_t> isCharacterBody;
+  int characterBodies = 0;
+  IgnoreCharactersFilter ignoreCharacters;
+
+  CharacterSlot *slot(PhysicsCharacterId id) {
+    if (!id.isValid() || id.value >= characters.size() ||
+        characters[id.value].character == nullptr)
+      return nullptr;
+    return &characters[id.value];
+  }
+  const CharacterSlot *slot(PhysicsCharacterId id) const {
+    return const_cast<Impl *>(this)->slot(id);
+  }
+
+  // What a character collides with: everything, its own body excepted
+  // (Jolt skips that itself).
+  JPH::DefaultBroadPhaseLayerFilter characterBroadPhase() const {
+    return system.GetDefaultBroadPhaseLayerFilter(Layers::Moving);
+  }
+  JPH::DefaultObjectLayerFilter characterLayers() const {
+    return system.GetDefaultLayerFilter(Layers::Moving);
+  }
+
   JPH::ShapeRefC shapeFor(const PhysicsBodyDesc &desc) {
     const bool fromParts = desc.shape == PhysicsShape::Hulls ||
                            desc.shape == PhysicsShape::TriangleMesh;
@@ -396,6 +503,10 @@ void PhysicsWorld::Impl::recordMovedBodies() {
   const JPH::BodyID *ids =
       system.GetActiveBodiesUnsafe(JPH::EBodyType::RigidBody);
   active.assign(ids, ids + count);
+  if (characterBodies > 0)
+    std::erase_if(active, [&](JPH::BodyID id) {
+      return isCharacterBody[id.GetIndex()] != 0;
+    });
 
   moved.clear();
   for (JPH::BodyID id : active) {
@@ -448,6 +559,7 @@ PhysicsWorld::PhysicsWorld(const Config &config)
   impl->userData.resize(config.maxBodies, 0);
   impl->movedPoseBuffer.reserve(config.maxBodies);
   impl->activeStamp.resize(config.maxBodies, 0);
+  impl->isCharacterBody.resize(config.maxBodies, 0);
   impl->lastActive.reserve(config.maxBodies);
   impl->active.reserve(config.maxBodies);
   impl->moved.reserve(config.maxBodies);
@@ -563,6 +675,10 @@ void PhysicsWorld::step(float dt) {
     }
   }
   impl->recordMovedBodies();
+  // What characters stand on may have moved or sped up in the step.
+  for (Impl::CharacterSlot &slot : impl->characters)
+    if (slot.character)
+      slot.character->UpdateGroundVelocity();
 }
 
 void PhysicsWorld::setPose(PhysicsBodyId id, const PhysicsPose &pose) {
@@ -632,7 +748,8 @@ std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
   const glm::vec3 ray = glm::normalize(direction) * maxDistance;
   const JPH::RRayCast cast(toJoltPosition(origin), toJolt(ray));
   JPH::RayCastResult hit;
-  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(cast, hit))
+  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(
+          cast, hit, {}, impl->ignoreCharacters))
     return std::nullopt;
   PhysicsRayHit result{PhysicsBodyId{hit.mBodyID.GetIndexAndSequenceNumber()},
                        impl->userData[hit.mBodyID.GetIndex()],
@@ -650,6 +767,140 @@ std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
       result.normal = -result.normal;
   }
   return result;
+}
+
+std::optional<PhysicsRayHit> PhysicsWorld::castSphere(glm::vec3 origin,
+                                                      glm::vec3 direction,
+                                                      float radius,
+                                                      float maxDistance) const {
+  const glm::vec3 sweep = glm::normalize(direction) * maxDistance;
+  JPH::SphereShape sphere(radius);
+  sphere.SetEmbedded(); // on the stack: no reference counting
+  const JPH::RShapeCast cast = JPH::RShapeCast::sFromWorldTransform(
+      &sphere, JPH::Vec3::sOne(),
+      JPH::RMat44::sTranslation(toJoltPosition(origin)), toJolt(sweep));
+  JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> closest;
+  impl->system.GetNarrowPhaseQueryNoLock().CastShape(
+      cast, JPH::ShapeCastSettings(), JPH::RVec3::sZero(), closest, {},
+      impl->ignoreCharacters);
+  if (!closest.HadHit())
+    return std::nullopt;
+  const JPH::ShapeCastResult &hit = closest.mHit;
+  // The penetration axis points from the ball into what it hit.
+  const JPH::Vec3 normal = -hit.mPenetrationAxis.NormalizedOr(-JPH::Vec3::sAxisY());
+  return PhysicsRayHit{PhysicsBodyId{hit.mBodyID2.GetIndexAndSequenceNumber()},
+                       impl->userData[hit.mBodyID2.GetIndex()],
+                       hit.mFraction * maxDistance, toGlm(normal)};
+}
+
+PhysicsCharacterId PhysicsWorld::addCharacter(const PhysicsCharacterDesc &desc) {
+  JPH::Ref<JPH::CharacterVirtualSettings> settings =
+      new JPH::CharacterVirtualSettings();
+  settings->mShape = makeCharacterShape(desc.radius, desc.height);
+  settings->mInnerBodyShape = settings->mShape;
+  settings->mInnerBodyLayer = Layers::Character;
+  settings->mMass = desc.mass;
+  // Only contacts below the centre of the bottom sphere hold it up; the
+  // rest are walls.
+  settings->mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -desc.radius);
+  JPH::Ref<JPH::CharacterVirtual> character = new JPH::CharacterVirtual(
+      settings, toJoltPosition(desc.position), JPH::Quat::sIdentity(), 0,
+      &impl->system);
+  character->SetListener(&impl->characterContacts);
+  const JPH::BodyID body = character->GetInnerBodyID();
+  if (body.IsInvalid())
+    spdlog::warn("[physics] world is full, a character got no body: thrown "
+                 "things will pass through it");
+  else {
+    impl->isCharacterBody[body.GetIndex()] = 1;
+    ++impl->characterBodies;
+  }
+  impl->characters.push_back({character, desc.radius, desc.height});
+  const PhysicsCharacterId id{static_cast<uint32_t>(impl->characters.size() - 1)};
+  placeCharacter(id, desc.position);
+  return id;
+}
+
+void PhysicsWorld::removeCharacter(PhysicsCharacterId id) {
+  Impl::CharacterSlot *slot = impl->slot(id);
+  if (!slot)
+    return;
+  const JPH::BodyID body = slot->character->GetInnerBodyID();
+  if (!body.IsInvalid()) {
+    impl->isCharacterBody[body.GetIndex()] = 0;
+    --impl->characterBodies;
+  }
+  slot->character = nullptr; // its destructor removes its body
+}
+
+void PhysicsWorld::moveCharacter(PhysicsCharacterId id,
+                                 const PhysicsCharacterMove &move, float dt) {
+  Impl::CharacterSlot *slot = impl->slot(id);
+  if (!slot)
+    return;
+  JPH::CharacterVirtual &character = *slot->character;
+  character.SetMaxSlopeAngle(move.maxSlope);
+  character.SetMaxStrength(move.pushStrength);
+  character.SetLinearVelocity(toJolt(move.velocity));
+  // Update (slide along what it hits), then climb a step if it walked into
+  // one, then snap down to the ground if it walked off a small drop.
+  JPH::CharacterVirtual::ExtendedUpdateSettings settings;
+  settings.mStickToFloorStepDown = JPH::Vec3(0.0f, -move.stickDown, 0.0f);
+  settings.mWalkStairsStepUp = JPH::Vec3(0.0f, move.stepUp, 0.0f);
+  character.ExtendedUpdate(dt, impl->system.GetGravity(), settings,
+                           impl->characterBroadPhase(), impl->characterLayers(),
+                           JPH::BodyFilter(), JPH::ShapeFilter(),
+                           *impl->tempAllocator);
+  slot->velocity = toGlm(velocityAfterContacts(character));
+}
+
+void PhysicsWorld::placeCharacter(PhysicsCharacterId id, glm::vec3 position) {
+  Impl::CharacterSlot *slot = impl->slot(id);
+  if (!slot)
+    return;
+  slot->character->SetPosition(toJoltPosition(position));
+  slot->character->SetLinearVelocity(JPH::Vec3::sZero());
+  slot->velocity = glm::vec3(0.0f);
+  // Finds what it touches there, so it starts out standing, not falling.
+  slot->character->RefreshContacts(impl->characterBroadPhase(),
+                                   impl->characterLayers(), JPH::BodyFilter(),
+                                   JPH::ShapeFilter(), *impl->tempAllocator);
+}
+
+bool PhysicsWorld::setCharacterHeight(PhysicsCharacterId id, float height) {
+  Impl::CharacterSlot *slot = impl->slot(id);
+  if (!slot)
+    return false;
+  if (height == slot->height)
+    return true;
+  const JPH::ShapeRefC shape = makeCharacterShape(slot->radius, height);
+  // Refuses if the new capsule would sink further into something than
+  // contacts normally do.
+  const float maxPenetration =
+      1.5f * impl->system.GetPhysicsSettings().mPenetrationSlop;
+  if (!slot->character->SetShape(shape, maxPenetration,
+                                 impl->characterBroadPhase(),
+                                 impl->characterLayers(), JPH::BodyFilter(),
+                                 JPH::ShapeFilter(), *impl->tempAllocator))
+    return false;
+  slot->character->SetInnerBodyShape(shape);
+  slot->height = height;
+  return true;
+}
+
+PhysicsCharacterState PhysicsWorld::characterState(PhysicsCharacterId id) const {
+  const Impl::CharacterSlot *slot = impl->slot(id);
+  if (!slot)
+    return {};
+  const JPH::CharacterVirtual &character = *slot->character;
+  PhysicsCharacterState state;
+  state.position = toGlm(character.GetPosition());
+  state.velocity = slot->velocity;
+  state.ground = toGround(character.GetGroundState());
+  state.groundNormal = toGlm(character.GetGroundNormal());
+  state.groundVelocity = toGlm(character.GetGroundVelocity());
+  state.height = slot->height;
+  return state;
 }
 
 uint32_t PhysicsWorld::bodyCount() const { return impl->system.GetNumBodies(); }

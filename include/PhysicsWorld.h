@@ -76,6 +76,53 @@ struct PhysicsMovedPose {
   PhysicsPose pose;
 };
 
+// A walking character: a capsule that slides along walls, climbs steps and
+// stands on slopes instead of tumbling like a body. Jolt's CharacterVirtual.
+// Ids are never reused, so a removed character's id stays dead.
+struct PhysicsCharacterId {
+  uint32_t value = 0xffffffffu;
+  bool isValid() const { return value != 0xffffffffu; }
+};
+
+struct PhysicsCharacterDesc {
+  float radius = 0.3f;
+  float height = 1.8f;   // feet to the top of the head, at least 2 * radius
+  float mass = 70.0f;    // kg, what it weighs on bodies it stands on
+  glm::vec3 position{0.0f}; // its feet
+};
+
+enum class PhysicsGround : uint8_t {
+  OnGround,      // standing on ground it can walk on
+  OnSteepGround, // touching ground too steep to stand on: it slides off
+  NotSupported,  // touching something, but nothing underneath (a ledge edge)
+  InAir,
+};
+
+// What one move does. Everything here can change from step to step, so the
+// tuning values can be dragged while playing.
+struct PhysicsCharacterMove {
+  // m/s for this step. The caller adds gravity: the character only goes
+  // where it's told, with walls, floors and steps in the way.
+  glm::vec3 velocity{0.0f};
+  // m, how far it lifts itself to get onto a step. The round bottom slides
+  // over about 10 cm more, so 0.3 climbs steps up to about 40 cm.
+  float stepUp = 0.3f;
+  float stickDown = 0.5f;  // m, how far it snaps down to keep to slopes and
+                           // stairs while walking; 0 = never
+  float maxSlope = 0.785398f; // radians (45 degrees); steeper can't be walked up
+  float pushStrength = 100.0f; // N, the most it pushes a dynamic body with
+};
+
+struct PhysicsCharacterState {
+  glm::vec3 position{0.0f}; // its feet
+  glm::vec3 velocity{0.0f}; // after the last move: walls and floors take
+                            // away what they blocked
+  PhysicsGround ground = PhysicsGround::InAir;
+  glm::vec3 groundNormal{0.0f, 1.0f, 0.0f};
+  glm::vec3 groundVelocity{0.0f}; // of what it stands on, to ride along
+  float height = 0.0f;            // the capsule's current height
+};
+
 // One end of a debug line, laid out to go straight into a vertex buffer.
 struct PhysicsDebugVertex {
   glm::vec3 position;
@@ -160,9 +207,36 @@ public:
   float mass(PhysicsBodyId id) const;
 
   // The nearest body the ray hits within maxDistance, for clicking on
-  // things. direction needn't be unit length.
+  // things. direction needn't be unit length. Characters don't block it.
   std::optional<PhysicsRayHit> castRay(glm::vec3 origin, glm::vec3 direction,
                                        float maxDistance) const;
+  // Sweeps a ball of the radius from origin along direction and returns the
+  // first body it touches; distance is how far its centre got. A ball that
+  // starts touching something hits at 0. Characters don't block it, so a
+  // camera behind one can cast from inside its capsule.
+  std::optional<PhysicsRayHit> castSphere(glm::vec3 origin,
+                                          glm::vec3 direction, float radius,
+                                          float maxDistance) const;
+
+  // Characters. Each one also gets a body of its own shape, so thrown and
+  // falling bodies hit it; that body never shows up in movedPoses().
+  PhysicsCharacterId addCharacter(const PhysicsCharacterDesc &desc);
+  void removeCharacter(PhysicsCharacterId id);
+  // Moves the character by move.velocity * dt right away, sliding along
+  // whatever it hits. Call it before step(), once per step, like Jolt's
+  // samples do.
+  void moveCharacter(PhysicsCharacterId id, const PhysicsCharacterMove &move,
+                     float dt);
+  // Puts its feet at position, standing still, as if it had always been
+  // there (for spawning).
+  void placeCharacter(PhysicsCharacterId id, glm::vec3 position);
+  // Changes the capsule's height, keeping its feet where they are, for
+  // crouching. False, and nothing changes, if the taller capsule wouldn't
+  // fit (a ceiling over a crouched character).
+  bool setCharacterHeight(PhysicsCharacterId id, float height);
+  // Up to date after moveCharacter() and step() (what it stands on can move
+  // in the step).
+  PhysicsCharacterState characterState(PhysicsCharacterId id) const;
 
   uint32_t bodyCount() const;
   // The most bodies this world holds (Config::maxBodies when it was made).

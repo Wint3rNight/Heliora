@@ -176,6 +176,7 @@ add_executable(heliora_tests
         tests/FixedStepTests.cpp
         tests/FrustumTests.cpp
         tests/GizmoTests.cpp
+        tests/PhysicsCharacterTests.cpp
         tests/PhysicsWorldTests.cpp
         tests/PickingTests.cpp
         tests/PrimitiveMeshTests.cpp

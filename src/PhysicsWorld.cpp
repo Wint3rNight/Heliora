@@ -588,6 +588,10 @@ void PhysicsWorld::applySettings(const Config &config) {
   }
 }
 
+glm::vec3 PhysicsWorld::gravity() const {
+  return toGlm(impl->system.GetGravity());
+}
+
 PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   JPH::EMotionType motion = JPH::EMotionType::Dynamic;
   if (desc.motion == PhysicsMotion::Static)

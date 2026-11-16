@@ -186,6 +186,7 @@ public:
   // and threads only apply to a new world. A gravity change wakes every
   // body, or sleeping ones would hang in the air until something hit them.
   void applySettings(const Config &config);
+  glm::vec3 gravity() const;
 
   // Moves the body there at once, for the editor. It's drawn there too, not
   // blended in from where it was. Wakes it if it can move.

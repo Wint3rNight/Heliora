@@ -534,3 +534,12 @@ TEST(set_pose_moves_the_body_without_blending) {
   CHECK_NEAR(glm::distance(drawn.position, target.position), 0.0, 1e-5);
   CHECK_NEAR(std::fabs(glm::dot(drawn.rotation, target.rotation)), 1.0, 1e-5);
 }
+
+TEST(gravity_reads_back_what_was_applied) {
+  PhysicsWorld world;
+  CHECK_NEAR(world.gravity().y, -9.81, 1e-5);
+  PhysicsWorld::Config config;
+  config.gravity = glm::vec3(0.0f, -3.0f, 0.0f);
+  world.applySettings(config);
+  CHECK_NEAR(world.gravity().y, -3.0, 1e-5);
+}

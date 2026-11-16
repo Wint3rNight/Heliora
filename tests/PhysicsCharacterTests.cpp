@@ -1,3 +1,4 @@
+#include "CharacterTestScenes.h"
 #include "PhysicsWorld.h"
 #include "TestRunner.h"
 
@@ -11,34 +12,10 @@ namespace {
 constexpr float kStep = 1.0f / 60.0f;
 constexpr float kGravity = -9.81f;
 
-PhysicsBodyId addStaticBox(PhysicsWorld &world, glm::vec3 position,
-                           glm::vec3 halfExtents,
-                           glm::quat rotation = glm::quat(1, 0, 0, 0)) {
-  PhysicsBodyDesc box;
-  box.shape = PhysicsShape::Box;
-  box.halfExtents = halfExtents;
-  box.motion = PhysicsMotion::Static;
-  box.position = position;
-  box.rotation = rotation;
-  return world.addBody(box);
-}
-
-// A static floor whose top surface is at y = 0.
-void addFloor(PhysicsWorld &world) {
-  addStaticBox(world, glm::vec3(0.0f, -0.5f, 0.0f), glm::vec3(50.0f, 0.5f, 50.0f));
-}
-
-// A 8 m long, 20 cm thick ramp rising along +x at the angle. Its top surface
-// meets the floor at about x = 4 - 0.1 / sin(angle).
-void addRamp(PhysicsWorld &world, float degrees) {
-  addStaticBox(world, glm::vec3(4.0f, 0.0f, 0.0f), glm::vec3(4.0f, 0.1f, 2.0f),
-               glm::angleAxis(glm::radians(degrees), glm::vec3(0, 0, 1)));
-}
-
-float rampSurfaceY(float x, float degrees) {
-  const float a = glm::radians(degrees);
-  return (x - (4.0f - 0.1f / std::sin(a))) * std::tan(a);
-}
+using test::addFloor;
+using test::addRamp;
+using test::addStaticBox;
+using test::rampSurfaceY;
 
 PhysicsCharacterId addCharacter(PhysicsWorld &world, glm::vec3 feet) {
   PhysicsCharacterDesc desc;

@@ -18,6 +18,7 @@ layout(set = 0, binding = 1, std430) readonly buffer FrustumData {
     mat4 viewProj;
     vec4 hzbParams; // x/y = HZB base extent, z = mip count, w = enabled
     uint meshCount;
+    float hzbDepthMargin; // reversed depth an object must be behind by
 } frustum;
 
 layout(set = 0, binding = 3, std430) writeonly buffer IndirectCommands {
@@ -66,7 +67,7 @@ bool aabbOccludedByHzb(vec3 bmin, vec3 bmax) {
 
     vec2 uvMin = vec2(1.0);
     vec2 uvMax = vec2(0.0);
-    float nearestDepth = 1.0;
+    float nearestDepth = 0.0; // reversed-Z: nearer is bigger
     int projected = 0;
     for (int i = 0; i < 8; ++i) {
         vec4 clip = frustum.viewProj * vec4(corners[i], 1.0);
@@ -76,7 +77,7 @@ bool aabbOccludedByHzb(vec3 bmin, vec3 bmax) {
         vec2 uv = ndc.xy * 0.5 + 0.5;
         uvMin = min(uvMin, uv);
         uvMax = max(uvMax, uv);
-        nearestDepth = min(nearestDepth, ndc.z);
+        nearestDepth = max(nearestDepth, ndc.z);
         projected++;
     }
 
@@ -88,20 +89,22 @@ bool aabbOccludedByHzb(vec3 bmin, vec3 bmax) {
     // No "-1": at ceil(log2) the AABB footprint spans <= 1 texel per axis,
     // so the 4 corner taps cover every texel it straddles. One level lower
     // left a 2-texel span whose unaligned middle texel none of the 4 corners
-    // hit — a missed farther depth there under-reported maxDepth and culled
-    // visible meshes (view-dependent popping).
+    // hit — a missed farther depth there under-reported the farthest depth
+    // and culled visible meshes (view-dependent popping).
     float mip = clamp(ceil(log2(max(pixelSize.x, pixelSize.y))),
                       0.0, max(frustum.hzbParams.z - 1.0, 0.0));
 
     vec2 center = (uvMin + uvMax) * 0.5;
     vec2 e = (uvMax - uvMin) * 0.5;
-    float maxDepth = 0.0;
-    maxDepth = max(maxDepth, textureLod(hzb, center + vec2(-e.x, -e.y), mip).r);
-    maxDepth = max(maxDepth, textureLod(hzb, center + vec2( e.x, -e.y), mip).r);
-    maxDepth = max(maxDepth, textureLod(hzb, center + vec2(-e.x,  e.y), mip).r);
-    maxDepth = max(maxDepth, textureLod(hzb, center + vec2( e.x,  e.y), mip).r);
+    // The farthest occluder depth under the box (smallest, reversed-Z).
+    float farthestDepth = 1.0;
+    farthestDepth = min(farthestDepth, textureLod(hzb, center + vec2(-e.x, -e.y), mip).r);
+    farthestDepth = min(farthestDepth, textureLod(hzb, center + vec2( e.x, -e.y), mip).r);
+    farthestDepth = min(farthestDepth, textureLod(hzb, center + vec2(-e.x,  e.y), mip).r);
+    farthestDepth = min(farthestDepth, textureLod(hzb, center + vec2( e.x,  e.y), mip).r);
 
-    return nearestDepth > maxDepth + 0.001;
+    // Hidden when even its nearest point is behind the farthest occluder.
+    return nearestDepth < farthestDepth - frustum.hzbDepthMargin;
 }
 
 void writeCommand(uint dst, MeshRecord m) {

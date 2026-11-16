@@ -1,3 +1,4 @@
+#include "CameraProjection.h"
 #include "Picking.h"
 #include "TestRunner.h"
 
@@ -7,12 +8,10 @@ namespace {
 
 constexpr glm::vec2 kViewport(1600.0f, 900.0f);
 
-// The renderer's camera: depth 0 to 1 (GLM_FORCE_DEPTH_ZERO_TO_ONE) and y
-// flipped for Vulkan, as in VulkanRenderer::rebuildProjection.
+// The renderer's camera (reversed-Z, y flipped for Vulkan).
 glm::mat4 invViewProj(glm::vec3 eye, glm::vec3 forward) {
-  glm::mat4 projection = glm::perspective(
+  const glm::mat4 projection = cameraProjection(
       glm::radians(45.0f), kViewport.x / kViewport.y, 1.0f, 200.0f);
-  projection[1][1] *= -1.0f;
   const glm::mat4 view =
       glm::lookAt(eye, eye + forward, glm::vec3(0.0f, 1.0f, 0.0f));
   return glm::inverse(projection * view);

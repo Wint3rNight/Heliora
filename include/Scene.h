@@ -154,6 +154,16 @@ struct SceneFog {
   bool operator==(const SceneFog &) const = default;
 };
 
+// Where the character starts when Play is pressed. One per scene at most.
+// yaw is in degrees about +y, 0 facing -z (CharacterController's way round,
+// in degrees like the rest of the file).
+struct ScenePlayerStart {
+  glm::vec3 position = glm::vec3(0.0f); // the feet
+  float yaw = 0.0f;
+  SceneSectionInfo info; // only the comment is used
+  bool operator==(const ScenePlayerStart &) const = default;
+};
+
 struct SceneDescription {
   std::string name;           // display name (defaults to file stem)
   std::string filePath;       // where this description was parsed from
@@ -161,6 +171,7 @@ struct SceneDescription {
   SceneCameraPose camera;
   SceneSun sun;
   SceneFog fog;
+  std::optional<ScenePlayerStart> player;
   std::vector<SceneModelEntry> models;
   std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;
@@ -204,7 +215,8 @@ std::optional<std::string> sceneFileNameFor(std::string_view name);
 namespace SceneIO {
 
 // Parses a .scene file (INI-style: `key = value` lines under [camera], [sun],
-// [fog], [model], [grid] and [ring] sections; `#` starts a comment). Throws
+// [fog], [player], [model], [grid] and [ring] sections; `#` starts a
+// comment). Throws
 // std::runtime_error with a line number on malformed input.
 SceneDescription loadFromFile(const std::string &path);
 
@@ -218,7 +230,7 @@ SceneDescription parse(std::istream &in, const std::string &sourceName);
 std::vector<SceneDescription> discover(const std::string &directory);
 
 // The scene as .scene text: the header comment, the global keys, [camera],
-// [sun], [fog], then every [model], [grid] and [ring] in their original
+// [sun], [fog], [player], then every [model], [grid] and [ring] in their original
 // order, each with the comment that sat above it. Only keys that differ from
 // their defaults are written, so a saved file reads like a hand-written one.
 std::string write(const SceneDescription &scene);

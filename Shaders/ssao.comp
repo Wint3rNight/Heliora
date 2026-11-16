@@ -115,7 +115,7 @@ void main() {
 
     vec2 uv = (vec2(pixel) + 0.5) / vec2(extent);
     float depth = texture(gBufferDepthSampler, uv).r;
-    if (depth >= 0.9999) {
+    if (depth <= 0.0) { // sky: still the clear value
         imageStore(outSSAO, pixel, vec4(1.0));
         return;
     }

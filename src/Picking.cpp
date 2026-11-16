@@ -11,8 +11,9 @@ PickRay rayFromScreen(glm::vec2 pixel, glm::vec2 viewport,
     const glm::vec4 p = invViewProj * glm::vec4(ndc, depth, 1.0f);
     return glm::vec3(p) / p.w;
   };
-  const glm::vec3 nearPoint = unproject(0.0f);
-  const glm::vec3 farPoint = unproject(1.0f);
+  // Reversed-Z (cameraProjection): depth 1 is the near plane, 0 the far.
+  const glm::vec3 nearPoint = unproject(1.0f);
+  const glm::vec3 farPoint = unproject(0.0f);
   return {nearPoint, glm::normalize(farPoint - nearPoint)};
 }
 

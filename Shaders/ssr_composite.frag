@@ -81,9 +81,11 @@ vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness,
         float sceneDepth = texture(gBufferDepthSampler, sUV).r;
         float rayDepth   = clip.z / clip.w;
 
-        // Depth-relative tolerance (B4)
-        float tol = max(0.005, 0.05 * sceneDepth);
-        if (rayDepth > sceneDepth && (rayDepth - sceneDepth) < tol) {
+        // Behind the surface, by less than a tolerance (B4). Reversed-Z, so
+        // behind is smaller. Times projection[3][2] (about the near plane),
+        // so the tolerance covers the same distance whatever it is.
+        float tol = max(0.005, 0.05 * (1.0 - sceneDepth)) * scene.projection[3][2];
+        if (rayDepth < sceneDepth && (sceneDepth - rayDepth) < tol) {
             // Refine via binary search
             vec3 lo = rayPos - reflDir * stepSize;
             vec3 hi = rayPos;
@@ -93,13 +95,13 @@ vec3 computeSSR(vec2 uv, vec3 viewPos, vec3 viewN, float roughness,
                 vec2 mUV = mc.xy / mc.w * 0.5 + 0.5;
                 float mRay   = mc.z / mc.w;
                 float mScene = texture(gBufferDepthSampler, mUV).r;
-                if (mRay > mScene) hi = mid; else lo = mid;
+                if (mRay < mScene) hi = mid; else lo = mid;
             }
             vec4 fc  = scene.projection * vec4(lo, 1.0);
             vec2 fUV = fc.xy / fc.w * 0.5 + 0.5;
 
             float hitDepth = texture(gBufferDepthSampler, fUV).r;
-            if (hitDepth >= 0.9999) return vec3(0.0);
+            if (hitDepth <= 0.0) return vec3(0.0);
             vec3 hitView = reconstructViewPos(fUV, hitDepth);
             float rayZ = -lo.z;
             float hitZ = -hitView.z;
@@ -138,9 +140,9 @@ void main() {
         return;
     }
 
-    // Skip SSR for sky pixels (depth at 1.0): no surface to reflect from.
+    // Skip SSR for sky pixels (depth still 0): no surface to reflect from.
     float depth = texture(gBufferDepthSampler, uv).r;
-    if (depth >= 0.9999) {
+    if (depth <= 0.0) { // sky: still the clear value
         outColor = vec4(lit, 1.0);
         return;
     }

@@ -12,10 +12,11 @@ layout(push_constant) uniform Push {
     vec2 areaOrigin;  // its corner in the window
 } pc;
 
-// Distance from the camera for a depth-buffer value (0 to 1, standard Z).
+// Distance from the camera for a depth-buffer value (reversed-Z: 1 at the
+// near plane, 0 at the far one).
 float viewDistance(float depth) {
     float n = pc.nearFar.x, f = pc.nearFar.y;
-    return n * f / (f - depth * (f - n));
+    return n * f / (n + depth * (f - n));
 }
 
 void main() {

@@ -82,8 +82,11 @@ public:
                     const std::vector<InstanceData> &instances,
                     const glm::uvec4 &texIdx0, const glm::uvec4 &texIdx1,
                     glm::vec3 aabbMin, glm::vec3 aabbMax);
+  // hzbDepthMargin: how much smaller (reversed-Z) an object's nearest depth
+  // must be than the farthest occluder's before it counts as hidden.
   void uploadRecords(uint32_t imageIndex, const glm::vec4 frustumPlanes[6],
-                     const glm::mat4 &viewProj, bool hzbEnabled);
+                     const glm::mat4 &viewProj, float hzbDepthMargin,
+                     bool hzbEnabled);
   bool canRecordIndirect(uint32_t imageIndex, bool enabled,
                          uint32_t minCandidates) const;
   void recordIndirectGBuffer(VkCommandBuffer cmd, uint32_t imageIndex,

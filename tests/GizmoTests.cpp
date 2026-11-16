@@ -1,3 +1,4 @@
+#include "CameraProjection.h"
 #include "GizmoMath.h"
 #include "TestRunner.h"
 
@@ -11,12 +12,10 @@ namespace {
 
 constexpr glm::vec2 kViewport(1600.0f, 900.0f);
 
-// The renderer's camera, as in PickingTests: depth 0 to 1 and y flipped for
-// Vulkan.
+// The renderer's camera (reversed-Z, y flipped for Vulkan).
 glm::mat4 viewProj(glm::vec3 eye, glm::vec3 target) {
-  glm::mat4 projection = glm::perspective(
+  const glm::mat4 projection = cameraProjection(
       glm::radians(45.0f), kViewport.x / kViewport.y, 0.1f, 200.0f);
-  projection[1][1] *= -1.0f;
   return projection * glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 

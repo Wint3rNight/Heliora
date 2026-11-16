@@ -585,7 +585,7 @@ std::string lowered(std::string text) {
   return text;
 }
 
-enum class Section { Global, Camera, Sun, Fog, Model, Grid, Ring };
+enum class Section { Global, Camera, Sun, Fog, Player, Model, Grid, Ring };
 
 // What the parser carries from line to line.
 struct SceneParser {
@@ -622,6 +622,11 @@ void openSection(SceneParser &p, const std::string &line, int lineNumber) {
     p.section = Section::Fog;
     scene.fog.info.comment = p.takeComment();
     p.fogLine = lineNumber;
+  } else if (name == "player") {
+    if (scene.player)
+      parseError(lineNumber, "only one [player] per scene");
+    p.section = Section::Player;
+    scene.player.emplace().info.comment = p.takeComment();
   } else if (name == "model") {
     p.section = Section::Model;
     scene.models.emplace_back().info = {p.nextOrder++, p.takeComment()};
@@ -684,6 +689,16 @@ void fogKey(SceneFog &fog, const std::string &key, const std::string &value,
     fog.max = parseFloat(value, lineNumber);
   else
     parseError(lineNumber, "unknown fog key '" + key + "'");
+}
+
+void playerKey(ScenePlayerStart &player, const std::string &key,
+               const std::string &value, int lineNumber) {
+  if (key == "position")
+    player.position = parseVec3(value, lineNumber);
+  else if (key == "yaw")
+    player.yaw = parseFloat(value, lineNumber);
+  else
+    parseError(lineNumber, "unknown player key '" + key + "'");
 }
 
 // A grid's own keys; anything else is its model's.
@@ -750,6 +765,9 @@ void applyKey(SceneParser &p, const std::string &key, const std::string &value,
     break;
   case Section::Fog:
     fogKey(scene.fog, key, value, lineNumber);
+    break;
+  case Section::Player:
+    playerKey(*scene.player, key, value, lineNumber);
     break;
   case Section::Model:
     if (!parseModelKey(scene.models.back(), key, value, lineNumber))
@@ -922,6 +940,16 @@ std::string write(const SceneDescription &scene) {
       writeKey(out, "falloff", formatFloat(scene.fog.falloff));
     if (scene.fog.max != d.max)
       writeKey(out, "max", formatFloat(scene.fog.max));
+  }
+  // Written whenever there is one: a start at the origin facing -z is still
+  // a start.
+  if (scene.player) {
+    const ScenePlayerStart d;
+    writeHeader(out, scene.player->info, "player");
+    if (scene.player->position != d.position)
+      writeKey(out, "position", formatVec3(scene.player->position));
+    if (scene.player->yaw != d.yaw)
+      writeKey(out, "yaw", formatFloat(scene.player->yaw));
   }
 
   // Models, grids and rings live in separate lists; info.order puts them

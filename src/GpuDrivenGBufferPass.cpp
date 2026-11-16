@@ -19,7 +19,8 @@ struct GpuDrivenFrustumData {
   glm::mat4 viewProj = glm::mat4(1.0f);
   glm::vec4 hzbParams = glm::vec4(0.0f);
   uint32_t meshCount = 0;
-  uint32_t _pad[3] = {};
+  float hzbDepthMargin = 0.0f;
+  uint32_t _pad[2] = {};
 };
 
 VkShaderModule createLocalShaderModule(VkDevice device,
@@ -649,7 +650,7 @@ void GpuDrivenGBufferPass::create(
     depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth.depthTestEnable = VK_TRUE;
     depth.depthWriteEnable = VK_TRUE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS;
+    depth.depthCompareOp = VK_COMPARE_OP_GREATER; // reversed-Z
 
     VkPipelineColorBlendAttachmentState blendOff{};
     blendOff.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
@@ -900,6 +901,7 @@ bool GpuDrivenGBufferPass::addInstanced(
 void GpuDrivenGBufferPass::uploadRecords(uint32_t imageIndex,
                                          const glm::vec4 frustumPlanes[6],
                                          const glm::mat4 &viewProj,
+                                         float hzbDepthMargin,
                                          bool hzbEnabled) {
   FrameResources &frame = frames[imageIndex];
   const std::vector<GpuDrivenMeshRecord> &meshRecords = frameMeshRecords;
@@ -956,6 +958,7 @@ void GpuDrivenGBufferPass::uploadRecords(uint32_t imageIndex,
       static_cast<float>(hzbExtent.width), static_cast<float>(hzbExtent.height),
       static_cast<float>(hzbMipCount), hzbReady ? 1.0f : 0.0f);
   frustumData.meshCount = meshCountValue;
+  frustumData.hzbDepthMargin = hzbDepthMargin;
   upload(frame.frustumBuffer, &frustumData, sizeof(frustumData));
   updateDescriptorSet(imageIndex);
 }

@@ -26,6 +26,8 @@ public:
   bool isMouseButtonPressed(int button) const;
   // True once per press, like wasKeyJustPressed.
   bool wasMouseButtonJustPressed(int button);
+  // Wheel notches this frame, positive away from you.
+  float getScrollDelta() const { return scrollY; }
   // Hides the cursor and sends raw movement (flying), or frees it. The first
   // movement after a switch is dropped, since the cursor jumps.
   void setCursorCaptured(bool captured);
@@ -43,6 +45,7 @@ private:
   float lastY = 0.0f;
   float deltaX = 0.0f;
   float deltaY = 0.0f;
+  float scrollY = 0.0f;
   bool firstMouse = true;
 
   // Resize flag
@@ -54,5 +57,6 @@ private:
 
   // Static callbacks (GLFW requires free/static functions)
   static void mouseCallback(GLFWwindow *w, double xpos, double ypos);
+  static void scrollCallback(GLFWwindow *w, double xoffset, double yoffset);
   static void framebufferResizeCallback(GLFWwindow *w, int width, int height);
 };

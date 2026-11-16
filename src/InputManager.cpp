@@ -15,6 +15,9 @@ void InputManager::init(GLFWwindow *newWindow) {
   // Register callbacks
   glfwSetCursorPosCallback(window, mouseCallback);
   glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+  // Set before ImGui starts: its backend calls whatever callback was here,
+  // so the panels still scroll.
+  glfwSetScrollCallback(window, scrollCallback);
 
   // Capture the cursor for FPS-style camera.
   // Raw mouse motion avoids XGrabPointer on X11, which can suppress touchpad
@@ -36,6 +39,7 @@ void InputManager::pollEvents() {
   // Reset per-frame deltas before polling
   deltaX = 0.0f;
   deltaY = 0.0f;
+  scrollY = 0.0f;
   glfwPollEvents();
 }
 
@@ -121,4 +125,10 @@ void InputManager::framebufferResizeCallback(GLFWwindow *w, int /*width*/,
   if (!self)
     return;
   self->framebufferResized = true;
+}
+
+void InputManager::scrollCallback(GLFWwindow *w, double, double yoffset) {
+  auto *self = static_cast<InputManager *>(glfwGetWindowUserPointer(w));
+  if (self)
+    self->scrollY += static_cast<float>(yoffset);
 }

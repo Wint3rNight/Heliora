@@ -85,7 +85,7 @@ void main() {
 
     ivec2 p = ivec2(pc.pixel);
     float depth = texelFetch(gBufferDepthSampler, p, 0).r;
-    if (depth >= 0.9999) {
+    if (depth <= 0.0) { // sky: still the clear value
         writeInvalid(pc.pixel);
         return;
     }

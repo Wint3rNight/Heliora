@@ -27,6 +27,7 @@
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
+#include "Player.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
 #include "Scene.h"
@@ -122,6 +123,20 @@ public:
   // F5 and the toolbar button. Stop rebuilds the scene from the layout,
   // without moving the camera, at the top of the next draw().
   void togglePlayMode() { playToggleRequested = true; }
+  // Play mode's keys and mouse for this frame; stepPhysics hands them to the
+  // character.
+  void setPlayerControls(const PlayerControls &controls) {
+    playerControls = controls;
+  }
+  // The fly camera, every frame. With no [player] in the scene the
+  // character starts on the ground below it, facing its way.
+  void setFlyCamera(glm::vec3 position, float yawDegrees) {
+    flyCameraPosition = position;
+    flyCameraYaw = yawDegrees;
+  }
+  // While playing there's a character, and the view comes from its camera.
+  bool hasPlayer() const { return player != nullptr; }
+  const ThirdPersonCamera &playerCamera() const { return player->camera(); }
   // Ctrl+Z and Ctrl+Shift+Z: one finished edit back or forward, rebuilt the
   // way Stop rebuilds, at the top of the next draw(). Edit mode only, and
   // not in the middle of a drag.
@@ -152,6 +167,11 @@ public:
   bool imguiWantsTextInput() const { return imguiLayer.wantsTextInput(); }
   bool gizmoHasMouse() const { return imguiLayer.gizmoHasMouse(); }
   void toggleUiVisibility() { imguiLayer.toggleVisibility(); }
+  // HELIORA_CAPTURE: copies the scene's finished picture in the next draw(),
+  // and finishCapture() saves it as a PNG once that frame is done. True
+  // when it has (or failed and logged why).
+  void requestCapture(const std::string &path);
+  bool finishCapture();
   bool isUiVisible() const { return imguiLayer.isVisible(); }
 
   ~VulkanRenderer();
@@ -168,6 +188,19 @@ private:
   // moves.
   std::unique_ptr<PhysicsWorld> physics;
   FixedStepClock physicsClock;
+  // The character, while playing. After physics, so it goes first: it takes
+  // its character out of the world. loadScene() removes it before it
+  // replaces the world, and puts a new one in if still playing.
+  std::unique_ptr<Player> player;
+  PlayerControls playerControls;
+  SceneNode *playerNode = nullptr; // its capsule, owned by rootNode
+  int playerModelId = -1;          // standing, and crouched below
+  int crouchedPlayerModelId = -1;
+  glm::vec3 flyCameraPosition{0.0f};
+  float flyCameraYaw = -90.0f; // degrees, Camera's convention
+  static SceneModelEntry playerCapsuleEntry(float height);
+  void spawnPlayer();
+  void posePlayer(float alpha, float frameSeconds);
   bool playing = true;
   bool playToggleRequested = false;
   // Animation time. Runs only while playing, and goes back to 0 with the
@@ -236,7 +269,9 @@ private:
   int ballModelId = -1; // made at scene load, so throwing never builds a mesh
   static SceneModelEntry thrownBallEntry();
   // The camera's near plane, shared by the projection and the debug lines.
-  static constexpr float kCameraNear = 1.0f;
+  // 10 cm, so a third-person camera close to a wall or the character doesn't
+  // cut into them. Reversed-Z keeps far depth precise with it this close.
+  static constexpr float kCameraNear = 0.1f;
 
   // --- Settings (Resources/settings.cfg, shared by every scene) ---
   std::string settingsPath;
@@ -348,6 +383,14 @@ private:
   std::vector<AllocatedImage> sceneColorImages;    // one per swap image
   std::vector<ImageViewHandle> sceneColorViews;
   std::vector<AllocatedImage> sceneOutputImages; // the finished picture
+  // A requested capture: Requested until copySceneToWindow records the copy
+  // into captureBuffer, Recorded until finishCapture writes it out.
+  enum class CaptureState { None, Requested, Recorded };
+  CaptureState captureState = CaptureState::None;
+  std::string capturePath;
+  AllocatedBuffer captureBuffer;
+  VkExtent2D captureExtent = {};
+  void recordCapture(VkCommandBuffer cmd, VkImage image);
   std::vector<ImageViewHandle> sceneOutputViews;
   RenderPassManager renderPassManager;
   DescriptorManager descriptorManager;

@@ -147,7 +147,10 @@ vec3 applyEdgeAA(vec3 center, vec3 n, vec3 s, vec3 e, vec3 w, ivec2 px) {
                                abs(texelFetch(depthTex, pW, 0).r - dC)));
 
     float lumaEdge = smoothstep(0.08, 0.35, range) * 0.35;
-    float depthEdge = smoothstep(0.0002, 0.006, depthRange);
+    // Raw depth steps shrink with the near plane (reversed-Z depth is about
+    // near / distance); divided by projection[3][2], which is about the
+    // near plane, they're the same whatever it is.
+    float depthEdge = smoothstep(0.0002, 0.006, depthRange / scene.projection[3][2]);
     float edge = max(lumaEdge, depthEdge);
     vec3 avg = (n + s + e + w) * 0.25;
     return mix(center, avg, edge * strength * 0.35);
@@ -284,8 +287,8 @@ void main() {
     float depth = texture(depthTex, uv).r;
 
     vec2 prevUV;
-    if (depth >= 0.9999) {
-        // Sky / far plane: reprojection through depth is unstable. Use
+    if (depth <= 0.0) { // sky: still the clear value
+        // Sky: reprojection through depth is unstable. Use
         // same UV (sky moves only with camera rotation; for translation
         // the sky is at infinity, so static UV is the right reprojection).
         prevUV = uv;
@@ -322,7 +325,7 @@ void main() {
     float viewZPrev     = abs(reconstructViewZ(prevUV, depthAtPrevUV));
     // 10% relative tolerance: tight enough to catch silhouette
     // disocclusions, loose enough that sub-pixel jitter doesn't flap it.
-    if (depthAtPrevUV < 0.9999 &&
+    if (depthAtPrevUV > 0.0 &&
         abs(viewZCur - viewZPrev) > max(0.1 * viewZCur, 0.05)) {
         outHistory = vec4(current, 1.0);
         outSwap    = vec4(finalEncode(current, enableBloom), 1.0);

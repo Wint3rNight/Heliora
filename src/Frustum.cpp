@@ -7,8 +7,11 @@ void extractFrustumPlanes(const glm::mat4 &viewProj, glm::vec4 planes[6]) {
   planes[1] = t[3] - t[0]; // right
   planes[2] = t[3] + t[1]; // bottom
   planes[3] = t[3] - t[1]; // top
-  planes[4] = t[3] + t[2]; // near
-  planes[5] = t[3] - t[2]; // far
+  // Depth runs 0 to 1 (Vulkan), so the depth planes are z >= 0 and z <= w.
+  // Which is near depends on the projection: the camera's is reversed-Z
+  // (near at 1), the shadow maps' aren't, and culling needs neither to know.
+  planes[4] = t[2];        // z >= 0
+  planes[5] = t[3] - t[2]; // z <= w
   for (int i = 0; i < 6; i++)
     planes[i] /= glm::length(glm::vec3(planes[i]));
 }

@@ -2,6 +2,7 @@
 #include "InputManager.h"
 #include "VulkanRenderer.h"
 #include <GLFW/glfw3.h>
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -33,6 +34,9 @@ void processInput(bool typing) {
   // Ctrl+S saves, so with Ctrl held the letters aren't movement.
   if (inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
       inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL))
+    return;
+  // While playing, WASD walks the character (readPlayerControls).
+  if (vulkanRenderer.hasPlayer())
     return;
 
   if (inputManager.isKeyPressed(GLFW_KEY_W))
@@ -139,7 +143,8 @@ void updateFlying(FlyState &fly, bool typing, bool asking) {
   // doesn't count as new after Tab.
   const bool rightPressed =
       inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
-  if (!fly.cameraMode) {
+  // While playing, the right mouse aims instead.
+  if (!fly.cameraMode && !vulkanRenderer.hasPlayer()) {
     if (rightPressed && !asking && !vulkanRenderer.imguiWantsMouse() &&
         vulkanRenderer.sceneContains(inputManager.getMousePosition())) {
       fly.rightMouseFlying = true;
@@ -175,7 +180,10 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
                     inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
   const bool shift = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
                      inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
-  const bool shortcuts = ctrl && !typing && !asking;
+  // Not while the character has the mouse: Ctrl is crouch there, and
+  // crouch-walking backwards mustn't save.
+  const bool characterHasMouse = vulkanRenderer.hasPlayer() && fly.cameraMode;
+  const bool shortcuts = ctrl && !typing && !asking && !characterHasMouse;
   if (zPressed && shortcuts) {
     if (shift)
       vulkanRenderer.redoEdit();
@@ -202,15 +210,52 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
     vulkanRenderer.togglePhysicsDebug();
   // F throws a ball where the camera looks, in camera mode only so a
   // click-and-type in a panel never throws. Play mode only (throwBall).
+  // With a character it starts from its shoulders, not from the camera
+  // behind it, or the first thing it would hit is the character.
   if (fly.cameraMode && !typing && !asking &&
-      inputManager.wasKeyJustPressed(GLFW_KEY_F))
-    vulkanRenderer.throwBall(camera.Position, camera.Front);
+      inputManager.wasKeyJustPressed(GLFW_KEY_F)) {
+    if (vulkanRenderer.hasPlayer()) {
+      const ThirdPersonCamera &view = vulkanRenderer.playerCamera();
+      vulkanRenderer.throwBall(view.pivot(), view.forward());
+    } else {
+      vulkanRenderer.throwBall(camera.Position, camera.Front);
+    }
+  }
+}
+
+// The character's controls, while it has the mouse (camera mode). With the
+// cursor free for the panels it stands still.
+PlayerControls readPlayerControls(const FlyState &fly, bool typing,
+                                  bool asking) {
+  // Read every frame, so a press made with the cursor free doesn't count
+  // as new after Tab.
+  const bool jump = inputManager.wasKeyJustPressed(GLFW_KEY_SPACE);
+  const bool dodge = inputManager.wasKeyJustPressed(GLFW_KEY_LEFT_ALT);
+  PlayerControls controls;
+  if (!fly.cameraMode || typing || asking)
+    return controls;
+  controls.forward = inputManager.isKeyPressed(GLFW_KEY_W);
+  controls.back = inputManager.isKeyPressed(GLFW_KEY_S);
+  controls.left = inputManager.isKeyPressed(GLFW_KEY_A);
+  controls.right = inputManager.isKeyPressed(GLFW_KEY_D);
+  controls.sprint = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT);
+  controls.crouch = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL);
+  controls.aim = inputManager.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+  controls.jump = jump;
+  controls.dodge = dodge;
+  // InputManager's y counts up; the controls' counts down, like the screen.
+  const glm::vec2 mouse = inputManager.getMouseDelta();
+  controls.mouse = glm::vec2(mouse.x, -mouse.y);
+  controls.wheel = inputManager.getScrollDelta();
+  return controls;
 }
 
 void turnCamera(const FlyState &fly) {
-  // The mouse turns the camera only while flying.
+  // The mouse turns the camera only while flying, and while playing it
+  // turns the character's camera instead.
   glm::vec2 mouseDelta = inputManager.getMouseDelta();
-  if (fly.flying() && (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
+  if (fly.flying() && !vulkanRenderer.hasPlayer() &&
+      (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f)) {
     camera.ProcessMouseMovement(mouseDelta.x, mouseDelta.y);
   }
 }
@@ -235,6 +280,23 @@ int main(int argc, char **argv) {
       });
   FlyState fly;
   inputManager.setCursorCaptured(true);
+
+  // HELIORA_CAPTURE=out.png renders the startup scene in edit mode (nothing
+  // moves) with the panels hidden and no input, saves the picture after
+  // HELIORA_CAPTURE_FRAMES frames (300 by default, so TAA and exposure
+  // settle) and quits. Two builds captured the same way can be compared.
+  // HELIORA_CAPTURE_PLAY=1 stays in play mode instead, character and all.
+  const char *capturePath = std::getenv("HELIORA_CAPTURE");
+  const char *captureFramesText = std::getenv("HELIORA_CAPTURE_FRAMES");
+  const int captureFrames =
+      captureFramesText ? std::max(1, std::atoi(captureFramesText)) : 300;
+  if (capturePath) {
+    if (!std::getenv("HELIORA_CAPTURE_PLAY"))
+      vulkanRenderer.togglePlayMode();
+    vulkanRenderer.toggleUiVisibility();
+    inputManager.setCursorCaptured(false);
+  }
+  int frameNumber = 0;
 
   if (!loadStartupScene(argc, argv)) {
     // Nothing to show without a scene, so say why instead of opening an
@@ -261,10 +323,13 @@ int main(int argc, char **argv) {
     // game's keys wait.
     const bool typing = vulkanRenderer.imguiWantsTextInput();
     const bool asking = vulkanRenderer.promptOpen();
-    updateFlying(fly, typing, asking);
-    processInput(typing);
-    handleEditorKeys(fly, typing, asking);
-    turnCamera(fly);
+    if (!capturePath) {
+      updateFlying(fly, typing, asking);
+      processInput(typing);
+      handleEditorKeys(fly, typing, asking);
+      turnCamera(fly);
+      vulkanRenderer.setPlayerControls(readPlayerControls(fly, typing, asking));
+    }
 
     if (inputManager.wasResized()) {
       vulkanRenderer.notifyResize();
@@ -272,16 +337,28 @@ int main(int argc, char **argv) {
     }
 
     // Physics first, so nodes it moved get their matrices in updateScene.
+    vulkanRenderer.setFlyCamera(camera.Position, camera.Yaw);
     vulkanRenderer.stepPhysics(deltaTime);
     // Advances node animations (play mode only) and global transforms.
     vulkanRenderer.updateScene(deltaTime);
 
-    vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
-
-    // Feed ImGui camera state; read back speed in case the slider changed it
-    vulkanRenderer.setImGuiCameraInfo(camera.Position, camera.MovementSpeed);
+    // The character's camera while playing, the fly camera otherwise. Feed
+    // ImGui the camera state; the speed is read back in case the slider
+    // changed it.
+    if (vulkanRenderer.hasPlayer()) {
+      const ThirdPersonCamera &view = vulkanRenderer.playerCamera();
+      vulkanRenderer.updateCameraView(view.view(), view.position());
+      vulkanRenderer.setImGuiCameraInfo(view.position(), camera.MovementSpeed);
+    } else {
+      vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
+      vulkanRenderer.setImGuiCameraInfo(camera.Position, camera.MovementSpeed);
+    }
+    if (capturePath && ++frameNumber == captureFrames)
+      vulkanRenderer.requestCapture(capturePath);
     vulkanRenderer.draw();
     camera.MovementSpeed = vulkanRenderer.getCameraSpeed();
+    if (capturePath && vulkanRenderer.finishCapture())
+      break;
   }
 
   vulkanRenderer.cleanup();

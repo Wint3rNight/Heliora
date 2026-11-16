@@ -217,22 +217,27 @@ Two things worth noting. The frame is dominated by the screen-space lighting pas
 
 | Input | Action |
 | --- | --- |
-| `W`, `A`, `S`, `D` | Move the camera |
-| Mouse | Look around in camera mode |
+| `W`, `A`, `S`, `D` | Walk the character, relative to the camera (play mode); move the camera (edit mode) |
+| Mouse | Orbit the character's camera (play mode); look around (edit mode, camera mode) |
+| `Shift`, held | Sprint (play mode) |
+| `Space` | Jump (play mode) |
+| `Ctrl`, held | Crouch (play mode); stands back up once there's room |
+| Left `Alt` | Dodge (play mode) |
+| Right mouse button, held | Aim over the shoulder (play mode); fly while in UI mode (edit mode) |
+| Mouse wheel | Zoom the character's camera (play mode) |
 | `Tab` | Toggle between camera mode and UI mode |
-| Right mouse button, held | Fly while in UI mode |
 | `F5` | Switch between play mode and edit mode (also the Play/Stop button in the toolbar) |
 | Left click | Select an object (edit mode, UI mode); click empty space to deselect |
 | `1`, `2`, `3` | Move, rotate or scale handles for the selected object |
 | `Ctrl` while dragging a handle | Snap to 0.25 m, 15° or 0.1 scale steps (also the Snap box in the toolbar) |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo (edit mode) |
-| `Ctrl+S`, `Ctrl+Shift+S` | Save, Save as |
+| `Ctrl+S`, `Ctrl+Shift+S` | Save, Save as (not while the character has the mouse: `Ctrl` is crouch) |
 | `F1` | Hide the menu bar and panels; the scene takes the whole window |
 | `F2` | Show physics collision shapes as wireframes |
-| `F` | Throw a ball from the camera (camera mode, play mode) |
+| `F` | Throw a ball where the camera looks (camera mode, play mode) |
 | `Esc` | Quit, asking first if something isn't saved |
 
-The game starts in play mode. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector, add shapes and model files from the Scene panel, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell.
+The game starts in play mode. Play puts a capsule character at the scene's `[player]` start (or on the ground below the camera) with a third-person camera behind it; Stop removes it and gives the editor camera back where it was. In edit mode physics is paused and everything sits where the scene's layout puts it: select an object and drag its handles or type values in the Inspector, add shapes and model files from the Scene panel, and save. Stop puts everything back to the layout, and Save always writes the layout, never where things fell.
 
 The window is a docked editor: a menu bar on top (File: Save, Save as, Quit; View: show or hide each panel, Reset layout; then Play/Stop, the handle modes and Snap) and panels down the sides, with the scene in the space they leave. Drag a panel's tab to another side, onto another panel's tabs, or out to float it; drag a divider to resize. The arrangement is saved to `Resources/editor_layout.ini` when you quit. The Render and Physics panels save their settings to `Resources/settings.cfg`, read at startup.
 

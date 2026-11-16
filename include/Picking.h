@@ -15,8 +15,8 @@ struct PickRay {
 
 // The ray through a pixel. pixel and viewport are in window coordinates,
 // with y counting down from the top. invViewProj undoes the unjittered
-// projection times view the frame was drawn with (depth 0 to 1, y flipped
-// for Vulkan). The ray starts on the near plane.
+// projection times view the frame was drawn with (cameraProjection:
+// reversed-Z, y flipped for Vulkan). The ray starts on the near plane.
 PickRay rayFromScreen(glm::vec2 pixel, glm::vec2 viewport,
                       const glm::mat4 &invViewProj);
 

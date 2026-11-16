@@ -738,3 +738,40 @@ TEST(counts_out_of_range_are_errors) {
   CHECK(refused("[ring]\npath = a.gltf\ncount = 0\n"));
   CHECK(!refused("[ring]\npath = a.gltf\ncount = 12\n"));
 }
+
+TEST(scene_without_a_player_start_has_none) {
+  const SceneDescription scene = parseText("[model]\nshape = box\n");
+  CHECK(!scene.player.has_value());
+  CHECK(SceneIO::write(scene).find("[player]") == std::string::npos);
+}
+
+TEST(player_start_survives_a_round_trip) {
+  const SceneDescription scene = parseText("# Spawn by the wall\n"
+                                           "[player]\n"
+                                           "position = 1 0.5 -3\n"
+                                           "yaw = 90\n");
+  CHECK(scene.player.has_value());
+  if (scene.player) {
+    CHECK(scene.player->position == glm::vec3(1.0f, 0.5f, -3.0f));
+    CHECK_NEAR(scene.player->yaw, 90.0, 1e-6);
+    CHECK(scene.player->info.comment == "# Spawn by the wall");
+  }
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(player_start_at_the_origin_keeps_its_section) {
+  const SceneDescription scene = parseText("[player]\n");
+  CHECK(scene.player.has_value());
+  CHECK(SceneIO::write(scene).find("[player]") != std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(bad_player_starts_are_errors) {
+  CHECK(errorOf("[player]\n[player]\n").find("one [player]") != std::string::npos);
+  CHECK(errorOf("[player]\nheight = 2\n").find("unknown player key") !=
+        std::string::npos);
+  // Not-a-number and infinity are already refused where they're read.
+  CHECK(errorOf("[player]\nposition = nan 0 0\n").find("line 2") !=
+        std::string::npos);
+  CHECK(errorOf("[player]\nyaw = inf\n").find("line 2") != std::string::npos);
+}

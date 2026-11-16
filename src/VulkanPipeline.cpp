@@ -86,7 +86,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
   depthStencil.depthTestEnable = VK_TRUE;
   depthStencil.depthWriteEnable = VK_TRUE;
-  depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+  depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // reversed-Z
 
   // ---- Blend state for a single opaque attachment ----
   VkPipelineColorBlendAttachmentState blendOff = {};
@@ -415,7 +415,7 @@ void VulkanPipeline::createPipelines(VkDevice device, VkRenderPass gBufferPass,
 
     VkPipelineDepthStencilStateCreateInfo transparentDepth = depthStencil;
     transparentDepth.depthWriteEnable = VK_FALSE;
-    transparentDepth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    transparentDepth.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
     VkPipelineColorBlendAttachmentState alphaBlend = blendOff;
     alphaBlend.blendEnable = VK_TRUE;

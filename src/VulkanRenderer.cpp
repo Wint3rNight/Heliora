@@ -1,4 +1,6 @@
 #include "VulkanRenderer.h"
+#include "CameraProjection.h"
+#include "ImageCapture.h"
 #include "Frustum.h"
 #include "Model.h"
 #include "Picking.h"
@@ -517,7 +519,12 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   vkDeviceWaitIdle(device.getLogicalDevice());
   const auto loadStart = std::chrono::steady_clock::now();
 
-  // Physics first: physicsLinks points into the tree cleared below.
+  // The character first: it lives in the world replaced below, and its
+  // capsule in the tree cleared below. A new one comes at the end if still
+  // playing.
+  player.reset();
+  playerNode = nullptr;
+  // Physics next: physicsLinks points into the tree cleared below.
   // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
   physicsLinks.clear();
   PhysicsWorld::Config physicsConfig = physicsPanel.config;
@@ -538,6 +545,10 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // A new scene's entries are different ones, and its history starts here.
   // Stop and undo keep the selection and the history.
   if (moveCamera) {
+    // Where the camera preset puts the fly camera, for a spawn below it
+    // before main() has passed it in.
+    flyCameraPosition = currentScene.camera.position;
+    flyCameraYaw = currentScene.camera.yaw;
     selection.reset();
     history.clear();
     history.push(currentScene);
@@ -586,6 +597,18 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     ballModelId = -1;
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
   }
+  // The character's capsules, standing and crouched, for the same reason.
+  try {
+    const CharacterTuning tuning;
+    playerModelId = createPrimitiveModel(playerCapsuleEntry(tuning.height));
+    crouchedPlayerModelId =
+        createPrimitiveModel(playerCapsuleEntry(tuning.crouchHeight));
+  } catch (const std::exception &e) {
+    playerModelId = crouchedPlayerModelId = -1;
+    spdlog::error("Couldn't make the character's capsule: {}", e.what());
+  }
+  if (playing)
+    spawnPlayer();
   rootNode.update(glm::mat4(1.0f), 0.0f);
   updateSelectionLines();
 
@@ -1064,13 +1087,22 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     steps = physicsClock.advance(frameSeconds);
     alpha = physicsClock.alpha();
   }
-  for (int i = 0; i < steps; ++i)
-    physics->step(static_cast<float>(physicsClock.stepSeconds()));
+  const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
+  if (player)
+    player->control(playerControls);
+  for (int i = 0; i < steps; ++i) {
+    // The character moves first, then the bodies, like Jolt's samples.
+    if (player)
+      player->step(stepSeconds);
+    physics->step(stepSeconds);
+  }
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
   for (const PhysicsMovedPose &moved : physics->movedPoses(alpha))
     if (SceneNode *node = physicsLinks[moved.userData].node)
       node->setPose(moved.pose.position, moved.pose.rotation);
+  if (player)
+    posePlayer(alpha, frameSeconds);
   const auto posed = std::chrono::steady_clock::now();
 
   using Ms = std::chrono::duration<double, std::milli>;
@@ -1107,6 +1139,64 @@ SceneModelEntry VulkanRenderer::thrownBallEntry() {
   ball.mass = 5.0f;
   ball.restitution = 0.3f;
   return ball;
+}
+
+SceneModelEntry VulkanRenderer::playerCapsuleEntry(float height) {
+  SceneModelEntry capsule;
+  capsule.shape = PrimitiveShape::Capsule;
+  capsule.radius = CharacterTuning{}.radius;
+  capsule.height = height;
+  capsule.color = glm::vec3(0.62f, 0.16f, 0.2f); // the UI's crimson
+  return capsule;
+}
+
+// At the scene's [player], or on the ground below the fly camera facing its
+// way. Its capsule is a plain node: not in the scene file, not selectable.
+void VulkanRenderer::spawnPlayer() {
+  if (!physics || player)
+    return;
+  glm::vec3 feet = flyCameraPosition;
+  float yaw;
+  if (currentScene.player) {
+    feet = currentScene.player->position;
+    yaw = glm::radians(currentScene.player->yaw);
+  } else {
+    if (const std::optional<PhysicsRayHit> ground = physics->castRay(
+            flyCameraPosition, glm::vec3(0.0f, -1.0f, 0.0f), 1000.0f))
+      feet.y -= ground->distance;
+    // Camera's yaw is LearnOpenGL's, in degrees: -90 looks down -z, where
+    // the character's 0 does.
+    yaw = -glm::radians(flyCameraYaw) - glm::half_pi<float>();
+  }
+  player = std::make_unique<Player>(*physics, feet, yaw);
+  if (playerModelId >= 0) {
+    auto node = std::make_unique<SceneNode>();
+    node->setModelId(playerModelId);
+    playerNode = node.get();
+    rootNode.addChild(std::move(node));
+  }
+  posePlayer(1.0f, 0.0f);
+}
+
+// The camera follows, and the capsule is drawn where the character is this
+// frame: blended between the last two steps, the short one while crouched.
+void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
+  player->follow(alpha, frameSeconds);
+  if (!playerNode)
+    return;
+  const CharacterController &character = player->character();
+  const float height = character.height();
+  const int model = height < character.tuning().height && crouchedPlayerModelId >= 0
+                        ? crouchedPlayerModelId
+                        : playerModelId;
+  if (playerNode->getModelId() != model)
+    playerNode->setModelId(model);
+  // The capsule mesh is centred on its middle, the character's position is
+  // its feet.
+  playerNode->setPose(character.drawnPosition(alpha) +
+                          glm::vec3(0.0f, 0.5f * height, 0.0f),
+                      glm::angleAxis(character.drawnYaw(alpha),
+                                     glm::vec3(0.0f, 1.0f, 0.0f)));
 }
 
 void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
@@ -1441,10 +1531,12 @@ void VulkanRenderer::applyPendingChanges() {
   if (playToggleRequested) {
     playToggleRequested = false;
     playing = !playing;
-    // Stop: back to the layout. Thrown balls and everything physics moved
-    // go, since the layout never had them.
+    // Stop: back to the layout. Thrown balls, the character and everything
+    // physics moved go, since the layout never had them.
     if (!playing)
       loadScene(currentScene, /*moveCamera=*/false);
+    else
+      spawnPlayer();
   }
 }
 
@@ -2176,6 +2268,8 @@ void VulkanRenderer::copySceneToWindow(VkCommandBuffer cmd,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    sameSize ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
   }
+  if (captureState == CaptureState::Requested)
+    recordCapture(cmd, sceneOutputImages[imageIndex].get());
   // The UI pass loads what's there and draws around and over it.
   renderResources.transition(
       cmd, window, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -2184,6 +2278,67 @@ void VulkanRenderer::copySceneToWindow(VkCommandBuffer cmd,
       VK_ACCESS_TRANSFER_WRITE_BIT,
       VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+}
+
+void VulkanRenderer::requestCapture(const std::string &path) {
+  capturePath = path;
+  captureState = CaptureState::Requested;
+}
+
+// The picture is already in TRANSFER_SRC for the blit, and a second read
+// needs no barrier. The one after makes the copy visible to the CPU.
+void VulkanRenderer::recordCapture(VkCommandBuffer cmd, VkImage image) {
+  captureExtent = sceneExtent;
+  createBuffer(device.getAllocator(),
+               VkDeviceSize(captureExtent.width) * captureExtent.height * 4,
+               VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, &captureBuffer);
+  VkBufferImageCopy region = {};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {captureExtent.width, captureExtent.height, 1};
+  vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         captureBuffer.get(), 1, &region);
+  VkMemoryBarrier2 toHost = {};
+  toHost.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  toHost.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  toHost.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  toHost.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  toHost.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  VkDependencyInfo dependency = {};
+  dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dependency.memoryBarrierCount = 1;
+  dependency.pMemoryBarriers = &toHost;
+  vkCmdPipelineBarrier2(cmd, &dependency);
+  captureState = CaptureState::Recorded;
+}
+
+bool VulkanRenderer::finishCapture() {
+  if (captureState != CaptureState::Recorded)
+    return false;
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  VmaAllocator allocator = device.getAllocator();
+  vmaInvalidateAllocation(allocator, captureBuffer.getAllocation(), 0,
+                          VK_WHOLE_SIZE);
+  void *mapped = nullptr;
+  bool written = false;
+  if (vmaMapMemory(allocator, captureBuffer.getAllocation(), &mapped) ==
+      VK_SUCCESS) {
+    const VkFormat format = swapchain.getImageFormat();
+    const bool bgra = format == VK_FORMAT_B8G8R8A8_UNORM ||
+                      format == VK_FORMAT_B8G8R8A8_SRGB;
+    written = writeCapturePng(capturePath, static_cast<uint8_t *>(mapped),
+                              captureExtent.width, captureExtent.height,
+                              captureExtent.width * 4, bgra);
+    vmaUnmapMemory(allocator, captureBuffer.getAllocation());
+  }
+  if (written)
+    spdlog::info("Captured {}x{} to {}", captureExtent.width,
+                 captureExtent.height, capturePath);
+  else
+    spdlog::error("Couldn't write the capture to {}", capturePath);
+  captureBuffer.reset();
+  captureState = CaptureState::None;
+  return true;
 }
 
 void VulkanRenderer::noteGBufferFinalLayouts(uint32_t imageIndex) {
@@ -2786,6 +2941,7 @@ void VulkanRenderer::cleanup() {
   // The world goes now, while main() runs. Left to the destructor, it would
   // go after main() returns, when Jolt's own statics (its default material)
   // may already be gone, and Jolt would release that material twice.
+  player.reset(); // takes its character out of the world below
   physicsLinks.clear();
   physics.reset();
 
@@ -3191,9 +3347,13 @@ bool VulkanRenderer::prepareGpuDrivenFrame(uint32_t currentImage,
     }
   }
 
+  // 0.001 of standard depth at a 1 m near plane, the margin this had before
+  // reversed-Z: projection[3][2] is about the near plane, and reversed depth
+  // differences scale with it.
+  const float hzbDepthMargin = 0.001f * sceneUbo.projection[3][2];
   gpuDrivenGBufferPass.uploadRecords(currentImage, frustumPlanes,
                                      sceneUbo.projection * sceneUbo.view,
-                                     imguiHzbCullingEnabled);
+                                     hzbDepthMargin, imguiHzbCullingEnabled);
   return gpuDrivenGBufferPass.canRecordIndirect(
       currentImage, imguiGpuDrivenEnabled, minCandidates);
 }
@@ -3410,7 +3570,7 @@ void VulkanRenderer::recordGBufferPass(VkCommandBuffer cmd, uint32_t currentImag
   }
 
   std::array<VkClearValue, 4> clears{};
-  clears[3].depthStencil = {1.0f, 0};
+  clears[3].depthStencil = {0.0f, 0}; // reversed-Z: 0 is the far plane
 
   VkRenderPassBeginInfo rpbi = {};
   rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3608,13 +3768,10 @@ void VulkanRenderer::setCameraPresetCallback(CameraPresetCallback callback) {
 void VulkanRenderer::rebuildProjection() {
   float aspect = static_cast<float>(sceneExtent.width) /
                  static_cast<float>(sceneExtent.height);
-  // Near=1.0 (not 0.1) because the scene is Crytek-scale (~3km long); a 0.1m
-  // near plane burns most of the D32F depth range on the first metre and
-  // leaves the rest of the hall z-fighting. 1m is below any meaningful
-  // first-person clip distance at this scale.
-  sceneUbo.projection = glm::perspective(glm::radians(imguiCameraFov), aspect,
+  // Reversed-Z (cameraProjection): depth 1 at the near plane, cleared to 0,
+  // tested with GREATER.
+  sceneUbo.projection = cameraProjection(glm::radians(imguiCameraFov), aspect,
                                          kCameraNear, imguiDrawDistance);
-  sceneUbo.projection[1][1] *= -1;
   sceneUbo.invProj = glm::inverse(sceneUbo.projection);
   // Capture the un-jittered baseline — draw() will copy this into
   // sceneUbo.projection at the start of every frame before applying the

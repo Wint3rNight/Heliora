@@ -1,3 +1,4 @@
+#include "CameraProjection.h"
 #include "Frustum.h"
 #include "ShadowCascades.h"
 #include "TestRunner.h"
@@ -30,11 +31,10 @@ glm::mat4 viewOf(const TestCamera &c) {
   return glm::lookAt(c.position, c.target, glm::vec3(0, 1, 0));
 }
 
+// The renderer's camera (reversed-Z).
 glm::mat4 projectionOf(const TestCamera &c) {
-  glm::mat4 p = glm::perspective(glm::radians(c.fovDeg), 16.0f / 9.0f, 0.1f,
-                                 c.drawDistance);
-  p[1][1] *= -1.0f;
-  return p;
+  return cameraProjection(glm::radians(c.fovDeg), 16.0f / 9.0f, 0.1f,
+                          c.drawDistance);
 }
 
 ShadowCascades cascadesOf(const TestCamera &c) {
@@ -143,4 +143,27 @@ TEST(spheres_behind_the_camera_are_dropped) {
     CHECK(!sphereKept(projectionOf(c) * viewOf(c), c.position - forward * 20.0f,
                       1.0f));
   }
+}
+
+TEST(spheres_past_the_draw_distance_are_dropped) {
+  for (const TestCamera &c : kCameras) {
+    const glm::vec3 forward = glm::normalize(c.target - c.position);
+    const glm::mat4 viewProj = projectionOf(c) * viewOf(c);
+    CHECK(!sphereKept(viewProj, c.position + forward * (c.drawDistance + 20.0f), 1.0f));
+    CHECK(sphereKept(viewProj, c.position + forward * (c.drawDistance - 20.0f), 1.0f));
+  }
+}
+
+TEST(camera_projection_is_reversed_z) {
+  const glm::mat4 p = cameraProjection(glm::radians(60.0f), 1.5f, 0.1f, 500.0f);
+  auto depthAt = [&](float distance) {
+    const glm::vec4 clip = p * glm::vec4(0.0f, 0.0f, -distance, 1.0f);
+    return clip.z / clip.w;
+  };
+  CHECK_NEAR(depthAt(0.1f), 1.0, 1e-5);
+  CHECK_NEAR(depthAt(500.0f), 0.0, 1e-5);
+  CHECK(depthAt(10.0f) > depthAt(20.0f)); // nearer is bigger
+  // Y still flipped for Vulkan: up in view is up the screen, negative NDC y.
+  const glm::vec4 up = p * glm::vec4(0.0f, 1.0f, -5.0f, 1.0f);
+  CHECK(up.y / up.w < 0.0f);
 }

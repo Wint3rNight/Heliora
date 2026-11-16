@@ -74,7 +74,7 @@ bool ssgiPathVisible(vec2 uv, vec2 sUV, float viewZ, float sViewZ,
         float t = float(step) / STEPS;
         vec2 midUV = mix(uv, sUV, t);
         float midDepth = texture(gBufferDepthSampler, midUV).r;
-        if (midDepth >= 0.9999)
+        if (midDepth <= 0.0)
             return false;
 
         float expectedZ = mix(viewZ, sViewZ, t);
@@ -176,7 +176,7 @@ vec3 computeSSGI(vec2 uv, vec3 worldPos, vec3 worldN, float viewZ) {
         if (sUV.x < 0.0 || sUV.x > 1.0 || sUV.y < 0.0 || sUV.y > 1.0) continue;
 
         float sDepth = texture(gBufferDepthSampler, sUV).r;
-        if (sDepth >= 0.9999) continue;
+        if (sDepth <= 0.0) continue;
 
         vec3 sN = texture(gBuffer1Sampler, sUV).xyz;
         if (dot(sN, sN) < 0.1) continue;
@@ -266,7 +266,7 @@ void main() {
     vec2 uv      = gl_FragCoord.xy / outSize;
 
     float depth = texture(gBufferDepthSampler, uv).r;
-    if (depth >= 0.9999) {
+    if (depth <= 0.0) { // sky: still the clear value
         // Sky — no bounce contribution.
         outSSGI = vec4(0.0);
         return;
@@ -306,7 +306,7 @@ void main() {
                 float depthAtPrev = texture(gBufferDepthSampler, prevUV).r;
                 float viewZCur  = abs(reconstructLinearViewZ(uv,     depth));
                 float viewZPrev = abs(reconstructLinearViewZ(prevUV, depthAtPrev));
-                bool depthOK = (depthAtPrev >= 0.9999) ||
+                bool depthOK = (depthAtPrev <= 0.0) ||
                                (abs(viewZCur - viewZPrev) <=
                                 max(0.1 * viewZCur, 0.05));
 

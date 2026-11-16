@@ -391,7 +391,9 @@ vec3 applyFXAA(vec2 uv, vec3 litColor) {
 
     float depthRange = max(max(max(dN, dS), max(dE, dW)), dC) -
                        min(min(min(dN, dS), min(dE, dW)), dC);
-    if (depthRange < 0.005) return litColor;
+    // Divided by projection[3][2] (about the near plane), so the threshold
+    // means the same whatever the near plane is.
+    if (depthRange / scene.projection[3][2] < 0.005) return litColor;
 
     // Check that it is also a shading edge (not just a smooth surface curve)
     vec3 nC = texture(gBuffer1Sampler, uv).rgb;
@@ -452,7 +454,7 @@ void main() {
     // Background: sample skybox using reconstructed view direction.
     // Multiplied by the ambient intensity so the night sky goes dark instead
     // of staying frozen at baked daylight.
-    if (depth >= 0.9999) {
+    if (depth <= 0.0) { // sky: still the clear value
         vec3 vPos   = reconstructViewPos(uv, depth);
         vec4 wPosCl = scene.invView * vec4(vPos, 1.0);
         vec3 viewDir = normalize(wPosCl.xyz / wPosCl.w - scene.cameraPosition.xyz);
@@ -733,7 +735,7 @@ void main() {
                 continue;
             vec3  sSSGI = texture(ssgiSampler, sUV).rgb;
             float sD   = texture(gBufferDepthSampler, sUV).r;
-            if (sD >= 0.9999) continue;
+            if (sD <= 0.0) continue;
             vec3  sN   = texture(gBuffer1Sampler, sUV).xyz;
             if (dot(sN, sN) < 0.1) continue;
             sN = normalize(sN);

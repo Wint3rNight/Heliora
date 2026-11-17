@@ -110,6 +110,7 @@ std::optional<std::string> modelProblem(const SceneModelEntry &model) {
       !std::isfinite(model.height) || !allFinite(model.color) ||
       !finite(model.mass) || !finite(model.density) ||
       !finite(model.friction) || !finite(model.restitution) ||
+      !finite(model.breakStrength) ||
       !allFinite(a.spinDegPerSec) || !std::isfinite(a.orbitDegPerSec) ||
       !std::isfinite(a.orbitRadius) || !std::isfinite(a.bobAmplitude) ||
       !std::isfinite(a.bobFrequency))
@@ -156,6 +157,18 @@ std::optional<std::string> modelProblem(const SceneModelEntry &model) {
   if (model.restitution &&
       (*model.restitution < 0.0f || *model.restitution > 1.0f))
     return "'restitution' must be between 0 and 1";
+  if (!model.breakPieces && (model.breakSeed != 0 || model.breakStrength))
+    return "'break_seed' and 'break_strength' need 'break'";
+  if (model.breakPieces) {
+    if (model.shape != PrimitiveShape::Box)
+      return "only boxes break for now ('break' needs 'shape = box')";
+    if (!model.body)
+      return "'break' needs a 'body': hits break it";
+    if (*model.breakPieces < 2 || *model.breakPieces > kMaxBreakPieces)
+      return std::format("'break' is the number of pieces, 2 to {}", kMaxBreakPieces);
+    if (model.breakStrength && *model.breakStrength <= 0.0f)
+      return "'break_strength' must be more than 0";
+  }
   if (!model.shape)
     return std::nullopt;
   switch (*model.shape) {
@@ -307,6 +320,20 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
     model.friction = parseFloat(value, lineNumber);
   else if (key == "restitution")
     model.restitution = parseFloat(value, lineNumber);
+  else if (key == "break" || key == "break_seed") {
+    // Whole numbers only, checked as a float first: converting one past
+    // int's range is undefined.
+    const float whole = parseFloat(value, lineNumber);
+    if (whole != std::round(whole) || whole < 0.0f || whole > 4294967295.0f)
+      throw std::runtime_error("scene parse error, line " + std::to_string(lineNumber) +
+                               ": '" + key + "' takes a whole number");
+    if (key == "break")
+      model.breakPieces = static_cast<int>(std::min(whole, 1e6f));
+    else
+      model.breakSeed = static_cast<uint32_t>(whole);
+  }
+  else if (key == "break_strength")
+    model.breakStrength = parseFloat(value, lineNumber);
   else if (key == "position")
     model.transform.position = parseVec3(value, lineNumber);
   else if (key == "rotation")
@@ -333,7 +360,7 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
 bool isModelDataKey(std::string_view key) {
   for (std::string_view data : {"path", "shape", "size", "radius", "height", "color", "body",
                                 "mass", "density", "collider", "material", "friction",
-                                "restitution"})
+                                "restitution", "break", "break_seed", "break_strength"})
     if (key == data)
       return true;
   return false;
@@ -442,6 +469,12 @@ void writeModelKeys(std::string &out, const SceneModelEntry &model) {
     writeKey(out, "friction", formatFloat(*model.friction));
   if (keep("restitution", model.restitution.has_value()) && model.restitution)
     writeKey(out, "restitution", formatFloat(*model.restitution));
+  if (keep("break", model.breakPieces.has_value()) && model.breakPieces)
+    writeKey(out, "break", std::format("{}", *model.breakPieces));
+  if (keep("break_seed", model.breakSeed != d.breakSeed))
+    writeKey(out, "break_seed", std::format("{}", model.breakSeed));
+  if (keep("break_strength", model.breakStrength.has_value()) && model.breakStrength)
+    writeKey(out, "break_strength", formatFloat(*model.breakStrength));
   const NodeAnimation &a = model.animation;
   if (a.spinDegPerSec != d.animation.spinDegPerSec)
     writeKey(out, "spin", formatVec3(a.spinDegPerSec));
@@ -571,6 +604,8 @@ SceneEntryRef addCharacter(SceneDescription &scene, SceneCharacterEntry characte
 std::optional<std::string> problemWith(const SceneGridEntry &grid) {
   if (std::optional<std::string> problem = modelProblem(grid.model))
     return problem;
+  if (grid.model.breakPieces)
+    return "a [grid] can't break yet; split it into objects first";
   if (glm::any(glm::lessThan(grid.count, glm::ivec3(1))) ||
       glm::any(glm::greaterThan(grid.count, glm::ivec3(kMaxCountPerAxis))))
     return "'count' must be 1 to " + std::to_string(kMaxCountPerAxis) +

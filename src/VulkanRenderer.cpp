@@ -719,9 +719,11 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   vkDeviceWaitIdle(device.getLogicalDevice());
   const auto loadStart = std::chrono::steady_clock::now();
 
-  // The characters first: their bodies live in the world replaced below,
-  // and their nodes in the tree cleared below. They come back at the end.
+  // The characters and breakables first: their bodies live in the world
+  // replaced below, and their nodes in the tree cleared below. They come
+  // back at the end.
   clearCharacters();
+  clearBreakables();
   // Physics next: physicsLinks points into the tree cleared below.
   // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
   physicsLinks.clear();
@@ -763,6 +765,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     addEntry({SceneEntryRef::Kind::Model, i});
   for (int i = 0; i < static_cast<int>(currentScene.grids.size()); ++i)
     addEntry({SceneEntryRef::Kind::Grid, i});
+  rebuildBreakables();
 
   for (const SceneRingEntry &ring : desc.rings) {
     if (ring.count <= 0)
@@ -882,6 +885,10 @@ void VulkanRenderer::addEntry(SceneEntryRef ref) {
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
   const SceneModelEntry &model = isGrid ? currentScene.grids[ref.index].model
                                         : currentScene.models[ref.index];
+  if (!isGrid && model.breakPieces) {
+    breakablesDirty = true; // its pieces and bodies, with all the others
+    return;
+  }
   try {
     // Every copy in a grid shares one model, so it's made once.
     const int modelId = modelFor(model);
@@ -899,6 +906,10 @@ void VulkanRenderer::addEntry(SceneEntryRef ref) {
 }
 
 void VulkanRenderer::removeEntryNodes(SceneEntryRef ref) {
+  // Entries after this one move down an index, and breakables keep theirs:
+  // they're all built again at the top of the next frame.
+  if (!breakables.empty())
+    breakablesDirty = true;
   for (PhysicsLink &link : physicsLinks)
     if (link.node && link.node->entry() == ref) {
       physics->removeBody(link.body);
@@ -915,6 +926,12 @@ void VulkanRenderer::placeEntry(SceneEntryRef ref) {
   }
   if (ref.kind == SceneEntryRef::Kind::Character) {
     placeCharacter(ref.index);
+    rootNode.update(glm::mat4(1.0f), playSeconds);
+    updateEditorLines();
+    return;
+  }
+  if (ref.kind == SceneEntryRef::Kind::Model && currentScene.models[ref.index].breakPieces) {
+    placeBreakable(ref);
     rootNode.update(glm::mat4(1.0f), playSeconds);
     updateEditorLines();
     return;
@@ -1729,11 +1746,19 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       roster->step(stepSeconds);
     physics->step(stepSeconds);
   }
+  if (steps > 0)
+    handleImpacts();
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
-  for (const PhysicsMovedPose &moved : physics->movedPoses(alpha))
-    if (SceneNode *node = physicsLinks[moved.userData].node)
+  for (const PhysicsMovedPose &moved : physics->movedPoses(alpha)) {
+    if (moved.userData & kBreakBodyFlag) {
+      const uint64_t body = moved.userData & ~kBreakBodyFlag;
+      if (body < breakBodies.size())
+        poseBreakBody(breakBodies[body], moved.pose);
+    } else if (SceneNode *node = physicsLinks[moved.userData].node) {
       node->setPose(moved.pose.position, moved.pose.rotation);
+    }
+  }
   const auto beforePose = std::chrono::steady_clock::now();
   if (roster)
     poseCharacters(alpha, frameSeconds);
@@ -2313,10 +2338,12 @@ void VulkanRenderer::updateSkeletonLines(const LiveCharacter &character,
   }
 }
 
-void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction) {
+void VulkanRenderer::throwBall(glm::vec3 from, glm::vec3 direction, bool heavy) {
   if (!physics || ballModelId < 0 || !playing)
     return;
   SceneModelEntry ball = thrownBallEntry();
+  if (heavy)
+    ball.mass = 60.0f; // an iron ball: the same size, twelve times the hit
   // A metre ahead of the camera, so it doesn't start inside the near plane.
   ball.transform.position = from + direction * 1.0f;
   auto node = std::make_unique<SceneNode>();
@@ -2395,7 +2422,11 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
   if (const std::optional<PhysicsRayHit> hit =
           physics->castRay(ray.origin, ray.direction, nearest)) {
     nearest = hit->distance;
-    if (const SceneNode *node = physicsLinks[hit->userData].node)
+    if (const int object = breakableOf(hit->userData); object >= 0)
+      picked = breakables[object].entry;
+    else if (hit->userData & kBreakBodyFlag)
+      picked.reset();
+    else if (const SceneNode *node = physicsLinks[hit->userData].node)
       picked = node->entry();
   }
   // Objects without a body have no collider to hit, so their bounding sphere
@@ -2495,6 +2526,17 @@ void VulkanRenderer::updateEditorLines() {
     }
   // A centimetre out, so the outline doesn't sit in the object's own faces.
   constexpr float kMargin = 0.01f;
+  // A breakable: the box it was, and its cuts.
+  if (selection->kind == SceneEntryRef::Kind::Model &&
+      currentScene.models[selection->index].breakPieces) {
+    const SceneModelEntry &entry = currentScene.models[selection->index];
+    const glm::vec3 half = 0.5f * entry.size * entry.transform.scale + kMargin;
+    const glm::mat4 where = glm::translate(glm::mat4(1.0f), entry.transform.position) *
+                            glm::mat4_cast(rotationFromDegrees(entry.transform.rotationDeg));
+    appendBoxLines(editorLines, boxCorners(-half, half, where), kSelectionColor);
+    appendPieceLines(*selection);
+    return;
+  }
   // One object gets a box turned with it; a grid gets one box around every
   // copy, lined up with the world.
   glm::vec3 lo(std::numeric_limits<float>::max());
@@ -2805,6 +2847,12 @@ void VulkanRenderer::applyPendingChanges() {
     vkDeviceWaitIdle(logicalDevice);
     applyDuplicate();
   }
+  if (breakablesDirty) {
+    vkDeviceWaitIdle(logicalDevice);
+    rebuildBreakables();
+    rootNode.update(glm::mat4(1.0f), playSeconds);
+    updateEditorLines();
+  }
   // The scene's images rebuilt once a new size has settled (a divider let
   // go, a window resize finished).
   {
@@ -2828,6 +2876,7 @@ void VulkanRenderer::applyPendingChanges() {
     } else {
       vkDeviceWaitIdle(logicalDevice); // the tree changes, a copy may be new
       buildCharacters();
+      prepareBreakGraph();
     }
   }
 }
@@ -4248,6 +4297,7 @@ void VulkanRenderer::cleanup() {
   // go after main() returns, when Jolt's own statics (its default material)
   // may already be gone, and Jolt would release that material twice.
   clearCharacters(); // takes the bodies out of the world below
+  clearBreakables();
   physicsLinks.clear();
   physics.reset();
 

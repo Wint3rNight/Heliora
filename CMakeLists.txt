@@ -136,6 +136,8 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ThirdPersonCamera.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Thumbnails.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/BreakGraph.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Fracture.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Frustum.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
@@ -198,6 +200,8 @@ add_executable(heliora_tests
         tests/ControlsTests.cpp
         tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp
+        tests/BreakGraphTests.cpp
+        tests/FractureTests.cpp
         tests/FrustumTests.cpp
         tests/GizmoTests.cpp
         tests/PhysicsCharacterTests.cpp

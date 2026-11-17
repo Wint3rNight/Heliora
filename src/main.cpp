@@ -215,14 +215,17 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
   // F throws a ball where the camera looks, in camera mode only so a
   // click-and-type in a panel never throws. Play mode only (throwBall).
   // With a character it starts from its shoulders, not from the camera
-  // behind it, or the first thing it would hit is the character.
+  // behind it, or the first thing it would hit is the character. Shift+F
+  // throws a heavy one, for breaking things.
   if (fly.cameraMode && !typing && !asking &&
       inputManager.wasKeyJustPressed(GLFW_KEY_F)) {
+    const bool heavy = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT) ||
+                       inputManager.isKeyPressed(GLFW_KEY_RIGHT_SHIFT);
     if (vulkanRenderer.hasPlayer()) {
       const ThirdPersonCamera &view = vulkanRenderer.playerCamera();
-      vulkanRenderer.throwBall(view.pivot(), view.forward());
+      vulkanRenderer.throwBall(view.pivot(), view.forward(), heavy);
     } else {
-      vulkanRenderer.throwBall(camera.Position, camera.Front);
+      vulkanRenderer.throwBall(camera.Position, camera.Front, heavy);
     }
   }
 }

@@ -61,6 +61,11 @@ glm::vec3 degreesFromRotation(const glm::quat &rotation);
 // one hull per part if it does. Box: one box around the whole model.
 enum class SceneCollider : uint8_t { Auto, Hull, Mesh, Box };
 
+// Breakable objects: the most pieces one is cut into, and how strongly its
+// pieces hold by default (N s per m^2 of cut face).
+constexpr int kMaxBreakPieces = 500;
+constexpr float kDefaultBreakStrength = 300.0f;
+
 // A model is a file (path) or a shape generated in code (shape), never both.
 struct SceneModelEntry {
   std::string path;
@@ -79,6 +84,12 @@ struct SceneModelEntry {
   std::optional<SceneCollider> collider; // model files only; unset is Auto
   std::optional<float> friction;    // 0 and up
   std::optional<float> restitution; // bounciness, 0 to 1
+  // Breakable (boxes with a body): pre-cut into this many pieces (Fracture.h)
+  // from this seed, the links between them holding up to this impulse per
+  // square metre of cut face (N s per m^2). Unset: it doesn't break.
+  std::optional<int> breakPieces;
+  uint32_t breakSeed = 0;
+  std::optional<float> breakStrength; // unset: kDefaultBreakStrength
   NodeTransform transform;
   NodeAnimation animation;
   // A copy of an object asset (a prefab, Resources/Objects/*.object): its

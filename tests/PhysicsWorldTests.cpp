@@ -543,3 +543,86 @@ TEST(gravity_reads_back_what_was_applied) {
   world.applySettings(config);
   CHECK_NEAR(world.gravity().y, -3.0, 1e-5);
 }
+
+namespace {
+
+// A static slab that reports what hits it, top at y = 0.
+PhysicsBodyId addTarget(PhysicsWorld &world, uint64_t userData) {
+  PhysicsBodyDesc slab;
+  slab.shape = PhysicsShape::Box;
+  slab.halfExtents = glm::vec3(5.0f, 0.5f, 5.0f);
+  slab.motion = PhysicsMotion::Static;
+  slab.position = glm::vec3(0.0f, -0.5f, 0.0f);
+  slab.reportImpacts = true;
+  slab.userData = userData;
+  return world.addBody(slab);
+}
+
+} // namespace
+
+TEST(a_falling_box_reports_its_impact) {
+  // 10 kg from 1.25 m up lands at about 4.95 m/s: an impulse of about 50 N s
+  // on what it hits, which doesn't move (its reduced mass is the box's).
+  PhysicsWorld world;
+  const PhysicsBodyId target = addTarget(world, 42);
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  box.halfExtents = glm::vec3(0.25f);
+  box.mass = 10.0f;
+  box.position = glm::vec3(0.0f, 1.5f, 0.0f);
+  world.addBody(box);
+  std::vector<PhysicsImpact> impacts;
+  for (int i = 0; i < 60; ++i) {
+    world.step(kStep);
+    for (const PhysicsImpact &impact : world.takeImpacts())
+      impacts.push_back(impact);
+  }
+  CHECK(!impacts.empty());
+  if (!impacts.empty()) {
+    const PhysicsImpact &first = impacts.front();
+    CHECK(first.body.value == target.value);
+    CHECK(first.userData == 42);
+    CHECK_NEAR(first.impulse, 50.0, 8.0);
+    CHECK_NEAR(first.point.y, 0.0, 0.05);
+    CHECK(std::fabs(first.point.x) < 0.3f && std::fabs(first.point.z) < 0.3f);
+  }
+  // Resting on it afterwards reports nothing more.
+  stepFor(world, 60);
+  world.takeImpacts();
+  stepFor(world, 30);
+  CHECK(world.takeImpacts().empty());
+}
+
+TEST(bodies_report_impacts_only_when_asked) {
+  PhysicsWorld world;
+  addFloor(world); // doesn't ask
+  addBox(world, glm::vec3(0.0f, 2.0f, 0.0f));
+  stepFor(world, 90);
+  CHECK(world.takeImpacts().empty());
+}
+
+TEST(a_body_tells_its_velocities) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  box.linearVelocity = glm::vec3(3.0f, 0.0f, 0.0f);
+  box.angularVelocity = glm::vec3(0.0f, 2.0f, 0.0f);
+  const PhysicsBodyId id = world.addBody(box);
+  CHECK_NEAR(glm::distance(world.linearVelocity(id), glm::vec3(3.0f, 0.0f, 0.0f)), 0.0, 1e-4);
+  CHECK_NEAR(glm::distance(world.angularVelocity(id), glm::vec3(0.0f, 2.0f, 0.0f)), 0.0, 1e-4);
+}
+
+TEST(settling_onto_something_is_no_impact) {
+  // A heavy box put down right on the target: the first step's few cm/s of
+  // fall add up to a big impulse at 2 t, but it's no hit.
+  PhysicsWorld world;
+  addTarget(world, 7);
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  box.halfExtents = glm::vec3(0.5f);
+  box.mass = 2000.0f;
+  box.position = glm::vec3(0.0f, 0.5f, 0.0f);
+  world.addBody(box);
+  stepFor(world, 30);
+  CHECK(world.takeImpacts().empty());
+}

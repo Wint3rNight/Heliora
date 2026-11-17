@@ -56,7 +56,21 @@ struct PhysicsBodyDesc {
   glm::vec3 position{0.0f};
   glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
   glm::vec3 linearVelocity{0.0f}; // m/s at the start, for thrown things
+  glm::vec3 angularVelocity{0.0f}; // radians/s at the start
   uint64_t userData = 0;           // ours, handed back by movedPoses()
+  // Things hitting it are reported by takeImpacts(), for breakable objects.
+  bool reportImpacts = false;
+};
+
+// Something hit a body that reports impacts: where, the contact normal (out
+// of the body), and the impulse (N s): the closing speed along the normal
+// times the pair's reduced mass.
+struct PhysicsImpact {
+  PhysicsBodyId body;
+  uint64_t userData = 0; // the body's
+  glm::vec3 point{0.0f};
+  glm::vec3 normal{0.0f};
+  float impulse = 0.0f;
 };
 
 struct PhysicsPose {
@@ -206,6 +220,13 @@ public:
   bool isActive(PhysicsBodyId id) const;
   // In kg. 0 for static bodies, which never move.
   float mass(PhysicsBodyId id) const;
+  glm::vec3 linearVelocity(PhysicsBodyId id) const;
+  glm::vec3 angularVelocity(PhysicsBodyId id) const; // radians/s
+
+  // New contacts on bodies that report impacts since the last call, closing
+  // at 1 m/s or more and harder than a knock (1 N s), gathered during
+  // step(). Settling and resting contacts don't count.
+  std::vector<PhysicsImpact> takeImpacts();
 
   // The nearest body the ray hits within maxDistance, for clicking on
   // things. direction needn't be unit length. Characters don't block it.

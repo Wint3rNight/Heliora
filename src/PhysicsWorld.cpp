@@ -19,6 +19,7 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Constraints/ContactConstraintManager.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
@@ -35,6 +36,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -281,6 +283,51 @@ JPH::ShapeRefC makeCharacterShape(float radius, float height) {
 // Dynamic bodies don't shove characters: Jolt would carry a character along
 // at their speed, so a thrown ball took a 70 kg character with it. They hit
 // its body instead, and it still pushes them.
+constexpr float kMinImpactSpeed = 1.0f; // m/s
+
+// New contacts on bodies that report impacts: the closing speed along the
+// normal times the pair's reduced mass. Jolt calls this from its worker
+// threads during the step, so the list is locked.
+class ImpactContacts final : public JPH::ContactListener {
+public:
+  const std::vector<uint8_t> *reports = nullptr; // by body index
+  const std::vector<uint64_t> *userData = nullptr;
+  std::mutex mutex;
+  std::vector<PhysicsImpact> impacts;
+
+  void OnContactAdded(const JPH::Body &one, const JPH::Body &two,
+                      const JPH::ContactManifold &manifold, JPH::ContactSettings &) override {
+    const bool reportOne = (*reports)[one.GetID().GetIndex()] != 0;
+    const bool reportTwo = (*reports)[two.GetID().GetIndex()] != 0;
+    if ((!reportOne && !reportTwo) || manifold.mRelativeContactPointsOn1.empty())
+      return;
+    JPH::RVec3 point = manifold.GetWorldSpaceContactPointOn1(0);
+    for (JPH::uint i = 1; i < manifold.mRelativeContactPointsOn1.size(); ++i)
+      point += manifold.GetWorldSpaceContactPointOn1(i);
+    point /= static_cast<float>(manifold.mRelativeContactPointsOn1.size());
+    const JPH::Vec3 normal = manifold.mWorldSpaceNormal; // from one towards two
+    const float closing = (one.GetPointVelocity(point) - two.GetPointVelocity(point)).Dot(normal);
+    const float inverseMass =
+        (one.IsDynamic() ? one.GetMotionProperties()->GetInverseMass() : 0.0f) +
+        (two.IsDynamic() ? two.GetMotionProperties()->GetInverseMass() : 0.0f);
+    // Bodies settling onto each other close slowly, and heavy ones would
+    // still add up to a big impulse: only real hits count.
+    if (closing < kMinImpactSpeed || inverseMass <= 0.0f)
+      return;
+    const float impulse = closing / inverseMass;
+    if (impulse < 1.0f)
+      return;
+    const glm::vec3 at = toGlm(point);
+    std::lock_guard lock(mutex);
+    if (reportOne)
+      impacts.push_back({PhysicsBodyId{one.GetID().GetIndexAndSequenceNumber()},
+                         (*userData)[one.GetID().GetIndex()], at, toGlm(normal), impulse});
+    if (reportTwo)
+      impacts.push_back({PhysicsBodyId{two.GetID().GetIndexAndSequenceNumber()},
+                         (*userData)[two.GetID().GetIndex()], at, -toGlm(normal), impulse});
+  }
+};
+
 class CharacterContacts final : public JPH::CharacterContactListener {
 public:
   void OnContactAdded(const JPH::CharacterVirtual *,
@@ -408,6 +455,9 @@ struct PhysicsWorld::Impl {
   uint32_t droppedContactSteps = 0;
   uint32_t loggedErrors = 0; // EPhysicsUpdateError bits already logged
   bool warnedFull = false;
+
+  ImpactContacts impactContacts;
+  std::vector<uint8_t> reportsImpacts; // by body index
 
   // Declared after system, so they go first: each removes its body from it.
   CharacterContacts characterContacts;
@@ -560,6 +610,10 @@ PhysicsWorld::PhysicsWorld(const Config &config)
   impl->movedPoseBuffer.reserve(config.maxBodies);
   impl->activeStamp.resize(config.maxBodies, 0);
   impl->isCharacterBody.resize(config.maxBodies, 0);
+  impl->reportsImpacts.resize(config.maxBodies, 0);
+  impl->impactContacts.reports = &impl->reportsImpacts;
+  impl->impactContacts.userData = &impl->userData;
+  impl->system.SetContactListener(&impl->impactContacts);
   impl->lastActive.reserve(config.maxBodies);
   impl->active.reserve(config.maxBodies);
   impl->moved.reserve(config.maxBodies);
@@ -567,6 +621,21 @@ PhysicsWorld::PhysicsWorld(const Config &config)
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
+
+glm::vec3 PhysicsWorld::linearVelocity(PhysicsBodyId id) const {
+  JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id.value));
+  return lock.Succeeded() ? toGlm(lock.GetBody().GetLinearVelocity()) : glm::vec3(0.0f);
+}
+
+glm::vec3 PhysicsWorld::angularVelocity(PhysicsBodyId id) const {
+  JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id.value));
+  return lock.Succeeded() ? toGlm(lock.GetBody().GetAngularVelocity()) : glm::vec3(0.0f);
+}
+
+std::vector<PhysicsImpact> PhysicsWorld::takeImpacts() {
+  std::lock_guard lock(impl->impactContacts.mutex);
+  return std::exchange(impl->impactContacts.impacts, {});
+}
 
 void PhysicsWorld::applySettings(const Config &config) {
   const JPH::Vec3 gravity = toJolt(config.gravity);
@@ -608,6 +677,7 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   settings.mFriction = desc.friction;
   settings.mRestitution = desc.restitution;
   settings.mLinearVelocity = toJolt(desc.linearVelocity);
+  settings.mAngularVelocity = toJolt(desc.angularVelocity);
   if (motion == JPH::EMotionType::Dynamic) {
     // Bodies share shapes, so a body's density can't live on its shape.
     // Instead the shape's mass properties, worked out at Jolt's default of
@@ -642,6 +712,7 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   const PhysicsPose spawn = impl->readPose(id);
   impl->drawn[id.GetIndex()] = {spawn, spawn};
   impl->userData[id.GetIndex()] = desc.userData;
+  impl->reportsImpacts[id.GetIndex()] = desc.reportImpacts ? 1 : 0;
   return PhysicsBodyId{id.GetIndexAndSequenceNumber()};
 }
 
@@ -653,6 +724,7 @@ void PhysicsWorld::removeBody(PhysicsBodyId id) {
     return;
   bodies.RemoveBody(bodyId);
   bodies.DestroyBody(bodyId);
+  impl->reportsImpacts[bodyId.GetIndex()] = 0;
   // Its index can go to a new body, so it must not stay in these lists.
   std::erase(impl->lastActive, bodyId);
   std::erase_if(impl->moved,

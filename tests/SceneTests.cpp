@@ -981,3 +981,51 @@ TEST(character_edits_must_be_ordinary_numbers_and_name_a_file) {
   lost.position.x = std::numeric_limits<float>::quiet_NaN();
   CHECK(problemWith(lost));
 }
+
+TEST(breakable_boxes_read_and_write) {
+  const SceneDescription scene =
+      parseText("[model]\nshape = box\nsize = 4 2 0.3\nbody = static\n"
+                "break = 24\nbreak_seed = 3\nbreak_strength = 250\n"
+                "[model]\nshape = box\nbody = dynamic\nbreak = 6\n");
+  const SceneModelEntry &wall = scene.models[0];
+  CHECK(wall.breakPieces == std::optional<int>(24));
+  CHECK(wall.breakSeed == 3u);
+  CHECK(wall.breakStrength == std::optional<float>(250.0f));
+  const SceneModelEntry &crate = scene.models[1];
+  CHECK(crate.breakPieces == std::optional<int>(6));
+  CHECK(crate.breakSeed == 0u);
+  CHECK(!crate.breakStrength); // the default strength
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("break = 24") != std::string::npos);
+  CHECK(text.find("break_seed = 3") != std::string::npos);
+  CHECK(text.find("break_seed = 0") == std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(only_boxes_with_bodies_break) {
+  CHECK(errorOf("[model]\nshape = sphere\nbody = static\nbreak = 8\n").find("box") !=
+        std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbreak = 8\n").find("body") != std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nbreak = 1\n").find("break") !=
+        std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nbreak = 501\n").find("break") !=
+        std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nbreak = 2.5\n").find("line 4") !=
+        std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nbreak_seed = 3\n").find("'break'") !=
+        std::string::npos);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nbreak = 4\nbreak_strength = 0\n")
+            .find("strength") != std::string::npos);
+}
+
+TEST(grids_dont_break_yet) {
+  CHECK(errorOf("[grid]\nshape = box\nbody = static\nbreak = 6\ncount = 3 1 1\n")
+            .find("split") != std::string::npos);
+}
+
+TEST(a_prefab_can_be_breakable) {
+  // What an object is, so a breakable crate can be a .object file.
+  CHECK(isModelDataKey("break"));
+  CHECK(isModelDataKey("break_seed"));
+  CHECK(isModelDataKey("break_strength"));
+}

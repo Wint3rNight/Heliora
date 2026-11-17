@@ -711,6 +711,9 @@ void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
       edited.friction.reset();
       edited.restitution.reset();
       edited.collider.reset();
+      edited.breakPieces.reset();
+      edited.breakSeed = 0;
+      edited.breakStrength.reset();
     } else {
       edited.body = static_cast<PhysicsMotion>(body - 1);
     }
@@ -765,6 +768,39 @@ void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
     if (ui.selectionMass > 0.0f)
       ImGui::TextDisabled(isGrid ? "Weighs %.1f kg each" : "Weighs %.1f kg",
                           ui.selectionMass);
+  }
+  // Breaking: boxes with a body, cut into pieces ahead of time.
+  if (edited.body && edited.shape == PrimitiveShape::Box && !isGrid) {
+    ImGui::SeparatorText("Breaking");
+    bool breaks = edited.breakPieces.has_value();
+    if (ImGui::Checkbox("Breakable", &breaks)) {
+      if (breaks) {
+        edited.breakPieces = 24;
+      } else {
+        edited.breakPieces.reset();
+        edited.breakSeed = 0;
+        edited.breakStrength.reset();
+      }
+      edit.changed = true;
+    }
+    ImGui::SetItemTooltip("Cut into pieces that hits knock out. Selected, its cuts show.");
+    if (edited.breakPieces) {
+      int pieces = *edited.breakPieces;
+      if (ImGui::DragInt("Pieces", &pieces, 0.2f, 2, kMaxBreakPieces, "%d", kClamp)) {
+        edited.breakPieces = pieces;
+        edit.changed = true;
+      }
+      int seed = static_cast<int>(edited.breakSeed);
+      if (ImGui::DragInt("Seed", &seed, 0.2f, 0, 1000000, "%d", kClamp)) {
+        edited.breakSeed = static_cast<uint32_t>(seed);
+        edit.changed = true;
+      }
+      ImGui::SetItemTooltip("Another seed, another set of pieces");
+      edit.changed |= optionalFloat("Strength", edited.breakStrength, kDefaultBreakStrength, 5.0f,
+                                    1.0f, 1.0e6f, "%.0f N s/m\u00b2");
+      ImGui::SetItemTooltip("How hard a hit its pieces hold out against, per square metre "
+                            "of cut face. A 5 kg ball thrown with F hits with about 125 N s");
+    }
   }
 }
 

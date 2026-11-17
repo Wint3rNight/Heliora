@@ -31,6 +31,7 @@
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
+#include "BreakGraph.h"
 #include "CharacterRoster.h"
 #include "PlayerController.h"
 #include "Prefab.h"
@@ -123,7 +124,8 @@ public:
     physicsPanel.showWireframes = !physicsPanel.showWireframes;
   }
   // F: throws a ball from the camera along direction. Play mode only.
-  void throwBall(glm::vec3 from, glm::vec3 direction);
+  // A 5 kg ball, or with heavy a 60 kg one, for breaking things.
+  void throwBall(glm::vec3 from, glm::vec3 direction, bool heavy = false);
   // Advances node animations (in play mode) and recomputes global
   // transforms. Call once per frame before draw() with the frame time in
   // seconds.
@@ -450,6 +452,68 @@ private:
     PhysicsBodyId body;
   };
   std::vector<PhysicsLink> physicsLinks;
+
+  // Destruction (step 1.3): breakable boxes are cut into pieces
+  // (Fracture.h), each piece a node, held by bodies that each carry a group
+  // of pieces: one per object at first. In play the pieces form one graph
+  // (BreakGraph.h): hits break links, and what's left splits into groups
+  // that stay put if anchored or fall as one moving body. A breakable
+  // body's userData has kBreakBodyFlag set and indexes breakBodies.
+  static constexpr uint64_t kBreakBodyFlag = 1ull << 62;
+  struct Breakable {
+    SceneEntryRef entry;
+    std::string key; // the cut's: size, pieces, seed
+    std::shared_ptr<const Fracture> fracture;
+    int firstPiece = 0;
+    float strength = kDefaultBreakStrength;
+    bool moving = false; // a dynamic body, never anchored
+  };
+  struct BreakPiece {
+    int object = 0; // into breakables
+    int index = 0;  // into its fracture's pieces
+    SceneNode *node = nullptr;
+    int body = -1;  // into breakBodies
+    // Its mesh's frame (the object's space) inside its body's frame.
+    glm::vec3 localPosition{0.0f};
+    glm::quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
+    bool anchor = false; // rests on something that never breaks
+  };
+  struct BreakBody {
+    PhysicsBodyId id; // invalid once replaced; indices stay
+    std::vector<int> pieces;
+    bool fixed = false; // static
+  };
+  std::vector<Breakable> breakables;
+  std::vector<BreakPiece> breakPieces;
+  std::vector<BreakBody> breakBodies;
+  std::vector<BreakLink> breakLinks;
+  std::vector<glm::vec3> breakLinkPoints; // in piece a's mesh frame
+  std::vector<std::vector<int>> pieceLinks; // by piece, its links
+  std::map<std::string, std::shared_ptr<const Fracture>> fractures; // cut once each
+  bool breakablesDirty = false; // rebuilt at the top of the next frame
+  bool breakGraphReady = false; // the links across objects and anchors, on Play
+  // Every breakable from the scene, intact. The GPU must be idle.
+  void rebuildBreakables();
+  void clearBreakables();
+  void prepareBreakGraph();
+  // After the physics steps: hits on breakable bodies break links, and
+  // groups that changed get new bodies.
+  void handleImpacts();
+  // A hit that broke links this frame: freed pieces near it fly off.
+  struct BreakHit {
+    glm::vec3 point{0.0f};
+    glm::vec3 push{0.0f}; // into the object, unit
+    float impulse = 0.0f;
+  };
+  void regroupBreakables(const std::vector<BreakHit> &hits);
+  PhysicsPose pieceWorld(const BreakPiece &piece) const;
+  int addBreakBody(const std::vector<int> &pieces, const std::vector<PhysicsPose> &worlds,
+                   bool fixed, glm::vec3 velocity, glm::vec3 spin,
+                   const std::vector<BreakHit> &hits = {});
+  void poseBreakBody(const BreakBody &body, const PhysicsPose &pose);
+  void placeBreakable(SceneEntryRef ref);
+  void appendPieceLines(SceneEntryRef ref);
+  int breakableOf(uint64_t userData) const; // into breakables, or -1
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;
   // The character's and its camera's tuning (the Character tab). The player

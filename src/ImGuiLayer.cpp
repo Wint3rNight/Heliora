@@ -2002,13 +2002,20 @@ std::optional<int> ImGuiLayer::drawAssetTiles(DebugUiContext &ui,
       ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
     const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
     ImDrawList *draw = ImGui::GetWindowDrawList();
-    // The hovered clip plays, on the tile itself.
+    // The hovered clip plays, on the tile itself, in place of its still
+    // (the live picture is see-through around him, so the still is covered
+    // with the tile's own colour first).
     if (isClip && ImGui::IsItemHovered()) {
       if (ui.onClipHover)
         ui.onClipHover(tile.clip);
-      if (ui.livePreview && ui.livePreviewClip && *ui.livePreviewClip == tile.clip)
-        draw->AddImage(ui.livePreview, ImVec2(lo.x + 3.0f, lo.y + 3.0f),
-                       ImVec2(hi.x - 3.0f, hi.y - 3.0f));
+      if (ui.livePreview && ui.livePreviewClip && *ui.livePreviewClip == tile.clip) {
+        const ImVec2 pad = ImGui::GetStyle().FramePadding;
+        const ImVec2 imageLo(lo.x + pad.x, lo.y + pad.y), imageHi(hi.x - pad.x, hi.y - pad.y);
+        draw->AddRectFilled(imageLo, imageHi,
+                            ImGui::GetColorU32(ImGui::IsItemActive() ? ImGuiCol_ButtonActive
+                                                                     : ImGuiCol_ButtonHovered));
+        draw->AddImage(ui.livePreview, imageLo, imageHi);
+      }
     }
     if (picture) {
       const float line = ImGui::GetTextLineHeight();

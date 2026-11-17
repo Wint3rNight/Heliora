@@ -422,6 +422,7 @@ void VulkanRenderer::loadSettings() {
   PhysicsWorld::Config &c = physicsPanel.config;
   CharacterTuning &ch = characterPanel.character;
   ThirdPersonCameraTuning &cam = characterPanel.camera;
+  AnimatorTuning &an = characterPanel.animation;
   settingBindings = {
       {"render", "spec_aa_variance", &imguiSpecAAVariance, 0, 4},
       {"render", "spec_aa_threshold", &imguiSpecAAThreshold, 0, 1},
@@ -513,6 +514,17 @@ void VulkanRenderer::loadSettings() {
       {"character", "camera_most_lag", &cam.maxLag, 0, 5},
       {"character", "camera_wall_margin", &cam.collisionRadius, 0.01, 1},
       {"character", "camera_ease_out_time", &cam.easeOutTime, 0, 3},
+      {"character", "anim_playback_rate", &an.playbackRate, 0.25, 3},
+      {"character", "anim_fade_moving", &an.locomotionFade, 0, 1},
+      {"character", "anim_fade_crouch", &an.crouchFade, 0, 1},
+      {"character", "anim_fade_jump", &an.jumpFade, 0, 1},
+      {"character", "anim_fade_fall", &an.fallFade, 0, 1},
+      {"character", "anim_fade_land", &an.landFade, 0, 1},
+      {"character", "anim_fade_dodge", &an.dodgeFade, 0, 1},
+      {"character", "anim_fall_speed", &an.fallSpeed, 1, 30},
+      {"character", "anim_air_pose_delay", &an.fallDelay, 0, 1},
+      {"character", "anim_landing_after", &an.landAirTime, 0, 2},
+      {"character", "anim_shortest_landing", &an.landMinTime, 0, 1},
   };
   writeSettings(settingsDefaults, settingBindings);
   settingsFile = SettingsFile::load(settingsPath);
@@ -594,6 +606,8 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // capsule in the tree cleared below. A new one comes at the end if still
   // playing.
   animator.reset();
+  characterPanel.animState = nullptr;
+  characterPanel.playing.clear();
   player.reset();
   playerNode = nullptr;
   // Physics next: physicsLinks points into the tree cleared below.
@@ -1177,6 +1191,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     characterPanel.changed = false;
     if (player)
       player->setTuning(characterPanel.character, characterPanel.camera);
+    if (animator)
+      animator->setTuning(characterPanel.animation);
     updateEditorLines(); // the player start's outline is the body's size
   }
   const auto start = std::chrono::steady_clock::now();
@@ -1358,7 +1374,8 @@ void VulkanRenderer::spawnPlayer() {
   const bool animated = characterModelId >= 0;
   if (animated) {
     animator = std::make_unique<CharacterAnimator>(
-        characterAsset->skeleton, characterAsset->library, characterScale());
+        characterAsset->skeleton, characterAsset->library, characterScale(),
+        characterPanel.animation);
     // The dodges move the way their clips do, from each clip's start to
     // its end, in metres at his size.
     std::array<RootMotion, 5> paths;
@@ -1417,6 +1434,15 @@ void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
       input.sprintSpeed = character.tuning().sprintSpeed;
       input.crouchSpeed = character.tuning().crouchSpeed;
       animator->update(input, frameSeconds);
+      // For the Character tab: the state and the clips in this pose.
+      characterPanel.animState = animStateName(animator->state());
+      characterPanel.playing.clear();
+      for (size_t k = 0; k < static_cast<size_t>(ClipSlot::Count); ++k) {
+        const ClipSlot slot = static_cast<ClipSlot>(k);
+        if (const float weight = animator->clipWeight(slot); weight > 0.005f)
+          characterPanel.playing.push_back(
+              {clipSlotName(slot), weight, animator->clipTime(slot)});
+      }
     }
     const std::vector<glm::mat4> model = characterPose();
     characterSkinning = skinningMatrices(characterAsset->skeleton, model);

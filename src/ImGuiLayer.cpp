@@ -1695,6 +1695,20 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   ImGui::SetItemTooltip(panel.characterLoaded
                             ? "The animated character's bones instead of its body"
                             : "No character loaded: its Mixamo files aren't here");
+  // What's playing now: the state, and each clip's share of the pose.
+  ImGui::SeparatorText("Animation");
+  if (panel.animState) {
+    ImGui::Text("State: %s", panel.animState);
+    for (const CharacterPanel::PlayingClip &clip : panel.playing) {
+      char overlay[64];
+      std::snprintf(overlay, sizeof overlay, "%s  %.0f%%  %.2f s", clip.name,
+                    clip.weight * 100.0f, clip.time);
+      ImGui::ProgressBar(clip.weight, ImVec2(-FLT_MIN, 0.0f), overlay);
+    }
+  } else {
+    ImGui::TextDisabled(panel.characterLoaded ? "Play (F5) to see what's playing"
+                                              : "No character loaded");
+  }
   constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
   auto slider = [&](const char *label, float *value, float lo, float hi,
                     const char *format) {
@@ -1753,6 +1767,27 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   ImGui::SetItemTooltip("How far it follows the ground down slopes and "
                         "stairs instead of flying off");
   changed |= slider("Push strength", &c.pushStrength, 0.0f, 5000.0f, "%.0f N");
+  ImGui::SeparatorText("Animation timing");
+  AnimatorTuning &an = panel.animation;
+  changed |= slider("Playback rate", &an.playbackRate, 0.25f, 3.0f, "%.2fx");
+  ImGui::SetItemTooltip("How fast walking, running and sprinting play; at 1 "
+                        "the feet keep up with the ground");
+  changed |= slider("Fade into moving", &an.locomotionFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fade into crouch", &an.crouchFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fade into jump", &an.jumpFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fade into fall", &an.fallFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fade into landing", &an.landFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fade into dodge", &an.dodgeFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Fall speed", &an.fallSpeed, 1.0f, 30.0f, "%.1f m/s");
+  ImGui::SetItemTooltip("Falling faster than this is a real fall: the falling "
+                        "loop, then the hard landing");
+  changed |= slider("Air pose delay", &an.fallDelay, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("Walking off a ledge, this long before the air pose, "
+                        "so a step down doesn't flicker");
+  changed |= slider("Landing after", &an.landAirTime, 0.0f, 2.0f, "%.2f s");
+  ImGui::SetItemTooltip("Less time in the air than this skips the landing");
+  changed |= slider("Shortest landing", &an.landMinTime, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("Moving cuts a landing short, but not before this");
   ImGui::SeparatorText("Camera");
   changed |= slider("Shoulder height", &cam.pivotHeight, 0.0f, 3.0f, "%.2f m");
   changed |= slider("Distance", &cam.distance, 0.5f, 30.0f, "%.1f m");

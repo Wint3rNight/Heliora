@@ -2,6 +2,7 @@
 #include "TestRunner.h"
 
 #include <cmath>
+#include <string>
 
 namespace {
 
@@ -418,4 +419,29 @@ TEST(missing_clips_fall_back_without_breaking) {
   CharacterAnimator b(s, empty, 1.0f);
   runFor(b, moving(3.0f), 0.5f);
   CHECK_NEAR(hipsDegrees(b), 0.0, 1e-4);
+}
+
+TEST(playback_rate_speeds_up_the_moving_clips) {
+  // At the walk clip's own speed it plays at its own rate; a playback rate
+  // of 2 plays it twice as fast (the feet then outpace the ground).
+  const Skeleton s = rig();
+  const AnimationLibrary l = fullLibrary();
+  AnimatorTuning tuning;
+  tuning.playbackRate = 2.0f;
+  CharacterAnimator a(s, l, 1.0f, tuning);
+  runFor(a, moving(1.5f), 0.3f);
+  CHECK_NEAR(a.clipWeight(ClipSlot::WalkForward), 1.0, 1e-3);
+  CHECK_NEAR(a.clipTime(ClipSlot::WalkForward), 0.6, 0.01);
+}
+
+TEST(every_state_has_its_own_name) {
+  const AnimState states[] = {AnimState::Locomotion, AnimState::Crouch,
+                              AnimState::Jump,       AnimState::Fall,
+                              AnimState::Land,       AnimState::Dodge};
+  for (AnimState a : states) {
+    CHECK(std::string(animStateName(a)).size() > 0);
+    for (AnimState b : states)
+      if (a != b)
+        CHECK(std::string(animStateName(a)) != animStateName(b));
+  }
 }

@@ -66,6 +66,18 @@ struct Moving {
 
 } // namespace
 
+const char *animStateName(AnimState state) {
+  switch (state) {
+  case AnimState::Locomotion: return "Locomotion";
+  case AnimState::Crouch: return "Crouch";
+  case AnimState::Jump: return "Jump";
+  case AnimState::Fall: return "Fall";
+  case AnimState::Land: return "Land";
+  case AnimState::Dodge: return "Dodge";
+  }
+  return "";
+}
+
 CharacterAnimator::CharacterAnimator(const Skeleton &skeleton,
                                      const AnimationLibrary &clips,
                                      float unitsToMetres, const AnimatorTuning &tuning)
@@ -278,7 +290,7 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       const float rate = naturalSpeed > 1e-4f
                              ? std::clamp(input.speed / naturalSpeed, 0.25f, 3.0f)
                              : 1.0f;
-      phase = std::fmod(phase + dt * rate / blendedLength, 1.0f);
+      phase = std::fmod(phase + dt * rate * tune.playbackRate / blendedLength, 1.0f);
     }
     sample(crouch ? ClipSlot::CrouchIdle : ClipSlot::Idle, idleTime, rows[0]);
     for (const Moving &m : moving)

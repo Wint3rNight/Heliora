@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "CharacterAnimator.h"
 #include "CharacterController.h"
 #include "PerformanceMetrics.h"
 #include "Picking.h"
@@ -49,7 +50,17 @@ struct PhysicsPanel {
 struct CharacterPanel {
   CharacterTuning character;
   ThirdPersonCameraTuning camera;
+  AnimatorTuning animation;
   bool changed = false;
+  // What the animated character is doing, for the Animation section: the
+  // renderer fills it each frame while playing; no state when it isn't.
+  struct PlayingClip {
+    const char *name;
+    float weight; // its share of the pose, 0 to 1
+    float time;   // seconds into it
+  };
+  const char *animState = nullptr;
+  std::vector<PlayingClip> playing;
   // Draws the animated character's bones as lines in play mode, instead of
   // its body. Not saved: a debug view (HELIORA_SHOW_SKELETON=1 starts with it).
   bool showSkeleton = false;

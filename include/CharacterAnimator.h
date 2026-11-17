@@ -59,6 +59,9 @@ struct AnimatorInput {
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
 
+// The state's name, for the editor: "Locomotion", "Crouch" and so on.
+const char *animStateName(AnimState state);
+
 // The clip each of the controller's dodges plays.
 inline ClipSlot dodgeClip(DodgeKind kind) {
   switch (kind) {
@@ -89,6 +92,9 @@ struct AnimatorTuning {
   float landAirTime = 0.35f;
   // Moving cuts a landing short, but not before this.
   float landMinTime = 0.12f;
+  // The moving clips play this much faster than the speed calls for (1 has
+  // the feet keep up with the ground).
+  float playbackRate = 1.0f;
 };
 
 class CharacterAnimator {

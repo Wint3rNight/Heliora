@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "AutoExposurePass.h"
@@ -40,6 +41,7 @@
 #include "SsaoPass.h"
 #include "SsgiPass.h"
 #include "TextureManager.h"
+#include "ThumbnailRenderer.h"
 #include "Utilities.h"
 #include "VulkanDevice.h"
 #include "VulkanPipeline.h"
@@ -79,6 +81,12 @@ public:
   void discoverScenes(const std::string &directory = "Resources/Scenes");
   // The model files the spawn list offers.
   void discoverModels(const std::string &folder = "Resources/Models");
+  // Model files from outside the project, copied into Resources/Models
+  // (dropped on the window, or the Assets panel's Import), at the next
+  // frame's edit step.
+  void importFiles(std::vector<std::string> paths) {
+    pendingImports.insert(pendingImports.end(), paths.begin(), paths.end());
+  }
   bool hasScenes() const { return !availableScenes.empty(); }
   // Immediate load: waits for the device to go idle, clears the scene graph
   // and instanced drawables, then builds the described scene. Models are
@@ -300,6 +308,9 @@ private:
   // The spawn list: what it offers, and what was picked, added at the top of
   // the next draw() since a new model may need a GPU upload.
   std::vector<std::string> modelFiles;
+  std::vector<std::string> pendingImports;
+  std::string assetStatus;
+  void runPendingImports();
   std::optional<SceneModelEntry> pendingSpawn;
   void spawnEntry(SceneModelEntry entry);
   void addNewEntry(SceneModelEntry entry);
@@ -314,6 +325,15 @@ private:
   std::optional<AssetPlacement> assetDrop;
   bool assetDragEnded = false;
   SceneNode *assetPreview = nullptr;
+  // The Assets panel's pictures: drawn one a frame as the panel asks,
+  // cached on disk.
+  ThumbnailRenderer thumbnails;
+  std::string thumbnailFolder;
+  ImTextureID thumbnailTexture = 0;
+  std::vector<std::pair<std::string, SceneModelEntry>> thumbnailRequests;
+  std::unordered_set<std::string> thumbnailsFailed; // not asked again
+  std::string thumbnailKeyFor(const SceneModelEntry &entry) const;
+  void makeNextThumbnail();
   int assetPreviewModel = -1;
   NodeTransform dropPlacement(const SceneModelEntry &entry, int modelId, glm::vec2 windowPixel,
                               bool turnToSurface);

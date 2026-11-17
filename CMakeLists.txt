@@ -109,6 +109,7 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 # and CPU flags.
 set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AssetImport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterAnimator.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterFile.cpp
@@ -132,6 +133,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Spawning.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ShadowCascades.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ThirdPersonCamera.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Thumbnails.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Frustum.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
@@ -185,6 +187,7 @@ enable_testing()
 add_executable(heliora_tests
         tests/main.cpp
         tests/AnimationClipTests.cpp
+        tests/AssetImportTests.cpp
         tests/CharacterAnimatorTests.cpp
         tests/CharacterControllerTests.cpp
         tests/CharacterFileTests.cpp
@@ -211,6 +214,7 @@ add_executable(heliora_tests
         tests/SpawningTests.cpp
         tests/ShadowCascadesTests.cpp
         tests/ThirdPersonCameraTests.cpp
+        tests/ThumbnailsTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
 add_test(NAME heliora_tests COMMAND heliora_tests)

@@ -337,6 +337,9 @@ int main(int argc, char **argv) {
     lastFrame = currentFrame;
 
     inputManager.pollEvents();
+    // Model files dropped on the window are imported into Resources/Models.
+    if (std::vector<std::string> dropped = inputManager.takeDroppedFiles(); !dropped.empty())
+      vulkanRenderer.importFiles(std::move(dropped));
     // The window's close button asks first, the same as Esc.
     if (inputManager.shouldClose()) {
       glfwSetWindowShouldClose(window, GLFW_FALSE);

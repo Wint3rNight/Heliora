@@ -82,3 +82,6 @@ Resources/editor_layout.ini
 # licence forbids sharing the raw files, and this repository is public.
 # They stay on this machine (download them from mixamo.com to rebuild).
 Resources/Characters/mixamo/
+
+# The Assets panel's cached thumbnails, drawn on first use.
+Resources/.thumbnails/

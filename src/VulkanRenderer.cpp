@@ -327,6 +327,11 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     imguiLayer.setLayoutFile(std::filesystem::is_directory("Resources")
                                  ? "Resources/editor_layout.ini"
                                  : "../Resources/editor_layout.ini");
+    // The Assets panel's pictures, cached next to the scenes.
+    thumbnails.create(device, pipelineCache.get(), descriptorManager.getBindlessLayout());
+    thumbnailTexture = imguiLayer.addTexture(thumbnails.atlasView());
+    thumbnailFolder = std::filesystem::is_directory("Resources") ? "Resources/.thumbnails"
+                                                                 : "../Resources/.thumbnails";
     imguiLayer.createFramebuffers(device.getLogicalDevice(),
                                   renderPassManager.getImGuiRenderPass(),
                                   swapchain.getExtent(), swapchain.getImages());
@@ -558,6 +563,41 @@ void VulkanRenderer::discoverScenes(const std::string &directory) {
     availableSceneNames.push_back(scene.name);
   spdlog::info("Discovered {} scene file(s) in {}", availableScenes.size(),
                directory);
+}
+
+// Copies each model file (and what a .gltf needs) into its own folder under
+// Resources/Models, then shows that folder in the Assets panel.
+void VulkanRenderer::runPendingImports() {
+  if (pendingImports.empty())
+    return;
+  const std::filesystem::path models = std::filesystem::is_directory("Resources")
+                                           ? "Resources/Models"
+                                           : "../Resources/Models";
+  std::vector<std::string> done, problems;
+  std::string lastFolder;
+  for (const std::string &path : std::exchange(pendingImports, {})) {
+    std::string error;
+    const std::optional<ImportPlan> plan =
+        planModelImport(path, models, "Resources/Models", error);
+    if (plan && runImport(*plan, error)) {
+      done.push_back(std::filesystem::path(plan->modelPath).filename().string());
+      lastFolder = std::filesystem::path(plan->modelPath).parent_path().generic_string();
+      spdlog::info("Imported {} as {} ({} files)", path, plan->modelPath, plan->copies.size());
+    } else {
+      problems.push_back(error);
+      spdlog::warn("Couldn't import {}: {}", path, error);
+    }
+  }
+  assetStatus.clear();
+  if (!done.empty()) {
+    assetStatus = "Imported ";
+    for (size_t i = 0; i < done.size(); ++i)
+      assetStatus += (i ? ", " : "") + done[i];
+    discoverModels();
+    imguiLayer.showAssetFolder(lastFolder);
+  }
+  for (const std::string &problem : problems)
+    assetStatus += (assetStatus.empty() ? "" : ". ") + problem;
 }
 
 void VulkanRenderer::discoverModels(const std::string &folder) {
@@ -917,6 +957,53 @@ NodeTransform VulkanRenderer::dropPlacement(const SceneModelEntry &entry, int mo
   NodeTransform t = dropTransform(ray, hit, boundsMin, boundsMax, turnToSurface);
   t.scale = scale;
   return t;
+}
+
+// What an asset's picture is cached under: a shape by what it looks like,
+// a model file by its path, size and date, so editing the file redraws it.
+std::string VulkanRenderer::thumbnailKeyFor(const SceneModelEntry &entry) const {
+  if (entry.shape)
+    return thumbnailKey(std::format("shape:{}|{} {} {}|{} {}|{} {} {}",
+                                    static_cast<int>(*entry.shape), entry.size.x, entry.size.y,
+                                    entry.size.z, entry.radius, entry.height, entry.color.r,
+                                    entry.color.g, entry.color.b),
+                        0, 0);
+  namespace fs = std::filesystem;
+  std::error_code error;
+  fs::path file(entry.path);
+  if (!fs::exists(file, error))
+    file = fs::path("..") / entry.path;
+  const uint64_t size = fs::file_size(file, error);
+  const auto modified = fs::last_write_time(file, error);
+  return thumbnailKey(entry.path, error ? 0 : size,
+                      error ? 0 : static_cast<int64_t>(modified.time_since_epoch().count()));
+}
+
+// One asked-for picture a frame: from the disk cache if it's there, or
+// drawn (loading the model if it isn't loaded yet). The GPU waits first,
+// since the atlas changes layout while frames in flight may sample it.
+void VulkanRenderer::makeNextThumbnail() {
+  if (thumbnailRequests.empty() || thumbnails.full())
+    return;
+  const auto [key, entry] = thumbnailRequests.front();
+  thumbnailRequests.erase(thumbnailRequests.begin());
+  if (thumbnails.cellOf(key))
+    return;
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  if (thumbnails.loadCached(device, key, thumbnailFolder))
+    return;
+  try {
+    const int modelId = modelFor(entry);
+    const MeshModel *model = modelManager.getModel(modelId);
+    const std::optional<ModelManager::Bounds> bounds = modelManager.localBounds(modelId);
+    if (!model || !bounds ||
+        !thumbnails.render(device, key, *model, bounds->min, bounds->max,
+                           descriptorManager.getBindlessSet(), thumbnailFolder))
+      thumbnailsFailed.insert(key);
+  } catch (const std::exception &e) {
+    spdlog::warn("No thumbnail for {}: {}", entry.shape ? "a shape" : entry.path, e.what());
+    thumbnailsFailed.insert(key);
+  }
 }
 
 // The dragged asset shown where it would land: a node of its own, with no
@@ -2115,6 +2202,8 @@ void VulkanRenderer::applyPendingChanges() {
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
   }
+  runPendingImports();
+  makeNextThumbnail();
   // Dragging from the Assets panel.
   if (assetDrop) {
     vkDeviceWaitIdle(logicalDevice);
@@ -3586,6 +3675,7 @@ void VulkanRenderer::cleanup() {
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
   skinningPass.cleanup();
+  thumbnails.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
   materialProbePass.cleanup();
@@ -4564,12 +4654,25 @@ void VulkanRenderer::buildUi() {
       assetDrop = AssetPlacement{entry, pixel, turn};
   };
   ui.onAssetDragEnd = [this] { assetDragEnded = true; };
+  ui.thumbnailAtlas = thumbnailTexture;
+  ui.thumbnail = [this](const SceneModelEntry &entry) -> std::optional<glm::vec4> {
+    const std::string key = thumbnailKeyFor(entry);
+    if (const std::optional<int> cell = thumbnails.cellOf(key))
+      return thumbnailAtlasRect(*cell);
+    const bool asked = std::ranges::any_of(
+        thumbnailRequests, [&](const auto &request) { return request.first == key; });
+    if (!asked && !thumbnailsFailed.contains(key))
+      thumbnailRequests.push_back({key, entry});
+    return std::nullopt;
+  };
   ui.onDuplicate = [this] { duplicateSelection(); };
   ui.onSpawnPlayerStart = [this] {
     if (!playing)
       pendingPlayerStart = true;
   };
   ui.onRescanModels = [this] { discoverModels(); };
+  ui.onImportFiles = [this](std::vector<std::string> paths) { importFiles(std::move(paths)); };
+  ui.assetStatus = &assetStatus;
   ui.sceneName = &currentScene.name;
   ui.sceneUnsaved = sceneUnsaved;
   ui.onSave = [this] { requestSave(); };

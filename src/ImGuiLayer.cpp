@@ -259,6 +259,11 @@ bool ImGuiLayer::wantsMouse() const {
   return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse;
 }
 
+ImTextureID ImGuiLayer::addTexture(VkImageView view) {
+  return reinterpret_cast<ImTextureID>(
+      ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+}
+
 bool ImGuiLayer::wantsTextInput() const {
   // Waiting for a key in the Controls tab counts too, and so does dragging
   // an asset: nothing else may take the key (Esc must cancel, not quit).
@@ -1946,19 +1951,41 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
 // Tiles for the things a scene can hold: drag one into the scene, or
 // double-click it to add it where the camera looks.
 void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
-  if (ui.playing) {
-    ImGui::TextDisabled("Stop (F5) to place things.");
-    return;
-  }
+  // While playing the tiles stay to look at, but nothing is placed: physics
+  // is running, and Stop goes back to the layout anyway.
+  const bool placing = !ui.playing;
+  ImGui::BeginDisabled(!placing);
   ImGui::Checkbox("Turn to the surface", &turnToSurface);
   ImGui::SetItemTooltip("Dropped things lie along the slope or wall under "
                         "them; off, they stay upright");
   ImGui::SameLine();
-  if (ImGui::Button("Rescan models") && ui.onRescanModels)
-    ui.onRescanModels();
+  if (ImGui::Button("Rescan models")) {
+    assetListings.clear();
+    if (ui.onRescanModels)
+      ui.onRescanModels();
+  }
+  ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::TextDisabled("Drag into the scene, or double-click to add where the "
-                      "camera looks.");
+  if (ImGui::Button("Import...")) {
+    importPickerOpen = true;
+    if (importFolder.empty()) {
+      const char *home = std::getenv("HOME");
+      const std::filesystem::path base = home ? home : ".";
+      importFolder = std::filesystem::is_directory(base / "Downloads") ? base / "Downloads" : base;
+    }
+  }
+  ImGui::SetItemTooltip("Copy .gltf or .glb models into Resources/Models. Dropping "
+                        "them on the window from the file manager works too.");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(180.0f);
+  ImGui::InputTextWithHint("##search", "search models", assetSearch, sizeof assetSearch);
+  ImGui::SameLine();
+  ImGui::TextDisabled(placing ? "Drag into the scene, or double-click to add where the "
+                                "camera looks."
+                              : "Stop (F5) to place things.");
+  if (ui.assetStatus && !ui.assetStatus->empty())
+    ImGui::TextDisabled("%s", ui.assetStatus->c_str());
+  drawImportPicker(ui);
 
   struct Tile {
     std::string label;
@@ -1977,11 +2004,27 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
         ImGui::SameLine();
       ImGui::PushID(i);
       ImGui::BeginDisabled(!tile.usable);
-      ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
-      if (tile.usable && ImGui::IsItemHovered() &&
+      // Its picture once there is one, with its name across the bottom.
+      const std::optional<glm::vec4> picture =
+          ui.thumbnail && ui.thumbnailAtlas ? ui.thumbnail(tile.entry) : std::nullopt;
+      if (picture) {
+        ImGui::ImageButton("##tile", ui.thumbnailAtlas, ImVec2(kSize, kSize),
+                           ImVec2(picture->x, picture->y), ImVec2(picture->z, picture->w));
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        const float line = ImGui::GetTextLineHeight();
+        ImDrawList *draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(ImVec2(lo.x, hi.y - line - 4.0f), hi, IM_COL32(0, 0, 0, 140));
+        draw->PushClipRect(lo, hi, true);
+        draw->AddText(ImVec2(lo.x + 4.0f, hi.y - line - 2.0f), IM_COL32(235, 235, 235, 255),
+                      tile.label.c_str());
+        draw->PopClipRect();
+      } else {
+        ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
+      }
+      if (placing && tile.usable && ImGui::IsItemHovered() &&
           ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ui.onSpawn)
         ui.onSpawn(tile.entry);
-      if (tile.usable && ImGui::BeginDragDropSource()) {
+      if (placing && tile.usable && ImGui::BeginDragDropSource()) {
         ImGui::SetDragDropPayload("HELIORA_ASSET", &i, sizeof i);
         ImGui::TextUnformatted(tile.label.c_str());
         ImGui::EndDragDropSource();
@@ -1993,34 +2036,141 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
     }
   };
 
-  if (ImGui::BeginTabBar("##assets")) {
-    if (ImGui::BeginTabItem("Shapes")) {
-      std::vector<Tile> tiles;
-      for (const auto &[shape, label] :
-           {std::pair{PrimitiveShape::Box, "Box"}, std::pair{PrimitiveShape::Sphere, "Sphere"},
-            std::pair{PrimitiveShape::Capsule, "Capsule"},
-            std::pair{PrimitiveShape::Plane, "Plane"}})
-        tiles.push_back({label, label, newShapeEntry(shape)});
-      drawTiles(tiles);
-      ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Models")) {
-      std::vector<Tile> tiles;
-      if (ui.modelFiles)
-        for (const std::string &file : *ui.modelFiles) {
-          // A path the scene file couldn't read back (a '#') can't be added.
-          const SceneModelEntry entry = newModelFileEntry(file);
-          const std::optional<std::string> problem = problemWith(entry);
-          tiles.push_back({std::filesystem::path(file).stem().string(),
-                           problem ? *problem : file, entry, !problem});
-        }
-      if (tiles.empty())
-        ImGui::TextDisabled("No .gltf or .glb files in Resources/Models.");
-      drawTiles(tiles);
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
+  // The folders on the left, Resources/ being the project's content (like
+  // Unreal's Content folder), the chosen one's models on the right.
+  ImGui::BeginChild("##folders", ImVec2(200.0f, 0.0f),
+                    ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+  if (ImGui::Selectable("Shapes", assetFolder.empty()))
+    assetFolder.clear();
+  drawAssetFolderTree("Resources");
+  ImGui::EndChild();
+  ImGui::SameLine();
+  ImGui::BeginChild("##tiles");
+  auto lower = [](std::string text) {
+    for (char &c : text)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text;
+  };
+  auto modelTile = [&](const std::string &file) {
+    // A path the scene file couldn't read back (a '#') can't be added.
+    const SceneModelEntry entry = newModelFileEntry(file);
+    const std::optional<std::string> problem = problemWith(entry);
+    return Tile{std::filesystem::path(file).stem().string(), problem ? *problem : file, entry,
+                !problem};
+  };
+  std::vector<Tile> tiles;
+  const std::string search = lower(assetSearch);
+  const char *empty = "";
+  if (!search.empty()) {
+    if (ui.modelFiles)
+      for (const std::string &file : *ui.modelFiles)
+        if (lower(std::filesystem::path(file).stem().string()).find(search) != std::string::npos)
+          tiles.push_back(modelTile(file));
+    empty = "No models match.";
+  } else if (assetFolder.empty()) {
+    for (const auto &[shape, label] :
+         {std::pair{PrimitiveShape::Box, "Box"}, std::pair{PrimitiveShape::Sphere, "Sphere"},
+          std::pair{PrimitiveShape::Capsule, "Capsule"},
+          std::pair{PrimitiveShape::Plane, "Plane"}})
+      tiles.push_back({label, label, newShapeEntry(shape)});
+  } else {
+    for (const std::string &name : listingOf(assetFolder).models)
+      tiles.push_back(modelTile(assetFolder + "/" + name));
+    empty = "No models in this folder. Import some, or drop them on the window.";
   }
+  if (tiles.empty())
+    ImGui::TextDisabled("%s", empty);
+  drawTiles(tiles);
+  ImGui::EndChild();
+}
+
+// A folder's listing, read once until the next rescan or import. Folders
+// are named as scene files write them; on disk they may be one level up
+// (the game runs from a build folder).
+const FolderListing &ImGuiLayer::listingOf(const std::string &folder) {
+  auto it = assetListings.find(folder);
+  if (it == assetListings.end()) {
+    const std::filesystem::path disk = std::filesystem::is_directory(folder)
+                                           ? std::filesystem::path(folder)
+                                           : std::filesystem::path("..") / folder;
+    it = assetListings.emplace(folder, listFolder(disk)).first;
+  }
+  return it->second;
+}
+
+void ImGuiLayer::drawAssetFolderTree(const std::string &folder) {
+  for (const std::string &name : listingOf(folder).folders) {
+    const std::string path = folder + "/" + name;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (listingOf(path).folders.empty())
+      flags |= ImGuiTreeNodeFlags_Leaf;
+    if (assetFolder == path)
+      flags |= ImGuiTreeNodeFlags_Selected;
+    // The way down to the shown folder starts open.
+    if (assetFolder.starts_with(path + "/"))
+      ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    const bool open = ImGui::TreeNodeEx(path.c_str(), flags, "%s", name.c_str());
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+      assetFolder = path;
+      assetSearch[0] = '\0';
+    }
+    if (open) {
+      drawAssetFolderTree(path);
+      ImGui::TreePop();
+    }
+  }
+}
+
+// Import: a small file picker in the editor (GLFW has no file dialog), for
+// a .gltf or .glb anywhere on the disk.
+void ImGuiLayer::drawImportPicker(DebugUiContext &ui) {
+  if (importPickerOpen) {
+    ImGui::OpenPopup("Import models");
+    importPickerOpen = false;
+    importChoice.clear();
+  }
+  ImGui::SetNextWindowSize(ImVec2(560.0f, 420.0f), ImGuiCond_Appearing);
+  if (!ImGui::BeginPopupModal("Import models"))
+    return;
+  ImGui::TextWrapped("%s", importFolder.string().c_str());
+  std::optional<std::filesystem::path> enter;
+  bool importNow = false;
+  ImGui::BeginChild("##files", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() * 1.5f),
+                    ImGuiChildFlags_Borders);
+  if (importFolder.has_parent_path() && importFolder != importFolder.root_path() &&
+      ImGui::Selectable(".."))
+    enter = importFolder.parent_path();
+  const FolderListing listing = listFolder(importFolder);
+  for (const std::string &name : listing.folders)
+    if (ImGui::Selectable((name + "/").c_str()))
+      enter = importFolder / name;
+  for (const std::string &name : listing.models) {
+    const std::filesystem::path file = importFolder / name;
+    if (ImGui::Selectable(name.c_str(), importChoice == file,
+                          ImGuiSelectableFlags_AllowDoubleClick)) {
+      importChoice = file;
+      importNow = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+    }
+  }
+  if (listing.folders.empty() && listing.models.empty())
+    ImGui::TextDisabled("No folders or .gltf / .glb files here.");
+  ImGui::EndChild();
+  if (enter) {
+    importFolder = *enter;
+    importChoice.clear();
+  }
+  ImGui::BeginDisabled(importChoice.empty());
+  importNow |= ImGui::Button("Import");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel"))
+    ImGui::CloseCurrentPopup();
+  if (importNow && !importChoice.empty()) {
+    if (ui.onImportFiles)
+      ui.onImportFiles({importChoice.string()});
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
 }
 
 // A tile being dragged: over the scene it shows where it would land, let

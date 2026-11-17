@@ -1,4 +1,7 @@
 #pragma once
+#include <vector>
+#include <utility>
+#include <string>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -26,6 +29,8 @@ public:
   bool isMouseButtonPressed(int button) const;
   // True once per press, like wasKeyJustPressed.
   bool wasMouseButtonJustPressed(int button);
+  // Files dropped on the window from the file manager since the last call.
+  std::vector<std::string> takeDroppedFiles() { return std::exchange(droppedFiles, {}); }
   // Wheel notches this frame, positive away from you.
   float getScrollDelta() const { return scrollY; }
   // Hides the cursor and sends raw movement (flying), or frees it. The first
@@ -59,4 +64,6 @@ private:
   static void mouseCallback(GLFWwindow *w, double xpos, double ypos);
   static void scrollCallback(GLFWwindow *w, double xoffset, double yoffset);
   static void framebufferResizeCallback(GLFWwindow *w, int width, int height);
+  static void dropCallback(GLFWwindow *w, int count, const char **paths);
+  std::vector<std::string> droppedFiles;
 };

@@ -7,11 +7,14 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <filesystem>
+#include <map>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "AssetImport.h"
 #include "CharacterAnimator.h"
 #include "CharacterController.h"
 #include "Controls.h"
@@ -223,6 +226,14 @@ struct DebugUiContext {
   std::function<void(const SceneModelEntry &, glm::vec2, bool)> onAssetHover;
   std::function<void(const SceneModelEntry &, glm::vec2, bool)> onAssetDrop;
   std::function<void()> onAssetDragEnd;
+  // Asset pictures: the atlas texture, and where an asset's picture sits in
+  // it (u0, v0, u1, v1), or nothing yet (asking draws it soon).
+  // Importing model files (dropped on the window or picked with Import),
+  // and what the last import did.
+  std::function<void(std::vector<std::string>)> onImportFiles;
+  const std::string *assetStatus = nullptr;
+  ImTextureID thumbnailAtlas = 0;
+  std::function<std::optional<glm::vec4>(const SceneModelEntry &)> thumbnail;
   std::function<void()> onSpawnPlayerStart;
   std::function<void()> onRescanModels;
 
@@ -262,6 +273,14 @@ public:
   bool wantsMouse() const;
   // A text box has the keyboard, so typed letters aren't game keys.
   bool wantsTextInput() const;
+  // Shows a folder in the Assets panel, read afresh (after an import).
+  void showAssetFolder(const std::string &folder) {
+    assetFolder = folder;
+    assetListings.clear();
+    assetSearch[0] = '\0';
+  }
+  // An image ImGui can draw, sampled in this layout.
+  ImTextureID addTexture(VkImageView view);
   // The cursor is on one of the gizmo's handles, or dragging one, so a left
   // click there isn't a click to select.
   bool gizmoHasMouse() const { return gizmoHovered || gizmoDrag.active; }
@@ -322,6 +341,9 @@ private:
   void drawControlsTab(DebugUiContext &ui);
   void drawAssetsPanel(DebugUiContext &ui);
   void updateAssetDrag(DebugUiContext &ui);
+  void drawAssetFolderTree(const std::string &folder);
+  const FolderListing &listingOf(const std::string &folder);
+  void drawImportPicker(DebugUiContext &ui);
   void drawClipsSection(CharacterPanel &panel);
   void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
@@ -429,6 +451,15 @@ private:
   std::optional<SceneModelEntry> assetDrag;
   bool turnToSurface = true;
   bool assetsPlaced = false;
+  // The folder the Assets panel shows ("" for the built-in shapes), each
+  // folder's listing until the next rescan, the search text, and the
+  // Import picker's folder and choice.
+  std::string assetFolder = "Resources/Models";
+  std::map<std::string, FolderListing> assetListings;
+  char assetSearch[64] = "";
+  bool importPickerOpen = false;
+  std::filesystem::path importFolder;
+  std::filesystem::path importChoice;
 
   bool visible = true;
 

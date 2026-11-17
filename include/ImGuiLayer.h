@@ -13,6 +13,7 @@
 
 #include "CharacterAnimator.h"
 #include "CharacterController.h"
+#include "Controls.h"
 #include "PerformanceMetrics.h"
 #include "Picking.h"
 #include "PhysicsWorld.h"
@@ -61,6 +62,14 @@ struct CharacterPanel {
   };
   const char *animState = nullptr;
   std::vector<PlayingClip> playing;
+  // The Clips section: which clip each move plays (the .character file,
+  // edited here), the files to pick from, and what the tab changed.
+  CharacterDescription clips;
+  std::vector<std::string> clipFiles;
+  std::optional<ClipSlot> clipChanged; // set by the tab, applied by the renderer
+  bool clipsUnsaved = false;
+  bool saveClips = false; // the Save clips button
+  std::string clipStatus;
   // Draws the animated character's bones as lines in play mode, instead of
   // its body. Not saved: a debug view (HELIORA_SHOW_SKELETON=1 starts with it).
   bool showSkeleton = false;
@@ -159,6 +168,7 @@ struct DebugUiContext {
 
   PhysicsPanel *physics = nullptr; // no panel when null
   CharacterPanel *character = nullptr; // likewise
+  ControlBindings *controls = nullptr;  // likewise
   // The live physics world's bodies and limit, for the grid count check.
   uint32_t bodiesInWorld = 0;
   uint32_t bodyLimit = 0;
@@ -271,6 +281,7 @@ private:
     Inspector,
     Physics,
     Character,
+    Controls,
     Performance,
     Debug,
     Count
@@ -297,6 +308,8 @@ private:
   void drawDebugTab(DebugUiContext &ui);
   void drawPhysicsTab(DebugUiContext &ui);
   void drawCharacterTab(DebugUiContext &ui);
+  void drawControlsTab(DebugUiContext &ui);
+  void drawClipsSection(CharacterPanel &panel);
   void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);
@@ -384,7 +397,13 @@ private:
     bool scaled = false;          // the body needs rebuilding at the end
   };
   GizmoDrag gizmoDrag;
-  GLFWwindow *window = nullptr; // to tell if the cursor is free
+  GLFWwindow *window = nullptr; // to tell if the cursor is free, and to read keys
+  // The Controls tab waiting for a key for this action. Armed once nothing
+  // is held, so the click that started it doesn't count.
+  std::optional<Action> rebinding;
+  bool rebindArmed = false;
+  std::string rebindNote; // why the last key wasn't taken
+  char clipFilter[64] = ""; // the Clips section's file filter
 
   bool visible = true;
 

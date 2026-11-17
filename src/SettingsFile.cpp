@@ -218,6 +218,11 @@ void SettingsFile::setVec3(std::string_view section, std::string_view key,
                       formatFloat(value.z)));
 }
 
+void SettingsFile::setString(std::string_view section, std::string_view key,
+                             std::string value) {
+  setText(section, key, std::move(value));
+}
+
 void SettingsFile::remove(std::string_view section, std::string_view key) {
   for (Section &s : sections)
     if (s.name == section)
@@ -312,6 +317,16 @@ void readBinding(const SettingsFile &file, const SettingBinding &b,
               for (int i = 0; i < 3; ++i)
                 (*v)[i] = float(clampTo((*x)[i], -kFloatMax, kFloatMax));
           },
+          [&](InputBinding *v) {
+            if (const auto x = file.text(b.section, b.key)) {
+              if (const std::optional<InputBinding> binding = bindingFromName(*x))
+                *v = *binding;
+              else if (warn)
+                spdlog::warn("settings: [{}] {} = '{}' isn't a key or mouse "
+                             "button, ignored",
+                             b.section, b.key, *x);
+            }
+          },
       },
       b.value);
 }
@@ -380,6 +395,9 @@ void writeSettings(SettingsFile &file, std::span<const SettingBinding> bindings,
                    [&](uint32_t *v) { file.setInt(b.section, b.key, *v); },
                    [&](bool *v) { file.setBool(b.section, b.key, *v); },
                    [&](glm::vec3 *v) { file.setVec3(b.section, b.key, *v); },
+                   [&](InputBinding *v) {
+                     file.setString(b.section, b.key, bindingName(*v));
+                   },
                },
                b.value);
     const std::optional<std::string> written = file.text(b.section, b.key);

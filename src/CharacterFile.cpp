@@ -37,6 +37,12 @@ public:
     std::string line;
     while (std::getline(in, line)) {
       ++lineNumber;
+      // Whole-line comments are kept for the model line or the [clip] that
+      // comes next, so a save doesn't lose the notes.
+      if (const std::string whole = trim(line); !whole.empty() && whole[0] == '#') {
+        notes += whole + "\n";
+        continue;
+      }
       if (const size_t hash = line.find('#'); hash != std::string::npos)
         line.erase(hash);
       const std::string text = trim(line);
@@ -46,6 +52,8 @@ public:
         finishClip();
         open = true;
         current = {};
+        current.comment = std::move(notes);
+        notes.clear();
         loopGiven = false;
         slotGiven = false;
         clipLine = lineNumber;
@@ -69,6 +77,7 @@ private:
   CharacterDescription result;
   CharacterClip current;
   bool open = false; // inside a [clip]
+  std::string notes; // comment lines waiting for what they're above
   bool slotGiven = false;
   bool loopGiven = false;
   int clipLine = 0;
@@ -85,6 +94,8 @@ private:
         fail(lineNumber, "unknown key '" + key + "' (before any [clip], only "
                                                  "'model')");
       result.model = value;
+      result.comment = std::move(notes);
+      notes.clear();
       return;
     }
     if (key == "slot") {
@@ -178,6 +189,21 @@ const CharacterClip *CharacterDescription::clip(ClipSlot slot) const {
   return nullptr;
 }
 
+void CharacterDescription::setClip(const CharacterClip &clip) {
+  for (CharacterClip &c : clips)
+    if (c.slot == clip.slot) {
+      std::string notes = clip.comment.empty() ? c.comment : clip.comment;
+      c = clip;
+      c.comment = std::move(notes);
+      return;
+    }
+  clips.push_back(clip);
+}
+
+void CharacterDescription::removeClip(ClipSlot slot) {
+  std::erase_if(clips, [&](const CharacterClip &c) { return c.slot == slot; });
+}
+
 namespace CharacterIO {
 
 CharacterDescription parse(std::istream &in, const std::string &sourceName) {
@@ -192,10 +218,10 @@ CharacterDescription loadFromFile(const std::string &path) {
 }
 
 std::string write(const CharacterDescription &character) {
-  std::string out = "model = " + character.model + "\n";
+  std::string out = character.comment + "model = " + character.model + "\n";
   for (const CharacterClip &clip : character.clips) {
-    out += std::format("\n[clip]\nslot = {}\nfile = {}\n", clipSlotName(clip.slot),
-                       clip.file);
+    out += std::format("\n{}[clip]\nslot = {}\nfile = {}\n", clip.comment,
+                       clipSlotName(clip.slot), clip.file);
     if (clip.start != 0.0f)
       out += std::format("start = {}\n", clip.start);
     if (clip.end != 0.0f)

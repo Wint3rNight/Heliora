@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -259,7 +260,10 @@ bool ImGuiLayer::wantsMouse() const {
 }
 
 bool ImGuiLayer::wantsTextInput() const {
-  return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
+  // Waiting for a key in the Controls tab counts too: nothing else may
+  // take that key (Esc must cancel, not quit).
+  return rebinding.has_value() ||
+         (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);
 }
 
 bool ImGuiLayer::editInProgress() const {
@@ -283,7 +287,8 @@ namespace {
 // file) know them by.
 constexpr const char *kPanelNames[] = {"Scene",     "Render",    "Lighting",
                                        "Camera",    "Inspector", "Physics",
-                                       "Character", "Performance", "Debug"};
+                                       "Character", "Controls",  "Performance",
+                                       "Debug"};
 
 // The dockspace's id, the same every run so the layout file finds it.
 ImGuiID dockspaceId() { return ImHashStr("HelioraDockspace"); }
@@ -350,7 +355,7 @@ void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
     ImGui::DockBuilderDockWindow(name, left);
   // The Inspector edits objects, in edit mode; the Character tab tunes the
   // character, while playing.
-  for (const char *name : {"Inspector", "Character"})
+  for (const char *name : {"Inspector", "Character", "Controls"})
     ImGui::DockBuilderDockWindow(name, top);
   for (const char *name : {"Physics", "Performance", "Debug"})
     ImGui::DockBuilderDockWindow(name, bottom);
@@ -431,6 +436,11 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
       inspector && inspector->DockId != 0)
     ImGui::SetNextWindowDockID(inspector->DockId, ImGuiCond_FirstUseEver);
   panel(Panel::Character, [&] { drawCharacterTab(ui); });
+  // Likewise for a layout saved before the Controls tab.
+  if (const ImGuiWindow *inspector = ImGui::FindWindowByName("Inspector");
+      inspector && inspector->DockId != 0)
+    ImGui::SetNextWindowDockID(inspector->DockId, ImGuiCond_FirstUseEver);
+  panel(Panel::Controls, [&] { drawControlsTab(ui); });
   panel(Panel::Performance, [&] { drawPerformanceTab(ui); });
   panel(Panel::Debug, [&] { drawDebugTab(ui); });
   focusDefaultTabs = false;
@@ -1709,6 +1719,8 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
     ImGui::TextDisabled(panel.characterLoaded ? "Play (F5) to see what's playing"
                                               : "No character loaded");
   }
+  if (panel.characterLoaded && ImGui::CollapsingHeader("Clips"))
+    drawClipsSection(panel);
   constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
   auto slider = [&](const char *label, float *value, float lo, float hi,
                     const char *format) {
@@ -1823,6 +1835,144 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
     cam = consistent(cam);
     panel.changed = true;
   }
+}
+
+// Which clip each move plays: a file for each slot, picked from the clip
+// files next to the character file, with its start and end. Changes play at
+// once; Save clips writes the .character file.
+void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
+  if (ImGui::Button("Save clips"))
+    panel.saveClips = true;
+  ImGui::SameLine();
+  if (panel.clipsUnsaved)
+    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Not saved");
+  else
+    ImGui::TextDisabled("Saved");
+  if (!panel.clipStatus.empty())
+    ImGui::TextDisabled("%s", panel.clipStatus.c_str());
+  // Shorter names: the folder they all share, and Mixamo's "packs".
+  auto shortName = [](const std::string &file) {
+    std::string_view name = file;
+    for (std::string_view prefix : {"Resources/Characters/", "mixamo/", "packs/"})
+      if (name.starts_with(prefix))
+        name.remove_prefix(prefix.size());
+    return std::string(name);
+  };
+  auto matches = [&](const std::string &name) {
+    if (clipFilter[0] == '\0')
+      return true;
+    std::string a = name, b = clipFilter;
+    for (char &c : a) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (char &c : b) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return a.find(b) != std::string::npos;
+  };
+  for (int k = 0; k < static_cast<int>(ClipSlot::Count); ++k) {
+    const ClipSlot slot = static_cast<ClipSlot>(k);
+    ImGui::PushID(k);
+    ImGui::SeparatorText(clipSlotName(slot));
+    const CharacterClip *clip = panel.clips.clip(slot);
+    const std::string preview = clip ? shortName(clip->file) : std::string("(none)");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##file", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+      if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      ImGui::InputTextWithHint("##filter", "filter", clipFilter, sizeof clipFilter);
+      if (ImGui::Selectable("(none)", !clip)) {
+        panel.clips.removeClip(slot);
+        panel.clipChanged = slot;
+      }
+      for (const std::string &file : panel.clipFiles) {
+        const std::string name = shortName(file);
+        if (!matches(name))
+          continue;
+        if (ImGui::Selectable(name.c_str(), clip && clip->file == file)) {
+          // Another clip: its own start and end, not the old one's.
+          CharacterClip chosen;
+          chosen.slot = slot;
+          chosen.file = file;
+          chosen.loop = defaultLoop(slot);
+          panel.clips.setClip(chosen);
+          panel.clipChanged = slot;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (clip = panel.clips.clip(slot); clip) {
+      CharacterClip edited = *clip;
+      bool changed = false;
+      ImGui::SetNextItemWidth(110.0f);
+      changed |= ImGui::DragFloat("start", &edited.start, 0.01f, 0.0f, 30.0f, "%.2f s",
+                                  ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(110.0f);
+      changed |= ImGui::DragFloat("end", &edited.end, 0.01f, 0.0f, 30.0f,
+                                  edited.end > 0.0f ? "%.2f s" : "clip's end",
+                                  ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SetItemTooltip("0 plays to the clip's end");
+      if (changed) {
+        // The file format wants an end after the start, or none.
+        if (edited.end > 0.0f && edited.end <= edited.start)
+          edited.end = edited.start + 0.01f;
+        panel.clips.setClip(edited);
+        panel.clipChanged = slot;
+      }
+    }
+    ImGui::PopID();
+  }
+}
+
+void ImGuiLayer::drawControlsTab(DebugUiContext &ui) {
+  if (!ui.controls)
+    return;
+  ControlBindings &controls = *ui.controls;
+  drawSettingsButtons(ui, "controls");
+  ImGui::TextDisabled("Click an action, then press its key or mouse button.");
+
+  if (rebinding && window) {
+    // The first key or mouse button held this frame, if any.
+    std::optional<InputBinding> held;
+    for (int k = GLFW_KEY_SPACE; k <= GLFW_KEY_LAST && !held; ++k)
+      if (glfwGetKey(window, k) == GLFW_PRESS)
+        held = InputBinding{InputBinding::Device::Key, k};
+    for (int b = 0; b <= GLFW_MOUSE_BUTTON_LAST && !held; ++b)
+      if (glfwGetMouseButton(window, b) == GLFW_PRESS)
+        held = InputBinding{InputBinding::Device::Mouse, b};
+    if (!rebindArmed) {
+      rebindArmed = !held;
+    } else if (held) {
+      if (held->device == InputBinding::Device::Key && held->code == GLFW_KEY_ESCAPE) {
+        rebinding.reset();
+        rebindNote.clear();
+      } else if (reservedForEditor(*held)) {
+        rebindNote = bindingName(*held) + " is the editor's; pick another";
+        rebindArmed = false;
+      } else {
+        controls.bind(*rebinding, *held);
+        rebinding.reset();
+        rebindNote.clear();
+      }
+    }
+  }
+
+  for (int i = 0; i < static_cast<int>(Action::Count); ++i) {
+    const Action action = static_cast<Action>(i);
+    ImGui::PushID(i);
+    const std::string label =
+        rebinding == action ? std::string("Press a key...") : bindingName(controls[action]);
+    if (ImGui::Button(label.c_str(), ImVec2(160.0f, 0.0f))) {
+      rebinding = action;
+      rebindArmed = false;
+      rebindNote.clear();
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(actionLabel(action));
+    ImGui::PopID();
+  }
+  if (!rebindNote.empty())
+    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "%s", rebindNote.c_str());
+  ImGui::TextDisabled("Esc cancels. A key another action has swaps with it.");
+  ImGui::TextDisabled("Esc, Tab, F, F1, F2 and F5 are the editor's.");
 }
 
 void ImGuiLayer::drawPhysicsTab(DebugUiContext &ui) {

@@ -138,6 +138,8 @@ public:
   }
   // While playing there's a character, and the view comes from its camera.
   bool hasPlayer() const { return player != nullptr; }
+  // The player's keys, rebound in the Controls tab.
+  const ControlBindings &controls() const { return controlBindings; }
   const ThirdPersonCamera &playerCamera() const { return player->camera(); }
   // Ctrl+Z and Ctrl+Shift+Z: one finished edit back or forward, rebuilt the
   // way Stop rebuilds, at the top of the next draw(). Edit mode only, and
@@ -213,6 +215,10 @@ private:
   // read once at startup. Without its files there's none, and the capsule
   // stays.
   std::optional<CharacterAsset> characterAsset;
+  std::string characterPath; // the .character file it came from, as found
+  // The file each move's clip was read from, so the Clips section only
+  // re-reads a clip when its file changes.
+  std::array<std::string, static_cast<size_t>(ClipSlot::Count)> loadedClipFiles;
   int characterModelId = -1; // made at the first scene load, kept after
   double characterClipTime = 0.0; // seconds into the clip playing
   // This frame's skinning matrices, worked out while posing and uploaded
@@ -224,6 +230,9 @@ private:
   std::unique_ptr<CharacterAnimator> animator;
   SkinningPass skinningPass;
   void loadCharacter();
+  std::array<RootMotion, 5> characterDodgePaths() const;
+  void applyClipChange(ClipSlot slot);
+  void saveCharacterFile();
   void createCharacterModel();
   // The scale from the model file's units to the spawned body's height.
   float characterScale() const;
@@ -302,6 +311,7 @@ private:
   // The character's and its camera's tuning (the Character tab). The player
   // start's outline and clicks use its body sizes too.
   CharacterPanel characterPanel;
+  ControlBindings controlBindings;
   // Sums for the [physics] log line, printed every 120 frames.
   struct PhysicsLogWindow {
     int frames = 0;

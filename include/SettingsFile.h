@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Controls.h"
+
 #include <glm/glm.hpp>
 
 #include <cstdint>
@@ -42,6 +44,8 @@ public:
   void setBool(std::string_view section, std::string_view key, bool value);
   void setVec3(std::string_view section, std::string_view key,
                glm::vec3 value);
+  void setString(std::string_view section, std::string_view key,
+                 std::string value);
   void remove(std::string_view section, std::string_view key);
 
   // The keys in a section, in file order.
@@ -69,11 +73,12 @@ private:
 
 // A setting the program keeps in a variable: where it sits in the file, the
 // variable, and the range it must stay in. A loaded value outside the range
-// is clamped, with a warning. Bools ignore the range.
+// is clamped, with a warning. Bools and keys ignore the range; a key is
+// written by its name ("Left Shift").
 struct SettingBinding {
   std::string_view section;
   std::string_view key;
-  std::variant<float *, int *, uint32_t *, bool *, glm::vec3 *> value;
+  std::variant<float *, int *, uint32_t *, bool *, glm::vec3 *, InputBinding *> value;
   double min = -1e30;
   double max = 1e30;
 };

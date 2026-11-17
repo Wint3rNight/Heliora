@@ -231,20 +231,34 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
 // cursor free for the panels it stands still.
 PlayerControls readPlayerControls(const FlyState &fly, bool typing,
                                   bool asking) {
+  // Through the bindings the Controls tab sets.
+  const ControlBindings &keys = vulkanRenderer.controls();
+  auto held = [&](Action action) {
+    const InputBinding &b = keys[action];
+    return b.device == InputBinding::Device::Mouse
+               ? inputManager.isMouseButtonPressed(b.code)
+               : inputManager.isKeyPressed(b.code);
+  };
+  auto pressed = [&](Action action) {
+    const InputBinding &b = keys[action];
+    return b.device == InputBinding::Device::Mouse
+               ? inputManager.wasMouseButtonJustPressed(b.code)
+               : inputManager.wasKeyJustPressed(b.code);
+  };
   // Read every frame, so a press made with the cursor free doesn't count
   // as new after Tab.
-  const bool jump = inputManager.wasKeyJustPressed(GLFW_KEY_SPACE);
-  const bool dodge = inputManager.wasKeyJustPressed(GLFW_KEY_LEFT_ALT);
+  const bool jump = pressed(Action::Jump);
+  const bool dodge = pressed(Action::Dodge);
   PlayerControls controls;
   if (!fly.cameraMode || typing || asking)
     return controls;
-  controls.forward = inputManager.isKeyPressed(GLFW_KEY_W);
-  controls.back = inputManager.isKeyPressed(GLFW_KEY_S);
-  controls.left = inputManager.isKeyPressed(GLFW_KEY_A);
-  controls.right = inputManager.isKeyPressed(GLFW_KEY_D);
-  controls.sprint = inputManager.isKeyPressed(GLFW_KEY_LEFT_SHIFT);
-  controls.crouch = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL);
-  controls.aim = inputManager.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+  controls.forward = held(Action::Forward);
+  controls.back = held(Action::Back);
+  controls.left = held(Action::Left);
+  controls.right = held(Action::Right);
+  controls.sprint = held(Action::Sprint);
+  controls.crouch = held(Action::Crouch);
+  controls.aim = held(Action::Aim);
   controls.jump = jump;
   controls.dodge = dodge;
   // InputManager's y counts up; the controls' counts down, like the screen.

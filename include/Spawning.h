@@ -5,8 +5,10 @@
 
 #include <glm/glm.hpp>
 
+#include <initializer_list>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Adding objects from the editor's spawn list: what's on the list, what a
@@ -21,6 +23,9 @@ constexpr float kSpawnFallback = 5.0f; // metres
 // form scene files use. Looks in ../folder when folder isn't there, as the
 // game usually runs from a build folder.
 std::vector<std::string> findModelFiles(const std::string &folder);
+// The same for any extensions (".fbx" for a character's clips).
+std::vector<std::string> findFiles(const std::string &folder,
+                                   std::initializer_list<std::string_view> extensions);
 
 // A new generated shape: default size and colour, and a dynamic body, apart
 // from a plane, whose body must be static.

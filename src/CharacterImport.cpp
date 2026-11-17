@@ -224,6 +224,11 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
 
 } // namespace
 
+std::optional<CharacterClipData> importCharacterClip(const CharacterClip &clip,
+                                                     const CharacterAsset &asset) {
+  return importClip(clip, asset);
+}
+
 std::string resolveCharacterPath(const std::string &path) {
   namespace fs = std::filesystem;
   for (const fs::path &candidate : {fs::path(path), fs::path("..") / path})

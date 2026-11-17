@@ -32,6 +32,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -526,6 +527,9 @@ void VulkanRenderer::loadSettings() {
       {"character", "anim_landing_after", &an.landAirTime, 0, 2},
       {"character", "anim_shortest_landing", &an.landMinTime, 0, 1},
   };
+  for (int i = 0; i < static_cast<int>(Action::Count); ++i)
+    settingBindings.push_back({"controls", actionName(static_cast<Action>(i)),
+                               &controlBindings[static_cast<Action>(i)]});
   writeSettings(settingsDefaults, settingBindings);
   settingsFile = SettingsFile::load(settingsPath);
   readSettings(settingsFile, settingBindings);
@@ -556,7 +560,7 @@ std::vector<std::string> VulkanRenderer::unsavedSettingsSections() const {
     if (!(imguiDayNightEnable && b.key == "day_night_hour"))
       checked.push_back(b);
   std::vector<std::string> sections;
-  for (const char *section : {"render", "physics", "character"})
+  for (const char *section : {"render", "physics", "character", "controls"})
     if (hasUnsavedSettings(settingsFile, checked, section, settingsDefaults))
       sections.push_back(section);
   return sections;
@@ -569,9 +573,10 @@ void VulkanRenderer::resetSettings(std::string_view section) {
   taaHistoryValid = false;
   physicsPanel.settingsChanged = true;
   characterPanel.changed = true;
-  const char *name = section == "render"    ? "Render"
-                     : section == "physics" ? "Physics"
-                                            : "Character";
+  const char *name = section == "render"      ? "Render"
+                     : section == "physics"   ? "Physics"
+                     : section == "character" ? "Character"
+                                              : "Controls";
   settingsStatus =
       std::format("{} settings are back to the defaults, not saved yet", name);
 }
@@ -1193,6 +1198,15 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       player->setTuning(characterPanel.character, characterPanel.camera);
     if (animator)
       animator->setTuning(characterPanel.animation);
+  }
+  if (characterPanel.clipChanged) {
+    if (characterAsset)
+      applyClipChange(*characterPanel.clipChanged);
+    characterPanel.clipChanged.reset();
+  }
+  if (characterPanel.saveClips) {
+    characterPanel.saveClips = false;
+    saveCharacterFile();
     updateEditorLines(); // the player start's outline is the body's size
   }
   const auto start = std::chrono::steady_clock::now();
@@ -1382,15 +1396,7 @@ void VulkanRenderer::spawnPlayer() {
     animator = std::make_unique<CharacterAnimator>(
         characterAsset->skeleton, characterAsset->library, characterScale(),
         characterPanel.animation);
-    // The dodges move the way their clips do, from each clip's start to
-    // its end, in metres at his size.
-    std::array<RootMotion, 5> paths;
-    for (size_t k = 0; k < paths.size(); ++k)
-      if (const CharacterClipData *clip =
-              characterAsset->clip(dodgeClip(static_cast<DodgeKind>(k))))
-        paths[k] = rootPath(clip->rootMotion, clip->start, clip->endTime(),
-                            characterScale());
-    player->setDodgePaths(paths);
+    player->setDodgePaths(characterDodgePaths());
   }
   if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
     auto node = std::make_unique<SceneNode>();
@@ -1491,14 +1497,91 @@ void VulkanRenderer::loadCharacter() {
   }
   std::string error;
   try {
-    characterAsset = importCharacter(CharacterIO::loadFromFile(path), error);
+    characterPanel.clips = CharacterIO::loadFromFile(path);
+    characterAsset = importCharacter(characterPanel.clips, error);
   } catch (const std::exception &e) {
     error = e.what();
   }
-  if (!characterAsset)
+  if (!characterAsset) {
     spdlog::warn("Character not loaded, keeping the capsule: {}", error);
+  } else {
+    characterPath = path;
+    for (const CharacterClip &clip : characterPanel.clips.clips)
+      if (characterAsset->clip(clip.slot))
+        loadedClipFiles[static_cast<size_t>(clip.slot)] = clip.file;
+    // The clips to choose from: every FBX next to the character file.
+    characterPanel.clipFiles = findFiles("Resources/Characters", {".fbx"});
+  }
   if (std::getenv("HELIORA_SHOW_SKELETON"))
     characterPanel.showSkeleton = true;
+}
+
+// The dodges move the way their clips do, from each clip's start to its
+// end, in metres at his size.
+std::array<RootMotion, 5> VulkanRenderer::characterDodgePaths() const {
+  std::array<RootMotion, 5> paths;
+  for (size_t k = 0; k < paths.size(); ++k)
+    if (const CharacterClipData *clip =
+            characterAsset->clip(dodgeClip(static_cast<DodgeKind>(k))))
+      paths[k] = rootPath(clip->rootMotion, clip->start, clip->endTime(),
+                          characterScale());
+  return paths;
+}
+
+// The Clips section changed a move: a new file is read now (a few
+// milliseconds), a new start or end just applies. The animator looks clips
+// up every frame, so it plays the new one at once.
+void VulkanRenderer::applyClipChange(ClipSlot slot) {
+  const size_t k = static_cast<size_t>(slot);
+  std::optional<CharacterClipData> &loaded = characterAsset->library.clips[k];
+  const CharacterClip *entry = characterPanel.clips.clip(slot);
+  if (!entry) {
+    loaded.reset();
+    loadedClipFiles[k].clear();
+    characterPanel.clipStatus = std::format("{}: no clip", clipSlotName(slot));
+  } else if (!loaded || entry->file != loadedClipFiles[k]) {
+    if (std::optional<CharacterClipData> data = importCharacterClip(*entry, *characterAsset)) {
+      loaded = std::move(data);
+      loadedClipFiles[k] = entry->file;
+      characterPanel.clipStatus = std::format("{}: {}", clipSlotName(slot),
+                                              std::filesystem::path(entry->file).filename().string());
+    } else {
+      characterPanel.clipStatus = std::format("Couldn't read {}", entry->file);
+    }
+  } else {
+    loaded->start = entry->start;
+    loaded->end = entry->end;
+    loaded->loop = entry->loop;
+  }
+  if (player)
+    player->setDodgePaths(characterDodgePaths());
+  characterPanel.clipsUnsaved = true;
+}
+
+// Writes the Clips section's choices back to the .character file, through
+// a temporary file and a rename like scene saves, comments kept.
+void VulkanRenderer::saveCharacterFile() {
+  if (characterPath.empty())
+    return;
+  const std::string temporary = characterPath + ".tmp";
+  {
+    std::ofstream out(temporary);
+    out << CharacterIO::write(characterPanel.clips);
+    if (!out) {
+      characterPanel.clipStatus = "Couldn't write " + temporary;
+      return;
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, characterPath, error);
+  if (error) {
+    std::filesystem::remove(temporary, error);
+    characterPanel.clipStatus = "Couldn't save " + characterPath;
+    return;
+  }
+  characterPanel.clipsUnsaved = false;
+  characterPanel.clipStatus = "Saved " + std::filesystem::path(characterPath).filename().string();
+  spdlog::info("Saved the clips to {}", characterPath);
 }
 
 // Each bone joined to its parent, the rig's own bones only (not the file's
@@ -4318,6 +4401,7 @@ void VulkanRenderer::buildUi() {
   ui.physics = &physicsPanel;
   characterPanel.characterLoaded = characterAsset.has_value();
   ui.character = &characterPanel;
+  ui.controls = &controlBindings;
   ui.bodiesInWorld = physics ? physics->bodyCount() : 0;
   ui.bodyLimit = physics ? physics->bodyLimit() : 0;
   ui.onSaveSettings = [this](const char *section) { saveSettings(section); };

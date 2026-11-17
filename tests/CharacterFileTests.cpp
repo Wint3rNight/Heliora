@@ -115,3 +115,44 @@ TEST(broken_character_files_say_what_and_where) {
                           "[clip]\nslot = idle\nfile = c.fbx\n"),
                  "idle"));
 }
+
+TEST(comments_survive_a_save_and_load) {
+  // The notes above the model line and above each clip stay with them.
+  const std::string text = "# Who this is\n# and where from\nmodel = a.fbx\n\n"
+                           "# Standing still\n[clip]\nslot = idle\nfile = b.fbx\n\n"
+                           "[clip]\nslot = jump\nfile = c.fbx\n";
+  const CharacterDescription c = parseText(text);
+  CHECK(c.comment == "# Who this is\n# and where from\n");
+  CHECK(c.clips.size() == 2);
+  if (c.clips.size() != 2)
+    return;
+  CHECK(c.clips[0].comment == "# Standing still\n");
+  CHECK(c.clips[1].comment.empty());
+  const std::string written = CharacterIO::write(c);
+  CHECK(contains(written, "# Who this is\n# and where from\nmodel = a.fbx\n"));
+  CHECK(contains(written, "# Standing still\n[clip]\nslot = idle\n"));
+  std::istringstream again(written);
+  CHECK(CharacterIO::parse(again, "again.character") == c);
+}
+
+TEST(clips_are_set_and_cleared_by_slot) {
+  CharacterDescription c = parseText("model = a.fbx\n\n# The jump\n[clip]\n"
+                                     "slot = jump\nfile = j.fbx\n");
+  CharacterClip roll;
+  roll.slot = ClipSlot::Roll;
+  roll.file = "r.fbx";
+  roll.start = 0.45f;
+  roll.loop = false;
+  c.setClip(roll);
+  CHECK(c.clip(ClipSlot::Roll) && c.clip(ClipSlot::Roll)->file == "r.fbx");
+  CharacterClip jump = *c.clip(ClipSlot::Jump);
+  jump.file = "j2.fbx";
+  jump.comment.clear();
+  c.setClip(jump); // replaces it where it was, keeping its notes
+  CHECK(c.clips.size() == 2);
+  CHECK(c.clips[0].file == "j2.fbx");
+  CHECK(c.clips[0].comment == "# The jump\n");
+  c.removeClip(ClipSlot::Jump);
+  CHECK(!c.clip(ClipSlot::Jump));
+  CHECK(c.clips.size() == 1);
+}

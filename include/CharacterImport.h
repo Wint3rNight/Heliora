@@ -41,3 +41,8 @@ std::string resolveCharacterPath(const std::string &path);
 // is left out with a log line.
 std::optional<CharacterAsset> importCharacter(const CharacterDescription &description,
                                               std::string &error);
+
+// One clip read again (the Clips section gave its move another file), onto
+// the asset's skeleton. Nothing, with a log line, if it can't be read.
+std::optional<CharacterClipData> importCharacterClip(const CharacterClip &clip,
+                                                     const CharacterAsset &asset);

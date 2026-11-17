@@ -8,6 +8,11 @@
 #include <system_error>
 
 std::vector<std::string> findModelFiles(const std::string &folder) {
+  return findFiles(folder, {".gltf", ".glb"});
+}
+
+std::vector<std::string> findFiles(const std::string &folder,
+                                   std::initializer_list<std::string_view> extensions) {
   namespace fs = std::filesystem;
   // The paths keep the folder's name as given, so they read
   // "Resources/Models/..." like the scene files, wherever it was found.
@@ -28,13 +33,13 @@ std::vector<std::string> findModelFiles(const std::string &folder) {
     const fs::path &path = it->path();
     std::error_code typeError;
     if (it->is_regular_file(typeError) &&
-        (path.extension() == ".gltf" || path.extension() == ".glb"))
+        std::ranges::find(extensions, path.extension().string()) != extensions.end())
       files.push_back(
           (fs::path(folder) / fs::relative(path, searched, typeError))
               .string());
   }
   if (error)
-    spdlog::warn("Model scan of {} stopped early: {}", searched.string(),
+    spdlog::warn("File scan of {} stopped early: {}", searched.string(),
                  error.message());
   std::sort(files.begin(), files.end());
   return files;

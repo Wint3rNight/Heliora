@@ -95,6 +95,25 @@ TEST(model_files_are_found_in_subfolders) {
   fs::remove_all(root);
 }
 
+TEST(clip_files_are_found_by_their_extension) {
+  // The Clips section lists a character's FBX files, nothing else.
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "heliora_clip_scan_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "packs" / "Male");
+  fs::create_directories(root / "zips");
+  for (const char *file : {"packs/Male/walking.fbx", "packs/Male/idle.fbx",
+                           "Ganfaul.character", "zips/pack.zip", "rock.gltf"})
+    std::ofstream(root / file) << "x";
+  const std::vector<std::string> found = findFiles(root.string(), {".fbx"});
+  CHECK(found.size() == 2);
+  if (found.size() == 2) {
+    CHECK(found[0] == (root / "packs" / "Male" / "idle.fbx").string());
+    CHECK(found[1] == (root / "packs" / "Male" / "walking.fbx").string());
+  }
+  fs::remove_all(root);
+}
+
 TEST(unreadable_folders_are_skipped) {
   // A folder the scan can't read is left out, not a crash.
   namespace fs = std::filesystem;

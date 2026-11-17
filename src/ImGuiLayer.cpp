@@ -944,7 +944,7 @@ void ImGuiLayer::drawPlayerStartInspector(DebugUiContext &ui) {
       ImGui::EndCombo();
     }
     ImGui::SetItemTooltip("The character file's variant this scene plays with, "
-                          "like the climb's arcade air");
+                          "like the climb's rage tuning");
   }
   ImGui::PopItemWidth();
   if (moved) {
@@ -1034,7 +1034,7 @@ void ImGuiLayer::drawCharacterInspector(DebugUiContext &ui) {
     ImGui::EndCombo();
   }
   ImGui::SetItemTooltip("The character file's variant it plays with, like the climb's "
-                        "arcade air");
+                        "rage tuning");
   if (ImGui::Checkbox("Player", &edited.player))
     changed = true;
   ImGui::SetItemTooltip("Play starts as this character. One per scene: ticking it unticks "

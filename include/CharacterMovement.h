@@ -46,7 +46,7 @@ struct CharacterTuning {
   float airAcceleration = 8.0f;
   // With it, the air can steer and slow it but not take it faster than it
   // left the ground at (walking pace at least); without, it speeds up in
-  // flight like an arcade game (the climb's "arcade" variant).
+  // flight like an arcade game (the climb's "rage" variant).
   bool airSpeedLimit = true;
 
   float jumpHeight = 1.2f; // m

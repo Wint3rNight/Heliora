@@ -69,7 +69,7 @@ struct CharacterSetting {
   bool operator==(const CharacterSetting &) const = default;
 };
 
-// A named set of overrides for [tuning] ("arcade"), which a scene's player
+// A named set of overrides for [tuning] ("rage"), which a scene's player
 // start can ask for.
 struct CharacterVariant {
   std::string name;

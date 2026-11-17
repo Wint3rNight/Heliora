@@ -281,7 +281,7 @@ TEST(a_running_jump_keeps_its_speed_but_gains_none) {
 }
 
 TEST(without_the_air_limit_it_speeds_up_in_the_air) {
-  // The arcade variant: a standing jump picks up speed in flight.
+  // Like the climb's rage variant: a standing jump picks up speed in flight.
   PhysicsWorld world;
   addFloor(world);
   CharacterTuning arcade;

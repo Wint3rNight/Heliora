@@ -626,3 +626,33 @@ TEST(settling_onto_something_is_no_impact) {
   stepFor(world, 30);
   CHECK(world.takeImpacts().empty());
 }
+
+TEST(an_impact_says_what_hit_and_how_fast_it_came) {
+  PhysicsWorld world;
+  addTarget(world, 1);
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  box.halfExtents = glm::vec3(0.25f);
+  box.mass = 10.0f;
+  box.position = glm::vec3(0.0f, 1.5f, 0.0f);
+  const PhysicsBodyId falling = world.addBody(box);
+  std::vector<PhysicsImpact> impacts;
+  for (int i = 0; i < 60 && impacts.empty(); ++i) {
+    world.step(kStep);
+    impacts = world.takeImpacts();
+  }
+  CHECK(!impacts.empty());
+  if (!impacts.empty()) {
+    CHECK(impacts[0].other.value == falling.value);
+    CHECK_NEAR(impacts[0].otherVelocity.y, -4.95, 0.3); // before the contact stopped it
+  }
+}
+
+TEST(a_body_can_be_given_a_velocity) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  const PhysicsBodyId id = world.addBody(box);
+  world.setLinearVelocity(id, glm::vec3(0.0f, 0.0f, -6.0f));
+  CHECK_NEAR(glm::distance(world.linearVelocity(id), glm::vec3(0.0f, 0.0f, -6.0f)), 0.0, 1e-4);
+}

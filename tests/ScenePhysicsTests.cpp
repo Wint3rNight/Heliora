@@ -261,3 +261,20 @@ TEST(grid_limit_counts_every_body_in_the_world) {
   // Shrinking always fits, even in a world that's over the limit already.
   CHECK(gridFitsBodyLimit(1500, 400, 300, 1000));
 }
+
+TEST(materials_break_their_own_way) {
+  // Wood gives way sooner than stone and splinters; stone clusters at the
+  // hit; ice shatters; metal and rubber don't split (metal bends, later).
+  const std::optional<PhysicsMaterial> wood = findMaterial("wood");
+  const std::optional<PhysicsMaterial> stone = findMaterial("stone");
+  const std::optional<PhysicsMaterial> ice = findMaterial("ice");
+  CHECK(wood && stone && ice);
+  if (wood && stone && ice) {
+    CHECK(wood->breakStrength < stone->breakStrength);
+    CHECK(wood->pattern == FracturePattern::Splinters);
+    CHECK(stone->pattern == FracturePattern::Clustered);
+    CHECK(ice->pattern == FracturePattern::Shards);
+  }
+  CHECK(findMaterial("metal")->pattern == FracturePattern::None);
+  CHECK(findMaterial("rubber")->pattern == FracturePattern::None);
+}

@@ -517,6 +517,77 @@ static void copyBuffer(VkDevice device, VkQueue transferQueue,
                             transferCommandBuffer);
 }
 
+// Many small uploads recorded into one command buffer and submitted once,
+// without waiting. Pieces cut while playing make dozens of tiny meshes a
+// frame; a submit and a queue wait for each of their buffers, or even one
+// wait for them all, stalled the frame until the frames in flight finished
+// (about 7 ms). While a batch is open (gUploadBatch), meshes and the
+// GPU-driven pass's shared buffer hand it their copies and staging buffers;
+// submit() sends them with a fence and returns. The copies run before
+// anything submitted later on the queue, and the barrier at the end makes
+// them visible to its vertex input. The staging buffers stay until
+// finished() says the GPU is done with them.
+class UploadBatch {
+public:
+  UploadBatch(VkDevice device, VkCommandPool pool, VkQueue queue)
+      : device(device), pool(pool), queue(queue) {}
+  UploadBatch(const UploadBatch &) = delete;
+  UploadBatch &operator=(const UploadBatch &) = delete;
+  ~UploadBatch() {
+    if (fence != VK_NULL_HANDLE) {
+      vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+      vkDestroyFence(device, fence, nullptr);
+    }
+    if (cmd != VK_NULL_HANDLE)
+      vkFreeCommandBuffers(device, pool, 1, &cmd);
+  }
+
+  void copy(AllocatedBuffer staging, VkBuffer destination, VkDeviceSize size,
+            VkDeviceSize destinationOffset = 0) {
+    if (cmd == VK_NULL_HANDLE)
+      cmd = beginCommandBuffer(device, pool);
+    const VkBufferCopy region{0, destinationOffset, size};
+    vkCmdCopyBuffer(cmd, staging.get(), destination, 1, &region);
+    staging_.push_back(std::move(staging));
+  }
+  bool empty() const { return cmd == VK_NULL_HANDLE; }
+  void submit() {
+    if (cmd == VK_NULL_HANDLE || fence != VK_NULL_HANDLE)
+      return;
+    VkMemoryBarrier visible{};
+    visible.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    visible.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    visible.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT |
+                            VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &visible, 0, nullptr, 0, nullptr);
+    vkEndCommandBuffer(cmd);
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(device, &fenceInfo, nullptr, &fence);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(queue, 1, &submitInfo, fence);
+  }
+  // True once the GPU has done the copies (or there were none).
+  bool finished() const {
+    return fence == VK_NULL_HANDLE || vkGetFenceStatus(device, fence) == VK_SUCCESS;
+  }
+
+private:
+  VkDevice device;
+  VkCommandPool pool;
+  VkQueue queue;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  VkFence fence = VK_NULL_HANDLE;
+  std::vector<AllocatedBuffer> staging_;
+};
+inline UploadBatch *gUploadBatch = nullptr; // the open batch, if any
+
 static void copyImageBuffer(VkDevice device, VkQueue transferQueue,
                             VkCommandPool transferCommandPool,
                             VkBuffer srcBuffer, VkImage dstImage,

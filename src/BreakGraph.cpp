@@ -174,10 +174,10 @@ std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, f
       float area = 0.0f;
       glm::vec3 weighted(0.0f);
       for (const FractureFace &fa : pieces[i].faces) {
-        if (fa.neighbour >= 0)
+        if (fa.neighbour != kOutsideFace)
           continue;
         for (const FractureFace &fb : pieces[j].faces) {
-          if (fb.neighbour >= 0)
+          if (fb.neighbour != kOutsideFace)
             continue;
           glm::vec3 centre;
           const float overlap = faceOverlap(fa, fb, tolerance, centre);
@@ -193,9 +193,71 @@ std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, f
   return touches;
 }
 
+float touchArea(const PlacedPiece &a, const PlacedPiece &b, float tolerance, glm::vec3 &centre) {
+  float area = 0.0f;
+  glm::vec3 weighted(0.0f);
+  for (const FractureFace &fa : a.faces)
+    for (const FractureFace &fb : b.faces) {
+      glm::vec3 middle;
+      const float overlap = faceOverlap(fa, fb, tolerance, middle);
+      if (overlap > 1e-7f) {
+        area += overlap;
+        weighted += middle * overlap;
+      }
+    }
+  if (area > 0.0f)
+    centre = weighted / area;
+  return area;
+}
+
+bool staysPut(const BreakGroup &group, const std::vector<int> &objectOf,
+              const std::vector<float> &volume, const std::vector<float> &objectVolume) {
+  if (!group.anchored)
+    return false;
+  std::vector<float> held(objectVolume.size(), 0.0f);
+  for (int p : group.pieces)
+    held[objectOf[p]] += volume[p];
+  for (size_t o = 0; o < held.size(); ++o)
+    if (held[o] > 0.0f && held[o] >= kStructuralShare * objectVolume[o])
+      return true;
+  return false;
+}
+
+std::vector<float> shareHit(float momentum, const std::vector<float> &distances) {
+  std::vector<float> shares;
+  float total = 0.0f;
+  for (float d : distances) {
+    const float x = d / kBreakSpread;
+    shares.push_back(1.0f / (1.0f + x * x));
+    total += shares.back();
+  }
+  for (float &s : shares)
+    s *= momentum / total;
+  return shares;
+}
+
+void varyStrengths(std::vector<BreakLink> &links, uint32_t seed, float amount) {
+  // A small hash per link (splitmix32), so the same seed gives the same
+  // strengths whatever order they're read in.
+  for (size_t i = 0; i < links.size(); ++i) {
+    uint32_t x = seed ^ static_cast<uint32_t>(i * 0x9e3779b9u);
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    const float unit = static_cast<float>(x >> 8) / 16777216.0f; // [0, 1)
+    links[i].strength *= 1.0f + amount * (2.0f * unit - 1.0f);
+  }
+}
+
+float splitImpulse(float volume, float strengthPerArea) {
+  return std::pow(std::max(volume, 0.0f), 2.0f / 3.0f) * strengthPerArea;
+}
+
 bool restsOn(const PlacedPiece &piece, float height, float tolerance) {
   for (const FractureFace &face : piece.faces) {
-    if (face.neighbour >= 0 || face.normal.y > -0.9f)
+    if (face.neighbour != kOutsideFace || face.normal.y > -0.9f)
       continue;
     if (std::all_of(face.points.begin(), face.points.end(),
                     [&](const glm::vec3 &p) { return std::fabs(p.y - height) <= tolerance; }))

@@ -63,6 +63,8 @@ public:
 
   // Adds a model's meshes to the arena and uploads only them.
   void registerModelGeometry(int modelId, ModelManager &modelManager);
+  // Many at once, with one upload: pieces cut in the same frame.
+  void registerModelGeometries(const std::vector<int> &modelIds, ModelManager &modelManager);
   // Scene switches must call this: the depth pyramid still holds the OLD
   // scene's depth, and occlusion-testing the new scene's AABBs against it
   // wrongly culls visible meshes for the first frame.

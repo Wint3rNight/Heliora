@@ -171,8 +171,11 @@ void Mesh::createVertexBuffer(VkQueue transferQueue,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &vertexBuffer);
 
-  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
-             vertexBuffer.get(), bufferSize);
+  if (gUploadBatch)
+    gUploadBatch->copy(std::move(stagingBuffer), vertexBuffer.get(), bufferSize);
+  else
+    copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
+               vertexBuffer.get(), bufferSize);
 }
 
 void Mesh::createIndexBuffer(VkQueue transferQueue,
@@ -194,8 +197,11 @@ void Mesh::createIndexBuffer(VkQueue transferQueue,
                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, &indexBuffer);
 
-  copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
-             indexBuffer.get(), bufferSize);
+  if (gUploadBatch)
+    gUploadBatch->copy(std::move(stagingBuffer), indexBuffer.get(), bufferSize);
+  else
+    copyBuffer(device, transferQueue, transferCommandPool, stagingBuffer.get(),
+               indexBuffer.get(), bufferSize);
 }
 
 // =============================================================================

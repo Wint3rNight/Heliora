@@ -37,11 +37,11 @@ boundsBox(const std::shared_ptr<const PhysicsMeshParts> &parts) {
 // Densities of the real, solid materials. Friction and bounce are picked to
 // feel right next to each other, not measured.
 constexpr PhysicsMaterial kMaterials[] = {
-    {"wood", 600.0f, 0.5f, 0.2f},
-    {"stone", 2400.0f, 0.6f, 0.1f},
-    {"metal", 7800.0f, 0.4f, 0.1f},
-    {"rubber", 1100.0f, 0.9f, 0.7f}, // grippy and bouncy
-    {"ice", 920.0f, 0.05f, 0.05f},   // slippery
+    {"wood", 600.0f, 0.5f, 0.2f, 150.0f, FracturePattern::Splinters},
+    {"stone", 2400.0f, 0.6f, 0.1f, 300.0f, FracturePattern::Clustered},
+    {"metal", 7800.0f, 0.4f, 0.1f, 1200.0f, FracturePattern::None}, // bends, later
+    {"rubber", 1100.0f, 0.9f, 0.7f, 400.0f, FracturePattern::None}, // grippy and bouncy
+    {"ice", 920.0f, 0.05f, 0.05f, 80.0f, FracturePattern::Shards},  // slippery
 };
 
 } // namespace

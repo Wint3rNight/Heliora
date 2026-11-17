@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Fracture.h"
 #include "PhysicsWorld.h"
 #include "Scene.h"
 
@@ -25,6 +26,10 @@ struct PhysicsMaterial {
   float density;     // kg/m^3
   float friction;    // 0 and up
   float restitution; // bounciness, 0 to 1
+  // Breaking: what a breakable of it holds out against by default (N s per
+  // m^2 of cut face) and how its pieces split where they're hit.
+  float breakStrength = 300.0f;
+  FracturePattern pattern = FracturePattern::Clustered;
 };
 
 // The material called name (any case), or nothing if there isn't one.

@@ -44,7 +44,18 @@ Polyhedron boxFaces(glm::vec3 half) {
   return box;
 }
 
+// The face's area centre: its fan's triangles' middles, weighted by area.
 glm::vec3 faceMiddle(const FractureFace &face) {
+  glm::vec3 weighted(0.0f);
+  float total = 0.0f;
+  for (size_t i = 1; i + 1 < face.points.size(); ++i) {
+    const glm::vec3 &a = face.points[0], &b = face.points[i], &c = face.points[i + 1];
+    const float area = 0.5f * glm::length(glm::cross(b - a, c - a));
+    weighted += area * (a + b + c) / 3.0f;
+    total += area;
+  }
+  if (total > 0.0f)
+    return weighted / total;
   glm::vec3 sum(0.0f);
   for (const glm::vec3 &p : face.points)
     sum += p;
@@ -163,44 +174,33 @@ float faceArea(const FractureFace &face) {
   return 0.5f * glm::length(sum);
 }
 
-Fracture fractureBox(glm::vec3 size, int count, uint32_t seed) {
+namespace {
+
+// The cells of start around the points, each start clipped by the planes
+// half way to every other point (nearest first, stopping once the planes
+// are too far to reach it), measured, with links from the faces they share.
+Fracture cutCells(const Polyhedron &start, const std::vector<glm::vec3> &points, float eps) {
   Fracture out;
-  count = std::max(count, 1);
-  const glm::vec3 half = 0.5f * size;
-  const float scale = std::max({size.x, size.y, size.z});
-  const float eps = 1e-5f * scale;
-
-  // The points, spread out a little so no piece is a sliver: each at least
-  // a quarter of the typical piece's size from the others, when possible.
-  Pcg32 random(seed);
-  const float spacing = 0.25f * std::cbrt(size.x * size.y * size.z / static_cast<float>(count));
-  std::vector<glm::vec3> points;
-  while (static_cast<int>(points.size()) < count) {
-    glm::vec3 p;
-    for (int attempt = 0; attempt < 30; ++attempt) {
-      p = (glm::vec3(random.unit(), random.unit(), random.unit()) * 2.0f - 1.0f) * half * 0.98f;
-      if (std::all_of(points.begin(), points.end(),
-                      [&](const glm::vec3 &q) { return glm::distance(p, q) >= spacing; }))
-        break;
-    }
-    points.push_back(p);
-  }
-
-  // Each piece: the box cut by the plane half way to every other point,
-  // nearest first, stopping once the planes are too far to reach it.
+  float size = 0.0f;
+  for (const FractureFace &face : start)
+    for (const glm::vec3 &p : face.points)
+      for (const glm::vec3 &q : points)
+        size = std::max(size, glm::distance(p, q));
   std::vector<int> order(points.size());
   for (size_t i = 0; i < points.size(); ++i) {
     std::iota(order.begin(), order.end(), 0);
     std::sort(order.begin(), order.end(), [&](int a, int b) {
       return glm::distance(points[i], points[a]) < glm::distance(points[i], points[b]);
     });
-    Polyhedron cell = boxFaces(half);
-    float reach = glm::length(size);
+    Polyhedron cell = start;
+    float reach = size;
     for (int j : order) {
       if (j == static_cast<int>(i))
         continue;
       const glm::vec3 toward = points[j] - points[i];
       const float gap = glm::length(toward);
+      if (gap <= eps)
+        continue; // the same point twice: no plane between them
       if (0.5f * gap > reach)
         break;
       const glm::vec3 n = toward / gap;
@@ -215,8 +215,12 @@ Fracture fractureBox(glm::vec3 size, int count, uint32_t seed) {
     measure(piece);
     out.pieces.push_back(std::move(piece));
   }
+  return out;
+}
 
-  // Links: a cut face both pieces have.
+// Links: a cut face both pieces have (new faces only, neighbour >= 0).
+void linkCells(Fracture &out) {
+  out.links.clear();
   for (int a = 0; a < static_cast<int>(out.pieces.size()); ++a) {
     for (const FractureFace &face : out.pieces[a].faces) {
       const int b = face.neighbour;
@@ -238,7 +242,150 @@ Fracture fractureBox(glm::vec3 size, int count, uint32_t seed) {
       }
     }
   }
+}
+
+// A convex polygon's outward normal from its corners (Newell's method):
+// the corners are counter-clockwise seen from outside.
+glm::vec3 newellNormal(const std::vector<glm::vec3> &points) {
+  glm::vec3 n(0.0f);
+  for (size_t i = 0; i < points.size(); ++i) {
+    const glm::vec3 &a = points[i], &b = points[(i + 1) % points.size()];
+    n += glm::vec3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+  }
+  const float length = glm::length(n);
+  return length > 0.0f ? n / length : glm::vec3(0.0f, 1.0f, 0.0f);
+}
+
+bool insidePolyhedron(const std::vector<FractureFace> &faces, glm::vec3 p, float margin) {
+  for (const FractureFace &face : faces)
+    if (glm::dot(face.normal, p - face.points[0]) > -margin)
+      return false;
+  return true;
+}
+
+} // namespace
+
+Fracture fractureBox(glm::vec3 size, int count, uint32_t seed) {
+  count = std::max(count, 1);
+  const glm::vec3 half = 0.5f * size;
+  const float scale = std::max({size.x, size.y, size.z});
+  const float eps = 1e-5f * scale;
+
+  // The points, spread out a little so no piece is a sliver: each at least
+  // a quarter of the typical piece's size from the others, when possible.
+  Pcg32 random(seed);
+  const float spacing = 0.25f * std::cbrt(size.x * size.y * size.z / static_cast<float>(count));
+  std::vector<glm::vec3> points;
+  while (static_cast<int>(points.size()) < count) {
+    glm::vec3 p;
+    for (int attempt = 0; attempt < 30; ++attempt) {
+      p = (glm::vec3(random.unit(), random.unit(), random.unit()) * 2.0f - 1.0f) * half * 0.98f;
+      if (std::all_of(points.begin(), points.end(),
+                      [&](const glm::vec3 &q) { return glm::distance(p, q) >= spacing; }))
+        break;
+    }
+    points.push_back(p);
+  }
+  Fracture out = cutCells(boxFaces(half), points, eps);
+  linkCells(out);
   return out;
+}
+
+Fracture fractureConvex(const FracturePiece &piece, const std::vector<glm::vec3> &points,
+                        glm::vec3 axis, float stretch) {
+  // Its faces as they were, with earlier cuts marked as cuts onto nothing in
+  // this set, so only the new faces make links.
+  Polyhedron start = piece.faces;
+  float scale = 0.0f;
+  for (FractureFace &face : start) {
+    if (face.neighbour != kOutsideFace)
+      face.neighbour = kCutFace;
+    for (const glm::vec3 &p : face.points)
+      scale = std::max(scale, glm::length(p - piece.centre));
+  }
+  const float eps = 1e-5f * std::max(2.0f * scale, 1e-3f);
+  // Stretched cells: cut in a space squeezed along the axis, where distances
+  // along it count for less, then map back. Planes stay planes.
+  const bool stretched = stretch > 1.0f && glm::length(axis) > 0.5f;
+  const glm::vec3 a = stretched ? glm::normalize(axis) : glm::vec3(0.0f);
+  auto squeeze = [&](glm::vec3 p) { return p + a * (glm::dot(a, p) * (1.0f / stretch - 1.0f)); };
+  auto unsqueeze = [&](glm::vec3 p) { return p + a * (glm::dot(a, p) * (stretch - 1.0f)); };
+  std::vector<glm::vec3> cutPoints = points;
+  if (stretched) {
+    for (FractureFace &face : start) {
+      for (glm::vec3 &p : face.points)
+        p = squeeze(p);
+      face.normal = newellNormal(face.points);
+    }
+    for (glm::vec3 &p : cutPoints)
+      p = squeeze(p);
+  }
+  Fracture out = cutCells(start, cutPoints, eps);
+  if (stretched)
+    for (FracturePiece &p : out.pieces) {
+      for (FractureFace &face : p.faces) {
+        for (glm::vec3 &q : face.points)
+          q = unsqueeze(q);
+        face.normal = newellNormal(face.points);
+      }
+      measure(p);
+    }
+  linkCells(out);
+  return out;
+}
+
+std::vector<glm::vec3> pointsAround(const FracturePiece &piece, glm::vec3 hit, glm::vec3 push,
+                                    int count, FracturePattern pattern, uint32_t seed) {
+  std::vector<glm::vec3> points;
+  if (pattern == FracturePattern::None || count < 2 || piece.faces.empty())
+    return points;
+  Pcg32 random(seed * 2654435761u + 17u);
+  float reach = 0.0f;
+  for (const FractureFace &face : piece.faces)
+    for (const glm::vec3 &p : face.points)
+      reach = std::max(reach, glm::distance(p, hit));
+  const float margin = 1e-4f * std::max(reach, 1e-3f);
+  const float spacing = 0.15f * std::cbrt(std::max(piece.volume, 1e-9f) / static_cast<float>(count));
+  auto accept = [&](glm::vec3 p) {
+    if (!insidePolyhedron(piece.faces, p, margin))
+      return false;
+    for (const glm::vec3 &q : points)
+      if (glm::distance(p, q) < spacing)
+        return false;
+    points.push_back(p);
+    return true;
+  };
+  auto direction = [&] {
+    // Uniform on the sphere.
+    const float z = random.unit() * 2.0f - 1.0f, t = random.unit() * 6.2831853f;
+    const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+    return glm::vec3(r * std::cos(t), r * std::sin(t), z);
+  };
+  if (pattern == FracturePattern::Shards) {
+    // Rings around the hit across the face it was hit on, just under it.
+    const glm::vec3 n = glm::length(push) > 0.0f ? glm::normalize(push) : glm::vec3(0, -1, 0);
+    const glm::vec3 helper = std::fabs(n.x) < 0.9f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+    const glm::vec3 u = glm::normalize(glm::cross(helper, n)), v = glm::cross(n, u);
+    const float rings[] = {0.12f, 0.35f, 0.7f};
+    const int perRing = std::max(2, count / 3);
+    for (float ring : rings)
+      for (int k = 0; k < perRing && static_cast<int>(points.size()) < count; ++k) {
+        const float angle = (k + 0.3f * random.unit()) * 6.2831853f / perRing;
+        const float r = reach * ring * (0.85f + 0.3f * random.unit());
+        for (int attempt = 0; attempt < 8; ++attempt) {
+          const float depth = (0.02f + 0.03f * random.unit()) * reach;
+          if (accept(hit + (u * std::cos(angle) + v * std::sin(angle)) * r + n * depth))
+            break;
+        }
+      }
+  }
+  // Clustered (and what Shards couldn't place): denser near the hit, r
+  // growing as the square of a uniform number.
+  for (int attempt = 0; static_cast<int>(points.size()) < count && attempt < count * 60; ++attempt) {
+    const float u = random.unit();
+    accept(hit + direction() * (reach * u * u));
+  }
+  return points;
 }
 
 MeshData makePieceMesh(const FracturePiece &piece, glm::vec3 outside, glm::vec3 inside) {
@@ -250,7 +397,7 @@ MeshData makePieceMesh(const FracturePiece &piece, glm::vec3 outside, glm::vec3 
     const glm::vec3 helper = std::fabs(n.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
     const glm::vec3 u = glm::normalize(glm::cross(helper, n));
     const glm::vec3 v = glm::cross(n, u);
-    const glm::vec3 colour = face.neighbour < 0 ? outside : inside;
+    const glm::vec3 colour = face.neighbour == kOutsideFace ? outside : inside;
     const uint32_t first = static_cast<uint32_t>(mesh.vertices.size());
     for (const glm::vec3 &p : face.points)
       mesh.vertices.push_back({p, colour, glm::vec2(glm::dot(p, u), -glm::dot(p, v)), n, u, -v});
@@ -259,4 +406,53 @@ MeshData makePieceMesh(const FracturePiece &piece, glm::vec3 outside, glm::vec3 
         mesh.indices.push_back(first + k);
   }
   return mesh;
+}
+
+MeshData makeRubbleMound(uint32_t seed, glm::vec3 colour) {
+  // Rings of a paraboloid, every point but the rim's raised or lowered a
+  // little, so it reads as loose stuff rather than a smooth bump.
+  constexpr int kRings = 5, kSegments = 14;
+  Pcg32 random(seed + 1u);
+  MeshData mesh;
+  std::vector<glm::vec3> grid;
+  grid.push_back(glm::vec3(0.0f, kRubbleHeight * (0.9f + 0.2f * random.unit()), 0.0f));
+  for (int r = 1; r <= kRings; ++r)
+    for (int s = 0; s < kSegments; ++s) {
+      const float t = static_cast<float>(r) / kRings;
+      const float angle = (s + 0.4f * random.unit()) * 6.2831853f / kSegments;
+      const float radius = r == kRings ? 1.0f : t * (0.92f + 0.12f * random.unit());
+      float height = kRubbleHeight * (1.0f - radius * radius);
+      if (r < kRings)
+        height *= 0.8f + 0.4f * random.unit();
+      grid.push_back(glm::vec3(std::cos(angle) * radius, height, std::sin(angle) * radius));
+    }
+  auto at = [&](int ring, int s) { return ring == 0 ? 0 : 1 + (ring - 1) * kSegments + (s % kSegments); };
+  // Flat-shaded triangles: each its own vertices and normal, like broken stuff.
+  auto triangle = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+    glm::vec3 n = glm::cross(b - a, c - a);
+    if (n.y < 0.0f) {
+      std::swap(b, c);
+      n = -n;
+    }
+    n = glm::normalize(n);
+    const glm::vec3 u = glm::normalize(glm::cross(glm::vec3(0, 0, 1), n));
+    const glm::vec3 v = glm::cross(n, u);
+    const uint32_t first = static_cast<uint32_t>(mesh.vertices.size());
+    for (const glm::vec3 &p : {a, b, c})
+      mesh.vertices.push_back({p, colour, glm::vec2(p.x, p.z), n, u, -v});
+    for (uint32_t k = 0; k < 3; ++k)
+      mesh.indices.push_back(first + k);
+  };
+  for (int s = 0; s < kSegments; ++s)
+    triangle(grid[0], grid[at(1, s + 1)], grid[at(1, s)]);
+  for (int r = 1; r < kRings; ++r)
+    for (int s = 0; s < kSegments; ++s) {
+      triangle(grid[at(r, s)], grid[at(r, s + 1)], grid[at(r + 1, s + 1)]);
+      triangle(grid[at(r, s)], grid[at(r + 1, s + 1)], grid[at(r + 1, s)]);
+    }
+  return mesh;
+}
+
+float rubbleRadius(float volume) {
+  return std::cbrt(std::max(volume, 0.0f) * 2.0f / (3.14159265f * kRubbleHeight));
 }

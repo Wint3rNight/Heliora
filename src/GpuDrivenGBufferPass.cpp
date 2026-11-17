@@ -122,6 +122,29 @@ void GpuDrivenGBufferPass::syncGeometry() {
   VkDevice dev = device->getLogicalDevice();
   AllocatedBuffer vertexStaging;
   AllocatedBuffer indexStaging;
+  if (gUploadBatch) {
+    // With the rest of the batch, which makes it visible and keeps the
+    // staging buffers until the GPU is done.
+    if (vertexBytes > 0) {
+      createBuffer(device->getAllocator(), vertexBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_AUTO, RENDER_UPLOAD_ALLOCATION_FLAGS, &vertexStaging);
+      uploadToAllocation(device->getAllocator(), vertexStaging.getAllocation(),
+                         staticVertices.data() + uploadedVertexCount, vertexBytes);
+      gUploadBatch->copy(std::move(vertexStaging), staticVertexBuffer.get(), vertexBytes,
+                         vertexOffset);
+    }
+    if (indexBytes > 0) {
+      createBuffer(device->getAllocator(), indexBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_AUTO, RENDER_UPLOAD_ALLOCATION_FLAGS, &indexStaging);
+      uploadToAllocation(device->getAllocator(), indexStaging.getAllocation(),
+                         staticIndices.data() + uploadedIndexCount, indexBytes);
+      gUploadBatch->copy(std::move(indexStaging), staticIndexBuffer.get(), indexBytes,
+                         indexOffset);
+    }
+    uploadedVertexCount = staticVertices.size();
+    uploadedIndexCount = staticIndices.size();
+    return;
+  }
   VkCommandBuffer cmd = beginCommandBuffer(dev, device->getGraphicsCommandPool());
   if (vertexBytes > 0) {
     createBuffer(device->getAllocator(), vertexBytes,
@@ -162,6 +185,15 @@ void GpuDrivenGBufferPass::syncGeometry() {
 void GpuDrivenGBufferPass::registerModelGeometry(int modelId,
                                                  ModelManager &modelManager) {
   if (appendModelGeometry(modelId, modelManager))
+    syncGeometry();
+}
+
+void GpuDrivenGBufferPass::registerModelGeometries(const std::vector<int> &modelIds,
+                                                   ModelManager &modelManager) {
+  bool changed = false;
+  for (int id : modelIds)
+    changed = appendModelGeometry(id, modelManager) || changed;
+  if (changed)
     syncGeometry();
 }
 

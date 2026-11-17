@@ -63,14 +63,18 @@ struct PhysicsBodyDesc {
 };
 
 // Something hit a body that reports impacts: where, the contact normal (out
-// of the body), and the impulse (N s): the closing speed along the normal
-// times the pair's reduced mass.
+// of the body), and the impulse (N s): how fast they came together (the
+// whole relative speed unless it only grazes) times the pair's reduced mass.
 struct PhysicsImpact {
   PhysicsBodyId body;
   uint64_t userData = 0; // the body's
   glm::vec3 point{0.0f};
   glm::vec3 normal{0.0f};
   float impulse = 0.0f;
+  // What hit it, and that body's velocity just before the contact (the
+  // solver may since have stopped or bounced it).
+  PhysicsBodyId other;
+  glm::vec3 otherVelocity{0.0f};
 };
 
 struct PhysicsPose {
@@ -221,6 +225,8 @@ public:
   // In kg. 0 for static bodies, which never move.
   float mass(PhysicsBodyId id) const;
   glm::vec3 linearVelocity(PhysicsBodyId id) const;
+  // Sets a moving body's velocity and wakes it; static bodies ignore it.
+  void setLinearVelocity(PhysicsBodyId id, glm::vec3 velocity);
   glm::vec3 angularVelocity(PhysicsBodyId id) const; // radians/s
 
   // New contacts on bodies that report impacts since the last call, closing

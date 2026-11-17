@@ -306,7 +306,14 @@ public:
       point += manifold.GetWorldSpaceContactPointOn1(i);
     point /= static_cast<float>(manifold.mRelativeContactPointsOn1.size());
     const JPH::Vec3 normal = manifold.mWorldSpaceNormal; // from one towards two
-    const float closing = (one.GetPointVelocity(point) - two.GetPointVelocity(point)).Dot(normal);
+    // How fast they came together: the whole relative speed when it heads
+    // into the contact at more than a shallow angle. The normal alone can
+    // come out tilted where a compound's pieces meet (their hulls' rounded
+    // edges), which would count a straight hit as a glancing one.
+    const JPH::Vec3 relative = one.GetPointVelocity(point) - two.GetPointVelocity(point);
+    const float along = relative.Dot(normal);
+    const float speed = relative.Length();
+    const float closing = along > 0.2f * speed ? speed : along;
     const float inverseMass =
         (one.IsDynamic() ? one.GetMotionProperties()->GetInverseMass() : 0.0f) +
         (two.IsDynamic() ? two.GetMotionProperties()->GetInverseMass() : 0.0f);
@@ -319,12 +326,14 @@ public:
       return;
     const glm::vec3 at = toGlm(point);
     std::lock_guard lock(mutex);
+    const PhysicsBodyId oneId{one.GetID().GetIndexAndSequenceNumber()};
+    const PhysicsBodyId twoId{two.GetID().GetIndexAndSequenceNumber()};
     if (reportOne)
-      impacts.push_back({PhysicsBodyId{one.GetID().GetIndexAndSequenceNumber()},
-                         (*userData)[one.GetID().GetIndex()], at, toGlm(normal), impulse});
+      impacts.push_back({oneId, (*userData)[one.GetID().GetIndex()], at, toGlm(normal), impulse,
+                         twoId, toGlm(two.GetLinearVelocity())});
     if (reportTwo)
-      impacts.push_back({PhysicsBodyId{two.GetID().GetIndexAndSequenceNumber()},
-                         (*userData)[two.GetID().GetIndex()], at, -toGlm(normal), impulse});
+      impacts.push_back({twoId, (*userData)[two.GetID().GetIndex()], at, -toGlm(normal), impulse,
+                         oneId, toGlm(one.GetLinearVelocity())});
   }
 };
 
@@ -630,6 +639,16 @@ glm::vec3 PhysicsWorld::linearVelocity(PhysicsBodyId id) const {
 glm::vec3 PhysicsWorld::angularVelocity(PhysicsBodyId id) const {
   JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id.value));
   return lock.Succeeded() ? toGlm(lock.GetBody().GetAngularVelocity()) : glm::vec3(0.0f);
+}
+
+void PhysicsWorld::setLinearVelocity(PhysicsBodyId id, glm::vec3 velocity) {
+  JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
+  const JPH::BodyID bodyId(id.value);
+  if (!id.isValid() || !bodies.IsAdded(bodyId) ||
+      bodies.GetMotionType(bodyId) != JPH::EMotionType::Dynamic)
+    return;
+  bodies.SetLinearVelocity(bodyId, toJolt(velocity));
+  bodies.ActivateBody(bodyId);
 }
 
 std::vector<PhysicsImpact> PhysicsWorld::takeImpacts() {

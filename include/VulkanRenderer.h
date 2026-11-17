@@ -467,21 +467,47 @@ private:
     int firstPiece = 0;
     float strength = kDefaultBreakStrength;
     bool moving = false; // a dynamic body, never anchored
+    float volume = 0.0f;
+    float density = 1000.0f; // kg/m^3, for its chunks' masses
+    FracturePattern pattern = FracturePattern::Clustered;
+    glm::vec3 grain{1.0f, 0.0f, 0.0f}; // its longest side, in its own space
+    glm::vec3 colour{0.8f};
   };
   struct BreakPiece {
     int object = 0; // into breakables
-    int index = 0;  // into its fracture's pieces
+    // Its shape in its object's space: one of the first cut's pieces, or a
+    // piece cut from one while playing.
+    std::shared_ptr<const FracturePiece> shape;
     SceneNode *node = nullptr;
-    int body = -1;  // into breakBodies
+    int body = -1; // into breakBodies
     // Its mesh's frame (the object's space) inside its body's frame.
     glm::vec3 localPosition{0.0f};
     glm::quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
     bool anchor = false; // rests on something that never breaks
+    bool alive = true;   // false once cut again or turned to rubble
   };
   struct BreakBody {
     PhysicsBodyId id; // invalid once replaced; indices stay
     std::vector<int> pieces;
     bool fixed = false; // static
+    double madeAt = 0.0; // playSeconds, for turning small pieces to rubble
+  };
+  // A heap of rubble on a half-metre patch of ground (part f).
+  struct RubbleHeap {
+    glm::vec3 base{0.0f};
+    float volume = 0.0f;
+    glm::vec3 colour{0.0f}; // volume weighted
+    SceneNode *node = nullptr;
+    PhysicsBodyId body;
+    float bodyRadius = 0.0f; // the radius its body was made at
+    uint32_t seed = 0;
+  };
+  // A piece queued to be cut where it was hit, in its own space.
+  struct PendingSplit {
+    int piece = 0;
+    glm::vec3 hit{0.0f};
+    glm::vec3 push{0.0f};
+    float impulse = 0.0f;
   };
   std::vector<Breakable> breakables;
   std::vector<BreakPiece> breakPieces;
@@ -490,26 +516,43 @@ private:
   std::vector<glm::vec3> breakLinkPoints; // in piece a's mesh frame
   std::vector<std::vector<int>> pieceLinks; // by piece, its links
   std::map<std::string, std::shared_ptr<const Fracture>> fractures; // cut once each
+  std::map<std::pair<int, int>, RubbleHeap> rubble; // by half-metre patch
+  std::shared_ptr<PhysicsMeshParts> rubbleParts; // the unit mound, for heaps' bodies
+  std::vector<PendingSplit> pendingSplits;
+  // Cuts' uploads the GPU may still be doing; dropped once their fence says
+  // it's done (UploadBatch).
+  std::vector<std::unique_ptr<UploadBatch>> uploadsInFlight;
+  uint32_t playSeed = 0;     // drawn at every Play: no two breaks alike
+  uint32_t splitsMade = 0;   // for each cut's own seed
+  int runtimePieces = 0;     // pieces cut while playing, against the budget
   bool breakablesDirty = false; // rebuilt at the top of the next frame
   bool breakGraphReady = false; // the links across objects and anchors, on Play
   // Every breakable from the scene, intact. The GPU must be idle.
   void rebuildBreakables();
   void clearBreakables();
   void prepareBreakGraph();
-  // After the physics steps: hits on breakable bodies break links, and
-  // groups that changed get new bodies.
+  // After the physics steps: hits on breakable bodies break links and cut
+  // pieces, groups that changed get new bodies, small settled pieces turn
+  // to rubble.
   void handleImpacts();
-  // A hit that broke links this frame: freed pieces near it fly off.
+  // A hit that broke links this frame: freed pieces near it share it, and
+  // what hit carries on with the rest.
   struct BreakHit {
     glm::vec3 point{0.0f};
     glm::vec3 push{0.0f}; // into the object, unit
     float impulse = 0.0f;
+    PhysicsBodyId other;
+    glm::vec3 otherVelocity{0.0f};
   };
   void regroupBreakables(const std::vector<BreakHit> &hits);
+  void splitPiece(const PendingSplit &split);
+  void settleRubble();
+  void addRubble(glm::vec3 where, float volume, glm::vec3 colour);
+  int pieceModel(const Breakable &object, const FracturePiece &shape, const std::string &key);
+  bool restsOnFixed(const PlacedPiece &piece) const;
   PhysicsPose pieceWorld(const BreakPiece &piece) const;
   int addBreakBody(const std::vector<int> &pieces, const std::vector<PhysicsPose> &worlds,
-                   bool fixed, glm::vec3 velocity, glm::vec3 spin,
-                   const std::vector<BreakHit> &hits = {});
+                   bool fixed, glm::vec3 velocity, glm::vec3 spin);
   void poseBreakBody(const BreakBody &body, const PhysicsPose &pose);
   void placeBreakable(SceneEntryRef ref);
   void appendPieceLines(SceneEntryRef ref);

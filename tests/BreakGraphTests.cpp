@@ -184,3 +184,62 @@ TEST(broken_links_stay_broken) {
     l.broken = true;
   CHECK(brokenCount(links, 1e6f, glm::vec3(0.0f), f) == 0);
 }
+
+TEST(a_lone_piece_on_the_ground_moves_and_a_big_remainder_stays) {
+  // Object 0 is 10 m^3. An anchored group holding 4 m^3 of it is still the
+  // structure; an anchored piece of 0.3 m^3 is just lying there.
+  const std::vector<int> objectOf = {0, 0, 0, 1};
+  const std::vector<float> volume = {3.0f, 1.0f, 0.3f, 0.5f};
+  const std::vector<float> objectVolume = {10.0f, 0.5f};
+  CHECK(staysPut({{0, 1}, true}, objectOf, volume, objectVolume));
+  CHECK(!staysPut({{2}, true}, objectOf, volume, objectVolume));
+  CHECK(!staysPut({{0, 1}, false}, objectOf, volume, objectVolume)); // nothing holds it
+  CHECK(staysPut({{3}, true}, objectOf, volume, objectVolume)); // all of a small object
+}
+
+TEST(a_hit_is_shared_between_what_it_frees) {
+  const std::vector<float> shares = shareHit(100.0f, {0.0f, 0.5f, 3.0f});
+  CHECK(shares.size() == 3);
+  CHECK_NEAR(shares[0] + shares[1] + shares[2], 100.0, 1e-3);
+  CHECK(shares[0] > shares[1]);
+  CHECK(shares[1] > shares[2]);
+  CHECK(shareHit(50.0f, {}).empty());
+}
+
+TEST(link_strengths_vary_within_a_quarter_and_repeat) {
+  std::vector<BreakLink> a(50, BreakLink{0, 1, 100.0f});
+  std::vector<BreakLink> b = a, c = a;
+  varyStrengths(a, 7, 0.25f);
+  varyStrengths(b, 7, 0.25f);
+  varyStrengths(c, 8, 0.25f);
+  bool same = true, differs = false, spread = false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    CHECK(a[i].strength >= 75.0f && a[i].strength <= 125.0f);
+    same = same && a[i].strength == b[i].strength;
+    differs = differs || a[i].strength != c[i].strength;
+    spread = spread || std::fabs(a[i].strength - 100.0f) > 10.0f;
+  }
+  CHECK(same);
+  CHECK(differs);
+  CHECK(spread);
+}
+
+TEST(bigger_pieces_take_more_to_split) {
+  // As strong as its cross-section: eight times the volume, four times the hit.
+  CHECK_NEAR(splitImpulse(8.0f, 100.0f) / splitImpulse(1.0f, 100.0f), 4.0, 1e-4);
+  CHECK_NEAR(splitImpulse(1.0f, 100.0f), 100.0, 1e-4);
+}
+
+TEST(two_pieces_touch_through_any_face) {
+  // Pieces cut while playing link to their old piece's neighbours through
+  // faces that were cut faces, so any face counts here.
+  const Fracture f = fractureBox(glm::vec3(1.0f), 6, 2);
+  const FractureLink &link = f.links.front();
+  const PlacedPiece a = placePiece(f.pieces[link.a], glm::mat4(1.0f), 0);
+  const PlacedPiece b = placePiece(f.pieces[link.b], glm::mat4(1.0f), 0);
+  glm::vec3 centre(0.0f);
+  CHECK_NEAR(touchArea(a, b, 0.01f, centre), link.area, 1e-4);
+  CHECK_NEAR(glm::distance(centre, link.centre), 0.0, 1e-3);
+  const PlacedPiece far = placePiece(f.pieces[link.b], glm::translate(glm::mat4(1.0f), glm::vec3(0, 3, 0)), 0);
+  CHECK(touchArea(a, far, 0.01f, centre) == 0.0f);
+}

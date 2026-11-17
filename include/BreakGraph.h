@@ -72,6 +72,30 @@ struct PieceTouch {
 };
 std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, float tolerance);
 
+// How much two pieces touch through any of their faces (opposite normals,
+// within tolerance apart), and the contact's middle; 0 if they don't.
+float touchArea(const PlacedPiece &a, const PlacedPiece &b, float tolerance, glm::vec3 &centre);
+
 // Whether an outside face of the piece faces down at this height (within
 // tolerance): it rests on a floor there.
 bool restsOn(const PlacedPiece &piece, float height, float tolerance);
+
+// Whether an anchored group stays where it is as part of the structure: it
+// holds at least a quarter of the volume of an object it's part of. A
+// smaller one (a piece lying on the ground, a stub of wall) moves, and
+// gravity keeps it there. A group with no anchor always moves.
+constexpr float kStructuralShare = 0.25f;
+bool staysPut(const BreakGroup &group, const std::vector<int> &objectOf,
+              const std::vector<float> &volume, const std::vector<float> &objectVolume);
+
+// A hit's momentum split between the groups it frees, by how far each is
+// from the hit (as links feel it), adding up to momentum.
+std::vector<float> shareHit(float momentum, const std::vector<float> &distances);
+
+// Every link's strength changed by up to amount either way (0.25 for a
+// quarter), from the seed: the same structure breaks differently each Play.
+void varyStrengths(std::vector<BreakLink> &links, uint32_t seed, float amount);
+
+// The impulse it takes to split a piece where it's hit: as strong as its
+// cross-section, volume^(2/3) times strengthPerArea.
+float splitImpulse(float volume, float strengthPerArea);

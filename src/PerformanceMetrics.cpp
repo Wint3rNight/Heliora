@@ -188,7 +188,7 @@ void PerformanceMetrics::endFrame() {
                  "submits={} binds={} dynState={} "
                  "shadow={:.2f} ptShadow={:.2f} gbuf={:.2f} ssgi={:.2f} "
                  "lit={:.2f} bloom={:.2f} autoExp={:.2f} comp={:.2f} "
-                 "imgui={:.2f}",
+                 "imgui={:.2f} skin={:.3f}",
                  totalFrames, getAverageFrameTimeMs(), getAverageFps(),
                  lastDrawCalls, lastTriangles / 1000, lastQueueSubmits,
                  lastPipelineBinds, lastDynamicStateChanges,
@@ -200,7 +200,8 @@ void PerformanceMetrics::endFrame() {
                  lastPassGpuMs[(int)GpuPass::Bloom],
                  lastPassGpuMs[(int)GpuPass::AutoExposure],
                  lastPassGpuMs[(int)GpuPass::Composite],
-                 lastPassGpuMs[(int)GpuPass::ImGui]);
+                 lastPassGpuMs[(int)GpuPass::ImGui],
+                 lastPassGpuMs[(int)GpuPass::Skinning]);
 
     double cpuMs[NUM_CPU_PHASES] = {};
     for (int p = 0; p < NUM_CPU_PHASES; p++) {
@@ -211,14 +212,15 @@ void PerformanceMetrics::endFrame() {
     }
     spdlog::info("[perf] cpu mean ms: waitFence={:.3f} acquire={:.3f} "
                  "imageFence={:.3f} update={:.3f} record={:.3f} upload={:.3f} "
-                 "submit={:.3f} present={:.3f} physics={:.3f} ui={:.3f}",
+                 "submit={:.3f} present={:.3f} physics={:.3f} ui={:.3f} "
+                 "anim={:.3f}",
                  cpuMs[(int)CpuPhase::WaitFence],
                  cpuMs[(int)CpuPhase::Acquire],
                  cpuMs[(int)CpuPhase::ImageFence],
                  cpuMs[(int)CpuPhase::Update], cpuMs[(int)CpuPhase::Record],
                  cpuMs[(int)CpuPhase::Upload], cpuMs[(int)CpuPhase::Submit],
                  cpuMs[(int)CpuPhase::Present], cpuMs[(int)CpuPhase::Physics],
-                 cpuMs[(int)CpuPhase::Ui]);
+                 cpuMs[(int)CpuPhase::Ui], cpuMs[(int)CpuPhase::Animation]);
   }
 }
 
@@ -284,6 +286,7 @@ double PerformanceMetrics::getAverageCpuPhaseTimeMs(CpuPhase phase) const {
 
 double PerformanceMetrics::getCpuActiveTimeMs() const {
   return getCpuPhaseTimeMs(CpuPhase::Physics) +
+         getCpuPhaseTimeMs(CpuPhase::Animation) +
          getCpuPhaseTimeMs(CpuPhase::Ui) +
          getCpuPhaseTimeMs(CpuPhase::Update) +
          getCpuPhaseTimeMs(CpuPhase::Record) +
@@ -293,6 +296,7 @@ double PerformanceMetrics::getCpuActiveTimeMs() const {
 
 double PerformanceMetrics::getAverageCpuActiveTimeMs() const {
   return getAverageCpuPhaseTimeMs(CpuPhase::Physics) +
+         getAverageCpuPhaseTimeMs(CpuPhase::Animation) +
          getAverageCpuPhaseTimeMs(CpuPhase::Ui) +
          getAverageCpuPhaseTimeMs(CpuPhase::Update) +
          getAverageCpuPhaseTimeMs(CpuPhase::Record) +
@@ -364,6 +368,9 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("╠══════════════════════════════════════════════╣");
   if (gpuTimingAvailable) {
     spdlog::info("║  GPU Pass Timing (last / avg):               ║");
+    spdlog::info("║    Skinning:        {:>7.3f} / {:>7.3f} ms  ║",
+                 lastPassGpuMs[(int)GpuPass::Skinning],
+                 getAveragePassGpuTimeMs(GpuPass::Skinning));
     spdlog::info("║    Shadow:          {:>7.3f} / {:>7.3f} ms  ║",
                  lastPassGpuMs[(int)GpuPass::Shadow],
                  getAveragePassGpuTimeMs(GpuPass::Shadow));
@@ -425,6 +432,9 @@ void PerformanceMetrics::printReport(VmaAllocator allocator) const {
   spdlog::info("║    Physics:         {:>7.3f} / {:>7.3f} ms  ║",
                getCpuPhaseTimeMs(CpuPhase::Physics),
                getAverageCpuPhaseTimeMs(CpuPhase::Physics));
+  spdlog::info("║    Animation:       {:>7.3f} / {:>7.3f} ms  ║",
+               getCpuPhaseTimeMs(CpuPhase::Animation),
+               getAverageCpuPhaseTimeMs(CpuPhase::Animation));
   spdlog::info("║    Build UI:        {:>7.3f} / {:>7.3f} ms  ║",
                getCpuPhaseTimeMs(CpuPhase::Ui),
                getAverageCpuPhaseTimeMs(CpuPhase::Ui));

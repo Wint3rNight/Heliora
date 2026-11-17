@@ -1227,9 +1227,14 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   for (const PhysicsMovedPose &moved : physics->movedPoses(alpha))
     if (SceneNode *node = physicsLinks[moved.userData].node)
       node->setPose(moved.pose.position, moved.pose.rotation);
+  const auto beforePose = std::chrono::steady_clock::now();
   if (player)
     posePlayer(alpha, frameSeconds);
   const auto posed = std::chrono::steady_clock::now();
+  // Posing the character is its own phase, so physics doesn't include it.
+  const double animationMs =
+      std::chrono::duration<double, std::milli>(posed - beforePose).count();
+  metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Animation, animationMs);
 
   using Ms = std::chrono::duration<double, std::milli>;
   physicsLog.frames++;
@@ -1253,7 +1258,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       PerformanceMetrics::CpuPhase::Physics,
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start)
-          .count());
+              .count() -
+          animationMs);
 }
 
 SceneModelEntry VulkanRenderer::thrownBallEntry() {
@@ -3512,7 +3518,10 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
 
   metrics.resetGpuQueries(cmd);
 
-  // The character bent for this frame, before anything draws it.
+  // The character bent for this frame, before anything draws it. Timed
+  // every frame, character or not: an unwritten timestamp would hold back
+  // every pass's timing for the frame.
+  metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Skinning);
   if (player && characterModelId >= 0 && skinningPass.hasMesh())
     if (const MeshModel *character = modelManager.getModel(characterModelId);
         character && character->getMeshCount() > 0) {
@@ -3522,6 +3531,7 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
                           gpuDrivenGBufferPass.arenaVertexBuffer(),
                           gpuDrivenGBufferPass.arenaFirstVertex(mesh));
     }
+  metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Skinning);
 
   VkViewport viewport = {};
   viewport.width = static_cast<float>(sceneExtent.width);

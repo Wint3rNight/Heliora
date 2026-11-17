@@ -1918,8 +1918,9 @@ void ImGuiLayer::drawPerformanceTab(DebugUiContext &ui) {
                   PerformanceMetrics::GpuPass::AutoExposure),
               ui.metrics.getPassGpuTimeMs(
                   PerformanceMetrics::GpuPass::Composite));
-  ImGui::Text("ImGui: %.2f ms",
-              ui.metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::ImGui));
+  ImGui::Text("ImGui: %.2f | Skinning: %.3f ms",
+              ui.metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::ImGui),
+              ui.metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Skinning));
   ImGui::Text("GPU total: %.2f | avg %.2f ms",
               ui.metrics.getLastGpuTimeMs(), ui.metrics.getAverageGpuTimeMs());
   ImGui::Text("CPU wait/acq/pres: %.2f | %.2f | %.2f ms",
@@ -1934,6 +1935,8 @@ void ImGuiLayer::drawPerformanceTab(DebugUiContext &ui) {
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Update),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Record),
               ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Submit));
+  ImGui::Text("CPU animation: %.3f ms",
+              ui.metrics.getCpuPhaseTimeMs(PerformanceMetrics::CpuPhase::Animation));
   ImGui::Text("CPU active: %.2f | sync wait: %.2f ms",
               ui.metrics.getCpuActiveTimeMs(), ui.metrics.getCpuSyncWaitTimeMs());
   ImGui::Text("CPU measured: %.2f | avg %.2f ms",

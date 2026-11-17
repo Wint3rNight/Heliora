@@ -26,9 +26,10 @@ public:
     Bloom = 5,
     AutoExposure = 6,
     Composite = 7,
-    ImGui = 8
+    ImGui = 8,
+    Skinning = 9 // the character bent once a frame, before the G-buffer
   };
-  static constexpr int NUM_GPU_PASSES = 9;
+  static constexpr int NUM_GPU_PASSES = 10;
 
   enum class CpuPhase {
     WaitFence = 0,
@@ -39,10 +40,11 @@ public:
     Upload = 5,
     Submit = 6,
     Present = 7,
-    Physics = 8, // fixed steps plus copying moved poses into scene nodes
-    Ui = 9       // building the ImGui frame, before anything is recorded
+    Physics = 8,  // fixed steps plus copying moved poses into scene nodes
+    Ui = 9,       // building the ImGui frame, before anything is recorded
+    Animation = 10 // the character's animator, pose and skinning matrices
   };
-  static constexpr int NUM_CPU_PHASES = 10;
+  static constexpr int NUM_CPU_PHASES = 11;
 
   // Lifecycle
   void init(VkDevice device, VkPhysicalDevice physicalDevice,

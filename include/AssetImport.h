@@ -32,10 +32,11 @@ std::optional<ImportPlan> planModelImport(const std::filesystem::path &source,
 // Copies the files; false, with the reason, if one fails.
 bool runImport(const ImportPlan &plan, std::string &error);
 
-// A folder's subfolders (not hidden ones like .thumbnails) and model files,
-// names only, sorted.
+// A folder's subfolders (not hidden ones like .thumbnails), model files and
+// animation clips (.fbx, Mixamo's), names only, sorted.
 struct FolderListing {
   std::vector<std::string> folders;
   std::vector<std::string> models;
+  std::vector<std::string> clips;
 };
 FolderListing listFolder(const std::filesystem::path &folder);

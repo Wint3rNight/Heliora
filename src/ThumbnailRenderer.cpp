@@ -101,6 +101,20 @@ std::string picturePath(const std::string &folder, const std::string &key) {
 
 } // namespace
 
+std::vector<ThumbnailDraw> thumbnailDraws(const MeshModel &model) {
+  std::vector<ThumbnailDraw> draws;
+  for (size_t i = 0; i < model.getMeshCount(); ++i) {
+    const Mesh *mesh = model.getMesh(i);
+    if (!mesh || mesh->getIndexCount(0) == 0)
+      continue;
+    const Material &material = mesh->getMaterial();
+    draws.push_back({mesh->getVertexBuffer(), mesh->getIndexBuffer(0),
+                     static_cast<uint32_t>(mesh->getIndexCount(0)),
+                     static_cast<uint32_t>(material.albedoTextureId), material.alphaMasked});
+  }
+  return draws;
+}
+
 void ThumbnailRenderer::create(const VulkanDevice &device, VkPipelineCache cache,
                                VkDescriptorSetLayout bindlessLayout) {
   VkDevice dev = device.getLogicalDevice();
@@ -146,12 +160,16 @@ void ThumbnailRenderer::create(const VulkanDevice &device, VkPipelineCache cache
   subpass.colorAttachmentCount = 1;
   subpass.pColorAttachments = &colorRef;
   subpass.pDepthStencilAttachment = &depthRef;
-  // The last picture's copy out of the tile, and the depth clear, before
-  // this one draws; the drawing before this one's copy.
+  // The last picture's copy out of the tile (or the UI's read of the live
+  // image), and the depth clear, before this one draws; the drawing before
+  // this one's copy (or the UI's read). One set for both passes, so they
+  // stay compatible and share the pipeline: only their final layout
+  // differs.
   std::array<VkSubpassDependency, 2> deps = {};
   deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
   deps[0].dstSubpass = 0;
-  deps[0].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  deps[0].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
   deps[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
@@ -161,8 +179,8 @@ void ThumbnailRenderer::create(const VulkanDevice &device, VkPipelineCache cache
   deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
   deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  deps[1].dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-  deps[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  deps[1].dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
   VkRenderPassCreateInfo rp = {};
   rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
   rp.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -173,6 +191,27 @@ void ThumbnailRenderer::create(const VulkanDevice &device, VkPipelineCache cache
   rp.pDependencies = deps.data();
   if (vkCreateRenderPass(dev, &rp, nullptr, &renderPass) != VK_SUCCESS)
     throw std::runtime_error("Failed to create the thumbnail render pass");
+
+  // The live preview's pass: the same attachments, so the same pipeline
+  // works in it, but it ends with the picture ready to sample, and waits for
+  // the last frame's UI to have read it before clearing.
+  makeImage(device, kThumbnailSize, kColorFormat,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, liveImage, liveImageView);
+  attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  if (vkCreateRenderPass(dev, &rp, nullptr, &liveRenderPass) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create the live preview render pass");
+  const std::array<VkImageView, 2> liveViews = {liveImageView.get(), depthView.get()};
+  VkFramebufferCreateInfo liveFb = {};
+  liveFb.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+  liveFb.renderPass = liveRenderPass;
+  liveFb.attachmentCount = static_cast<uint32_t>(liveViews.size());
+  liveFb.pAttachments = liveViews.data();
+  liveFb.width = kThumbnailSize;
+  liveFb.height = kThumbnailSize;
+  liveFb.layers = 1;
+  if (vkCreateFramebuffer(dev, &liveFb, nullptr, &liveFramebuffer) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create the live preview framebuffer");
 
   const std::array<VkImageView, 2> views = {tileView.get(), depthView.get()};
   VkFramebufferCreateInfo fb = {};
@@ -286,6 +325,9 @@ void ThumbnailRenderer::create(const VulkanDevice &device, VkPipelineCache cache
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  barrier(cmd, liveImage.get(), VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   endAndSubmitCommandBuffer(dev, device.getGraphicsCommandPool(), device.getGraphicsQueue(), cmd);
 }
 
@@ -298,6 +340,14 @@ void ThumbnailRenderer::cleanup(VkDevice device) {
     vkDestroyFramebuffer(device, framebuffer, nullptr);
   if (renderPass)
     vkDestroyRenderPass(device, renderPass, nullptr);
+  if (liveFramebuffer)
+    vkDestroyFramebuffer(device, liveFramebuffer, nullptr);
+  if (liveRenderPass)
+    vkDestroyRenderPass(device, liveRenderPass, nullptr);
+  liveFramebuffer = VK_NULL_HANDLE;
+  liveRenderPass = VK_NULL_HANDLE;
+  liveImageView.reset();
+  liveImage.reset();
   pipeline = VK_NULL_HANDLE;
   layout = VK_NULL_HANDLE;
   framebuffer = VK_NULL_HANDLE;
@@ -388,21 +438,18 @@ bool ThumbnailRenderer::loadCached(const VulkanDevice &device, const std::string
   return true;
 }
 
-bool ThumbnailRenderer::render(const VulkanDevice &device, const std::string &key,
-                               const MeshModel &model, glm::vec3 boundsMin, glm::vec3 boundsMax,
-                               VkDescriptorSet bindlessSet, const std::string &folder) {
-  if (full())
-    return false;
-  VkDevice dev = device.getLogicalDevice();
-  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
-
+void ThumbnailRenderer::recordDraws(VkCommandBuffer cmd, VkRenderPass pass,
+                                    VkFramebuffer target,
+                                    const std::vector<ThumbnailDraw> &draws,
+                                    glm::vec3 boundsMin, glm::vec3 boundsMax,
+                                    VkDescriptorSet bindlessSet) {
   std::array<VkClearValue, 2> clears = {};
   clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
   clears[1].depthStencil = {1.0f, 0};
   VkRenderPassBeginInfo begin = {};
   begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-  begin.renderPass = renderPass;
-  begin.framebuffer = framebuffer;
+  begin.renderPass = pass;
+  begin.framebuffer = target;
   begin.renderArea = {{0, 0}, {kThumbnailSize, kThumbnailSize}};
   begin.clearValueCount = static_cast<uint32_t>(clears.size());
   begin.pClearValues = clears.data();
@@ -413,23 +460,37 @@ bool ThumbnailRenderer::render(const VulkanDevice &device, const std::string &ke
   ThumbnailPush push;
   push.viewProj = thumbnailViewProj(boundsMin, boundsMax);
   push.light = glm::vec4(thumbnailLightDirection(), 0.0f);
-  for (size_t i = 0; i < model.getMeshCount(); ++i) {
-    const Mesh *mesh = model.getMesh(i);
-    if (!mesh || mesh->getIndexCount(0) == 0)
-      continue;
-    const Material &material = mesh->getMaterial();
-    push.texture = glm::uvec4(static_cast<uint32_t>(material.albedoTextureId),
-                              material.alphaMasked ? 1u : 0u, 0u, 0u);
+  for (const ThumbnailDraw &draw : draws) {
+    push.texture = glm::uvec4(draw.albedo, draw.alphaMasked ? 1u : 0u, 0u, 0u);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof push, &push);
-    const VkBuffer vertices = mesh->getVertexBuffer();
     const VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vertices, &offset);
-    vkCmdBindIndexBuffer(cmd, mesh->getIndexBuffer(0), 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, static_cast<uint32_t>(mesh->getIndexCount(0)), 1, 0, 0, 0);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &draw.vertices, &offset);
+    vkCmdBindIndexBuffer(cmd, draw.indices, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, draw.indexCount, 1, 0, 0, 0);
   }
-  vkCmdEndRenderPass(cmd); // the tile is now ready to copy from
+  vkCmdEndRenderPass(cmd);
+}
 
+void ThumbnailRenderer::recordLive(VkCommandBuffer cmd, const std::vector<ThumbnailDraw> &draws,
+                                   glm::vec3 boundsMin, glm::vec3 boundsMax,
+                                   VkDescriptorSet bindlessSet) {
+  recordDraws(cmd, liveRenderPass, liveFramebuffer, draws, boundsMin, boundsMax, bindlessSet);
+}
+
+bool ThumbnailRenderer::render(const VulkanDevice &device, const std::string &key,
+                               const std::vector<ThumbnailDraw> &draws, glm::vec3 boundsMin,
+                               glm::vec3 boundsMax, VkDescriptorSet bindlessSet,
+                               const std::string &folder,
+                               const std::function<void(VkCommandBuffer)> &before) {
+  if (full())
+    return false;
+  VkDevice dev = device.getLogicalDevice();
+  VkCommandBuffer cmd = beginCommandBuffer(dev, device.getGraphicsCommandPool());
+  if (before)
+    before(cmd);
+  recordDraws(cmd, renderPass, framebuffer, draws, boundsMin, boundsMax, bindlessSet);
+  // The tile is now ready to copy from.
   const int cell = takeCell(key);
   copyIntoAtlas(cmd, cell, /*fromTile=*/true);
   VkBufferImageCopy out = {};

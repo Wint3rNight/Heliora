@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <map>
 #include <unordered_set>
 #include <vector>
 
@@ -240,6 +241,10 @@ private:
   // Made with the character at Play, gone with it.
   std::unique_ptr<CharacterAnimator> animator;
   SkinningPass skinningPass;
+  // Clip pictures pose a second copy of the character: its own skinning
+  // pass, into a vertex buffer of its own, drawn by the thumbnail renderer.
+  SkinningPass previewSkinning;
+  AllocatedBuffer previewVertices;
   void loadCharacter();
   std::array<RootMotion, 5> characterDodgePaths() const;
   void applyClipChange(ClipSlot slot);
@@ -331,6 +336,20 @@ private:
   std::string thumbnailFolder;
   ImTextureID thumbnailTexture = 0;
   std::vector<std::pair<std::string, SceneModelEntry>> thumbnailRequests;
+  std::vector<std::pair<std::string, std::string>> clipRequests; // key, clip file
+  // The clip under the mouse in a tile, playing live; clips read for
+  // previews, kept for a while.
+  ImTextureID liveTexture = 0;
+  std::string hoveredClip;
+  std::string liveClip;
+  double liveClipTime = 0.0;
+  std::vector<glm::mat4> liveSkinning;
+  std::map<std::string, CharacterClipData> previewClips;
+  std::string clipThumbnailKey(const std::string &file) const;
+  const CharacterClipData *previewClip(const std::string &file);
+  std::vector<ThumbnailDraw> characterPreviewDraws();
+  void prepareLivePreview();
+  std::chrono::steady_clock::time_point liveTick;
   std::unordered_set<std::string> thumbnailsFailed; // not asked again
   std::string thumbnailKeyFor(const SceneModelEntry &entry) const;
   void makeNextThumbnail();

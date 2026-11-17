@@ -234,6 +234,13 @@ struct DebugUiContext {
   const std::string *assetStatus = nullptr;
   ImTextureID thumbnailAtlas = 0;
   std::function<std::optional<glm::vec4>(const SceneModelEntry &)> thumbnail;
+  // Clips: a clip file's still in the atlas, the clip under the mouse (said
+  // each frame it's hovered), and the live preview image with the clip it
+  // shows.
+  std::function<std::optional<glm::vec4>(const std::string &)> clipThumbnail;
+  std::function<void(const std::string &)> onClipHover;
+  ImTextureID livePreview = 0;
+  const std::string *livePreviewClip = nullptr;
   std::function<void()> onSpawnPlayerStart;
   std::function<void()> onRescanModels;
 
@@ -344,7 +351,22 @@ private:
   void drawAssetFolderTree(const std::string &folder);
   const FolderListing &listingOf(const std::string &folder);
   void drawImportPicker(DebugUiContext &ui);
-  void drawClipsSection(CharacterPanel &panel);
+  void drawClipsSection(DebugUiContext &ui, CharacterPanel &panel);
+  // A tile in the Assets panel or the clip picker: a shape or model file
+  // (entry), or an animation clip (clip, the file).
+  struct AssetTile {
+    std::string label;
+    std::string tooltip;
+    SceneModelEntry entry;
+    std::string clip;
+    bool usable = true;
+  };
+  // Draws tiles in rows, pictures where there are some, the hovered clip
+  // playing; placing lets models be dragged in or double-clicked. The tile
+  // clicked this frame, if any.
+  std::optional<int> drawAssetTiles(DebugUiContext &ui, const std::vector<AssetTile> &tiles,
+                                    bool placing, const std::string &chosenClip = {});
+  std::optional<ClipSlot> clipPickerSlot; // the move the clip picker chooses for
   void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);

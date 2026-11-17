@@ -244,6 +244,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //    history, the composite's, the G-buffer, the GPU-driven pass's HZB,
     //    auto-exposure, and the descriptor sets that point at them.
     skinningPass.create(device, pipelineCache.get());
+    previewSkinning.create(device, pipelineCache.get());
     debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
                          pipelineCache.get());
     createSceneTargets();
@@ -330,6 +331,7 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     // The Assets panel's pictures, cached next to the scenes.
     thumbnails.create(device, pipelineCache.get(), descriptorManager.getBindlessLayout());
     thumbnailTexture = imguiLayer.addTexture(thumbnails.atlasView());
+    liveTexture = imguiLayer.addTexture(thumbnails.liveView());
     thumbnailFolder = std::filesystem::is_directory("Resources") ? "Resources/.thumbnails"
                                                                  : "../Resources/.thumbnails";
     imguiLayer.createFramebuffers(device.getLogicalDevice(),
@@ -983,8 +985,57 @@ std::string VulkanRenderer::thumbnailKeyFor(const SceneModelEntry &entry) const 
 // drawn (loading the model if it isn't loaded yet). The GPU waits first,
 // since the atlas changes layout while frames in flight may sample it.
 void VulkanRenderer::makeNextThumbnail() {
-  if (thumbnailRequests.empty() || thumbnails.full())
+  if (thumbnails.full())
     return;
+  if (thumbnailRequests.empty()) {
+    // A clip's picture: the character posed halfway through it, skinned
+    // into the preview buffer in the same command buffer that draws it.
+    if (clipRequests.empty() || characterModelId < 0 || !previewSkinning.hasMesh())
+      return;
+    const auto [key, file] = clipRequests.front();
+    clipRequests.erase(clipRequests.begin());
+    if (thumbnails.cellOf(key))
+      return;
+    vkDeviceWaitIdle(device.getLogicalDevice());
+    if (thumbnails.loadCached(device, key, thumbnailFolder))
+      return;
+    const CharacterClipData *clip = previewClip(file);
+    if (!clip) {
+      thumbnailsFailed.insert(key);
+      return;
+    }
+    const Skeleton &skeleton = characterAsset->skeleton;
+    Pose pose = bindPose(skeleton);
+    sampleClip(clip->clip, skeleton, 0.5f * clip->clip.duration, true, pose);
+    const std::vector<glm::mat4> model = modelSpace(skeleton, pose);
+    previewSkinning.updateMatrices(0, skinningMatrices(skeleton, model));
+    // Framed around where his joints are in this pose, plus some room for
+    // the body around them: a climb or a roll moves him off his standing
+    // spot.
+    glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+    for (size_t b = 0; b < skeleton.bones.size(); ++b)
+      if (skeleton.bones[b].name.rfind("mixamorig", 0) == 0) {
+        lo = glm::min(lo, glm::vec3(model[b][3]));
+        hi = glm::max(hi, glm::vec3(model[b][3]));
+      }
+    const float room =
+        0.12f * (characterAsset->boundsMax.y - characterAsset->boundsMin.y);
+    if (lo.x > hi.x) {
+      lo = characterAsset->boundsMin;
+      hi = characterAsset->boundsMax;
+    } else {
+      lo -= glm::vec3(room);
+      hi += glm::vec3(room);
+    }
+    if (!thumbnails.render(device, key, characterPreviewDraws(), lo, hi,
+                           descriptorManager.getBindlessSet(),
+                           thumbnailFolder, [&](VkCommandBuffer cmd) {
+                             previewSkinning.record(cmd, 0, previewVertices.get(),
+                                                    VK_NULL_HANDLE, -1);
+                           }))
+      thumbnailsFailed.insert(key);
+    return;
+  }
   const auto [key, entry] = thumbnailRequests.front();
   thumbnailRequests.erase(thumbnailRequests.begin());
   if (thumbnails.cellOf(key))
@@ -997,13 +1048,88 @@ void VulkanRenderer::makeNextThumbnail() {
     const MeshModel *model = modelManager.getModel(modelId);
     const std::optional<ModelManager::Bounds> bounds = modelManager.localBounds(modelId);
     if (!model || !bounds ||
-        !thumbnails.render(device, key, *model, bounds->min, bounds->max,
+        !thumbnails.render(device, key, thumbnailDraws(*model), bounds->min, bounds->max,
                            descriptorManager.getBindlessSet(), thumbnailFolder))
       thumbnailsFailed.insert(key);
   } catch (const std::exception &e) {
     spdlog::warn("No thumbnail for {}: {}", entry.shape ? "a shape" : entry.path, e.what());
     thumbnailsFailed.insert(key);
   }
+}
+
+// A clip's picture is cached under its file, size and date, like a model's.
+std::string VulkanRenderer::clipThumbnailKey(const std::string &file) const {
+  namespace fs = std::filesystem;
+  std::error_code error;
+  fs::path path(file);
+  if (!fs::exists(path, error))
+    path = fs::path("..") / file;
+  const uint64_t size = fs::file_size(path, error);
+  const auto modified = fs::last_write_time(path, error);
+  return thumbnailKey(file + "|clip", error ? 0 : size,
+                      error ? 0 : static_cast<int64_t>(modified.time_since_epoch().count()));
+}
+
+// A clip read onto the character's skeleton for a preview, in place (its
+// movement taken out), kept for the next time.
+const CharacterClipData *VulkanRenderer::previewClip(const std::string &file) {
+  if (const auto it = previewClips.find(file); it != previewClips.end())
+    return &it->second;
+  if (!characterAsset)
+    return nullptr;
+  CharacterClip entry;
+  entry.slot = ClipSlot::Idle; // looping: only the steady progress comes out
+  entry.file = file;
+  std::optional<CharacterClipData> data = importCharacterClip(entry, *characterAsset);
+  if (!data)
+    return nullptr;
+  if (previewClips.size() >= 32)
+    previewClips.erase(previewClips.begin());
+  return &previewClips.emplace(file, std::move(*data)).first->second;
+}
+
+// The character's draw, from the preview's own skinned vertices.
+std::vector<ThumbnailDraw> VulkanRenderer::characterPreviewDraws() {
+  std::vector<ThumbnailDraw> draws;
+  const MeshModel *model = modelManager.getModel(characterModelId);
+  if (!model || !previewVertices)
+    return draws;
+  for (ThumbnailDraw draw : thumbnailDraws(*model)) {
+    draw.vertices = previewVertices.get();
+    draws.push_back(draw);
+  }
+  return draws;
+}
+
+// The clip under the mouse plays, looping, at the real pace: its pose this
+// frame, for the frame's command buffer to skin and draw. Read here, not
+// while recording, since the first time means loading the file.
+void VulkanRenderer::prepareLivePreview() {
+  const auto now = std::chrono::steady_clock::now();
+  const float dt = liveTick == std::chrono::steady_clock::time_point{}
+                       ? 0.0f
+                       : std::min(std::chrono::duration<float>(now - liveTick).count(), 0.1f);
+  liveTick = now;
+  const std::string hovered = std::exchange(hoveredClip, {}); // asked again each frame
+  if (hovered.empty() || characterModelId < 0 || !characterAsset) {
+    liveClip.clear();
+    liveSkinning.clear();
+    return;
+  }
+  if (hovered != liveClip) {
+    liveClip = hovered;
+    liveClipTime = 0.0;
+  }
+  const CharacterClipData *clip = previewClip(liveClip);
+  if (!clip) {
+    liveSkinning.clear();
+    return;
+  }
+  liveClipTime += dt;
+  const Skeleton &skeleton = characterAsset->skeleton;
+  Pose pose = bindPose(skeleton);
+  sampleClip(clip->clip, skeleton, static_cast<float>(liveClipTime), true, pose);
+  liveSkinning = skinningMatrices(skeleton, modelSpace(skeleton, pose));
 }
 
 // The dragged asset shown where it would land: a node of its own, with no
@@ -1488,6 +1614,11 @@ void VulkanRenderer::createCharacterModel() {
   gpuDrivenGBufferPass.registerModelGeometry(characterModelId, modelManager);
   skinningPass.setMesh(asset.mesh.vertices, asset.skin,
                        asset.skeleton.bones.size());
+  // The preview copy: the same mesh, bent into its own buffer.
+  previewSkinning.setMesh(asset.mesh.vertices, asset.skin, asset.skeleton.bones.size());
+  createBuffer(device.getAllocator(), sizeof(Vertex) * asset.mesh.vertices.size(),
+               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+               VMA_MEMORY_USAGE_AUTO, 0, &previewVertices);
 }
 
 float VulkanRenderer::characterScale() const {
@@ -2204,6 +2335,7 @@ void VulkanRenderer::applyPendingChanges() {
   }
   runPendingImports();
   makeNextThumbnail();
+  prepareLivePreview();
   // Dragging from the Assets panel.
   if (assetDrop) {
     vkDeviceWaitIdle(logicalDevice);
@@ -3675,6 +3807,8 @@ void VulkanRenderer::cleanup() {
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
   skinningPass.cleanup();
+  previewSkinning.cleanup();
+  previewVertices.reset();
   thumbnails.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
@@ -3827,6 +3961,14 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
                           gpuDrivenGBufferPass.arenaVertexBuffer(),
                           gpuDrivenGBufferPass.arenaFirstVertex(mesh));
     }
+  // The hovered clip's live preview, skinned into its own buffer and drawn
+  // into its own image, before the UI pass samples it.
+  if (!liveSkinning.empty() && previewSkinning.hasMesh() && previewVertices) {
+    previewSkinning.updateMatrices(currentFrame, liveSkinning);
+    previewSkinning.record(cmd, currentFrame, previewVertices.get(), VK_NULL_HANDLE, -1);
+    thumbnails.recordLive(cmd, characterPreviewDraws(), characterAsset->boundsMin,
+                          characterAsset->boundsMax, descriptorManager.getBindlessSet());
+  }
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Skinning);
 
   VkViewport viewport = {};
@@ -4655,6 +4797,21 @@ void VulkanRenderer::buildUi() {
   };
   ui.onAssetDragEnd = [this] { assetDragEnded = true; };
   ui.thumbnailAtlas = thumbnailTexture;
+  ui.livePreview = liveTexture;
+  ui.clipThumbnail = [this](const std::string &file) -> std::optional<glm::vec4> {
+    if (characterModelId < 0)
+      return std::nullopt;
+    const std::string key = clipThumbnailKey(file);
+    if (const std::optional<int> cell = thumbnails.cellOf(key))
+      return thumbnailAtlasRect(*cell);
+    const bool asked = std::ranges::any_of(
+        clipRequests, [&](const auto &request) { return request.first == key; });
+    if (!asked && !thumbnailsFailed.contains(key))
+      clipRequests.push_back({key, file});
+    return std::nullopt;
+  };
+  ui.onClipHover = [this](const std::string &file) { hoveredClip = file; };
+  ui.livePreviewClip = &liveClip;
   ui.thumbnail = [this](const SceneModelEntry &entry) -> std::optional<glm::vec4> {
     const std::string key = thumbnailKeyFor(entry);
     if (const std::optional<int> cell = thumbnails.cellOf(key))

@@ -121,9 +121,12 @@ FolderListing listFolder(const fs::path &folder) {
         listing.folders.push_back(name);
     } else if (it->is_regular_file(typeError) && isModel(it->path())) {
       listing.models.push_back(name);
+    } else if (it->is_regular_file(typeError) && it->path().extension() == ".fbx") {
+      listing.clips.push_back(name);
     }
   }
   std::ranges::sort(listing.folders);
   std::ranges::sort(listing.models);
+  std::ranges::sort(listing.clips);
   return listing;
 }

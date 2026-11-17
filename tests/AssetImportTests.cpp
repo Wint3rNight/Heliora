@@ -112,11 +112,14 @@ TEST(a_folder_lists_its_subfolders_and_models) {
   write(root / "crate.glb", "x");
   write(root / "barrel.gltf", "x");
   write(root / "notes.txt", "x");
+  write(root / "walking.fbx", "x"); // a clip
+  write(root / "idle.fbx", "x");
   write(root / ".thumbnails" / "a.png", "x");
   fs::create_directories(root / "empty");
   const FolderListing listing = listFolder(root);
   CHECK((listing.folders == std::vector<std::string>{"empty", "rock"}));
   CHECK((listing.models == std::vector<std::string>{"barrel.gltf", "crate.glb"}));
+  CHECK((listing.clips == std::vector<std::string>{"idle.fbx", "walking.fbx"}));
   CHECK(listFolder(root / "missing").folders.empty());
   fs::remove_all(root);
 }

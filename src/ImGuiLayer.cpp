@@ -267,8 +267,12 @@ ImTextureID ImGuiLayer::addTexture(VkImageView view) {
 bool ImGuiLayer::wantsTextInput() const {
   // Waiting for a key in the Controls tab counts too, and so does dragging
   // an asset: nothing else may take the key (Esc must cancel, not quit).
+  // An open popup (the clip picker, Import, a menu) too: Esc closes or
+  // cancels there.
   return rebinding.has_value() || assetDrag.has_value() ||
-         (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);
+         (ImGui::GetCurrentContext() &&
+          (ImGui::GetIO().WantTextInput ||
+           ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)));
 }
 
 bool ImGuiLayer::editInProgress() const {
@@ -1748,7 +1752,7 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
                                               : "No character loaded");
   }
   if (panel.characterLoaded && ImGui::CollapsingHeader("Clips"))
-    drawClipsSection(panel);
+    drawClipsSection(ui, panel);
   constexpr ImGuiSliderFlags kClamp = ImGuiSliderFlags_AlwaysClamp;
   auto slider = [&](const char *label, float *value, float lo, float hi,
                     const char *format) {
@@ -1874,7 +1878,7 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
 // Which clip each move plays: a file for each slot, picked from the clip
 // files next to the character file, with its start and end. Changes play at
 // once; Save character writes the .character file.
-void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
+void ImGuiLayer::drawClipsSection(DebugUiContext &ui, CharacterPanel &panel) {
   ImGui::TextDisabled("Save character (above) writes these too.");
   // Shorter names: the folder they all share, and Mixamo's "packs".
   auto shortName = [](const std::string &file) {
@@ -1898,32 +1902,10 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
     ImGui::SeparatorText(clipSlotName(slot));
     const CharacterClip *clip = panel.description.clip(slot);
     const std::string preview = clip ? shortName(clip->file) : std::string("(none)");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::BeginCombo("##file", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
-      if (ImGui::IsWindowAppearing())
-        ImGui::SetKeyboardFocusHere();
-      ImGui::SetNextItemWidth(-FLT_MIN);
-      ImGui::InputTextWithHint("##filter", "filter", clipFilter, sizeof clipFilter);
-      if (ImGui::Selectable("(none)", !clip)) {
-        panel.description.removeClip(slot);
-        panel.clipChanged = slot;
-      }
-      for (const std::string &file : panel.clipFiles) {
-        const std::string name = shortName(file);
-        if (!matches(name))
-          continue;
-        if (ImGui::Selectable(name.c_str(), clip && clip->file == file)) {
-          // Another clip: its own start and end, not the old one's.
-          CharacterClip chosen;
-          chosen.slot = slot;
-          chosen.file = file;
-          chosen.loop = defaultLoop(slot);
-          panel.description.setClip(chosen);
-          panel.clipChanged = slot;
-        }
-      }
-      ImGui::EndCombo();
-    }
+    // Picked from tiles of the clips, the hovered one playing on him.
+    if (ImGui::Button((preview + "##pick").c_str(), ImVec2(-FLT_MIN, 0.0f)))
+      clipPickerSlot = slot;
+    ImGui::SetItemTooltip("Pick from the clips, shown on the character");
     if (clip = panel.description.clip(slot); clip) {
       CharacterClip edited = *clip;
       bool changed = false;
@@ -1946,6 +1928,114 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
     }
     ImGui::PopID();
   }
+  if (clipPickerSlot && !ImGui::IsPopupOpen("Pick a clip"))
+    ImGui::OpenPopup("Pick a clip");
+  ImGui::SetNextWindowSize(ImVec2(760.0f, 540.0f), ImGuiCond_Appearing);
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                          ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Pick a clip")) {
+    const ClipSlot slot = clipPickerSlot.value_or(ClipSlot::Idle);
+    const CharacterClip *current = panel.description.clip(slot);
+    ImGui::Text("The clip for %s. Hover one to see it play.", clipSlotName(slot));
+    ImGui::SetNextItemWidth(260.0f);
+    ImGui::InputTextWithHint("##filter", "filter", clipFilter, sizeof clipFilter);
+    ImGui::SameLine();
+    if (ImGui::Button("None")) {
+      panel.description.removeClip(slot);
+      panel.clipChanged = slot;
+      clipPickerSlot.reset();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      clipPickerSlot.reset();
+      ImGui::CloseCurrentPopup();
+    }
+    std::vector<AssetTile> tiles;
+    for (const std::string &file : panel.clipFiles) {
+      const std::string name = shortName(file);
+      if (matches(name))
+        tiles.push_back({std::filesystem::path(file).stem().string(), name, {}, file, true});
+    }
+    ImGui::BeginChild("##clips", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
+    if (const std::optional<int> picked =
+            drawAssetTiles(ui, tiles, false, current ? current->file : std::string())) {
+      // Another clip: its own start and end, not the old one's.
+      CharacterClip chosen;
+      chosen.slot = slot;
+      chosen.file = tiles[*picked].clip;
+      chosen.loop = defaultLoop(slot);
+      panel.description.setClip(chosen);
+      panel.clipChanged = slot;
+      clipPickerSlot.reset();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndChild();
+    ImGui::EndPopup();
+  }
+}
+
+std::optional<int> ImGuiLayer::drawAssetTiles(DebugUiContext &ui,
+                                              const std::vector<AssetTile> &tiles, bool placing,
+                                              const std::string &chosenClip) {
+  constexpr float kSize = 96.0f;
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const int columns =
+      std::max(1, int((ImGui::GetContentRegionAvail().x + spacing) / (kSize + spacing)));
+  std::optional<int> clicked;
+  for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
+    const AssetTile &tile = tiles[i];
+    const bool isClip = !tile.clip.empty();
+    if (i % columns != 0)
+      ImGui::SameLine();
+    ImGui::PushID(i);
+    ImGui::BeginDisabled(!tile.usable);
+    // Its picture once there is one, asked for only while the tile shows.
+    std::optional<glm::vec4> picture;
+    if (ImGui::IsRectVisible(ImVec2(kSize, kSize)) && ui.thumbnailAtlas)
+      picture = isClip ? (ui.clipThumbnail ? ui.clipThumbnail(tile.clip) : std::nullopt)
+                       : (ui.thumbnail ? ui.thumbnail(tile.entry) : std::nullopt);
+    if (picture)
+      ImGui::ImageButton("##tile", ui.thumbnailAtlas, ImVec2(kSize, kSize),
+                         ImVec2(picture->x, picture->y), ImVec2(picture->z, picture->w));
+    else
+      ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
+    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    // The hovered clip plays, on the tile itself.
+    if (isClip && ImGui::IsItemHovered()) {
+      if (ui.onClipHover)
+        ui.onClipHover(tile.clip);
+      if (ui.livePreview && ui.livePreviewClip && *ui.livePreviewClip == tile.clip)
+        draw->AddImage(ui.livePreview, ImVec2(lo.x + 3.0f, lo.y + 3.0f),
+                       ImVec2(hi.x - 3.0f, hi.y - 3.0f));
+    }
+    if (picture) {
+      const float line = ImGui::GetTextLineHeight();
+      draw->AddRectFilled(ImVec2(lo.x, hi.y - line - 4.0f), hi, IM_COL32(0, 0, 0, 140));
+      draw->PushClipRect(lo, hi, true);
+      draw->AddText(ImVec2(lo.x + 4.0f, hi.y - line - 2.0f), IM_COL32(235, 235, 235, 255),
+                    tile.label.c_str());
+      draw->PopClipRect();
+    }
+    if (isClip && tile.clip == chosenClip)
+      draw->AddRect(lo, hi, IM_COL32(245, 211, 107, 255), 4.0f, 0, 2.0f);
+    if (ImGui::IsItemClicked())
+      clicked = i;
+    if (!isClip && placing && tile.usable && ImGui::IsItemHovered() &&
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ui.onSpawn)
+      ui.onSpawn(tile.entry);
+    if (!isClip && placing && tile.usable && ImGui::BeginDragDropSource()) {
+      ImGui::SetDragDropPayload("HELIORA_ASSET", &i, sizeof i);
+      ImGui::TextUnformatted(tile.label.c_str());
+      ImGui::EndDragDropSource();
+      assetDrag = tile.entry;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", tile.tooltip.c_str());
+    ImGui::PopID();
+  }
+  return clicked;
 }
 
 // Tiles for the things a scene can hold: drag one into the scene, or
@@ -1987,55 +2077,6 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
     ImGui::TextDisabled("%s", ui.assetStatus->c_str());
   drawImportPicker(ui);
 
-  struct Tile {
-    std::string label;
-    std::string tooltip;
-    SceneModelEntry entry;
-    bool usable = true;
-  };
-  auto drawTiles = [&](const std::vector<Tile> &tiles) {
-    constexpr float kSize = 96.0f;
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const int columns = std::max(
-        1, int((ImGui::GetContentRegionAvail().x + spacing) / (kSize + spacing)));
-    for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
-      const Tile &tile = tiles[i];
-      if (i % columns != 0)
-        ImGui::SameLine();
-      ImGui::PushID(i);
-      ImGui::BeginDisabled(!tile.usable);
-      // Its picture once there is one, with its name across the bottom.
-      const std::optional<glm::vec4> picture =
-          ui.thumbnail && ui.thumbnailAtlas ? ui.thumbnail(tile.entry) : std::nullopt;
-      if (picture) {
-        ImGui::ImageButton("##tile", ui.thumbnailAtlas, ImVec2(kSize, kSize),
-                           ImVec2(picture->x, picture->y), ImVec2(picture->z, picture->w));
-        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
-        const float line = ImGui::GetTextLineHeight();
-        ImDrawList *draw = ImGui::GetWindowDrawList();
-        draw->AddRectFilled(ImVec2(lo.x, hi.y - line - 4.0f), hi, IM_COL32(0, 0, 0, 140));
-        draw->PushClipRect(lo, hi, true);
-        draw->AddText(ImVec2(lo.x + 4.0f, hi.y - line - 2.0f), IM_COL32(235, 235, 235, 255),
-                      tile.label.c_str());
-        draw->PopClipRect();
-      } else {
-        ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
-      }
-      if (placing && tile.usable && ImGui::IsItemHovered() &&
-          ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ui.onSpawn)
-        ui.onSpawn(tile.entry);
-      if (placing && tile.usable && ImGui::BeginDragDropSource()) {
-        ImGui::SetDragDropPayload("HELIORA_ASSET", &i, sizeof i);
-        ImGui::TextUnformatted(tile.label.c_str());
-        ImGui::EndDragDropSource();
-        assetDrag = tile.entry;
-      }
-      ImGui::EndDisabled();
-      ImGui::SetItemTooltip("%s", tile.tooltip.c_str());
-      ImGui::PopID();
-    }
-  };
-
   // The folders on the left, Resources/ being the project's content (like
   // Unreal's Content folder), the chosen one's models on the right.
   ImGui::BeginChild("##folders", ImVec2(200.0f, 0.0f),
@@ -2055,10 +2096,10 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
     // A path the scene file couldn't read back (a '#') can't be added.
     const SceneModelEntry entry = newModelFileEntry(file);
     const std::optional<std::string> problem = problemWith(entry);
-    return Tile{std::filesystem::path(file).stem().string(), problem ? *problem : file, entry,
-                !problem};
+    return AssetTile{std::filesystem::path(file).stem().string(), problem ? *problem : file,
+                     entry, {}, !problem};
   };
-  std::vector<Tile> tiles;
+  std::vector<AssetTile> tiles;
   const std::string search = lower(assetSearch);
   const char *empty = "";
   if (!search.empty()) {
@@ -2072,15 +2113,20 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
          {std::pair{PrimitiveShape::Box, "Box"}, std::pair{PrimitiveShape::Sphere, "Sphere"},
           std::pair{PrimitiveShape::Capsule, "Capsule"},
           std::pair{PrimitiveShape::Plane, "Plane"}})
-      tiles.push_back({label, label, newShapeEntry(shape)});
+      tiles.push_back({label, label, newShapeEntry(shape), {}, true});
   } else {
     for (const std::string &name : listingOf(assetFolder).models)
       tiles.push_back(modelTile(assetFolder + "/" + name));
-    empty = "No models in this folder. Import some, or drop them on the window.";
+    // Animation clips: shown on the character, the hovered one playing.
+    for (const std::string &name : listingOf(assetFolder).clips) {
+      const std::string file = assetFolder + "/" + name;
+      tiles.push_back({std::filesystem::path(name).stem().string(), file, {}, file, true});
+    }
+    empty = "No models or clips in this folder. Import models, or drop them on the window.";
   }
   if (tiles.empty())
     ImGui::TextDisabled("%s", empty);
-  drawTiles(tiles);
+  drawAssetTiles(ui, tiles, placing);
   ImGui::EndChild();
 }
 
@@ -2130,6 +2176,8 @@ void ImGuiLayer::drawImportPicker(DebugUiContext &ui) {
     importChoice.clear();
   }
   ImGui::SetNextWindowSize(ImVec2(560.0f, 420.0f), ImGuiCond_Appearing);
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                          ImVec2(0.5f, 0.5f));
   if (!ImGui::BeginPopupModal("Import models"))
     return;
   ImGui::TextWrapped("%s", importFolder.string().c_str());

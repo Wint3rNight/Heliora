@@ -10,7 +10,7 @@ namespace {
 constexpr float kFov = 0.5235988f; // 30 degrees
 // Bump when the way pictures are drawn changes, so old cached ones are
 // left behind instead of reused.
-constexpr int kVersion = 1;
+constexpr int kVersion = 2;
 } // namespace
 
 glm::mat4 thumbnailViewProj(glm::vec3 boundsMin, glm::vec3 boundsMax) {

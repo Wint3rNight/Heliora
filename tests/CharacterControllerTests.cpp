@@ -3,6 +3,7 @@
 #include "TestRunner.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
@@ -393,6 +394,85 @@ TEST(crouch_slows_and_waits_for_headroom) {
   CHECK_NEAR(character.height(), 1.8, 1e-5);
 }
 
+// A dodge path 2 m ahead by 0.5 s and 3 m by 1 s, slowing down.
+RootMotion slowingPath(glm::vec2 way) {
+  RootMotion path;
+  path.duration = 1.0f;
+  path.offsets = {{0.0f, glm::vec2(0.0f)}, {0.5f, 2.0f * way}, {1.0f, 3.0f * way}};
+  return path;
+}
+
+TEST(a_roll_follows_its_clips_path) {
+  // Supplied a roll's path, the dodge moves along it the way it's pressed
+  // and lasts as long as it.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  std::array<RootMotion, 5> paths;
+  paths[static_cast<size_t>(DodgeKind::Roll)] = slowingPath(glm::vec2(0.0f, 1.0f));
+  character.setDodgePaths(paths);
+  hold(world, character, CharacterInput{}, 10);
+  hold(world, character, pressing(false, true, glm::vec3(1, 0, 0)), 1);
+  CHECK(character.dodgeKind() == DodgeKind::Roll);
+  hold(world, character, CharacterInput{}, 29); // 0.5 s in
+  CHECK(character.dodging());
+  CHECK_NEAR(character.position().x, 2.0, 0.05);
+  hold(world, character, CharacterInput{}, 31);
+  CHECK(!character.dodging());
+  CHECK_NEAR(character.position().x, 3.0, 0.05);
+  CHECK_NEAR(character.position().z, 0.0, 0.01);
+  // Out of it at the path's last speed (2 m/s), braking: 0.2 m on.
+  hold(world, character, CharacterInput{}, 20);
+  CHECK_NEAR(character.position().x, 3.2, 0.05);
+}
+
+TEST(dodge_scale_stretches_the_path) {
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterTuning tuning;
+  tuning.dodgeScale = 2.0f;
+  CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+  std::array<RootMotion, 5> paths;
+  paths[static_cast<size_t>(DodgeKind::Roll)] = slowingPath(glm::vec2(0.0f, 1.0f));
+  character.setDodgePaths(paths);
+  hold(world, character, CharacterInput{}, 10);
+  hold(world, character, pressing(false, true, glm::vec3(1, 0, 0)), 61);
+  CHECK(!character.dodging());
+  CHECK_NEAR(character.position().x, 6.0, 0.1);
+}
+
+TEST(an_aimed_dodge_steps_the_way_pressed) {
+  // Aiming down -z and pressing right: the right dodge, its path laid out
+  // from the way it faces, so its own "right" carries it to +x.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  std::array<RootMotion, 5> paths;
+  paths[static_cast<size_t>(DodgeKind::Right)] = slowingPath(glm::vec2(0.5f, 0.0f));
+  paths[static_cast<size_t>(DodgeKind::Back)] = slowingPath(glm::vec2(0.0f, -0.5f));
+  character.setDodgePaths(paths);
+  CharacterInput aim;
+  aim.aim = true;
+  hold(world, character, aim, 10);
+  CharacterInput right = aim;
+  right.move = glm::vec3(1, 0, 0);
+  right.dodge = true;
+  hold(world, character, right, 1);
+  CHECK(character.dodgeKind() == DodgeKind::Right);
+  hold(world, character, aim, 60);
+  CHECK_NEAR(character.position().x, 1.5, 0.05);
+  CHECK_NEAR(character.position().z, 0.0, 0.05);
+  CHECK_NEAR(facingError(character.yaw(), glm::vec3(0, 0, -1)), 0.0, 1e-3);
+  // Pressing back (+z, behind it): the back dodge.
+  CharacterInput back = aim;
+  back.move = glm::vec3(0, 0, 1);
+  back.dodge = true;
+  hold(world, character, back, 1);
+  CHECK(character.dodgeKind() == DodgeKind::Back);
+  hold(world, character, aim, 60);
+  CHECK_NEAR(character.position().z, 1.5, 0.05);
+}
+
 TEST(dodge_covers_its_distance) {
   PhysicsWorld world;
   addFloor(world);
@@ -405,8 +485,12 @@ TEST(dodge_covers_its_distance) {
   hold(world, character, CharacterInput{}, 1); // 15 steps = 0.25 s
   CHECK(!character.dodging());
   CHECK_NEAR(character.position().x, 5.0, 0.1);
-  hold(world, character, CharacterInput{}, 20); // no input: it stops there
-  CHECK_NEAR(character.position().x, 5.0, 0.1);
+  // Out of it at run speed at most, then no input brakes it like a run:
+  // 1.25 m on.
+  hold(world, character, CharacterInput{}, 1);
+  CHECK_NEAR(flatSpeed(character.velocity()), 5.0 - 10.0 / 60.0, 0.05);
+  hold(world, character, CharacterInput{}, 39);
+  CHECK_NEAR(character.position().x, 6.25, 0.1);
 }
 
 TEST(dodge_without_input_goes_the_way_it_faces) {
@@ -429,10 +513,10 @@ TEST(dodge_waits_for_its_cooldown) {
   hold(world, character, CharacterInput{}, 23);
   hold(world, character, dodgeRight, 1); // 0.4 s after the first: ignored
   hold(world, character, CharacterInput{}, 20);
-  CHECK_NEAR(character.position().x, 5.0, 0.1);
+  CHECK_NEAR(character.position().x, 6.25, 0.1); // 5 m, then braking
   hold(world, character, dodgeRight, 1); // 0.75 s: allowed
   hold(world, character, CharacterInput{}, 14);
-  CHECK_NEAR(character.position().x, 10.0, 0.15);
+  CHECK_NEAR(character.position().x, 11.25, 0.15);
 }
 
 TEST(no_dodge_in_the_air) {

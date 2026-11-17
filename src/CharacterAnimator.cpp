@@ -178,14 +178,8 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       oneShot = ClipSlot::Jump;
     else if (next == AnimState::Land)
       oneShot = landing;
-    else if (next == AnimState::Dodge) {
-      // The roll; while aiming, a step the way it's pressed.
-      const glm::vec2 d = input.direction;
-      oneShot = !input.aiming ? ClipSlot::Roll
-                : std::abs(d.x) > std::abs(d.y)
-                    ? (d.x > 0.0f ? ClipSlot::DodgeRight : ClipSlot::DodgeLeft)
-                    : (d.y < 0.0f ? ClipSlot::DodgeBack : ClipSlot::DodgeForward);
-    }
+    else if (next == AnimState::Dodge)
+      oneShot = input.dodgeClip; // the controller picked it
     active = next;
     stateTime = 0.0f;
   }

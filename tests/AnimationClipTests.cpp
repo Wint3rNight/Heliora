@@ -207,3 +207,25 @@ TEST(a_jumps_own_rise_can_be_taken_out) {
   CHECK_NEAR(glm::distance(hipsAt(clip, s, 0.3f), glm::vec3(0.1f, 0.8f, 0)), 0.0, 1e-5);
   CHECK_NEAR(glm::distance(hipsAt(clip, s, 0.6f), glm::vec3(0.2f, 1.0f, 0)), 0.0, 1e-5);
 }
+
+TEST(a_clips_root_motion_becomes_the_characters_path) {
+  // The model faces +z, so its +x is the character's left. Between 0.5 s
+  // and 1.5 s the root goes 200 units ahead and 50 to the right; at 1 cm a
+  // unit that's 2 m ahead and 0.5 m right, over 1 s from the dodge's start.
+  RootMotion motion;
+  motion.duration = 2.0f;
+  motion.offsets = {{0.0f, glm::vec2(0.0f, 0.0f)},
+                    {0.5f, glm::vec2(0.0f, 100.0f)},
+                    {1.5f, glm::vec2(-50.0f, 300.0f)},
+                    {2.0f, glm::vec2(-50.0f, 350.0f)}};
+  const RootMotion path = rootPath(motion, 0.5f, 1.5f, 0.01f);
+  CHECK_NEAR(path.duration, 1.0, 1e-6);
+  const glm::vec2 whole = rootDisplacement(path, 0.0f, 1.0f, false);
+  CHECK_NEAR(whole.x, 0.5, 1e-5);
+  CHECK_NEAR(whole.y, 2.0, 1e-5);
+  const glm::vec2 half = rootDisplacement(path, 0.0f, 0.5f, false);
+  CHECK_NEAR(half.x, 0.25, 1e-5);
+  CHECK_NEAR(half.y, 1.0, 1e-5);
+  // Nothing past the end it was given.
+  CHECK_NEAR(glm::length(rootDisplacement(path, 1.0f, 2.0f, false)), 0.0, 1e-6);
+}

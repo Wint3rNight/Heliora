@@ -54,6 +54,10 @@ public:
                  const ThirdPersonCameraTuning &camera);
 
   const CharacterController &character() const { return controller; }
+  // The animated character's dodge clips, as paths (CharacterController).
+  void setDodgePaths(const std::array<RootMotion, 5> &paths) {
+    controller.setDodgePaths(paths);
+  }
   const ThirdPersonCamera &camera() const { return view; }
 
 private:

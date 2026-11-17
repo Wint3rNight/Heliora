@@ -342,7 +342,9 @@ TEST(crouching_plays_the_crouch_clips) {
   CHECK_NEAR(a.clipWeight(ClipSlot::CrouchForward), 1.0, 1e-3);
 }
 
-TEST(a_dodge_rolls_or_steps_aside_while_aiming) {
+TEST(a_dodge_plays_the_clip_the_controller_picked) {
+  // The controller picks the dodge (it moves along that clip's path), so
+  // the animator plays what it's told, whatever the stick says.
   const Skeleton s = rig();
   const AnimationLibrary l = fullLibrary();
   CharacterAnimator a(s, l, 1.0f);
@@ -353,7 +355,8 @@ TEST(a_dodge_rolls_or_steps_aside_while_aiming) {
   CHECK_NEAR(a.clipWeight(ClipSlot::Roll), 1.0, 1e-3);
   CharacterAnimator b(s, l, 1.0f);
   dodge.aiming = true;
-  dodge.direction = glm::vec2(-1.0f, 0.0f);
+  dodge.direction = glm::vec2(1.0f, 0.0f);
+  dodge.dodgeClip = ClipSlot::DodgeLeft;
   runFor(b, dodge, 0.2f);
   CHECK_NEAR(b.clipWeight(ClipSlot::DodgeLeft), 1.0, 1e-3);
 }

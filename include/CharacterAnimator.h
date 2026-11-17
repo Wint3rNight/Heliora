@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnimationClip.h"
+#include "CharacterController.h"
 #include "CharacterFile.h"
 #include "PoseBlend.h"
 #include "Skeleton.h"
@@ -49,12 +50,25 @@ struct AnimatorInput {
   // The controller's gaits, m/s: the run, sprint and crouch walk play in
   // full at these, faster or slower than their own speed so the feet keep
   // up. 0 leaves a gait at its clip's own speed.
+  // The dodge the controller picked (it moves along that clip's path).
+  ClipSlot dodgeClip = ClipSlot::Roll;
   float runSpeed = 0.0f;
   float sprintSpeed = 0.0f;
   float crouchSpeed = 0.0f;
 };
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
+
+// The clip each of the controller's dodges plays.
+inline ClipSlot dodgeClip(DodgeKind kind) {
+  switch (kind) {
+  case DodgeKind::Forward: return ClipSlot::DodgeForward;
+  case DodgeKind::Back: return ClipSlot::DodgeBack;
+  case DodgeKind::Left: return ClipSlot::DodgeLeft;
+  case DodgeKind::Right: return ClipSlot::DodgeRight;
+  default: return ClipSlot::Roll;
+  }
+}
 
 struct AnimatorTuning {
   // Cross-fade times into each state, seconds.

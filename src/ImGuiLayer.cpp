@@ -1736,8 +1736,12 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Jump buffer", &c.jumpBuffer, 0.0f, 0.5f, "%.2f s");
   ImGui::SetItemTooltip("How long before landing a jump press still counts");
   ImGui::SeparatorText("Dodge");
+  changed |= slider("Dodge scale", &c.dodgeScale, 0.1f, 5.0f, "%.2fx");
+  ImGui::SetItemTooltip("Stretches the dodge clips' own movement");
   changed |= slider("Dodge distance", &c.dodgeDistance, 0.0f, 20.0f, "%.1f m");
+  ImGui::SetItemTooltip("Without a character: the fixed dodge's length");
   changed |= slider("Dodge time", &c.dodgeTime, 0.05f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("Without a character: the fixed dodge's time");
   changed |= slider("Dodge cooldown", &c.dodgeCooldown, 0.0f, 5.0f, "%.2f s");
   ImGui::SetItemTooltip("From the start of one dodge to the next");
   ImGui::SeparatorText("Ground");

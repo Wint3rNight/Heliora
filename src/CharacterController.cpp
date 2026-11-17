@@ -27,6 +27,9 @@ float angleBetween(float a, float b) {
 
 float yawOf(glm::vec3 direction) { return std::atan2(-direction.x, -direction.z); }
 
+// The direction to the right of a yaw, flat.
+glm::vec3 rightOf(float yaw) { return glm::vec3(std::cos(yaw), 0.0f, -std::sin(yaw)); }
+
 // A flat direction turned about +y by angle (positive turns -z towards -x).
 glm::vec3 turnFlat(glm::vec3 d, float angle) {
   const float c = std::cos(angle), s = std::sin(angle);
@@ -105,12 +108,27 @@ void CharacterController::update(const CharacterInput &input, float dt) {
                                      : tune.runSpeed;
   const glm::vec3 wanted = move * speed;
 
-  // Dodge: a fixed burst along the stick, or forward without input. Only
-  // from the ground, and not again until the cooldown has run out.
+  // Dodge: the roll along the stick (forward without input), or while
+  // aiming a step the way it's pressed, seen from the way it faces. It
+  // moves along its clip's path, laid out from the way it faces during the
+  // dodge, and lasts as long; without one, a fixed burst. Only from the
+  // ground, and not again until the cooldown has run out.
   dodgeWait = std::max(0.0f, dodgeWait - dt);
   if (input.dodge && onGround && !dodging() && dodgeWait <= kTimerEpsilon) {
     dodgeDirection = moving ? glm::normalize(move) : yawForward(current.yaw);
-    dodgeLeft = tune.dodgeTime;
+    dodgeType = DodgeKind::Roll;
+    if (input.aim) {
+      const glm::vec2 local(glm::dot(move, rightOf(input.aimYaw)),
+                            glm::dot(move, yawForward(input.aimYaw)));
+      dodgeType = std::fabs(local.x) > std::fabs(local.y)
+                      ? (local.x > 0.0f ? DodgeKind::Right : DodgeKind::Left)
+                      : (local.y < 0.0f ? DodgeKind::Back : DodgeKind::Forward);
+    }
+    const RootMotion &path = dodgePaths[static_cast<size_t>(dodgeType)];
+    dodgeOnPath = path.offsets.size() >= 2 && path.duration > kTimerEpsilon;
+    dodgeLength = dodgeOnPath ? path.duration : tune.dodgeTime;
+    dodgeLeft = dodgeLength;
+    dodgeFacing = input.aim ? input.aimYaw : yawOf(dodgeDirection);
     dodgeWait = tune.dodgeCooldown;
   }
 
@@ -118,17 +136,27 @@ void CharacterController::update(const CharacterInput &input, float dt) {
       onGround ? state.groundVelocity : glm::vec3(0.0f);
   glm::vec3 stepHorizontal; // this step's; horizontal carries into the next
   if (dodging()) {
-    const glm::vec3 burst =
-        dodgeDirection * (tune.dodgeDistance / tune.dodgeTime);
+    glm::vec3 burst = dodgeDirection * (tune.dodgeDistance / tune.dodgeTime);
+    if (dodgeOnPath) {
+      // This step's stretch of the path, turned from the character's own
+      // frame (x right, y ahead) into the world.
+      const float from = dodgeLength - dodgeLeft;
+      const glm::vec2 d = rootDisplacement(dodgePaths[static_cast<size_t>(dodgeType)],
+                                           from, std::min(from + dt, dodgeLength),
+                                           false) *
+                          tune.dodgeScale;
+      burst = (rightOf(dodgeFacing) * d.x + yawForward(dodgeFacing) * d.y) / dt;
+    }
     stepHorizontal = flat(groundVelocity) + burst;
     horizontal = stepHorizontal;
     dodgeLeft -= dt;
     if (dodgeLeft <= kTimerEpsilon) {
-      // Out of the dodge after this step, at the speed the stick asks for,
-      // so it doesn't slide on.
+      // Out of the dodge after this step the way it was going, at its speed
+      // but no faster than a run; from there it moves (or brakes) as usual.
       dodgeLeft = 0.0f;
-      horizontal = flat(groundVelocity) +
-                   dodgeDirection * std::min(glm::length(burst), glm::length(wanted));
+      const float speed = glm::length(burst);
+      const glm::vec3 way = speed > kStill ? burst / speed : dodgeDirection;
+      horizontal = flat(groundVelocity) + way * std::min(speed, tune.runSpeed);
     }
   } else if (onGround && !input.aim) {
     // Momentum: a heading and a speed, relative to the ground under it.

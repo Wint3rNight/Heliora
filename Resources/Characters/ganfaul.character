@@ -94,23 +94,31 @@ slot = crouch_right
 file = Resources/Characters/mixamo/packs/Pro Magic Pack/Crouch Walk Right.fbx
 
 # Dodging: the roll when not aiming, a step in the pressed direction while
-# aiming. These keep their root motion: the dodge moves as the clip does.
+# aiming. The dodge moves the way the clip does, from its start to its end:
+# the roll from where it dives (it runs for 0.45 s first), the steps past
+# their little wind-up, the back step until it stops moving.
 [clip]
 slot = roll
 file = Resources/Characters/mixamo/clips/Sprinting Forward Roll.fbx
+start = 0.45
 
 [clip]
 slot = dodge_forward
 file = Resources/Characters/mixamo/clips/Standing Dodge Forward.fbx
+start = 0.2
 
 [clip]
 slot = dodge_back
 file = Resources/Characters/mixamo/clips/Standing Dodge Backward.fbx
+start = 0.15
+end = 1.1
 
 [clip]
 slot = dodge_left
 file = Resources/Characters/mixamo/clips/Standing Dodge Left.fbx
+start = 0.1
 
 [clip]
 slot = dodge_right
 file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx
+start = 0.1

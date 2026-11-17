@@ -155,3 +155,26 @@ void limitRootHeight(AnimationClip &clip, const Skeleton &skeleton, int rootBone
     if (const float height = glm::dot(key.value, up); height > start)
       key.value -= (height - start) * up;
 }
+
+RootMotion rootPath(const RootMotion &motion, float start, float end,
+                    float metresPerUnit) {
+  RootMotion path;
+  if (motion.offsets.empty())
+    return path;
+  start = std::clamp(start, 0.0f, motion.duration);
+  const float stop = end > start ? std::min(end, motion.duration) : motion.duration;
+  if (stop <= start)
+    return path;
+  // The skeleton's x is the character's left, its z straight ahead.
+  auto along = [&](float t) {
+    const glm::vec2 d = rootDisplacement(motion, start, t, false);
+    return glm::vec2(-d.x, d.y) * metresPerUnit;
+  };
+  path.duration = stop - start;
+  path.offsets.push_back({0.0f, glm::vec2(0.0f)});
+  for (const Key<glm::vec2> &key : motion.offsets)
+    if (key.time > start && key.time < stop)
+      path.offsets.push_back({key.time - start, along(key.time)});
+  path.offsets.push_back({path.duration, along(stop)});
+  return path;
+}

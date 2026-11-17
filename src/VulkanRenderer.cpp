@@ -487,6 +487,7 @@ void VulkanRenderer::loadSettings() {
       {"character", "dodge_distance", &ch.dodgeDistance, 0, 20},
       {"character", "dodge_time", &ch.dodgeTime, 0.05, 1},
       {"character", "dodge_cooldown", &ch.dodgeCooldown, 0, 5},
+      {"character", "dodge_scale", &ch.dodgeScale, 0.1, 5},
       {"character", "max_slope", &ch.maxSlope, 0.08, 1.4},
       {"character", "step_up", &ch.stepUp, 0, 1},
       {"character", "stick_down", &ch.stickDown, 0, 2},
@@ -1355,9 +1356,19 @@ void VulkanRenderer::spawnPlayer() {
                                     characterPanel.character,
                                     characterPanel.camera);
   const bool animated = characterModelId >= 0;
-  if (animated)
+  if (animated) {
     animator = std::make_unique<CharacterAnimator>(
         characterAsset->skeleton, characterAsset->library, characterScale());
+    // The dodges move the way their clips do, from each clip's start to
+    // its end, in metres at his size.
+    std::array<RootMotion, 5> paths;
+    for (size_t k = 0; k < paths.size(); ++k)
+      if (const CharacterClipData *clip =
+              characterAsset->clip(dodgeClip(static_cast<DodgeKind>(k))))
+        paths[k] = rootPath(clip->rootMotion, clip->start, clip->endTime(),
+                            characterScale());
+    player->setDodgePaths(paths);
+  }
   if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
     auto node = std::make_unique<SceneNode>();
     node->setModelId(model);
@@ -1401,6 +1412,7 @@ void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
       input.verticalSpeed = velocity.y;
       // The run, sprint and crouch walk play in full at the controller's
       // own speeds for them.
+      input.dodgeClip = dodgeClip(character.dodgeKind());
       input.runSpeed = character.tuning().runSpeed;
       input.sprintSpeed = character.tuning().sprintSpeed;
       input.crouchSpeed = character.tuning().crouchSpeed;

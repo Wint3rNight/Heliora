@@ -1,6 +1,9 @@
 #pragma once
 
+#include "AnimationClip.h"
 #include "PhysicsWorld.h"
+
+#include <array>
 
 #include <glm/glm.hpp>
 
@@ -45,8 +48,10 @@ struct CharacterTuning {
   float coyoteTime = 0.1f; // s after walking off a ledge that a jump still works
   float jumpBuffer = 0.1f; // s before landing that a jump press still counts
 
+  // Without a clip's path (no character), a dodge is a fixed burst.
   float dodgeDistance = 5.0f; // m
   float dodgeTime = 0.25f;    // s
+  float dodgeScale = 1.0f;    // a clip's dodge path is stretched by this
   float dodgeCooldown = 0.6f; // s from the start of one dodge to the next
 
   float maxSlope = 0.785398f; // radians (45 degrees)
@@ -72,6 +77,9 @@ struct CharacterInput {
   bool dodge = false;   // pressed since the last step
 };
 
+// Which dodge: the roll, or while aiming a step the way it's pressed.
+enum class DodgeKind { Roll, Forward, Back, Left, Right };
+
 // The direction a yaw faces, flat.
 glm::vec3 yawForward(float yaw);
 
@@ -89,6 +97,9 @@ public:
   // Puts it there standing still, drawn there at once (spawning, Stop).
   void place(glm::vec3 feet, float yaw);
   void setTuning(const CharacterTuning &tuning) { tune = tuning; }
+  // The path each dodge moves along, from its clip (rootPath), by
+  // DodgeKind. One left empty is the fixed burst.
+  void setDodgePaths(const std::array<RootMotion, 5> &paths) { dodgePaths = paths; }
   const CharacterTuning &tuning() const { return tune; }
 
   glm::vec3 position() const { return current.position; } // feet
@@ -99,6 +110,7 @@ public:
   float height() const; // drops to crouchHeight while crouched
   bool grounded() const { return onGround; }
   bool dodging() const { return dodgeLeft > 0.0f; }
+  DodgeKind dodgeKind() const { return dodgeType; } // the last one started
 
   // Blended between the last two steps by the physics clock's alpha, so the
   // drawn capsule and the camera move smoothly at any frame rate.
@@ -126,4 +138,9 @@ private:
   float dodgeLeft = 0.0f;  // s of the current dodge still to go
   float dodgeWait = 0.0f;  // s until the next dodge is allowed
   glm::vec3 dodgeDirection{0.0f};
+  std::array<RootMotion, 5> dodgePaths;
+  DodgeKind dodgeType = DodgeKind::Roll;
+  bool dodgeOnPath = false;  // this dodge follows its clip's path
+  float dodgeLength = 0.0f;  // s the current dodge lasts
+  float dodgeFacing = 0.0f;  // the yaw its path is laid out from
 };

@@ -65,6 +65,13 @@ RootMotion removeRootMotion(AnimationClip &clip, const Skeleton &skeleton,
 glm::vec2 rootDisplacement(const RootMotion &motion, float from, float to,
                            bool loop);
 
+// A one-off clip's root motion as the character moves along it: from start
+// to end of the clip, times from 0, in metres (metresPerUnit) and in the
+// character's own frame, x to its right and y ahead. The model faces +z,
+// as Mixamo's do and as the game draws them, so its +x is the left.
+RootMotion rootPath(const RootMotion &motion, float start, float end,
+                    float metresPerUnit);
+
 // Keeps the root bone from rising above where it starts: dips stay, rises
 // go. For a jump clip, whose own jump would add to the capsule's.
 void limitRootHeight(AnimationClip &clip, const Skeleton &skeleton, int rootBone);

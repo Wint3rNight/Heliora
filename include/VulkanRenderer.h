@@ -216,6 +216,9 @@ private:
   // stays.
   std::optional<CharacterAsset> characterAsset;
   std::string characterPath; // the .character file it came from, as found
+  // The tuning as the character file last had it, to tell unsaved edits.
+  std::pair<CharacterTuning, AnimatorTuning> savedTuning;
+  std::optional<std::string> notedVariant; // the variant variantNote describes
   // The file each move's clip was read from, so the Clips section only
   // re-reads a clip when its file changes.
   std::array<std::string, static_cast<size_t>(ClipSlot::Count)> loadedClipFiles;
@@ -232,7 +235,10 @@ private:
   void loadCharacter();
   std::array<RootMotion, 5> characterDodgePaths() const;
   void applyClipChange(ClipSlot slot);
-  void saveCharacterFile();
+  bool saveCharacterFile();
+  std::pair<CharacterTuning, AnimatorTuning> playedTuning() const;
+  void updateCharacterUnsaved();
+  void updateVariantNote();
   void createCharacterModel();
   // The scale from the model file's units to the spawned body's height.
   float characterScale() const;

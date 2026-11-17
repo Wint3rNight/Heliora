@@ -95,6 +95,7 @@ struct AnimatorTuning {
   // The moving clips play this much faster than the speed calls for (1 has
   // the feet keep up with the ground).
   float playbackRate = 1.0f;
+  bool operator==(const AnimatorTuning &) const = default;
 };
 
 class CharacterAnimator {

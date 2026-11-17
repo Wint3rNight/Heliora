@@ -5,6 +5,47 @@
 # them the game keeps the capsule.
 model = Resources/Characters/mixamo/packs/Male Locomotion Pack/Ganfaul M Aure.fbx
 
+# How he moves and animates, edited in the Character tab (Save character
+# writes it here). Speeds in m/s, accelerations in m/s^2, angles in radians,
+# times in seconds. Every machine gets these, unlike settings.cfg.
+[tuning]
+run_speed = 5
+sprint_speed = 8
+crouch_speed = 2
+ground_acceleration = 10
+ground_braking = 10
+turn_grip = 16
+turn_rate = 12.566371
+aim_acceleration = 30
+air_acceleration = 8
+air_speed_limit = true
+jump_height = 1.2
+coyote_time = 0.1
+jump_buffer = 0.1
+dodge_scale = 1
+dodge_distance = 5
+dodge_time = 0.25
+dodge_cooldown = 0.6
+max_slope = 0.785398
+step_up = 0.3
+stick_down = 0.5
+push_strength = 100
+radius = 0.3
+height = 1.8
+crouch_height = 1.1
+mass = 70
+anim_playback_rate = 1
+anim_fade_moving = 0.2
+anim_fade_crouch = 0.25
+anim_fade_jump = 0.08
+anim_fade_fall = 0.25
+anim_fade_land = 0.08
+anim_fade_dodge = 0.06
+anim_fall_speed = 7.5
+anim_air_pose_delay = 0.2
+anim_landing_after = 0.35
+anim_shortest_landing = 0.12
+
 # Standing still, walking and running ahead: the plain Male locomotion pack.
 [clip]
 slot = idle
@@ -122,3 +163,8 @@ start = 0.1
 slot = dodge_right
 file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx
 start = 0.1
+
+# For the climb (01_climb.scene asks for it): the air speeds him up like
+# an arcade game, which its jumps were built around.
+[variant arcade]
+air_speed_limit = false

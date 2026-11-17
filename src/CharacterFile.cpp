@@ -48,8 +48,15 @@ public:
       const std::string text = trim(line);
       if (text.empty())
         continue;
+      if (text.size() > 2 && text.front() == '[' && text.back() == ']' &&
+          text != "[clip]") {
+        startSettings(trim(std::string_view(text).substr(1, text.size() - 2)));
+        continue;
+      }
       if (text == "[clip]") {
         finishClip();
+        inTuning = false;
+        variantIndex = -1;
         open = true;
         current = {};
         current.comment = std::move(notes);
@@ -78,6 +85,9 @@ private:
   CharacterClip current;
   bool open = false; // inside a [clip]
   std::string notes; // comment lines waiting for what they're above
+  bool inTuning = false;
+  bool tuningGiven = false;
+  int variantIndex = -1; // inside that [variant], or -1
   bool slotGiven = false;
   bool loopGiven = false;
   int clipLine = 0;
@@ -88,7 +98,41 @@ private:
                  : std::format("{}: {}", source, message));
   }
 
+  // [tuning] or [variant name]: key = value lines kept as text.
+  void startSettings(const std::string &inside) {
+    finishClip();
+    inTuning = false;
+    variantIndex = -1;
+    if (inside == "tuning") {
+      if (tuningGiven)
+        fail(lineNumber, "[tuning] is given twice");
+      tuningGiven = true;
+      inTuning = true;
+      result.tuningComment = std::move(notes);
+      notes.clear();
+    } else if (inside == "variant" || inside.starts_with("variant ")) {
+      const std::string name = trim(std::string_view(inside).substr(7));
+      if (name.empty())
+        fail(lineNumber, "a [variant] needs a name, like [variant arcade]");
+      if (result.variant(name))
+        fail(lineNumber, "variant '" + name + "' is given twice");
+      result.variants.push_back({name, std::move(notes), {}});
+      notes.clear();
+      variantIndex = static_cast<int>(result.variants.size()) - 1;
+    } else {
+      fail(lineNumber, "unknown section [" + inside + "]");
+    }
+  }
+
   void setKey(const std::string &key, const std::string &value) {
+    if (inTuning) {
+      result.tuning.push_back({key, value});
+      return;
+    }
+    if (variantIndex >= 0) {
+      result.variants[variantIndex].values.push_back({key, value});
+      return;
+    }
     if (!open) {
       if (key != "model")
         fail(lineNumber, "unknown key '" + key + "' (before any [clip], only "
@@ -189,6 +233,13 @@ const CharacterClip *CharacterDescription::clip(ClipSlot slot) const {
   return nullptr;
 }
 
+const CharacterVariant *CharacterDescription::variant(std::string_view name) const {
+  for (const CharacterVariant &v : variants)
+    if (v.name == name)
+      return &v;
+  return nullptr;
+}
+
 void CharacterDescription::setClip(const CharacterClip &clip) {
   for (CharacterClip &c : clips)
     if (c.slot == clip.slot) {
@@ -219,6 +270,11 @@ CharacterDescription loadFromFile(const std::string &path) {
 
 std::string write(const CharacterDescription &character) {
   std::string out = character.comment + "model = " + character.model + "\n";
+  if (!character.tuning.empty() || !character.tuningComment.empty()) {
+    out += "\n" + character.tuningComment + "[tuning]\n";
+    for (const CharacterSetting &s : character.tuning)
+      out += s.key + " = " + s.value + "\n";
+  }
   for (const CharacterClip &clip : character.clips) {
     out += std::format("\n{}[clip]\nslot = {}\nfile = {}\n", clip.comment,
                        clipSlotName(clip.slot), clip.file);
@@ -228,6 +284,11 @@ std::string write(const CharacterDescription &character) {
       out += std::format("end = {}\n", clip.end);
     if (clip.loop != defaultLoop(clip.slot))
       out += std::format("loop = {}\n", clip.loop ? "true" : "false");
+  }
+  for (const CharacterVariant &v : character.variants) {
+    out += "\n" + v.comment + "[variant " + v.name + "]\n";
+    for (const CharacterSetting &s : v.values)
+      out += s.key + " = " + s.value + "\n";
   }
   return out;
 }

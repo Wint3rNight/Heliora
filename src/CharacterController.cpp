@@ -17,6 +17,9 @@ constexpr float kPlantAngle = 2.0943951f; // 120 degrees
 constexpr float kPlantSpeed = 1.5f;       // m/s
 // Slower than this it has no heading of its own and goes by its facing.
 constexpr float kStill = 1e-3f;
+// With the air speed limit, the air can take it this fast at least, so a
+// standing jump can still be nudged.
+constexpr float kWalkingPace = 1.5f; // m/s
 
 glm::vec3 flat(glm::vec3 v) { return glm::vec3(v.x, 0.0f, v.z); }
 
@@ -69,6 +72,7 @@ void CharacterController::place(glm::vec3 feet, float yaw) {
   current = {world.characterState(id).position, yaw};
   previous = current;
   horizontal = glm::vec3(0.0f);
+  airSpeedCap = kWalkingPace;
   onGround = false;
   jumpedSinceGround = false;
   airTime = 0.0f;
@@ -199,8 +203,17 @@ void CharacterController::update(const CharacterInput &input, float dt) {
     // stands on).
     const float rate = onGround ? tune.aimAcceleration : tune.airAcceleration;
     horizontal = approach(horizontal, flat(groundVelocity) + wanted, rate * dt);
+    // In the air the stick can steer and slow it, but no faster than it
+    // left the ground at.
+    if (!onGround && tune.airSpeedLimit)
+      if (const float speed = glm::length(horizontal); speed > airSpeedCap)
+        horizontal *= airSpeedCap / speed;
     stepHorizontal = horizontal;
   }
+  // The speed it leaves the ground at, for the air speed limit: what it
+  // moves at on its last step there.
+  if (onGround)
+    airSpeedCap = std::max(glm::length(horizontal), kWalkingPace);
 
   // Jump: a press stays queued for jumpBuffer seconds, and the ground still
   // counts for coyoteTime seconds after walking off it.

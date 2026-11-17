@@ -62,14 +62,18 @@ struct CharacterPanel {
   };
   const char *animState = nullptr;
   std::vector<PlayingClip> playing;
-  // The Clips section: which clip each move plays (the .character file,
-  // edited here), the files to pick from, and what the tab changed.
-  CharacterDescription clips;
+  // The .character file: the tuning above (movement, animation timing,
+  // body) and the Clips section's choices, saved together by Save
+  // character. The files to pick clips from, and what the tab asked for.
+  CharacterDescription description;
   std::vector<std::string> clipFiles;
   std::optional<ClipSlot> clipChanged; // set by the tab, applied by the renderer
-  bool clipsUnsaved = false;
-  bool saveClips = false; // the Save clips button
-  std::string clipStatus;
+  bool clipsEdited = false;   // since the file was read or saved
+  bool unsaved = false;       // the tuning or the clips differ from the file
+  bool saveCharacter = false; // the Save character button
+  bool resetTuning = false;   // the Reset to defaults button
+  std::string status;
+  std::string variantNote; // the open scene's variant and what it overrides
   // Draws the animated character's bones as lines in play mode, instead of
   // its body. Not saved: a debug view (HELIORA_SHOW_SKELETON=1 starts with it).
   bool showSkeleton = false;

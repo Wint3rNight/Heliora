@@ -551,3 +551,4 @@ body = static
 [player]
 position = -12 0 8
 yaw = -90
+variant = arcade

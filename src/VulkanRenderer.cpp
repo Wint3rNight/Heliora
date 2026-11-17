@@ -5,6 +5,7 @@
 #include "Model.h"
 #include "Picking.h"
 #include "PlayerStart.h"
+#include "CharacterSettings.h"
 #include "Spawning.h"
 #include "ScenePhysics.h"
 #include "Utilities.h"
@@ -421,9 +422,9 @@ void VulkanRenderer::loadSettings() {
                      : "../Resources/settings.cfg";
   PhysicsPanel &p = physicsPanel;
   PhysicsWorld::Config &c = physicsPanel.config;
-  CharacterTuning &ch = characterPanel.character;
   ThirdPersonCameraTuning &cam = characterPanel.camera;
-  AnimatorTuning &an = characterPanel.animation;
+  // The character's own tuning is in its .character file (loadCharacter);
+  // the camera, the player's preference, stays here.
   settingBindings = {
       {"render", "spec_aa_variance", &imguiSpecAAVariance, 0, 4},
       {"render", "spec_aa_threshold", &imguiSpecAAThreshold, 0, 1},
@@ -474,58 +475,23 @@ void VulkanRenderer::loadSettings() {
       {"physics", "max_contact_constraints", &c.maxContactConstraints, 64,
        1 << 17},
       // Angles in radians, as the code keeps them; the tab shows degrees.
-      {"character", "run_speed", &ch.runSpeed, 0.5, 20},
-      {"character", "sprint_speed", &ch.sprintSpeed, 0.5, 30},
-      {"character", "crouch_speed", &ch.crouchSpeed, 0.2, 10},
-      {"character", "ground_acceleration", &ch.groundAcceleration, 1, 200},
-      {"character", "ground_braking", &ch.groundBraking, 1, 200},
-      {"character", "air_acceleration", &ch.airAcceleration, 0, 100},
-      {"character", "turn_grip", &ch.turnGrip, 1, 100},
-      {"character", "turn_rate", &ch.turnRate, 0.5, 63},
-      {"character", "aim_acceleration", &ch.aimAcceleration, 1, 200},
-      {"character", "jump_height", &ch.jumpHeight, 0.1, 5},
-      {"character", "coyote_time", &ch.coyoteTime, 0, 0.5},
-      {"character", "jump_buffer", &ch.jumpBuffer, 0, 0.5},
-      {"character", "dodge_distance", &ch.dodgeDistance, 0, 20},
-      {"character", "dodge_time", &ch.dodgeTime, 0.05, 1},
-      {"character", "dodge_cooldown", &ch.dodgeCooldown, 0, 5},
-      {"character", "dodge_scale", &ch.dodgeScale, 0.1, 5},
-      {"character", "max_slope", &ch.maxSlope, 0.08, 1.4},
-      {"character", "step_up", &ch.stepUp, 0, 1},
-      {"character", "stick_down", &ch.stickDown, 0, 2},
-      {"character", "push_strength", &ch.pushStrength, 0, 5000},
-      {"character", "radius", &ch.radius, 0.1, 1},
-      {"character", "height", &ch.height, 0.5, 3},
-      {"character", "crouch_height", &ch.crouchHeight, 0.3, 3},
-      {"character", "mass", &ch.mass, 1, 1000},
-      {"character", "camera_shoulder_height", &cam.pivotHeight, 0, 3},
-      {"character", "camera_distance", &cam.distance, 0.5, 30},
-      {"character", "camera_closest", &cam.minDistance, 0.5, 20},
-      {"character", "camera_furthest", &cam.maxDistance, 0.5, 30},
-      {"character", "camera_zoom_step", &cam.zoomStep, 0.05, 5},
-      {"character", "camera_lowest_look", &cam.minPitch, -1.553, 0},
-      {"character", "camera_highest_look", &cam.maxPitch, 0, 1.553},
-      {"character", "camera_mouse_sensitivity", &cam.mouseSensitivity, 0.0002,
+      {"camera", "shoulder_height", &cam.pivotHeight, 0, 3},
+      {"camera", "distance", &cam.distance, 0.5, 30},
+      {"camera", "closest", &cam.minDistance, 0.5, 20},
+      {"camera", "furthest", &cam.maxDistance, 0.5, 30},
+      {"camera", "zoom_step", &cam.zoomStep, 0.05, 5},
+      {"camera", "lowest_look", &cam.minPitch, -1.553, 0},
+      {"camera", "highest_look", &cam.maxPitch, 0, 1.553},
+      {"camera", "mouse_sensitivity", &cam.mouseSensitivity, 0.0002,
        0.02},
-      {"character", "camera_aim_right", &cam.aimRight, -2, 2},
-      {"character", "camera_aim_up", &cam.aimUp, -1, 2},
-      {"character", "camera_aim_distance", &cam.aimDistance, 0.5, 10},
-      {"character", "camera_aim_time", &cam.aimTime, 0.01, 1},
-      {"character", "camera_follow_time", &cam.followTime, 0, 1},
-      {"character", "camera_most_lag", &cam.maxLag, 0, 5},
-      {"character", "camera_wall_margin", &cam.collisionRadius, 0.01, 1},
-      {"character", "camera_ease_out_time", &cam.easeOutTime, 0, 3},
-      {"character", "anim_playback_rate", &an.playbackRate, 0.25, 3},
-      {"character", "anim_fade_moving", &an.locomotionFade, 0, 1},
-      {"character", "anim_fade_crouch", &an.crouchFade, 0, 1},
-      {"character", "anim_fade_jump", &an.jumpFade, 0, 1},
-      {"character", "anim_fade_fall", &an.fallFade, 0, 1},
-      {"character", "anim_fade_land", &an.landFade, 0, 1},
-      {"character", "anim_fade_dodge", &an.dodgeFade, 0, 1},
-      {"character", "anim_fall_speed", &an.fallSpeed, 1, 30},
-      {"character", "anim_air_pose_delay", &an.fallDelay, 0, 1},
-      {"character", "anim_landing_after", &an.landAirTime, 0, 2},
-      {"character", "anim_shortest_landing", &an.landMinTime, 0, 1},
+      {"camera", "aim_right", &cam.aimRight, -2, 2},
+      {"camera", "aim_up", &cam.aimUp, -1, 2},
+      {"camera", "aim_distance", &cam.aimDistance, 0.5, 10},
+      {"camera", "aim_time", &cam.aimTime, 0.01, 1},
+      {"camera", "follow_time", &cam.followTime, 0, 1},
+      {"camera", "most_lag", &cam.maxLag, 0, 5},
+      {"camera", "wall_margin", &cam.collisionRadius, 0.01, 1},
+      {"camera", "ease_out_time", &cam.easeOutTime, 0, 3},
   };
   for (int i = 0; i < static_cast<int>(Action::Count); ++i)
     settingBindings.push_back({"controls", actionName(static_cast<Action>(i)),
@@ -534,7 +500,6 @@ void VulkanRenderer::loadSettings() {
   settingsFile = SettingsFile::load(settingsPath);
   readSettings(settingsFile, settingBindings);
   // A hand-edited file can hold values that don't fit together.
-  ch = consistent(ch);
   cam = consistent(cam);
 }
 
@@ -560,7 +525,7 @@ std::vector<std::string> VulkanRenderer::unsavedSettingsSections() const {
     if (!(imguiDayNightEnable && b.key == "day_night_hour"))
       checked.push_back(b);
   std::vector<std::string> sections;
-  for (const char *section : {"render", "physics", "character", "controls"})
+  for (const char *section : {"render", "physics", "camera", "controls"})
     if (hasUnsavedSettings(settingsFile, checked, section, settingsDefaults))
       sections.push_back(section);
   return sections;
@@ -575,7 +540,7 @@ void VulkanRenderer::resetSettings(std::string_view section) {
   characterPanel.changed = true;
   const char *name = section == "render"      ? "Render"
                      : section == "physics"   ? "Physics"
-                     : section == "character" ? "Character"
+                     : section == "camera"    ? "Camera"
                                               : "Controls";
   settingsStatus =
       std::format("{} settings are back to the defaults, not saved yet", name);
@@ -942,8 +907,10 @@ void VulkanRenderer::placePlayerStart() {
   ScenePlayerStart start = playerStartAt(
       ray, physics->castRay(ray.origin, ray.direction, kSpawnReach),
       tuning.radius, tuning.height);
-  if (currentScene.player)
+  if (currentScene.player) {
     start.info = currentScene.player->info;
+    start.variant = currentScene.player->variant;
+  }
   currentScene.player = start;
   selection = SceneEntryRef{SceneEntryRef::Kind::Player, 0};
   updateEditorLines();
@@ -1040,7 +1007,8 @@ void VulkanRenderer::requestSaveAs() {
 void VulkanRenderer::requestQuit() {
   if (promptOpen())
     return;
-  const bool settingsUnsaved = !unsavedSettingsSections().empty();
+  const bool settingsUnsaved =
+      !unsavedSettingsSections().empty() || characterPanel.unsaved;
   if (!sceneUnsaved && !settingsUnsaved) {
     quitting = true;
     return;
@@ -1127,6 +1095,8 @@ void VulkanRenderer::answerPrompt(PromptAnswer answer,
       for (const std::string &section : unsavedSettingsSections())
         if (!saveSettings(section))
           problem = settingsStatus;
+      if (characterPanel.unsaved && !saveCharacterFile())
+        problem = characterPanel.status;
     }
     if (problem.empty())
       quitting = true;
@@ -1192,20 +1162,30 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
         physicsClock.maxStepsPerFrame() != physicsPanel.maxCatchUpSteps)
       physicsClock = FixedStepClock(step, physicsPanel.maxCatchUpSteps);
   }
+  updateVariantNote(); // the scene or its player start may have changed
+  if (characterPanel.resetTuning) {
+    characterPanel.resetTuning = false;
+    characterPanel.character = CharacterTuning{};
+    characterPanel.animation = AnimatorTuning{};
+    characterPanel.status = "The tuning is back to the defaults, not saved yet";
+    characterPanel.changed = true;
+  }
   if (characterPanel.changed) {
     characterPanel.changed = false;
+    const auto [movement, animation] = playedTuning();
     if (player)
-      player->setTuning(characterPanel.character, characterPanel.camera);
+      player->setTuning(movement, characterPanel.camera);
     if (animator)
-      animator->setTuning(characterPanel.animation);
+      animator->setTuning(animation);
+    updateCharacterUnsaved();
   }
   if (characterPanel.clipChanged) {
     if (characterAsset)
       applyClipChange(*characterPanel.clipChanged);
     characterPanel.clipChanged.reset();
   }
-  if (characterPanel.saveClips) {
-    characterPanel.saveClips = false;
+  if (characterPanel.saveCharacter) {
+    characterPanel.saveCharacter = false;
     saveCharacterFile();
     updateEditorLines(); // the player start's outline is the body's size
   }
@@ -1388,14 +1368,14 @@ void VulkanRenderer::spawnPlayer() {
     // the character's 0 does.
     yaw = -glm::radians(flyCameraYaw) - glm::half_pi<float>();
   }
-  player = std::make_unique<Player>(*physics, feet, yaw,
-                                    characterPanel.character,
+  const auto [movement, animation] = playedTuning();
+  player = std::make_unique<Player>(*physics, feet, yaw, movement,
                                     characterPanel.camera);
   const bool animated = characterModelId >= 0;
   if (animated) {
     animator = std::make_unique<CharacterAnimator>(
         characterAsset->skeleton, characterAsset->library, characterScale(),
-        characterPanel.animation);
+        animation);
     player->setDodgePaths(characterDodgePaths());
   }
   if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
@@ -1497,16 +1477,21 @@ void VulkanRenderer::loadCharacter() {
   }
   std::string error;
   try {
-    characterPanel.clips = CharacterIO::loadFromFile(path);
-    characterAsset = importCharacter(characterPanel.clips, error);
+    characterPanel.description = CharacterIO::loadFromFile(path);
+    // Its tuning, which the capsule gets too, without the Mixamo files.
+    characterPath = path;
+    applyCharacterTuning(characterPanel.description, "", characterPanel.character,
+                         characterPanel.animation);
+    characterPanel.character = consistent(characterPanel.character);
+    savedTuning = {characterPanel.character, characterPanel.animation};
+    characterAsset = importCharacter(characterPanel.description, error);
   } catch (const std::exception &e) {
     error = e.what();
   }
   if (!characterAsset) {
     spdlog::warn("Character not loaded, keeping the capsule: {}", error);
   } else {
-    characterPath = path;
-    for (const CharacterClip &clip : characterPanel.clips.clips)
+    for (const CharacterClip &clip : characterPanel.description.clips)
       if (characterAsset->clip(clip.slot))
         loadedClipFiles[static_cast<size_t>(clip.slot)] = clip.file;
     // The clips to choose from: every FBX next to the character file.
@@ -1534,19 +1519,19 @@ std::array<RootMotion, 5> VulkanRenderer::characterDodgePaths() const {
 void VulkanRenderer::applyClipChange(ClipSlot slot) {
   const size_t k = static_cast<size_t>(slot);
   std::optional<CharacterClipData> &loaded = characterAsset->library.clips[k];
-  const CharacterClip *entry = characterPanel.clips.clip(slot);
+  const CharacterClip *entry = characterPanel.description.clip(slot);
   if (!entry) {
     loaded.reset();
     loadedClipFiles[k].clear();
-    characterPanel.clipStatus = std::format("{}: no clip", clipSlotName(slot));
+    characterPanel.status = std::format("{}: no clip", clipSlotName(slot));
   } else if (!loaded || entry->file != loadedClipFiles[k]) {
     if (std::optional<CharacterClipData> data = importCharacterClip(*entry, *characterAsset)) {
       loaded = std::move(data);
       loadedClipFiles[k] = entry->file;
-      characterPanel.clipStatus = std::format("{}: {}", clipSlotName(slot),
+      characterPanel.status = std::format("{}: {}", clipSlotName(slot),
                                               std::filesystem::path(entry->file).filename().string());
     } else {
-      characterPanel.clipStatus = std::format("Couldn't read {}", entry->file);
+      characterPanel.status = std::format("Couldn't read {}", entry->file);
     }
   } else {
     loaded->start = entry->start;
@@ -1555,33 +1540,83 @@ void VulkanRenderer::applyClipChange(ClipSlot slot) {
   }
   if (player)
     player->setDodgePaths(characterDodgePaths());
-  characterPanel.clipsUnsaved = true;
+  characterPanel.clipsEdited = true;
+  updateCharacterUnsaved();
 }
 
-// Writes the Clips section's choices back to the .character file, through
-// a temporary file and a rename like scene saves, comments kept.
-void VulkanRenderer::saveCharacterFile() {
-  if (characterPath.empty())
+// What the character plays with: the Character tab's tuning (saved or
+// not), with the open scene's variant over it.
+std::pair<CharacterTuning, AnimatorTuning> VulkanRenderer::playedTuning() const {
+  CharacterTuning movement = characterPanel.character;
+  AnimatorTuning animation = characterPanel.animation;
+  if (currentScene.player)
+    applyCharacterVariant(characterPanel.description, currentScene.player->variant,
+                          movement, animation);
+  return {consistent(movement), animation};
+}
+
+void VulkanRenderer::updateCharacterUnsaved() {
+  characterPanel.unsaved =
+      characterPanel.clipsEdited ||
+      !(characterPanel.character == savedTuning.first &&
+        characterPanel.animation == savedTuning.second);
+}
+
+// For the Character tab: which variant the open scene plays, and what it
+// changes.
+void VulkanRenderer::updateVariantNote() {
+  const std::string name = currentScene.player ? currentScene.player->variant : "";
+  if (notedVariant == name)
     return;
+  notedVariant = name;
+  characterPanel.variantNote.clear();
+  if (name.empty())
+    return;
+  const CharacterVariant *variant = characterPanel.description.variant(name);
+  if (!variant) {
+    characterPanel.variantNote =
+        std::format("This scene asks for a variant '{}' the character file doesn't have.", name);
+    return;
+  }
+  std::string changes;
+  for (const CharacterSetting &s : variant->values)
+    changes += (changes.empty() ? "" : ", ") + s.key + " = " + s.value;
+  characterPanel.variantNote =
+      std::format("This scene plays the '{}' variant, over these values: {}.", name, changes);
+}
+
+// Writes the tuning and the Clips section's choices back to the
+// .character file, through a temporary file and a rename like scene saves,
+// comments kept. False if it couldn't.
+bool VulkanRenderer::saveCharacterFile() {
+  if (characterPath.empty()) {
+    characterPanel.status = "No character file to save to";
+    return false;
+  }
+  storeCharacterTuning(characterPanel.description, characterPanel.character,
+                       characterPanel.animation);
   const std::string temporary = characterPath + ".tmp";
   {
     std::ofstream out(temporary);
-    out << CharacterIO::write(characterPanel.clips);
+    out << CharacterIO::write(characterPanel.description);
     if (!out) {
-      characterPanel.clipStatus = "Couldn't write " + temporary;
-      return;
+      characterPanel.status = "Couldn't write " + temporary;
+      return false;
     }
   }
   std::error_code error;
   std::filesystem::rename(temporary, characterPath, error);
   if (error) {
     std::filesystem::remove(temporary, error);
-    characterPanel.clipStatus = "Couldn't save " + characterPath;
-    return;
+    characterPanel.status = "Couldn't save " + characterPath;
+    return false;
   }
-  characterPanel.clipsUnsaved = false;
-  characterPanel.clipStatus = "Saved " + std::filesystem::path(characterPath).filename().string();
-  spdlog::info("Saved the clips to {}", characterPath);
+  savedTuning = {characterPanel.character, characterPanel.animation};
+  characterPanel.clipsEdited = false;
+  characterPanel.unsaved = false;
+  characterPanel.status = "Saved " + std::filesystem::path(characterPath).filename().string();
+  spdlog::info("Saved the character to {}", characterPath);
+  return true;
 }
 
 // Each bone joined to its parent, the rig's own bones only (not the file's

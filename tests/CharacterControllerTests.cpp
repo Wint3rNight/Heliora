@@ -235,10 +235,72 @@ TEST(aiming_keeps_quick_footwork) {
   CHECK_NEAR(character.velocity().x, -5.0, 0.05);
 }
 
+TEST(a_standing_jump_barely_drifts) {
+  // In the air the stick steers and slows, but can't take it faster than
+  // it left the ground at, apart from walking pace: no flying long jump from
+  // standing.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, CharacterInput{}, 10);
+  CharacterInput jump = moving(yawForward(0.0f));
+  jump.jump = true;
+  hold(world, character, jump, 1);
+  float fastest = 0.0f;
+  for (int i = 0; i < 70 && !(i > 5 && character.grounded()); ++i) {
+    hold(world, character, moving(yawForward(0.0f)), 1);
+    if (!character.grounded())
+      fastest = std::max(fastest, flatSpeed(character.velocity()));
+  }
+  CHECK(fastest <= 1.5f + 1e-3f);
+  CHECK(-character.position().z < 1.6f);
+}
+
+TEST(a_running_jump_keeps_its_speed_but_gains_none) {
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterInput run = moving(yawForward(0.0f));
+  hold(world, character, run, 180);
+  CharacterInput jump = run;
+  jump.jump = true;
+  hold(world, character, jump, 1);
+  const float takeoff = flatSpeed(character.velocity()); // the step it left on
+  CharacterInput sprintJump = run;
+  sprintJump.sprint = true; // asking for more in the air
+  float fastest = 0.0f, slowest = 100.0f;
+  for (int i = 0; i < 50; ++i) {
+    hold(world, character, sprintJump, 1);
+    if (!character.grounded()) {
+      fastest = std::max(fastest, flatSpeed(character.velocity()));
+      slowest = std::min(slowest, flatSpeed(character.velocity()));
+    }
+  }
+  CHECK(fastest <= takeoff + 1e-3f);
+  CHECK(slowest > takeoff - 0.05f);
+}
+
+TEST(without_the_air_limit_it_speeds_up_in_the_air) {
+  // The arcade variant: a standing jump picks up speed in flight.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterTuning arcade;
+  arcade.airSpeedLimit = false;
+  CharacterController character(world, glm::vec3(0.0f), 0.0f, arcade);
+  hold(world, character, CharacterInput{}, 10);
+  CharacterInput jump = moving(yawForward(0.0f));
+  jump.jump = true;
+  hold(world, character, jump, 1);
+  hold(world, character, moving(yawForward(0.0f)), 40);
+  CHECK(flatSpeed(character.velocity()) > 3.0f);
+}
+
 TEST(air_control_is_weaker_than_on_the_ground) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f, 5.0f, 0.0f), 0.0f);
+  CharacterTuning arcade; // the limit would cap it at walking pace
+  arcade.airSpeedLimit = false;
+  CharacterController character(world, glm::vec3(0.0f, 5.0f, 0.0f), 0.0f, arcade);
   hold(world, character, moving(glm::vec3(1, 0, 0)), 12);
   CHECK(!character.grounded());
   CHECK_NEAR(flatSpeed(character.velocity()), 8.0 * 12.0 / 60.0, 0.05); // 8 m/s^2

@@ -759,6 +759,17 @@ TEST(player_start_survives_a_round_trip) {
   CHECK(reparse(scene) == scene);
 }
 
+TEST(player_start_can_ask_for_a_character_variant) {
+  const SceneDescription scene =
+      parseText("[player]\nposition = 0 0 0\nvariant = arcade\n");
+  CHECK(scene.player.has_value());
+  if (scene.player)
+    CHECK(scene.player->variant == "arcade");
+  CHECK(SceneIO::write(scene).find("variant = arcade") != std::string::npos);
+  CHECK(reparse(scene) == scene);
+  CHECK(errorOf("[player]\nvariant =\n").find("line 2") != std::string::npos);
+}
+
 TEST(player_start_at_the_origin_keeps_its_section) {
   const SceneDescription scene = parseText("[player]\n");
   CHECK(scene.player.has_value());

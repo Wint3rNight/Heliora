@@ -740,7 +740,12 @@ void playerKey(ScenePlayerStart &player, const std::string &key,
     player.position = parseVec3(value, lineNumber);
   else if (key == "yaw")
     player.yaw = parseFloat(value, lineNumber);
-  else
+  else if (key == "variant") {
+    if (value.empty())
+      parseError(lineNumber, "'variant' needs the name of one of the character's "
+                             "variants");
+    player.variant = value;
+  } else
     parseError(lineNumber, "unknown player key '" + key + "'");
 }
 
@@ -993,6 +998,8 @@ std::string write(const SceneDescription &scene) {
       writeKey(out, "position", formatVec3(scene.player->position));
     if (scene.player->yaw != d.yaw)
       writeKey(out, "yaw", formatFloat(scene.player->yaw));
+    if (!scene.player->variant.empty())
+      writeKey(out, "variant", scene.player->variant);
   }
 
   // Models, grids and rings live in separate lists; info.order puts them

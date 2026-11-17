@@ -61,9 +61,30 @@ struct CharacterClip {
   bool operator==(const CharacterClip &) const = default;
 };
 
+// One `key = value` of a [tuning] or [variant] section, as written; what
+// the keys mean is CharacterSettings.h's business.
+struct CharacterSetting {
+  std::string key;
+  std::string value;
+  bool operator==(const CharacterSetting &) const = default;
+};
+
+// A named set of overrides for [tuning] ("arcade"), which a scene's player
+// start can ask for.
+struct CharacterVariant {
+  std::string name;
+  std::string comment;
+  std::vector<CharacterSetting> values;
+  bool operator==(const CharacterVariant &) const = default;
+};
+
 struct CharacterDescription {
   std::string comment; // the `#` lines above the model line
   std::string model;
+  std::string tuningComment;
+  std::vector<CharacterSetting> tuning; // [tuning], in file order
+  std::vector<CharacterVariant> variants;
+  const CharacterVariant *variant(std::string_view name) const;
   std::vector<CharacterClip> clips; // one per slot at most
   // The clip for a slot, or nothing.
   const CharacterClip *clip(ClipSlot slot) const;

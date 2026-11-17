@@ -857,6 +857,25 @@ void ImGuiLayer::drawPlayerStartInspector(DebugUiContext &ui) {
   }
   ImGui::SetItemTooltip("Degrees about the vertical axis, like the gizmo's "
                         "green ring. 0 faces -z.");
+  // Which of the character file's variants this scene plays with.
+  if (ui.character) {
+    ImGui::SeparatorText("Character");
+    const std::string preview = edited.variant.empty() ? "(its own tuning)" : edited.variant;
+    if (ImGui::BeginCombo("Variant", preview.c_str())) {
+      if (ImGui::Selectable("(its own tuning)", edited.variant.empty())) {
+        edited.variant.clear();
+        moved = true;
+      }
+      for (const CharacterVariant &v : ui.character->description.variants)
+        if (ImGui::Selectable(v.name.c_str(), edited.variant == v.name)) {
+          edited.variant = v.name;
+          moved = true;
+        }
+      ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("The character file's variant this scene plays with, "
+                          "like the climb's arcade air");
+  }
   ImGui::PopItemWidth();
   if (moved) {
     if (const std::optional<std::string> problem = problemWith(edited)) {
@@ -1696,7 +1715,20 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   CharacterPanel &panel = *ui.character;
   CharacterTuning &c = panel.character;
   ThirdPersonCameraTuning &cam = panel.camera;
-  drawSettingsButtons(ui, "character");
+  // The character's file: its tuning and clips, the same on every machine.
+  if (ImGui::Button("Save character"))
+    panel.saveCharacter = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Reset to defaults"))
+    panel.resetTuning = true;
+  ImGui::SetItemTooltip("The tuning back to the code's defaults (not the clips); "
+                        "Save character keeps it");
+  if (panel.unsaved)
+    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Not saved to the character file");
+  if (!panel.status.empty())
+    ImGui::TextDisabled("%s", panel.status.c_str());
+  if (!panel.variantNote.empty())
+    ImGui::TextWrapped("%s", panel.variantNote.c_str());
   ImGui::TextDisabled(ui.playing ? "Changes apply as you play."
                                  : "Changes apply when you play (F5).");
   ImGui::BeginDisabled(!panel.characterLoaded);
@@ -1754,6 +1786,10 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Air control", &c.airAcceleration, 0.0f, 100.0f,
                     "%.1f m/s\u00b2");
   ImGui::SetItemTooltip("Acceleration and braking in the air");
+  changed |= ImGui::Checkbox("Air speed limit", &c.airSpeedLimit);
+  ImGui::SetItemTooltip("In the air: steer and slow down, but no faster than at "
+                        "takeoff (walking pace at least). Off: it speeds up in "
+                        "flight, like an arcade game");
   ImGui::SeparatorText("Jumping");
   changed |= slider("Jump height", &c.jumpHeight, 0.1f, 5.0f, "%.2f m");
   changed |= slider("Coyote time", &c.coyoteTime, 0.0f, 0.5f, "%.2f s");
@@ -1801,6 +1837,8 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Shortest landing", &an.landMinTime, 0.0f, 1.0f, "%.2f s");
   ImGui::SetItemTooltip("Moving cuts a landing short, but not before this");
   ImGui::SeparatorText("Camera");
+  // The camera is the player's preference: settings.cfg, not the character.
+  drawSettingsButtons(ui, "camera");
   changed |= slider("Shoulder height", &cam.pivotHeight, 0.0f, 3.0f, "%.2f m");
   changed |= slider("Distance", &cam.distance, 0.5f, 30.0f, "%.1f m");
   ImGui::SetItemTooltip("Where the wheel starts at each Play");
@@ -1839,17 +1877,9 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
 
 // Which clip each move plays: a file for each slot, picked from the clip
 // files next to the character file, with its start and end. Changes play at
-// once; Save clips writes the .character file.
+// once; Save character writes the .character file.
 void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
-  if (ImGui::Button("Save clips"))
-    panel.saveClips = true;
-  ImGui::SameLine();
-  if (panel.clipsUnsaved)
-    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Not saved");
-  else
-    ImGui::TextDisabled("Saved");
-  if (!panel.clipStatus.empty())
-    ImGui::TextDisabled("%s", panel.clipStatus.c_str());
+  ImGui::TextDisabled("Save character (above) writes these too.");
   // Shorter names: the folder they all share, and Mixamo's "packs".
   auto shortName = [](const std::string &file) {
     std::string_view name = file;
@@ -1870,7 +1900,7 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
     const ClipSlot slot = static_cast<ClipSlot>(k);
     ImGui::PushID(k);
     ImGui::SeparatorText(clipSlotName(slot));
-    const CharacterClip *clip = panel.clips.clip(slot);
+    const CharacterClip *clip = panel.description.clip(slot);
     const std::string preview = clip ? shortName(clip->file) : std::string("(none)");
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##file", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
@@ -1879,7 +1909,7 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
       ImGui::SetNextItemWidth(-FLT_MIN);
       ImGui::InputTextWithHint("##filter", "filter", clipFilter, sizeof clipFilter);
       if (ImGui::Selectable("(none)", !clip)) {
-        panel.clips.removeClip(slot);
+        panel.description.removeClip(slot);
         panel.clipChanged = slot;
       }
       for (const std::string &file : panel.clipFiles) {
@@ -1892,13 +1922,13 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
           chosen.slot = slot;
           chosen.file = file;
           chosen.loop = defaultLoop(slot);
-          panel.clips.setClip(chosen);
+          panel.description.setClip(chosen);
           panel.clipChanged = slot;
         }
       }
       ImGui::EndCombo();
     }
-    if (clip = panel.clips.clip(slot); clip) {
+    if (clip = panel.description.clip(slot); clip) {
       CharacterClip edited = *clip;
       bool changed = false;
       ImGui::SetNextItemWidth(110.0f);
@@ -1914,7 +1944,7 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
         // The file format wants an end after the start, or none.
         if (edited.end > 0.0f && edited.end <= edited.start)
           edited.end = edited.start + 0.01f;
-        panel.clips.setClip(edited);
+        panel.description.setClip(edited);
         panel.clipChanged = slot;
       }
     }

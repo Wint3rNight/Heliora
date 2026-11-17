@@ -166,6 +166,9 @@ struct SceneFog {
 struct ScenePlayerStart {
   glm::vec3 position = glm::vec3(0.0f); // the feet
   float yaw = 0.0f;
+  // The character file's variant this scene plays with ("arcade"), or the
+  // base tuning when empty.
+  std::string variant;
   SceneSectionInfo info; // only the comment is used
   bool operator==(const ScenePlayerStart &) const = default;
 };

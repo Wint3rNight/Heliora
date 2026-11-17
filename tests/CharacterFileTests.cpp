@@ -156,3 +156,34 @@ TEST(clips_are_set_and_cleared_by_slot) {
   CHECK(!c.clip(ClipSlot::Jump));
   CHECK(c.clips.size() == 1);
 }
+
+TEST(tuning_and_variants_are_read_and_written) {
+  const std::string text = "model = a.fbx\n\n# How he moves\n[tuning]\nrun_speed = 6\n"
+                           "air_speed_limit = true\n\n[clip]\nslot = idle\nfile = b.fbx\n\n"
+                           "# For the climb\n[variant arcade]\nair_speed_limit = false\n";
+  const CharacterDescription c = parseText(text);
+  CHECK(c.tuning.size() == 2);
+  if (c.tuning.size() == 2) {
+    CHECK(c.tuning[0].key == "run_speed" && c.tuning[0].value == "6");
+    CHECK(c.tuning[1].key == "air_speed_limit" && c.tuning[1].value == "true");
+  }
+  CHECK(c.tuningComment == "# How he moves\n");
+  const CharacterVariant *arcade = c.variant("arcade");
+  CHECK(arcade != nullptr);
+  if (arcade) {
+    CHECK(arcade->comment == "# For the climb\n");
+    CHECK(arcade->values.size() == 1);
+    CHECK(arcade->values.size() == 1 && arcade->values[0].value == "false");
+  }
+  CHECK(!c.variant("racing"));
+  std::istringstream again(CharacterIO::write(c));
+  CHECK(CharacterIO::parse(again, "again.character") == c);
+}
+
+TEST(broken_tuning_and_variants_say_what_and_where) {
+  CHECK(contains(errorFor("model = a.fbx\n[variant]\nx = 1\n"), "line 2"));
+  CHECK(contains(errorFor("model = a.fbx\n[variant a]\nx = 1\n[variant a]\ny = 2\n"),
+                 "twice"));
+  CHECK(contains(errorFor("model = a.fbx\n[tuning]\nx = 1\n[tuning]\ny = 2\n"), "twice"));
+  CHECK(contains(errorFor("model = a.fbx\n[tuning]\njust words\n"), "line 3"));
+}

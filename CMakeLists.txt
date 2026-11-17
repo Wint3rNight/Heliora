@@ -112,6 +112,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterAnimator.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterFile.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterSettings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Controls.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EditHistory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/GizmoMath.cpp
@@ -187,6 +188,7 @@ add_executable(heliora_tests
         tests/CharacterAnimatorTests.cpp
         tests/CharacterControllerTests.cpp
         tests/CharacterFileTests.cpp
+        tests/CharacterSettingsTests.cpp
         tests/ControlsTests.cpp
         tests/EditHistoryTests.cpp
         tests/FixedStepTests.cpp

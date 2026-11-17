@@ -43,6 +43,10 @@ struct CharacterTuning {
   // In the air it eases in a straight line at this, so a jump keeps most of
   // its momentum.
   float airAcceleration = 8.0f;
+  // With it, the air can steer and slow it but not take it faster than it
+  // left the ground at (walking pace at least); without, it speeds up in
+  // flight like an arcade game (the climb's "arcade" variant).
+  bool airSpeedLimit = true;
 
   float jumpHeight = 1.2f; // m
   float coyoteTime = 0.1f; // s after walking off a ledge that a jump still works
@@ -58,6 +62,7 @@ struct CharacterTuning {
   float stepUp = 0.3f;        // m, see PhysicsCharacterMove::stepUp
   float stickDown = 0.5f;     // m
   float pushStrength = 100.0f; // N
+  bool operator==(const CharacterTuning &) const = default;
 };
 
 // The same values, made to fit together: the height leaves room for the
@@ -134,6 +139,7 @@ private:
   bool onGround = false;
   bool jumpedSinceGround = false;
   float airTime = 0.0f;   // s since it last stood on walkable ground
+  float airSpeedCap = 1.5f; // m/s, the most the air may take it to (airSpeedLimit)
   float jumpQueued = 0.0f; // s a jump press stays buffered
   float dodgeLeft = 0.0f;  // s of the current dodge still to go
   float dodgeWait = 0.0f;  // s until the next dodge is allowed

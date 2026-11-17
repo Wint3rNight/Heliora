@@ -44,7 +44,7 @@ struct NodeTransform {
 // Where a section sat in its file and the comment lines right above it, so a
 // saved scene keeps a person's notes and the order they wrote things in.
 struct SceneSectionInfo {
-  int order = 0;       // position among the file's [model], [grid], [ring]
+  int order = 0;       // position among the file's [model], [grid], [ring], [character]
   std::string comment; // the '#' lines above the section, as written
   bool operator==(const SceneSectionInfo &) const = default;
 };
@@ -81,9 +81,25 @@ struct SceneModelEntry {
   std::optional<float> restitution; // bounciness, 0 to 1
   NodeTransform transform;
   NodeAnimation animation;
+  // A copy of an object asset (a prefab, Resources/Objects/*.object): its
+  // path, and the keys this copy sets itself; every other key comes from
+  // the object (resolvePrefab in Prefab.h). Empty for an ordinary object.
+  std::string object;
+  std::vector<std::string> overrides;
   SceneSectionInfo info;
   bool operator==(const SceneModelEntry &) const = default;
 };
+
+// The keys that say what a [model] is, as opposed to where it stands
+// (position, rotation, scale) or how it moves (spin, orbit, bob): what an
+// object asset holds, and what a copy of one can override.
+bool isModelDataKey(std::string_view key);
+// One [model] key read into model, as scene files read it (throws naming the
+// line for a bad value); false if it isn't a [model] key. For object files.
+bool readModelKey(SceneModelEntry &model, const std::string &key, const std::string &value,
+                  int lineNumber);
+// A [model]'s keys as scene files write them.
+std::string modelKeysText(const SceneModelEntry &model);
 
 // Whether it's drawn with the 1 m world grid over its colour: generated
 // shapes with a static body, the pieces a level is built from.
@@ -124,9 +140,9 @@ std::vector<SceneModelEntry> expandGrid(const SceneGridEntry &grid);
 // one brick selects all of them. The player start has no nodes; there's one
 // per scene at most, so its index is always 0.
 struct SceneEntryRef {
-  enum class Kind : uint8_t { None, Model, Grid, Player };
+  enum class Kind : uint8_t { None, Model, Grid, Player, Character };
   Kind kind = Kind::None;
-  int index = -1; // into SceneDescription::models or ::grids
+  int index = -1; // into SceneDescription::models, ::grids or ::characters
   bool operator==(const SceneEntryRef &) const = default;
 };
 
@@ -161,7 +177,7 @@ struct SceneFog {
 };
 
 // Where the character starts when Play is pressed. One per scene at most.
-// yaw is in degrees about +y, 0 facing -z (CharacterController's way round,
+// yaw is in degrees about +y, 0 facing -z (CharacterMovement's way round,
 // in degrees like the rest of the file).
 struct ScenePlayerStart {
   glm::vec3 position = glm::vec3(0.0f); // the feet
@@ -171,6 +187,20 @@ struct ScenePlayerStart {
   std::string variant;
   SceneSectionInfo info; // only the comment is used
   bool operator==(const ScenePlayerStart &) const = default;
+};
+
+// A character standing in the scene: its .character file, where its feet
+// are and which way it faces (degrees, like [player]), and the variant of
+// the file's tuning it plays with. The one marked player is who the player
+// plays as, one per scene at most; the rest stand still until there's AI.
+struct SceneCharacterEntry {
+  std::string file; // Resources/Characters/ganfaul.character
+  glm::vec3 position = glm::vec3(0.0f);
+  float yaw = 0.0f;
+  std::string variant; // empty: the file's base tuning
+  bool player = false;
+  SceneSectionInfo info; // numbered with the models, grids and rings
+  bool operator==(const SceneCharacterEntry &) const = default;
 };
 
 struct SceneDescription {
@@ -184,6 +214,7 @@ struct SceneDescription {
   std::vector<SceneModelEntry> models;
   std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;
+  std::vector<SceneCharacterEntry> characters;
   std::string headerComment; // '#' lines at the top of the file
   bool operator==(const SceneDescription &) const = default;
 };
@@ -200,8 +231,19 @@ std::optional<std::string> problemWith(const SceneGridEntry &grid);
 // The same for the sun and fog, which the Lighting tab edits.
 std::optional<std::string> problemWith(const SceneSun &sun);
 std::optional<std::string> problemWith(const SceneFog &fog);
-// And the player start, which the Inspector and the gizmo edit.
+// And the player start and characters, which the Inspector and the gizmo
+// edit.
 std::optional<std::string> problemWith(const ScenePlayerStart &start);
+std::optional<std::string> problemWith(const SceneCharacterEntry &character);
+
+// The character the player plays as, if one is ticked. Without one the
+// player starts at [player] as the default character.
+std::optional<int> playerCharacter(const SceneDescription &scene);
+// Ticks that one as the player and unticks the rest; -1 unticks them all.
+void setPlayerCharacter(SceneDescription &scene, int index);
+// Adds a character after everything else in the file and returns where it
+// went: the end of the characters list.
+SceneEntryRef addCharacter(SceneDescription &scene, SceneCharacterEntry character);
 
 // Takes the entry out (for the player start, the scene's [player]). The
 // others keep their order in the file, but entries of the same kind after it
@@ -218,10 +260,10 @@ std::vector<SceneEntryRef> splitGrid(SceneDescription &scene, int gridIndex);
 // the end of the models list.
 SceneEntryRef addModel(SceneDescription &scene, SceneModelEntry model);
 
-// A copy of a model or a whole grid, moved by offset, added after
-// everything else in the file like addModel. The comment above the original
-// stays with it. Nothing for the player start (one per scene) or an entry
-// that isn't there.
+// A copy of a model, a whole grid or a character, moved by offset, added
+// after everything else in the file like addModel. The comment above the
+// original stays with it, and so does the player tick (one per scene).
+// Nothing for the player start (one per scene) or an entry that isn't there.
 std::optional<SceneEntryRef> duplicateEntry(SceneDescription &scene,
                                             SceneEntryRef ref,
                                             glm::vec3 offset);
@@ -235,8 +277,8 @@ std::optional<std::string> sceneFileNameFor(std::string_view name);
 namespace SceneIO {
 
 // Parses a .scene file (INI-style: `key = value` lines under [camera], [sun],
-// [fog], [player], [model], [grid] and [ring] sections; `#` starts a
-// comment). Throws
+// [fog], [player], [model], [grid], [ring] and [character] sections; `#`
+// starts a comment). Throws
 // std::runtime_error with a line number on malformed input.
 SceneDescription loadFromFile(const std::string &path);
 
@@ -250,8 +292,8 @@ SceneDescription parse(std::istream &in, const std::string &sourceName);
 std::vector<SceneDescription> discover(const std::string &directory);
 
 // The scene as .scene text: the header comment, the global keys, [camera],
-// [sun], [fog], [player], then every [model], [grid] and [ring] in their original
-// order, each with the comment that sat above it. Only keys that differ from
+// [sun], [fog], [player], then every [model], [grid], [ring] and [character]
+// in their original order, each with the comment that sat above it. Only keys that differ from
 // their defaults are written, so a saved file reads like a hand-written one.
 std::string write(const SceneDescription &scene);
 

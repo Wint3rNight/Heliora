@@ -114,12 +114,18 @@ TEST(a_folder_lists_its_subfolders_and_models) {
   write(root / "notes.txt", "x");
   write(root / "walking.fbx", "x"); // a clip
   write(root / "idle.fbx", "x");
+  write(root / "crate.object", "x"); // a prefab
+  write(root / "ganfaul.character", "x");
+  write(root / "goblin.character", "x");
   write(root / ".thumbnails" / "a.png", "x");
   fs::create_directories(root / "empty");
   const FolderListing listing = listFolder(root);
   CHECK((listing.folders == std::vector<std::string>{"empty", "rock"}));
   CHECK((listing.models == std::vector<std::string>{"barrel.gltf", "crate.glb"}));
   CHECK((listing.clips == std::vector<std::string>{"idle.fbx", "walking.fbx"}));
+  CHECK((listing.objects == std::vector<std::string>{"crate.object"}));
+  CHECK((listing.characters ==
+         std::vector<std::string>{"ganfaul.character", "goblin.character"}));
   CHECK(listFolder(root / "missing").folders.empty());
   fs::remove_all(root);
 }

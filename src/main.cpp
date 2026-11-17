@@ -306,7 +306,7 @@ int main(int argc, char **argv) {
   // HELIORA_CAPTURE_PLAY=1 stays in play mode instead, character and all,
   // and HELIORA_CAPTURE_UI=1 keeps the panels, to check the editor itself.
   // HELIORA_CAPTURE_KEYS presses the character's keys on a script, so its
-  // moves can be checked too (scriptedControls in Player.h).
+  // moves can be checked too (scriptedControls in PlayerController.h).
   const char *capturePath = std::getenv("HELIORA_CAPTURE");
   const char *captureKeys = std::getenv("HELIORA_CAPTURE_KEYS");
   const char *captureFramesText = std::getenv("HELIORA_CAPTURE_FRAMES");

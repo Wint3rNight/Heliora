@@ -113,7 +113,49 @@ void SkinningPass::create(VulkanDevice &newDevice, VkPipelineCache pipelineCache
   vkDestroyShaderModule(dev, shader, nullptr);
   if (result != VK_SUCCESS)
     throw std::runtime_error("Failed to create the skinning pipeline");
+}
 
+void SkinningPass::cleanup() {
+  if (!device)
+    return;
+  const VkDevice dev = device->getLogicalDevice();
+  for (Copy &copy : copies)
+    if (copy.pool)
+      vkDestroyDescriptorPool(dev, copy.pool, nullptr);
+  copies.clear();
+  meshes.clear();
+  if (pipeline)
+    vkDestroyPipeline(dev, pipeline, nullptr);
+  if (pipelineLayout)
+    vkDestroyPipelineLayout(dev, pipelineLayout, nullptr);
+  if (setLayout)
+    vkDestroyDescriptorSetLayout(dev, setLayout, nullptr);
+  pipeline = VK_NULL_HANDLE;
+  pipelineLayout = VK_NULL_HANDLE;
+  setLayout = VK_NULL_HANDLE;
+  device = nullptr;
+}
+
+int SkinningPass::addMesh(const std::vector<Vertex> &bindVertices,
+                          const std::vector<VertexSkin> &skin, size_t boneCount) {
+  if (!device || bindVertices.empty() || skin.size() != bindVertices.size())
+    return -1;
+  Mesh mesh;
+  uploadStorage(*device, bindVertices.data(), sizeof(Vertex) * bindVertices.size(),
+                mesh.bind);
+  uploadStorage(*device, skin.data(), sizeof(VertexSkin) * skin.size(), mesh.skin);
+  mesh.vertexCount = static_cast<uint32_t>(bindVertices.size());
+  mesh.matrixCount = std::max<size_t>(boneCount, 1);
+  meshes.push_back(std::move(mesh));
+  return static_cast<int>(meshes.size()) - 1;
+}
+
+int SkinningPass::addCopy(int mesh) {
+  if (!device || mesh < 0 || mesh >= static_cast<int>(meshes.size()))
+    return -1;
+  const VkDevice dev = device->getLogicalDevice();
+  Copy copy;
+  copy.mesh = mesh;
   VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                 static_cast<uint32_t>(5 * MAX_FRAMES_DRAWS)};
   VkDescriptorPoolCreateInfo poolCI{};
@@ -121,97 +163,58 @@ void SkinningPass::create(VulkanDevice &newDevice, VkPipelineCache pipelineCache
   poolCI.maxSets = MAX_FRAMES_DRAWS;
   poolCI.poolSizeCount = 1;
   poolCI.pPoolSizes = &poolSize;
-  if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &descriptorPool) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create the skinning descriptor pool");
+  if (vkCreateDescriptorPool(dev, &poolCI, nullptr, &copy.pool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create a skinning descriptor pool");
   std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_DRAWS, setLayout);
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = descriptorPool;
+  allocInfo.descriptorPool = copy.pool;
   allocInfo.descriptorSetCount = MAX_FRAMES_DRAWS;
   allocInfo.pSetLayouts = layouts.data();
-  sets.resize(MAX_FRAMES_DRAWS);
-  if (vkAllocateDescriptorSets(dev, &allocInfo, sets.data()) != VK_SUCCESS)
+  copy.sets.resize(MAX_FRAMES_DRAWS);
+  if (vkAllocateDescriptorSets(dev, &allocInfo, copy.sets.data()) != VK_SUCCESS) {
+    vkDestroyDescriptorPool(dev, copy.pool, nullptr);
     throw std::runtime_error("Failed to allocate the skinning descriptor sets");
-}
-
-void SkinningPass::cleanup() {
-  if (!device)
-    return;
-  const VkDevice dev = device->getLogicalDevice();
-  bindBuffer.reset();
-  skinBuffer.reset();
-  matrixBuffers.clear();
-  if (descriptorPool)
-    vkDestroyDescriptorPool(dev, descriptorPool, nullptr);
-  if (pipeline)
-    vkDestroyPipeline(dev, pipeline, nullptr);
-  if (pipelineLayout)
-    vkDestroyPipelineLayout(dev, pipelineLayout, nullptr);
-  if (setLayout)
-    vkDestroyDescriptorSetLayout(dev, setLayout, nullptr);
-  descriptorPool = VK_NULL_HANDLE;
-  pipeline = VK_NULL_HANDLE;
-  pipelineLayout = VK_NULL_HANDLE;
-  setLayout = VK_NULL_HANDLE;
-  sets.clear();
-  vertexCount = 0;
-  device = nullptr;
-}
-
-void SkinningPass::setMesh(const std::vector<Vertex> &bindVertices,
-                           const std::vector<VertexSkin> &skin, size_t boneCount) {
-  if (!device || bindVertices.empty() || skin.size() != bindVertices.size())
-    return;
-  uploadStorage(*device, bindVertices.data(), sizeof(Vertex) * bindVertices.size(),
-                bindBuffer);
-  uploadStorage(*device, skin.data(), sizeof(VertexSkin) * skin.size(), skinBuffer);
-  matrixBuffers.clear();
-  matrixBuffers.resize(MAX_FRAMES_DRAWS);
-  matrixCount = std::max<size_t>(boneCount, 1);
+  }
+  // Identity until the first pose: the bind pose.
+  const size_t matrixCount = meshes[mesh].matrixCount;
   const std::vector<glm::mat4> identity(matrixCount, glm::mat4(1.0f));
-  for (AllocatedBuffer &buffer : matrixBuffers) {
+  copy.matrixBuffers.resize(MAX_FRAMES_DRAWS);
+  for (AllocatedBuffer &buffer : copy.matrixBuffers) {
     createBuffer(device->getAllocator(), sizeof(glm::mat4) * matrixCount,
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                  RENDER_UPLOAD_ALLOCATION_FLAGS, &buffer);
     uploadToAllocation(device->getAllocator(), buffer.getAllocation(),
                        identity.data(), sizeof(glm::mat4) * matrixCount);
   }
-  vertexCount = static_cast<uint32_t>(bindVertices.size());
+  copies.push_back(std::move(copy));
+  return static_cast<int>(copies.size()) - 1;
 }
 
-void SkinningPass::updateMatrices(int frame, const std::vector<glm::mat4> &skinning) {
-  if (!hasMesh() || skinning.size() < matrixCount)
+size_t SkinningPass::vertexCount(int copy) const {
+  return hasCopy(copy) ? meshes[copies[copy].mesh].vertexCount : 0;
+}
+
+void SkinningPass::updateMatrices(int copy, int frame,
+                                  const std::vector<glm::mat4> &skinning) {
+  if (!hasCopy(copy))
     return;
-  uploadToAllocation(device->getAllocator(), matrixBuffers[frame].getAllocation(),
+  const size_t matrixCount = meshes[copies[copy].mesh].matrixCount;
+  if (skinning.size() < matrixCount)
+    return;
+  uploadToAllocation(device->getAllocator(),
+                     copies[copy].matrixBuffers[frame].getAllocation(),
                      skinning.data(), sizeof(glm::mat4) * matrixCount);
 }
 
-void SkinningPass::record(VkCommandBuffer cmd, int frame, VkBuffer meshVertices,
-                          VkBuffer arena, int32_t arenaFirstVertex) {
-  if (!hasMesh() || meshVertices == VK_NULL_HANDLE)
+void SkinningPass::record(VkCommandBuffer cmd, int frame,
+                          const std::vector<Target> &targets) {
+  std::vector<const Target *> valid;
+  for (const Target &target : targets)
+    if (hasCopy(target.copy) && target.meshVertices != VK_NULL_HANDLE)
+      valid.push_back(&target);
+  if (valid.empty())
     return;
-  const bool writeArena = arena != VK_NULL_HANDLE && arenaFirstVertex >= 0;
-  // This slot's set was last used by the frame two before, which its fence
-  // has finished; the shared buffer may have been replaced since.
-  const std::array<VkDescriptorBufferInfo, 5> infos = {{
-      {bindBuffer.get(), 0, VK_WHOLE_SIZE},
-      {skinBuffer.get(), 0, VK_WHOLE_SIZE},
-      {matrixBuffers[frame].get(), 0, VK_WHOLE_SIZE},
-      {meshVertices, 0, VK_WHOLE_SIZE},
-      {writeArena ? arena : meshVertices, 0, VK_WHOLE_SIZE},
-  }};
-  std::array<VkWriteDescriptorSet, 5> writes{};
-  for (uint32_t i = 0; i < writes.size(); ++i) {
-    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[i].dstSet = sets[frame];
-    writes[i].dstBinding = i;
-    writes[i].descriptorCount = 1;
-    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[i].pBufferInfo = &infos[i];
-  }
-  vkUpdateDescriptorSets(device->getLogicalDevice(),
-                         static_cast<uint32_t>(writes.size()), writes.data(), 0,
-                         nullptr);
 
   vkdbgBeginLabel(cmd, "Skinning", 0.9f, 0.5f, 0.2f);
   // The frames before drew from these vertices (vertex input) on this queue;
@@ -221,14 +224,41 @@ void SkinningPass::record(VkCommandBuffer cmd, int frame, VkBuffer meshVertices,
               VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
           0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
-                          1, &sets[frame], 0, nullptr);
-  const SkinningPush push{vertexCount,
-                          static_cast<uint32_t>(std::max(arenaFirstVertex, 0)),
-                          writeArena ? 1u : 0u};
-  vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                     sizeof(push), &push);
-  vkCmdDispatch(cmd, (vertexCount + 63) / 64, 1, 1);
+  for (const Target *target : valid) {
+    const Copy &copy = copies[target->copy];
+    const Mesh &mesh = meshes[copy.mesh];
+    const bool writeArena = target->arena != VK_NULL_HANDLE && target->arenaFirstVertex >= 0;
+    // This slot's set was last used by the frame two before, which its
+    // fence has finished; the shared buffer may have been replaced since.
+    const std::array<VkDescriptorBufferInfo, 5> infos = {{
+        {mesh.bind.get(), 0, VK_WHOLE_SIZE},
+        {mesh.skin.get(), 0, VK_WHOLE_SIZE},
+        {copy.matrixBuffers[frame].get(), 0, VK_WHOLE_SIZE},
+        {target->meshVertices, 0, VK_WHOLE_SIZE},
+        {writeArena ? target->arena : target->meshVertices, 0, VK_WHOLE_SIZE},
+    }};
+    std::array<VkWriteDescriptorSet, 5> writes{};
+    for (uint32_t i = 0; i < writes.size(); ++i) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = copy.sets[frame];
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(device->getLogicalDevice(),
+                           static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                           nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
+                            1, &copy.sets[frame], 0, nullptr);
+    const SkinningPush push{mesh.vertexCount,
+                            static_cast<uint32_t>(std::max(target->arenaFirstVertex, 0)),
+                            writeArena ? 1u : 0u};
+    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(push), &push);
+    // Copies write different vertices, so they need nothing between them.
+    vkCmdDispatch(cmd, (mesh.vertexCount + 63) / 64, 1, 1);
+  }
   // This frame's G-buffer and, later on this queue, its shadows read them.
   barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,

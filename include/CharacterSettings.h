@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CharacterAnimator.h"
-#include "CharacterController.h"
+#include "CharacterMovement.h"
 #include "CharacterFile.h"
 #include "SettingsFile.h"
 

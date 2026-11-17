@@ -38,5 +38,7 @@ struct FolderListing {
   std::vector<std::string> folders;
   std::vector<std::string> models;
   std::vector<std::string> clips;
+  std::vector<std::string> objects; // .object files (prefabs)
+  std::vector<std::string> characters; // .character files
 };
 FolderListing listFolder(const std::filesystem::path &folder);

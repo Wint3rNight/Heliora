@@ -873,3 +873,111 @@ TEST(static_generated_shapes_get_the_world_grid) {
   rock.body = PhysicsMotion::Static;
   CHECK(!showsWorldGrid(rock));
 }
+
+TEST(character_sections_read_and_write_back) {
+  const SceneDescription scene =
+      parseText("[model]\nshape = box\n"
+                "# The guard by the door\n"
+                "[character]\nfile = Resources/Characters/ganfaul.character\n"
+                "position = 1 0 -2\nyaw = 90\nvariant = arcade\n"
+                "[character]\nfile = Resources/Characters/ganfaul.character\n"
+                "player = true\n");
+  CHECK(scene.characters.size() == 2);
+  const SceneCharacterEntry &guard = scene.characters[0];
+  CHECK(guard.file == "Resources/Characters/ganfaul.character");
+  CHECK(guard.position == glm::vec3(1.0f, 0.0f, -2.0f));
+  CHECK_NEAR(guard.yaw, 90.0, 1e-6);
+  CHECK(guard.variant == "arcade");
+  CHECK(!guard.player);
+  CHECK(guard.info.comment == "# The guard by the door");
+  CHECK(scene.characters[1].player);
+  CHECK(scene.characters[1].variant.empty());
+  // In the file's order among the models, and only what isn't a default.
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("[model]") < text.find("[character]"));
+  CHECK(text.find("player = true") != std::string::npos);
+  CHECK(text.find("player = false") == std::string::npos);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(bad_characters_are_errors) {
+  CHECK(errorOf("[character]\nposition = 0 0 0\n").find("'file'") != std::string::npos);
+  CHECK(errorOf("[character]\nfile = a.character\nheight = 2\n")
+            .find("unknown character key") != std::string::npos);
+  CHECK(errorOf("[character]\nfile = a.character\nplayer = maybe\n").find("line 3") !=
+        std::string::npos);
+  CHECK(errorOf("[character]\nfile = a.character\nyaw = inf\n").find("line 3") !=
+        std::string::npos);
+  CHECK(errorOf("[character]\nfile = a.character\nvariant =\n").find("line 3") !=
+        std::string::npos);
+}
+
+TEST(only_one_character_is_the_player) {
+  const std::string two = "[character]\nfile = a.character\nplayer = true\n"
+                          "[character]\nfile = a.character\nplayer = true\n";
+  CHECK(errorOf(two).find("line 4") != std::string::npos);
+  CHECK(errorOf(two).find("only one") != std::string::npos);
+}
+
+TEST(the_player_character_is_the_ticked_one_or_none) {
+  SceneDescription scene = parseText("[character]\nfile = a.character\n"
+                                     "[character]\nfile = b.character\nplayer = true\n");
+  CHECK(playerCharacter(scene) == std::optional<int>(1));
+  scene.characters[1].player = false;
+  CHECK(!playerCharacter(scene)); // the player start and the default character
+}
+
+TEST(ticking_a_character_as_the_player_unticks_the_others) {
+  SceneDescription scene = parseText("[character]\nfile = a.character\nplayer = true\n"
+                                     "[character]\nfile = b.character\n");
+  setPlayerCharacter(scene, 1);
+  CHECK(!scene.characters[0].player);
+  CHECK(scene.characters[1].player);
+  setPlayerCharacter(scene, -1); // none
+  CHECK(!scene.characters[0].player && !scene.characters[1].player);
+}
+
+TEST(adding_a_character_puts_it_last) {
+  SceneDescription scene = parseText("[character]\nfile = a.character\n[model]\nshape = box\n");
+  SceneCharacterEntry added;
+  added.file = "b.character";
+  const SceneEntryRef ref = addCharacter(scene, added);
+  CHECK((ref == SceneEntryRef{SceneEntryRef::Kind::Character, 1}));
+  CHECK(scene.characters[1].info.order > scene.models[0].info.order);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(duplicating_a_character_leaves_the_player_tick_behind) {
+  SceneDescription scene =
+      parseText("[character]\nfile = a.character\nposition = 1 0 0\nplayer = true\n");
+  const std::optional<SceneEntryRef> copy = duplicateEntry(
+      scene, {SceneEntryRef::Kind::Character, 0}, glm::vec3(2.0f, 0.0f, 0.0f));
+  CHECK((copy == SceneEntryRef{SceneEntryRef::Kind::Character, 1}));
+  CHECK(scene.characters.size() == 2);
+  CHECK(scene.characters[1].position == glm::vec3(3.0f, 0.0f, 0.0f));
+  CHECK(scene.characters[0].player);
+  CHECK(!scene.characters[1].player);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(removing_a_character_keeps_the_rest_in_order) {
+  SceneDescription scene = parseText("[character]\nfile = a.character\n"
+                                     "[model]\nshape = box\n"
+                                     "[character]\nfile = b.character\n");
+  removeEntry(scene, {SceneEntryRef::Kind::Character, 0});
+  CHECK(scene.characters.size() == 1);
+  CHECK(scene.characters[0].file == "b.character");
+  CHECK(scene.models[0].info.order < scene.characters[0].info.order);
+  CHECK(reparse(scene) == scene);
+}
+
+TEST(character_edits_must_be_ordinary_numbers_and_name_a_file) {
+  SceneCharacterEntry character;
+  character.file = "a.character";
+  CHECK(!problemWith(character));
+  SceneCharacterEntry noFile;
+  CHECK(problemWith(noFile));
+  SceneCharacterEntry lost = character;
+  lost.position.x = std::numeric_limits<float>::quiet_NaN();
+  CHECK(problemWith(lost));
+}

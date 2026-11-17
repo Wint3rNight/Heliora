@@ -1,4 +1,4 @@
-#include "CharacterController.h"
+#include "CharacterMovement.h"
 
 #include <algorithm>
 #include <cmath>
@@ -52,9 +52,8 @@ glm::vec3 yawForward(float yaw) {
   return glm::vec3(-std::sin(yaw), 0.0f, -std::cos(yaw));
 }
 
-CharacterController::CharacterController(PhysicsWorld &world, glm::vec3 feet,
-                                         float yaw,
-                                         const CharacterTuning &tuning)
+CharacterMovement::CharacterMovement(PhysicsWorld &world, glm::vec3 feet,
+                                     float yaw, const CharacterTuning &tuning)
     : world(world), tune(tuning) {
   PhysicsCharacterDesc desc;
   desc.radius = tune.radius;
@@ -65,9 +64,9 @@ CharacterController::CharacterController(PhysicsWorld &world, glm::vec3 feet,
   place(feet, yaw);
 }
 
-CharacterController::~CharacterController() { world.removeCharacter(id); }
+CharacterMovement::~CharacterMovement() { world.removeCharacter(id); }
 
-void CharacterController::place(glm::vec3 feet, float yaw) {
+void CharacterMovement::place(glm::vec3 feet, float yaw) {
   world.placeCharacter(id, feet);
   current = {world.characterState(id).position, yaw};
   previous = current;
@@ -76,12 +75,23 @@ void CharacterController::place(glm::vec3 feet, float yaw) {
   onGround = false;
   jumpedSinceGround = false;
   airTime = 0.0f;
+  aimed = false;
   jumpQueued = 0.0f;
   dodgeLeft = 0.0f;
   dodgeWait = 0.0f;
 }
 
-void CharacterController::update(const CharacterInput &input, float dt) {
+void CharacterMovement::setTuning(const CharacterTuning &tuning) {
+  const CharacterTuning made = tune;
+  tune = tuning;
+  tune.radius = made.radius;
+  tune.height = made.height;
+  tune.crouchHeight = made.crouchHeight;
+  tune.mass = made.mass;
+}
+
+void CharacterMovement::update(const CharacterInput &input, float dt) {
+  aimed = input.aim;
   const PhysicsCharacterState state = world.characterState(id);
   const float gravity = std::max(0.0f, -world.gravity().y);
 
@@ -284,19 +294,19 @@ void CharacterController::update(const CharacterInput &input, float dt) {
   current = {world.characterState(id).position, yaw};
 }
 
-glm::vec3 CharacterController::velocity() const {
+glm::vec3 CharacterMovement::velocity() const {
   return world.characterState(id).velocity;
 }
 
-float CharacterController::height() const {
+float CharacterMovement::height() const {
   return world.characterState(id).height;
 }
 
-glm::vec3 CharacterController::drawnPosition(float alpha) const {
+glm::vec3 CharacterMovement::drawnPosition(float alpha) const {
   return glm::mix(previous.position, current.position, alpha);
 }
 
-float CharacterController::drawnYaw(float alpha) const {
+float CharacterMovement::drawnYaw(float alpha) const {
   return previous.yaw + angleBetween(previous.yaw, current.yaw) * alpha;
 }
 

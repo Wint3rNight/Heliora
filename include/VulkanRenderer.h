@@ -31,7 +31,9 @@
 #include "ModelManager.h"
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
-#include "Player.h"
+#include "CharacterRoster.h"
+#include "PlayerController.h"
+#include "Prefab.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
 #include "Scene.h"
@@ -145,11 +147,12 @@ public:
     flyCameraPosition = position;
     flyCameraYaw = yawDegrees;
   }
-  // While playing there's a character, and the view comes from its camera.
-  bool hasPlayer() const { return player != nullptr; }
+  // While playing, the player possesses a character and the view comes from
+  // its camera.
+  bool hasPlayer() const { return playerController && playerController->body(); }
   // The player's keys, rebound in the Controls tab.
   const ControlBindings &controls() const { return controlBindings; }
-  const ThirdPersonCamera &playerCamera() const { return player->camera(); }
+  const ThirdPersonCamera &playerCamera() const { return playerController->camera(); }
   // Ctrl+Z and Ctrl+Shift+Z: one finished edit back or forward, rebuilt the
   // way Stop rebuilds, at the top of the next draw(). Edit mode only, and
   // not in the middle of a drag.
@@ -209,13 +212,14 @@ private:
   // moves.
   std::unique_ptr<PhysicsWorld> physics;
   FixedStepClock physicsClock;
-  // The character, while playing. After physics, so it goes first: it takes
-  // its character out of the world. loadScene() removes it before it
-  // replaces the world, and puts a new one in if still playing.
-  std::unique_ptr<Player> player;
+  // While playing: the player's brain, and the bodies of every character in
+  // play (CharacterRoster.h). The controller comes first so it outlives what
+  // it possesses, and both come after physics so the bodies leave the world
+  // before it goes. loadScene() clears them before it replaces the world.
+  std::unique_ptr<PlayerController> playerController;
+  std::unique_ptr<CharacterRoster> roster;
   PlayerControls playerControls;
-  SceneNode *playerNode = nullptr; // its capsule, owned by rootNode
-  int playerModelId = -1;          // standing, and crouched below
+  int playerModelId = -1;          // the capsule standing, and crouched below
   int crouchedPlayerModelId = -1;
   glm::vec3 flyCameraPosition{0.0f};
   float flyCameraYaw = -90.0f; // degrees, Camera's convention
@@ -231,40 +235,92 @@ private:
   // The file each move's clip was read from, so the Clips section only
   // re-reads a clip when its file changes.
   std::array<std::string, static_cast<size_t>(ClipSlot::Count)> loadedClipFiles;
-  int characterModelId = -1; // made at the first scene load, kept after
-  double characterClipTime = 0.0; // seconds into the clip playing
-  // This frame's skinning matrices, worked out while posing and uploaded
-  // in draw() once the frame slot's fence says it's free.
-  std::vector<glm::mat4> characterSkinning;
   std::vector<PhysicsDebugVertex> skeletonLines; // Show skeleton, play mode
-  // Picks and blends the character's clips from what the controller does.
-  // Made with the character at Play, gone with it.
-  std::unique_ptr<CharacterAnimator> animator;
+  // Bends every character's mesh each frame: one mesh per character file,
+  // one copy per character drawn, and each file's copy for its pictures.
   SkinningPass skinningPass;
-  // Clip pictures pose a second copy of the character: its own skinning
-  // pass, into a vertex buffer of its own, drawn by the thumbnail renderer.
-  SkinningPass previewSkinning;
-  AllocatedBuffer previewVertices;
+
+  // A character file in use: read once, shared by every character made
+  // from it. The default one (Ganfaul's) is the Character tab's: its
+  // description and asset are the tab's own, edited live; the others keep
+  // theirs here.
+  struct CharacterFileData {
+    std::string file; // as scenes name it
+    const CharacterDescription *description = nullptr;
+    const CharacterAsset *asset = nullptr; // none: drawn as a capsule
+    CharacterDescription ownDescription;
+    std::optional<CharacterAsset> ownAsset;
+    int skinMesh = -1;
+    // Copies of its mesh to draw at once: a model with its own vertex
+    // buffer, and the skinning copy that bends into it. Made as more are
+    // needed and kept, so rebuilding the scene reuses them.
+    struct Copy {
+      int model = -1;
+      int skin = -1;
+    };
+    std::vector<Copy> copies;
+    // The copy its pictures pose (clip stills, the live clip, its own
+    // tile), skinned into a buffer of its own that only the thumbnail
+    // renderer draws.
+    int previewSkin = -1;
+    AllocatedBuffer previewVertices;
+  };
+  std::vector<std::unique_ptr<CharacterFileData>> characterFiles; // [0] the default
+  std::vector<std::string> characterFileNames; // Resources/Characters/*.character
+  // The file a scene names, read the first time (the GPU must be idle), or
+  // nothing if it can't be read.
+  CharacterFileData *characterFile(const std::string &file);
+  CharacterFileData *defaultCharacter() {
+    return characterFiles.empty() ? nullptr : characterFiles.front().get();
+  }
+  // Its mesh in the skinning pass and the model its copies are made like.
+  void prepareCharacterMesh(CharacterFileData &data);
+  int characterCopy(CharacterFileData &data, size_t index);
+
+  // A character drawn in the scene: a [character], or with none ticked the
+  // player at the player start. Edit mode: standing in its idle pose. Play
+  // mode: a body in the roster, animated.
+  struct LiveCharacter {
+    SceneEntryRef entry; // Kind::None for the player start's
+    CharacterFileData *file = nullptr;
+    std::string variant;
+    CharacterTuning tuning; // what it plays with: its file, its variant
+    AnimatorTuning animation;
+    float scale = 1.0f;  // the model file's units to its body's height
+    SceneNode *node = nullptr; // owned by rootNode
+    int copy = -1; // into file->copies; -1 is the capsule
+    int body = -1; // in the roster, while playing
+    std::unique_ptr<CharacterAnimator> animator; // while playing, with a mesh
+    // This frame's skinning matrices, worked out while posing and uploaded
+    // in draw() once the frame slot's fence says it's free.
+    std::vector<glm::mat4> skinning;
+  };
+  std::vector<LiveCharacter> characters;
+  int playedCharacter = -1; // the one the player possesses, into characters
+  // Every character from the scene, in edit or play mode: the old ones'
+  // nodes and bodies go first. The GPU must be idle (a copy may be new).
+  void buildCharacters();
+  void clearCharacters();
+  // Edit mode: a character's node at its entry's place, after an edit.
+  void placeCharacter(int index);
+  void poseCharacters(float alpha, float frameSeconds);
+  std::pair<CharacterTuning, AnimatorTuning> tuningFor(const CharacterFileData &data,
+                                                       const std::string &variant) const;
+  // The variant the player's character plays: the ticked one's, or the
+  // player start's.
+  std::string playedVariant() const;
+  std::array<RootMotion, 5> dodgePathsFor(const LiveCharacter &character) const;
   void loadCharacter();
-  std::array<RootMotion, 5> characterDodgePaths() const;
   void applyClipChange(ClipSlot slot);
   bool saveCharacterFile();
-  std::pair<CharacterTuning, AnimatorTuning> playedTuning() const;
   void updateCharacterUnsaved();
   void updateVariantNote();
-  void createCharacterModel();
-  // The scale from the model file's units to the spawned body's height.
-  float characterScale() const;
-  // Each bone in the skeleton's space, for this frame.
-  std::vector<glm::mat4> characterPose() const;
   // The character's skeleton as lines where it's drawn this frame.
-  void updateSkeletonLines(const glm::mat4 &placement,
+  void updateSkeletonLines(const LiveCharacter &character, const glm::mat4 &placement,
                            const std::vector<glm::mat4> &model);
   // The capsules for the Character tab's body sizes, made if they aren't
   // yet. A new mesh waits for the GPU to go idle first.
   void ensurePlayerModels();
-  void spawnPlayer();
-  void posePlayer(float alpha, float frameSeconds);
   bool playing = true;
   bool playToggleRequested = false;
   // Animation time. Runs only while playing, and goes back to 0 with the
@@ -317,6 +373,14 @@ private:
   std::string assetStatus;
   void runPendingImports();
   std::optional<SceneModelEntry> pendingSpawn;
+  // Prefabs: the object files read so far, and an Inspector button to act
+  // on at the next edit step.
+  std::map<std::string, ObjectAsset> objectAssets;
+  const ObjectAsset *objectAsset(const std::string &file);
+  std::string objectsFolderOnDisk() const;
+  void resolvePrefabs(SceneDescription &scene);
+  std::optional<std::pair<SceneEntryRef, DebugUiContext::PrefabAction>> pendingPrefabAction;
+  void applyPrefabAction(SceneEntryRef ref, DebugUiContext::PrefabAction action);
   void spawnEntry(SceneModelEntry entry);
   void addNewEntry(SceneModelEntry entry);
   // Dragging from the Assets panel: this frame's hover or drop, and the
@@ -337,6 +401,7 @@ private:
   ImTextureID thumbnailTexture = 0;
   std::vector<std::pair<std::string, SceneModelEntry>> thumbnailRequests;
   std::vector<std::pair<std::string, std::string>> clipRequests; // key, clip file
+  std::vector<std::pair<std::string, std::string>> characterRequests; // key, .character
   // The clip under the mouse in a tile, playing live; clips read for
   // previews, kept for a while.
   ImTextureID liveTexture = 0;
@@ -347,7 +412,11 @@ private:
   std::map<std::string, CharacterClipData> previewClips;
   std::string clipThumbnailKey(const std::string &file) const;
   const CharacterClipData *previewClip(const std::string &file);
-  std::vector<ThumbnailDraw> characterPreviewDraws();
+  std::string characterThumbnailKey(const std::string &file) const;
+  std::vector<ThumbnailDraw> characterPreviewDraws(const CharacterFileData &data);
+  // A posed character's picture, framed around its joints.
+  bool renderCharacterThumbnail(CharacterFileData &data, const std::string &key,
+                                const std::vector<glm::mat4> &model);
   void prepareLivePreview();
   std::chrono::steady_clock::time_point liveTick;
   std::unordered_set<std::string> thumbnailsFailed; // not asked again
@@ -359,6 +428,18 @@ private:
   void showAssetPreview(const SceneModelEntry &entry, glm::vec2 windowPixel, bool turnToSurface);
   void hideAssetPreview();
   void dropAsset(SceneModelEntry entry, glm::vec2 windowPixel, bool turnToSurface);
+  // Characters from the Assets panel: standing on the surface under the
+  // cursor, facing away from the camera, shown meanwhile as a capsule's
+  // outline. Double-click puts one where the camera looks.
+  struct CharacterPlacement {
+    std::string file;
+    std::optional<glm::vec2> windowPixel; // none: where the camera looks
+  };
+  std::optional<CharacterPlacement> characterHover;
+  std::optional<CharacterPlacement> characterDrop;
+  std::optional<SceneCharacterEntry> characterDragShown; // its outline
+  SceneCharacterEntry characterPlacement(const CharacterPlacement &placement);
+  void dropCharacter(const CharacterPlacement &placement);
   bool pendingPlayerStart = false; // the list's Player start, same timing
   void placePlayerStart();
   bool duplicateRequested = false; // Ctrl+D, same timing

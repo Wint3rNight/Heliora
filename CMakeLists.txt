@@ -111,7 +111,8 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AnimationClip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AssetImport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterAnimator.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterMovement.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterRoster.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterSettings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Controls.cpp
@@ -119,9 +120,10 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/GizmoMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PhysicsWorld.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Picking.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Player.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PlayerController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PlayerStart.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PoseBlend.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Prefab.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PrimitiveMesh.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Scene.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SceneNode.cpp
@@ -189,7 +191,8 @@ add_executable(heliora_tests
         tests/AnimationClipTests.cpp
         tests/AssetImportTests.cpp
         tests/CharacterAnimatorTests.cpp
-        tests/CharacterControllerTests.cpp
+        tests/CharacterMovementTests.cpp
+        tests/CharacterRosterTests.cpp
         tests/CharacterFileTests.cpp
         tests/CharacterSettingsTests.cpp
         tests/ControlsTests.cpp
@@ -201,8 +204,9 @@ add_executable(heliora_tests
         tests/PhysicsWorldTests.cpp
         tests/PickingTests.cpp
         tests/PlayerStartTests.cpp
-        tests/PlayerTests.cpp
+        tests/PlayerControllerTests.cpp
         tests/PoseBlendTests.cpp
+        tests/PrefabTests.cpp
         tests/PrimitiveMeshTests.cpp
         tests/SceneNodeTests.cpp
         tests/ScenePhysicsTests.cpp

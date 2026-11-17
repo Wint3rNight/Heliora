@@ -9,7 +9,7 @@
 // and no input devices, so it's tested like the rest of heliora_core.
 //
 // Yaw and pitch are in radians. Yaw is about +y with 0 looking down -z, the
-// same as CharacterController, so its yaw can turn WASD into the world.
+// same as CharacterMovement, so its yaw can turn WASD into the world.
 // Positive pitch looks up.
 
 struct ThirdPersonCameraTuning {

@@ -1,4 +1,4 @@
-#include "CharacterController.h"
+#include "CharacterMovement.h"
 #include "CharacterTestScenes.h"
 #include "TestRunner.h"
 
@@ -30,7 +30,7 @@ CharacterInput pressing(bool jump, bool dodge, glm::vec3 direction = glm::vec3(0
 
 // Steps the controller and the world together, the way the game will. Jump
 // and dodge count as pressed on the first step only.
-void hold(PhysicsWorld &world, CharacterController &character,
+void hold(PhysicsWorld &world, CharacterMovement &character,
           CharacterInput input, int steps) {
   for (int i = 0; i < steps; ++i) {
     character.update(input, kStep);
@@ -43,7 +43,7 @@ void hold(PhysicsWorld &world, CharacterController &character,
 float flatSpeed(glm::vec3 v) { return std::sqrt(v.x * v.x + v.z * v.z); }
 
 // The highest the feet get in the next steps, holding the input.
-float highestOver(PhysicsWorld &world, CharacterController &character,
+float highestOver(PhysicsWorld &world, CharacterMovement &character,
                   CharacterInput input, int steps) {
   float highest = character.position().y;
   for (int i = 0; i < steps; ++i) {
@@ -68,7 +68,7 @@ TEST(yaw_zero_faces_minus_z) {
 TEST(controller_spawns_standing_where_placed) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(2.0f, 0.0f, 1.0f), 0.5f);
+  CharacterMovement character(world, glm::vec3(2.0f, 0.0f, 1.0f), 0.5f);
   CHECK_NEAR(glm::distance(character.position(), glm::vec3(2, 0, 1)), 0.0, 1e-4);
   CHECK_NEAR(character.yaw(), 0.5, 1e-6);
   CHECK_NEAR(character.height(), 1.8, 1e-5);
@@ -82,7 +82,7 @@ TEST(controller_leaves_the_world_with_its_character) {
   PhysicsWorld world;
   addFloor(world);
   {
-    CharacterController character(world, glm::vec3(0.0f), 0.0f);
+    CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
     CHECK(world.bodyCount() == 2);
   }
   CHECK(world.bodyCount() == 1);
@@ -93,7 +93,7 @@ TEST(speed_builds_from_a_walk_to_a_run) {
   // after 0.2 s, a jog by 0.6 s, nearly the run by 1.2 s.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   const CharacterInput ahead = moving(yawForward(0.0f));
   hold(world, character, ahead, 12);
   const float walking = flatSpeed(character.velocity());
@@ -111,7 +111,7 @@ TEST(speed_builds_from_a_walk_to_a_run) {
 TEST(sprint_builds_on_from_the_run) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput input = moving(yawForward(0.0f));
   hold(world, character, input, 180);
   input.sprint = true;
@@ -138,7 +138,7 @@ TEST(stopping_takes_a_moment) {
   // stopped by 0.5 s, about 1.25 m on.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(yawForward(0.0f)), 180);
   const float before = character.position().z;
   hold(world, character, CharacterInput{}, 15);
@@ -154,7 +154,7 @@ TEST(turning_at_a_run_follows_an_arc) {
   // takes about 0.5 s and swings about 1.5 m wide, keeping its speed.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(yawForward(0.0f)), 180);
   const glm::vec3 start = character.position();
   const glm::vec3 right(1.0f, 0.0f, 0.0f);
@@ -173,7 +173,7 @@ TEST(turning_on_the_spot_is_quick) {
   // Standing, it turns at turnRate first and only then sets off.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   // Half way round it pushes only as much as it faces the way: about half
   // of a straight push's 0.67 m/s by now.
@@ -189,7 +189,7 @@ TEST(going_back_at_speed_plants_then_turns) {
   // turns and sets off: no wide U-turn.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(yawForward(0.0f)), 180);
   const glm::vec3 back = -yawForward(0.0f);
   hold(world, character, moving(back), 18);
@@ -211,7 +211,7 @@ TEST(a_wall_takes_the_stored_speed) {
   PhysicsWorld world;
   addFloor(world);
   addStaticBox(world, glm::vec3(0.0f, 1.0f, -3.0f), glm::vec3(5.0f, 1.0f, 0.25f));
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(yawForward(0.0f)), 90);
   CHECK(flatSpeed(character.velocity()) < 0.5f);
   // With the run still stored it would swing round at 5 m/s, over 3 m/s
@@ -225,7 +225,7 @@ TEST(aiming_keeps_quick_footwork) {
   // the run in a sixth of a second, and a side step reversed as quickly.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput input = moving(glm::vec3(1, 0, 0));
   input.aim = true;
   hold(world, character, input, 12);
@@ -241,7 +241,7 @@ TEST(a_standing_jump_barely_drifts) {
   // standing.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   CharacterInput jump = moving(yawForward(0.0f));
   jump.jump = true;
@@ -259,7 +259,7 @@ TEST(a_standing_jump_barely_drifts) {
 TEST(a_running_jump_keeps_its_speed_but_gains_none) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput run = moving(yawForward(0.0f));
   hold(world, character, run, 180);
   CharacterInput jump = run;
@@ -286,7 +286,7 @@ TEST(without_the_air_limit_it_speeds_up_in_the_air) {
   addFloor(world);
   CharacterTuning arcade;
   arcade.airSpeedLimit = false;
-  CharacterController character(world, glm::vec3(0.0f), 0.0f, arcade);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f, arcade);
   hold(world, character, CharacterInput{}, 10);
   CharacterInput jump = moving(yawForward(0.0f));
   jump.jump = true;
@@ -300,7 +300,7 @@ TEST(air_control_is_weaker_than_on_the_ground) {
   addFloor(world);
   CharacterTuning arcade; // the limit would cap it at walking pace
   arcade.airSpeedLimit = false;
-  CharacterController character(world, glm::vec3(0.0f, 5.0f, 0.0f), 0.0f, arcade);
+  CharacterMovement character(world, glm::vec3(0.0f, 5.0f, 0.0f), 0.0f, arcade);
   hold(world, character, moving(glm::vec3(1, 0, 0)), 12);
   CHECK(!character.grounded());
   CHECK_NEAR(flatSpeed(character.velocity()), 8.0 * 12.0 / 60.0, 0.05); // 8 m/s^2
@@ -309,7 +309,7 @@ TEST(air_control_is_weaker_than_on_the_ground) {
 TEST(jump_reaches_its_height) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   const float start = character.position().y;
   const float highest = highestOver(world, character, pressing(true, false), 90);
@@ -323,7 +323,7 @@ TEST(jump_height_holds_under_other_gravity) {
   config.gravity = glm::vec3(0.0f, -4.0f, 0.0f);
   world.applySettings(config);
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   const float start = character.position().y;
   float highest = start;
@@ -346,7 +346,7 @@ TEST(small_hop_isnt_cancelled_by_the_floor) {
   addFloor(world);
   CharacterTuning tuning;
   tuning.jumpHeight = 0.1f;
-  CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f, tuning);
   hold(world, character, CharacterInput{}, 10);
   const float start = character.position().y;
   const float highest = highestOver(world, character, pressing(true, false), 30);
@@ -358,7 +358,7 @@ TEST(jump_stops_at_a_ceiling) {
   addFloor(world);
   // 50 cm of headroom over a 1.8 m character.
   addStaticBox(world, glm::vec3(0.0f, 2.4f, 0.0f), glm::vec3(3.0f, 0.1f, 3.0f));
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   hold(world, character, pressing(true, false), 1);
   int stepsInAir = 1;
@@ -374,7 +374,7 @@ TEST(jump_stops_at_a_ceiling) {
 TEST(no_second_jump_in_the_air) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   const float start = character.position().y;
   hold(world, character, pressing(true, false), 20);
@@ -390,7 +390,7 @@ float riseAfterJumpingLate(int stepsAfterLeaving) {
   PhysicsWorld world;
   addFloor(world);
   addStaticBox(world, glm::vec3(-2.5f, 0.5f, 0.0f), glm::vec3(2.5f, 0.5f, 2.0f));
-  CharacterController character(world, glm::vec3(-1.0f, 1.0f, 0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(-1.0f, 1.0f, 0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 5);
   const CharacterInput walk = moving(glm::vec3(0.6f, 0.0f, 0.0f));
   for (int i = 0; i < 120 && character.grounded(); ++i)
@@ -409,7 +409,7 @@ float heightAfterLandingWithJumpPressedEarly(int stepsBeforeLanding) {
   {
     PhysicsWorld world;
     addFloor(world);
-    CharacterController character(world, glm::vec3(0.0f, 2.0f, 0.0f), 0.0f);
+    CharacterMovement character(world, glm::vec3(0.0f, 2.0f, 0.0f), 0.0f);
     for (int i = 0; i < 120 && landingStep < 0; ++i) {
       hold(world, character, CharacterInput{}, 1);
       if (character.grounded())
@@ -419,7 +419,7 @@ float heightAfterLandingWithJumpPressedEarly(int stepsBeforeLanding) {
   CHECK(landingStep > 20);
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f, 2.0f, 0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f, 2.0f, 0.0f), 0.0f);
   for (int i = 0; i <= landingStep; ++i)
     hold(world, character, pressing(i == landingStep - stepsBeforeLanding, false), 1);
   return highestOver(world, character, CharacterInput{}, 30);
@@ -442,7 +442,7 @@ TEST(crouch_slows_and_waits_for_headroom) {
   addFloor(world);
   // The ceiling's underside is 1.4 m up, over x = -1 to 1.
   addStaticBox(world, glm::vec3(0.0f, 1.5f, 0.0f), glm::vec3(1.0f, 0.1f, 2.0f));
-  CharacterController character(world, glm::vec3(-3.0f, 0.0f, 0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(-3.0f, 0.0f, 0.0f), 0.0f);
   CharacterInput crouchWalk = moving(glm::vec3(1, 0, 0));
   crouchWalk.crouch = true;
   hold(world, character, crouchWalk, 90);
@@ -469,7 +469,7 @@ TEST(a_roll_follows_its_clips_path) {
   // and lasts as long as it.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   std::array<RootMotion, 5> paths;
   paths[static_cast<size_t>(DodgeKind::Roll)] = slowingPath(glm::vec2(0.0f, 1.0f));
   character.setDodgePaths(paths);
@@ -493,7 +493,7 @@ TEST(dodge_scale_stretches_the_path) {
   addFloor(world);
   CharacterTuning tuning;
   tuning.dodgeScale = 2.0f;
-  CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f, tuning);
   std::array<RootMotion, 5> paths;
   paths[static_cast<size_t>(DodgeKind::Roll)] = slowingPath(glm::vec2(0.0f, 1.0f));
   character.setDodgePaths(paths);
@@ -508,7 +508,7 @@ TEST(an_aimed_dodge_steps_the_way_pressed) {
   // from the way it faces, so its own "right" carries it to +x.
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   std::array<RootMotion, 5> paths;
   paths[static_cast<size_t>(DodgeKind::Right)] = slowingPath(glm::vec2(0.5f, 0.0f));
   paths[static_cast<size_t>(DodgeKind::Back)] = slowingPath(glm::vec2(0.0f, -0.5f));
@@ -538,7 +538,7 @@ TEST(an_aimed_dodge_steps_the_way_pressed) {
 TEST(dodge_covers_its_distance) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   hold(world, character, pressing(false, true, glm::vec3(1, 0, 0)), 1);
   CHECK(character.dodging());
@@ -558,7 +558,7 @@ TEST(dodge_covers_its_distance) {
 TEST(dodge_without_input_goes_the_way_it_faces) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   hold(world, character, pressing(false, true), 15);
   CHECK_NEAR(character.position().z, -5.0, 0.1);
@@ -568,7 +568,7 @@ TEST(dodge_without_input_goes_the_way_it_faces) {
 TEST(dodge_waits_for_its_cooldown) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 10);
   const CharacterInput dodgeRight = pressing(false, true, glm::vec3(1, 0, 0));
   hold(world, character, dodgeRight, 1);
@@ -584,7 +584,7 @@ TEST(dodge_waits_for_its_cooldown) {
 TEST(no_dodge_in_the_air) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f, 3.0f, 0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f, 3.0f, 0.0f), 0.0f);
   hold(world, character, pressing(false, true, glm::vec3(1, 0, 0)), 15);
   CHECK(!character.dodging());
   CHECK(character.position().x < 1.0f);
@@ -593,7 +593,7 @@ TEST(no_dodge_in_the_air) {
 TEST(character_turns_to_face_where_it_moves) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(glm::vec3(1, 0, 0)), 1);
   CHECK_NEAR(character.yaw(), -12.566371 / 60.0, 1e-4); // one step of turning
   hold(world, character, moving(glm::vec3(1, 0, 0)), 30);
@@ -603,7 +603,7 @@ TEST(character_turns_to_face_where_it_moves) {
 TEST(turn_takes_the_short_way) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 3.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 3.0f);
   // -3.0 is 0.28 rad away across the back, 6 rad away the long way.
   hold(world, character, moving(yawForward(-3.0f)), 2);
   CHECK_NEAR(facingError(character.yaw(), yawForward(-3.0f)), 0.0, 1e-4);
@@ -612,7 +612,7 @@ TEST(turn_takes_the_short_way) {
 TEST(aiming_faces_the_camera_while_moving) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput input = moving(glm::vec3(1, 0, 0));
   input.aim = true;
   input.aimYaw = kPi; // faces +z
@@ -631,7 +631,7 @@ TEST(controller_rides_a_sliding_slab) {
   slab.position = glm::vec3(0.0f, 0.25f, 0.0f);
   slab.linearVelocity = glm::vec3(1.0f, 0.0f, 0.0f);
   const PhysicsBodyId id = world.addBody(slab);
-  CharacterController character(world, glm::vec3(0.0f, 0.5f, 0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f, 0.5f, 0.0f), 0.0f);
   hold(world, character, CharacterInput{}, 60);
   CHECK_NEAR(character.position().x - world.pose(id).position.x, 0.0, 0.1);
 }
@@ -639,7 +639,7 @@ TEST(controller_rides_a_sliding_slab) {
 TEST(drawn_pose_blends_the_last_two_steps) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   hold(world, character, moving(glm::vec3(1, 0, 0)), 29);
   const glm::vec3 before = character.position();
   const float yawBefore = character.yaw();
@@ -659,7 +659,7 @@ TEST(drawn_pose_blends_the_last_two_steps) {
 TEST(drawn_yaw_blends_the_short_way) {
   PhysicsWorld world;
   addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 3.1f);
+  CharacterMovement character(world, glm::vec3(0.0f), 3.1f);
   hold(world, character, moving(yawForward(-3.1f)), 1); // crosses +-pi
   const float half = character.drawnYaw(0.5f);
   CHECK(std::fabs(std::fabs(half) - kPi) < 0.1f); // near the back, not the front
@@ -673,7 +673,7 @@ TEST(tuning_reaches_the_physics_character) {
     addStaticBox(world, glm::vec3(2.5f, 0.175f, 0.0f), glm::vec3(1.0f, 0.175f, 2.0f));
     CharacterTuning tuning;
     tuning.stepUp = stepUp;
-    CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+    CharacterMovement character(world, glm::vec3(0.0f), 0.0f, tuning);
     // Building up to 3 m/s, so it's on the 2 m long step at the end.
     hold(world, character, moving(glm::vec3(0.6f, 0, 0)), 80);
     CHECK((character.position().y > 0.3f) == (stepUp > 0.0f));
@@ -685,7 +685,7 @@ TEST(tuning_reaches_the_physics_character) {
     addRamp(world, 40.0f);
     CharacterTuning tuning;
     tuning.maxSlope = glm::radians(maxSlope);
-    CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+    CharacterMovement character(world, glm::vec3(0.0f), 0.0f, tuning);
     hold(world, character, moving(glm::vec3(0.6f, 0, 0)), 150);
     CHECK((character.position().y > 1.0f) == (maxSlope > 40.0f));
   }
@@ -700,7 +700,7 @@ TEST(tuning_reaches_the_physics_character) {
     const PhysicsBodyId id = world.addBody(box);
     CharacterTuning tuning;
     tuning.pushStrength = strength;
-    CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
+    CharacterMovement character(world, glm::vec3(0.0f), 0.0f, tuning);
     hold(world, character, moving(glm::vec3(0.4f, 0, 0)), 90);
     CHECK((world.pose(id).position.x > 1.5f) == (strength > 0.0f));
   }
@@ -711,7 +711,7 @@ TEST(tuning_reaches_the_physics_character) {
     addRamp(world, 30.0f);
     CharacterTuning tuning;
     tuning.stickDown = stickDown;
-    CharacterController character(
+    CharacterMovement character(
         world, glm::vec3(7.0f, test::rampSurfaceY(7.0f, 30.0f) + 0.05f, 0.0f), 0.0f, tuning);
     hold(world, character, CharacterInput{}, 30);
     int stepsInAir = 0;
@@ -740,4 +740,53 @@ TEST(tuning_is_kept_consistent) {
   CharacterTuning tallCrouch;
   tallCrouch.crouchHeight = 2.5f;
   CHECK(consistent(tallCrouch).crouchHeight == tallCrouch.height);
+}
+
+TEST(new_tuning_applies_from_the_next_step) {
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
+  CharacterTuning slower;
+  slower.runSpeed = 3.0f;
+  character.setTuning(slower);
+  hold(world, character, moving(glm::vec3(0, 0, -1)), 180);
+  CHECK_NEAR(-character.velocity().z, 3.0, 0.05);
+}
+
+TEST(new_body_sizes_wait_for_the_next_spawn) {
+  // The capsule in the physics world was made at the old size; changing it
+  // under a moving character isn't safe, so Play picks it up next time.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
+  CharacterTuning shorter;
+  shorter.height = 1.2f;
+  shorter.crouchHeight = 0.8f;
+  shorter.radius = 0.2f;
+  shorter.mass = 40.0f;
+  shorter.jumpHeight = 2.0f; // this one does apply
+  character.setTuning(shorter);
+  const CharacterTuning &now = character.tuning();
+  CHECK_NEAR(now.height, 1.8, 1e-6);
+  CHECK_NEAR(now.crouchHeight, 1.1, 1e-6);
+  CHECK_NEAR(now.radius, 0.3, 1e-6);
+  CHECK_NEAR(now.mass, 70.0, 1e-6);
+  CHECK_NEAR(now.jumpHeight, 2.0, 1e-6);
+  hold(world, character, CharacterInput{}, 10);
+  CHECK_NEAR(character.height(), 1.8, 1e-5);
+}
+
+TEST(it_knows_whether_its_last_step_aimed) {
+  // The animator reads it from the body, so every character animates from
+  // its own commands, not the player's keys.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
+  CHECK(!character.aiming());
+  CharacterInput aim;
+  aim.aim = true;
+  hold(world, character, aim, 1);
+  CHECK(character.aiming());
+  hold(world, character, CharacterInput{}, 1);
+  CHECK(!character.aiming());
 }

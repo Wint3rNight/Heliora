@@ -123,10 +123,16 @@ FolderListing listFolder(const fs::path &folder) {
       listing.models.push_back(name);
     } else if (it->is_regular_file(typeError) && it->path().extension() == ".fbx") {
       listing.clips.push_back(name);
+    } else if (it->is_regular_file(typeError) && it->path().extension() == ".object") {
+      listing.objects.push_back(name);
+    } else if (it->is_regular_file(typeError) && it->path().extension() == ".character") {
+      listing.characters.push_back(name);
     }
   }
   std::ranges::sort(listing.folders);
   std::ranges::sort(listing.models);
   std::ranges::sort(listing.clips);
+  std::ranges::sort(listing.objects);
+  std::ranges::sort(listing.characters);
   return listing;
 }

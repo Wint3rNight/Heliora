@@ -1,4 +1,5 @@
 #include "ImGuiLayer.h"
+#include "Prefab.h"
 
 #include "GizmoMath.h"
 #include "Picking.h"
@@ -269,7 +270,7 @@ bool ImGuiLayer::wantsTextInput() const {
   // an asset: nothing else may take the key (Esc must cancel, not quit).
   // An open popup (the clip picker, Import, a menu) too: Esc closes or
   // cancels there.
-  return rebinding.has_value() || assetDrag.has_value() ||
+  return rebinding.has_value() || assetDrag.has_value() || characterDrag.has_value() ||
          (ImGui::GetCurrentContext() &&
           (ImGui::GetIO().WantTextInput ||
            ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)));
@@ -795,6 +796,10 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     drawPlayerStartInspector(ui);
     return;
   }
+  if (ui.selection->kind == SceneEntryRef::Kind::Character) {
+    drawCharacterInspector(ui);
+    return;
+  }
   const SceneEntryRef ref = *ui.selection;
   SceneDescription &scene = *ui.scene;
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
@@ -820,6 +825,9 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     const glm::ivec3 n = grid->count;
     ImGui::Text("Grid %d: %s, %lld copies", ref.index, what.c_str(),
                 static_cast<long long>(n.x) * n.y * n.z);
+  } else if (!edited.object.empty()) {
+    ImGui::Text("Model %d: %s (a copy of %s)", ref.index, what.c_str(),
+                std::filesystem::path(edited.object).stem().string().c_str());
   } else {
     ImGui::Text("Model %d: %s", ref.index, what.c_str());
   }
@@ -837,6 +845,40 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
     ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
     ImGui::TextWrapped("%s", inspectorProblem.c_str());
     ImGui::PopStyleColor();
+  }
+  // Prefabs: make one from this object, or for a copy, what it sets itself
+  // and pushing that into its prefab, dropping it, or leaving the prefab.
+  if (!isGrid && ui.onPrefabAction) {
+    ImGui::SeparatorText("Prefab");
+    const SceneModelEntry &current = scene.models[ref.index];
+    if (current.object.empty()) {
+      if (ImGui::Button("Make prefab"))
+        ui.onPrefabAction(ref, DebugUiContext::PrefabAction::Make);
+      ImGui::SetItemTooltip("Saves what this object is in Resources/Objects/, and makes "
+                            "this a copy of it");
+    } else {
+      ImGui::TextDisabled("%s", current.object.c_str());
+      std::string own;
+      for (const std::string &key : current.overrides)
+        own += (own.empty() ? "" : ", ") + key;
+      if (own.empty())
+        ImGui::TextDisabled("The same as its prefab.");
+      else
+        ImGui::TextWrapped("Its own: %s", own.c_str());
+      ImGui::BeginDisabled(current.overrides.empty());
+      if (ImGui::Button("Apply to prefab"))
+        ui.onPrefabAction(ref, DebugUiContext::PrefabAction::Apply);
+      ImGui::SetItemTooltip("Saves these into the prefab: every copy changes");
+      ImGui::SameLine();
+      if (ImGui::Button("Revert"))
+        ui.onPrefabAction(ref, DebugUiContext::PrefabAction::Revert);
+      ImGui::SetItemTooltip("Back to the prefab's values");
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::Button("Unpack"))
+        ui.onPrefabAction(ref, DebugUiContext::PrefabAction::Unpack);
+      ImGui::SetItemTooltip("No longer a copy: an ordinary object with these values");
+    }
   }
   ImGui::Separator();
   const bool duplicating = ImGui::Button("Duplicate");
@@ -930,6 +972,112 @@ void ImGuiLayer::drawPlayerStartInspector(DebugUiContext &ui) {
     ui.onEntryDeleted(ref);
 }
 
+// A character's place and facing, which take effect at once, and its file,
+// variant and Player tick, which rebuild the scene's characters.
+void ImGuiLayer::drawCharacterInspector(DebugUiContext &ui) {
+  const SceneEntryRef ref = *ui.selection;
+  SceneDescription &scene = *ui.scene;
+  if (ref.index < 0 || ref.index >= static_cast<int>(scene.characters.size()))
+    return;
+  if (ref != inspectorShownRef) {
+    inspectorShownRef = ref;
+    inspectorProblem.clear();
+  }
+  ImGui::PushID("character");
+  ImGui::PushID(ref.index);
+  SceneCharacterEntry edited = scene.characters[ref.index];
+  auto stem = [](const std::string &file) {
+    return std::filesystem::path(file).stem().string();
+  };
+  ImGui::Text("Character %d: %s", ref.index, stem(edited.file).c_str());
+  ImGui::TextDisabled(edited.player ? "Play (F5) starts as this one."
+                                    : "Stands still until there's AI.");
+  ImGui::PushItemWidth(-110.0f);
+  ImGui::SeparatorText("Transform");
+  bool moved = ImGui::DragFloat3("Position", &edited.position.x, 0.05f, 0.0f, 0.0f, "%.2f");
+  if (ImGui::DragFloat("Facing", &edited.yaw, 0.5f, 0.0f, 0.0f, "%.1f\u00b0")) {
+    edited.yaw = std::remainder(edited.yaw, 360.0f);
+    moved = true;
+  }
+  ImGui::SetItemTooltip("Degrees about the vertical axis, like the gizmo's green ring. 0 "
+                        "faces -z.");
+  ImGui::SeparatorText("Character");
+  bool changed = false;
+  if (ImGui::BeginCombo("File", stem(edited.file).c_str())) {
+    if (ui.characterFiles)
+      for (const std::string &file : *ui.characterFiles)
+        if (ImGui::Selectable(stem(file).c_str(), edited.file == file) &&
+            file != edited.file) {
+          edited.file = file;
+          edited.variant.clear(); // another file's variants are its own
+          changed = true;
+        }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("%s: its model, clips and tuning", edited.file.c_str());
+  std::vector<std::string> variants =
+      ui.characterVariants ? ui.characterVariants(edited.file) : std::vector<std::string>{};
+  if (!edited.variant.empty() && std::ranges::find(variants, edited.variant) == variants.end())
+    variants.push_back(edited.variant); // asked for but not in the file: still shown
+  const std::string preview = edited.variant.empty() ? "(its own tuning)" : edited.variant;
+  if (ImGui::BeginCombo("Variant", preview.c_str())) {
+    if (ImGui::Selectable("(its own tuning)", edited.variant.empty()) &&
+        !edited.variant.empty()) {
+      edited.variant.clear();
+      changed = true;
+    }
+    for (const std::string &name : variants)
+      if (ImGui::Selectable(name.c_str(), edited.variant == name) && edited.variant != name) {
+        edited.variant = name;
+        changed = true;
+      }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("The character file's variant it plays with, like the climb's "
+                        "arcade air");
+  if (ImGui::Checkbox("Player", &edited.player))
+    changed = true;
+  ImGui::SetItemTooltip("Play starts as this character. One per scene: ticking it unticks "
+                        "the others. With none ticked, Play starts at the player start.");
+  ImGui::PopItemWidth();
+  if (moved || changed) {
+    if (const std::optional<std::string> problem = problemWith(edited)) {
+      inspectorProblem = *problem;
+    } else {
+      inspectorProblem.clear();
+      scene.characters[ref.index] = edited;
+      if (edited.player)
+        setPlayerCharacter(scene, ref.index);
+      sceneEditOpen = true;
+      if (moved && ui.onEntryMoved)
+        ui.onEntryMoved(ref);
+      if (changed) {
+        inspectorRebuildPending = true;
+        inspectorPendingRef = ref;
+      }
+    }
+  }
+  if (!inspectorProblem.empty()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, hex(kRedBright));
+    ImGui::TextWrapped("%s", inspectorProblem.c_str());
+    ImGui::PopStyleColor();
+  }
+  ImGui::Separator();
+  const bool duplicating = ImGui::Button("Duplicate");
+  ImGui::SetItemTooltip("Ctrl+D: a copy beside it, not the player");
+  ImGui::SameLine();
+  const bool deleting = ImGui::Button("Delete");
+  ImGui::PopID();
+  ImGui::PopID();
+  if (duplicating && ui.onDuplicate)
+    ui.onDuplicate();
+  if (deleting) {
+    inspectorRebuildPending = false;
+    if (ui.onEntryDeleted)
+      ui.onEntryDeleted(ref);
+  }
+}
+
 // Keeps an Inspector edit if the parser would take it (and, for a grid, if
 // the physics world has room for its bodies), otherwise shows why not.
 void ImGuiLayer::commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
@@ -953,6 +1101,8 @@ void ImGuiLayer::commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
       problem = std::format("more bodies than the physics world holds ({})",
                             ui.bodyLimit);
   } else {
+    // A copy of a prefab: what the edit changed becomes its own.
+    noteOverrides(ui.scene->models[ref.index], edited);
     problem = problemWith(edited);
   }
   if (problem) {
@@ -1138,15 +1288,20 @@ ImVec2 ImGuiLayer::GizmoView::at(glm::vec2 p) const {
 // A grid only turns about y, through its layout rotation, and the player
 // start only through its yaw.
 bool ImGuiLayer::GizmoView::axisShown(int axis, GizmoMode mode) const {
-  return !(mode == GizmoMode::Rotate && (grid || player) && axis != 1);
+  return !(mode == GizmoMode::Rotate && (grid || player || character) && axis != 1);
 }
 
 NodeTransform ImGuiLayer::GizmoView::transform() const {
-  if (!player)
-    return entry->transform;
   NodeTransform t;
-  t.position = player->position;
-  t.rotationDeg.y = player->yaw;
+  if (player) {
+    t.position = player->position;
+    t.rotationDeg.y = player->yaw;
+  } else if (character) {
+    t.position = character->position;
+    t.rotationDeg.y = character->yaw;
+  } else {
+    t = entry->transform;
+  }
   return t;
 }
 
@@ -1178,9 +1333,12 @@ std::optional<ImGuiLayer::GizmoView> ImGuiLayer::gizmoView(DebugUiContext &ui) {
       view.entry = &ui.scene->models[ref.index];
     } else if (ref.kind == SceneEntryRef::Kind::Player && ui.scene->player) {
       view.player = &*ui.scene->player;
+    } else if (ref.kind == SceneEntryRef::Kind::Character && ref.index >= 0 &&
+               ref.index < static_cast<int>(ui.scene->characters.size())) {
+      view.character = &ui.scene->characters[ref.index];
     }
   }
-  const bool found = view.entry || view.player;
+  const bool found = view.entry || view.player || view.character;
   // main.cpp selects before the UI runs, so on the click that selected this
   // object its handles are new, and the click mustn't grab one.
   const std::optional<SceneEntryRef> selected =
@@ -1362,6 +1520,14 @@ void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
     edited.yaw = placement.rotationDeg.y;
     if (edited != *view.player && !problemWith(edited)) {
       *view.player = edited;
+      changed = true;
+    }
+  } else if (view.character) {
+    SceneCharacterEntry edited = *view.character;
+    edited.position = placement.position;
+    edited.yaw = placement.rotationDeg.y;
+    if (edited != *view.character && !problemWith(edited)) {
+      *view.character = edited;
       changed = true;
     }
   } else if (view.grid) {
@@ -1986,6 +2152,7 @@ std::optional<int> ImGuiLayer::drawAssetTiles(DebugUiContext &ui,
   for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
     const AssetTile &tile = tiles[i];
     const bool isClip = !tile.clip.empty();
+    const bool isCharacter = !tile.character.empty();
     if (i % columns != 0)
       ImGui::SameLine();
     ImGui::PushID(i);
@@ -1993,8 +2160,10 @@ std::optional<int> ImGuiLayer::drawAssetTiles(DebugUiContext &ui,
     // Its picture once there is one, asked for only while the tile shows.
     std::optional<glm::vec4> picture;
     if (ImGui::IsRectVisible(ImVec2(kSize, kSize)) && ui.thumbnailAtlas)
-      picture = isClip ? (ui.clipThumbnail ? ui.clipThumbnail(tile.clip) : std::nullopt)
-                       : (ui.thumbnail ? ui.thumbnail(tile.entry) : std::nullopt);
+      picture = isClip        ? (ui.clipThumbnail ? ui.clipThumbnail(tile.clip) : std::nullopt)
+                : isCharacter ? (ui.characterThumbnail ? ui.characterThumbnail(tile.character)
+                                                       : std::nullopt)
+                              : (ui.thumbnail ? ui.thumbnail(tile.entry) : std::nullopt);
     if (picture)
       ImGui::ImageButton("##tile", ui.thumbnailAtlas, ImVec2(kSize, kSize),
                          ImVec2(picture->x, picture->y), ImVec2(picture->z, picture->w));
@@ -2029,14 +2198,23 @@ std::optional<int> ImGuiLayer::drawAssetTiles(DebugUiContext &ui,
       draw->AddRect(lo, hi, IM_COL32(245, 211, 107, 255), 4.0f, 0, 2.0f);
     if (ImGui::IsItemClicked())
       clicked = i;
-    if (!isClip && placing && tile.usable && ImGui::IsItemHovered() &&
-        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ui.onSpawn)
+    const bool doubleClicked = placing && tile.usable && ImGui::IsItemHovered() &&
+                               ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+    if (doubleClicked && isCharacter && ui.onCharacterDrop)
+      ui.onCharacterDrop(tile.character, std::nullopt);
+    else if (doubleClicked && !isClip && ui.onSpawn)
       ui.onSpawn(tile.entry);
     if (!isClip && placing && tile.usable && ImGui::BeginDragDropSource()) {
       ImGui::SetDragDropPayload("HELIORA_ASSET", &i, sizeof i);
       ImGui::TextUnformatted(tile.label.c_str());
       ImGui::EndDragDropSource();
-      assetDrag = tile.entry;
+      if (isCharacter) {
+        characterDrag = tile.character;
+        assetDrag.reset();
+      } else {
+        assetDrag = tile.entry;
+        characterDrag.reset();
+      }
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("%s", tile.tooltip.c_str());
@@ -2124,12 +2302,29 @@ void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
   } else {
     for (const std::string &name : listingOf(assetFolder).models)
       tiles.push_back(modelTile(assetFolder + "/" + name));
+    // Prefabs: placed as copies, drawn as what they are.
+    for (const std::string &name : listingOf(assetFolder).objects) {
+      const std::string file = assetFolder + "/" + name;
+      const std::optional<SceneModelEntry> copy =
+          ui.objectEntry ? ui.objectEntry(file) : std::nullopt;
+      tiles.push_back({std::filesystem::path(name).stem().string(),
+                       copy ? file : file + ": can't be read", copy.value_or(SceneModelEntry{}),
+                       {}, copy.has_value()});
+    }
+    // Characters: dragged in to stand in the scene.
+    for (const std::string &name : listingOf(assetFolder).characters) {
+      const std::string file = assetFolder + "/" + name;
+      AssetTile tile{std::filesystem::path(name).stem().string(), file, {}, {}, true};
+      tile.character = file;
+      tiles.push_back(std::move(tile));
+    }
     // Animation clips: shown on the character, the hovered one playing.
     for (const std::string &name : listingOf(assetFolder).clips) {
       const std::string file = assetFolder + "/" + name;
       tiles.push_back({std::filesystem::path(name).stem().string(), file, {}, file, true});
     }
-    empty = "No models or clips in this folder. Import models, or drop them on the window.";
+    empty = "No models, prefabs, characters or clips in this folder. Import models, or drop "
+            "them on the window.";
   }
   if (tiles.empty())
     ImGui::TextDisabled("%s", empty);
@@ -2231,6 +2426,10 @@ void ImGuiLayer::drawImportPicker(DebugUiContext &ui) {
 // A tile being dragged: over the scene it shows where it would land, let
 // go there it's placed, anywhere else (or Esc) it's dropped.
 void ImGuiLayer::updateAssetDrag(DebugUiContext &ui) {
+  if (characterDrag) {
+    updateCharacterDrag(ui);
+    return;
+  }
   if (!assetDrag)
     return;
   const ImGuiPayload *payload = ImGui::GetDragDropPayload();
@@ -2255,6 +2454,26 @@ void ImGuiLayer::updateAssetDrag(DebugUiContext &ui) {
   if (ui.onAssetDragEnd)
     ui.onAssetDragEnd();
   assetDrag.reset();
+}
+
+// The same for a character: shown standing where it would, placed there.
+void ImGuiLayer::updateCharacterDrag(DebugUiContext &ui) {
+  const ImGuiPayload *payload = ImGui::GetDragDropPayload();
+  const bool dragging = payload && payload->IsDataType("HELIORA_ASSET");
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const glm::vec2 pixel(mouse.x, mouse.y);
+  const bool overScene = centralArea && centralArea->contains(pixel);
+  const bool released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::ClearDragDrop();
+  } else if (dragging && !released) {
+    if (overScene && ui.onCharacterHover)
+      ui.onCharacterHover(*characterDrag, pixel);
+    return;
+  } else if (released && overScene && ui.onCharacterDrop) {
+    ui.onCharacterDrop(*characterDrag, pixel);
+  }
+  characterDrag.reset();
 }
 
 void ImGuiLayer::drawControlsTab(DebugUiContext &ui) {

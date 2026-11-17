@@ -116,6 +116,12 @@ std::optional<std::string> modelProblem(const SceneModelEntry &model) {
     return "every number must be an ordinary number";
   if (t.scale <= 0.0f)
     return "'scale' must be more than 0";
+  if (model.object.find('#') != std::string::npos)
+    return "an object path can't contain '#'; rename the file";
+  // A copy of an object asset before its object's values are in (just
+  // read from a scene file): the rest is checked once they are.
+  if (!model.object.empty() && model.path.empty() && !model.shape)
+    return std::nullopt;
   // The parser reads # as the start of a comment.
   if (model.path.find('#') != std::string::npos)
     return "a model path can't contain '#' (a scene file reads it as a "
@@ -188,6 +194,8 @@ void renumberSections(SceneDescription &scene) {
     sections.push_back({grid.info.order, &grid.info});
   for (SceneRingEntry &ring : scene.rings)
     sections.push_back({ring.info.order, &ring.info});
+  for (SceneCharacterEntry &character : scene.characters)
+    sections.push_back({character.info.order, &character.info});
   std::stable_sort(sections.begin(), sections.end(),
                    [](const Section &a, const Section &b) {
                      return a.order < b.order;
@@ -257,9 +265,16 @@ float parseFloat(const std::string &value, int lineNumber) {
 }
 
 // Keys shared by [model] and [grid]. False if the key isn't one of them.
+// The keys saying what it is are noted, for a copy of an object asset,
+// whose own keys are its overrides.
 bool parseModelKey(SceneModelEntry &model, const std::string &key,
                    const std::string &value, int lineNumber) {
-  if (key == "path")
+  if (isModelDataKey(key) &&
+      std::find(model.overrides.begin(), model.overrides.end(), key) == model.overrides.end())
+    model.overrides.push_back(key);
+  if (key == "object")
+    model.object = value;
+  else if (key == "path")
     model.path = value;
   else if (key == "shape")
     model.shape = parseShape(value, lineNumber);
@@ -312,6 +327,19 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
     return false;
   return true;
 }
+
+} // namespace
+
+bool isModelDataKey(std::string_view key) {
+  for (std::string_view data : {"path", "shape", "size", "radius", "height", "color", "body",
+                                "mass", "density", "collider", "material", "friction",
+                                "restitution"})
+    if (key == data)
+      return true;
+  return false;
+}
+
+namespace {
 
 // Shortest text that reads back as exactly the same float.
 std::string formatFloat(float value) { return std::format("{}", value); }
@@ -367,18 +395,30 @@ void writeKey(std::string &out, std::string_view key, std::string_view value) {
   out += std::format("{} = {}\n", key, value);
 }
 
-// The keys [model] and [grid] share, skipping any left at its default.
+// The keys [model] and [grid] share, skipping any left at its default. A
+// copy of an object asset writes its object and, of what it is, only what
+// it overrides (even a default: its object may hold something else); its
+// place and movement are always its own.
 void writeModelKeys(std::string &out, const SceneModelEntry &model) {
   const SceneModelEntry d;
-  if (!model.path.empty())
+  const bool copy = !model.object.empty();
+  auto keep = [&](std::string_view key, bool differs) {
+    if (!copy)
+      return differs;
+    return std::find(model.overrides.begin(), model.overrides.end(), key) !=
+           model.overrides.end();
+  };
+  if (copy)
+    writeKey(out, "object", model.object);
+  if (keep("path", !model.path.empty()) && !model.path.empty())
     writeKey(out, "path", model.path);
-  if (model.shape)
+  if (keep("shape", model.shape.has_value()) && model.shape)
     writeKey(out, "shape", shapeName(*model.shape));
-  if (model.size != d.size)
+  if (keep("size", model.size != d.size))
     writeKey(out, "size", formatVec3(model.size));
-  if (model.radius != d.radius)
+  if (keep("radius", model.radius != d.radius))
     writeKey(out, "radius", formatFloat(model.radius));
-  if (model.height != d.height)
+  if (keep("height", model.height != d.height))
     writeKey(out, "height", formatFloat(model.height));
   if (model.transform.position != d.transform.position)
     writeKey(out, "position", formatVec3(model.transform.position));
@@ -386,21 +426,21 @@ void writeModelKeys(std::string &out, const SceneModelEntry &model) {
     writeKey(out, "rotation", formatVec3(model.transform.rotationDeg));
   if (model.transform.scale != d.transform.scale)
     writeKey(out, "scale", formatFloat(model.transform.scale));
-  if (model.color != d.color)
+  if (keep("color", model.color != d.color))
     writeKey(out, "color", formatVec3(model.color));
-  if (model.body)
+  if (keep("body", model.body.has_value()) && model.body)
     writeKey(out, "body", bodyName(*model.body));
-  if (model.collider)
+  if (keep("collider", model.collider.has_value()) && model.collider)
     writeKey(out, "collider", colliderName(*model.collider));
-  if (model.material)
+  if (keep("material", model.material.has_value()) && model.material)
     writeKey(out, "material", *model.material);
-  if (model.density)
+  if (keep("density", model.density.has_value()) && model.density)
     writeKey(out, "density", formatFloat(*model.density));
-  if (model.mass)
+  if (keep("mass", model.mass.has_value()) && model.mass)
     writeKey(out, "mass", formatFloat(*model.mass));
-  if (model.friction)
+  if (keep("friction", model.friction.has_value()) && model.friction)
     writeKey(out, "friction", formatFloat(*model.friction));
-  if (model.restitution)
+  if (keep("restitution", model.restitution.has_value()) && model.restitution)
     writeKey(out, "restitution", formatFloat(*model.restitution));
   const NodeAnimation &a = model.animation;
   if (a.spinDegPerSec != d.animation.spinDegPerSec)
@@ -498,6 +538,36 @@ std::optional<std::string> problemWith(const ScenePlayerStart &start) {
   return std::nullopt;
 }
 
+std::optional<std::string> problemWith(const SceneCharacterEntry &character) {
+  if (character.file.empty())
+    return "'file' needs a character file, like "
+           "Resources/Characters/ganfaul.character";
+  if (!allFinite(character.position) || !std::isfinite(character.yaw))
+    return "'position' and 'yaw' must be ordinary numbers";
+  return std::nullopt;
+}
+
+std::optional<int> playerCharacter(const SceneDescription &scene) {
+  for (size_t i = 0; i < scene.characters.size(); ++i)
+    if (scene.characters[i].player)
+      return static_cast<int>(i);
+  return std::nullopt;
+}
+
+void setPlayerCharacter(SceneDescription &scene, int index) {
+  for (size_t i = 0; i < scene.characters.size(); ++i)
+    scene.characters[i].player = static_cast<int>(i) == index;
+}
+
+SceneEntryRef addCharacter(SceneDescription &scene, SceneCharacterEntry character) {
+  character.info.order = std::numeric_limits<int>::max();
+  scene.characters.push_back(std::move(character));
+  if (scene.characters.back().player)
+    setPlayerCharacter(scene, static_cast<int>(scene.characters.size()) - 1);
+  renumberSections(scene);
+  return {SceneEntryRef::Kind::Character, static_cast<int>(scene.characters.size()) - 1};
+}
+
 std::optional<std::string> problemWith(const SceneGridEntry &grid) {
   if (std::optional<std::string> problem = modelProblem(grid.model))
     return problem;
@@ -530,6 +600,9 @@ void removeEntry(SceneDescription &scene, SceneEntryRef ref) {
   else if (ref.kind == SceneEntryRef::Kind::Grid && ref.index >= 0 &&
            ref.index < static_cast<int>(scene.grids.size()))
     scene.grids.erase(scene.grids.begin() + ref.index);
+  else if (ref.kind == SceneEntryRef::Kind::Character && ref.index >= 0 &&
+           ref.index < static_cast<int>(scene.characters.size()))
+    scene.characters.erase(scene.characters.begin() + ref.index);
   else
     return;
   renumberSections(scene);
@@ -587,6 +660,17 @@ std::optional<SceneEntryRef> duplicateEntry(SceneDescription &scene,
     return SceneEntryRef{SceneEntryRef::Kind::Grid,
                          static_cast<int>(scene.grids.size()) - 1};
   }
+  if (ref.kind == SceneEntryRef::Kind::Character && ref.index >= 0 &&
+      ref.index < static_cast<int>(scene.characters.size())) {
+    SceneCharacterEntry copy = scene.characters[ref.index];
+    copy.position += offset;
+    copy.player = false;
+    copy.info = last;
+    scene.characters.push_back(std::move(copy));
+    renumberSections(scene);
+    return SceneEntryRef{SceneEntryRef::Kind::Character,
+                         static_cast<int>(scene.characters.size()) - 1};
+  }
   return std::nullopt;
 }
 
@@ -628,7 +712,7 @@ std::string lowered(std::string text) {
   return text;
 }
 
-enum class Section { Global, Camera, Sun, Fog, Player, Model, Grid, Ring };
+enum class Section { Global, Camera, Sun, Fog, Player, Model, Grid, Ring, Character };
 
 // What the parser carries from line to line.
 struct SceneParser {
@@ -636,6 +720,7 @@ struct SceneParser {
   Section section = Section::Global;
   std::vector<int> modelLines; // header line of each [model], for errors
   std::vector<int> gridLines;  // and of each [grid]
+  std::vector<int> characterLines; // and of each [character]
   int sunLine = 0;
   int fogLine = 0;
   // Comment lines wait here for the section below them. The block at the
@@ -681,6 +766,10 @@ void openSection(SceneParser &p, const std::string &line, int lineNumber) {
   } else if (name == "ring") {
     p.section = Section::Ring;
     scene.rings.emplace_back().info = {p.nextOrder++, p.takeComment()};
+  } else if (name == "character") {
+    p.section = Section::Character;
+    scene.characters.emplace_back().info = {p.nextOrder++, p.takeComment()};
+    p.characterLines.push_back(lineNumber);
   } else {
     parseError(lineNumber, "unknown section [" + name + "]");
   }
@@ -749,9 +838,34 @@ void playerKey(ScenePlayerStart &player, const std::string &key,
     parseError(lineNumber, "unknown player key '" + key + "'");
 }
 
+void characterKey(SceneCharacterEntry &character, const std::string &key,
+                  const std::string &value, int lineNumber) {
+  if (key == "file") {
+    character.file = value;
+  } else if (key == "position") {
+    character.position = parseVec3(value, lineNumber);
+  } else if (key == "yaw") {
+    character.yaw = parseFloat(value, lineNumber);
+  } else if (key == "variant") {
+    if (value.empty())
+      parseError(lineNumber, "'variant' needs the name of one of the character's "
+                             "variants");
+    character.variant = value;
+  } else if (key == "player") {
+    if (value != "true" && value != "false")
+      parseError(lineNumber, "'player' is true or false");
+    character.player = value == "true";
+  } else {
+    parseError(lineNumber, "unknown character key '" + key + "'");
+  }
+}
+
 // A grid's own keys; anything else is its model's.
 void gridKey(SceneGridEntry &grid, const std::string &key,
              const std::string &value, int lineNumber) {
+  if (key == "object")
+    parseError(lineNumber, "a [grid] can't be copies of a prefab yet; give it a "
+                           "'shape' or 'path'");
   if (key == "count") {
     // Checked as floats first: converting one past int's range is
     // undefined.
@@ -827,6 +941,9 @@ void applyKey(SceneParser &p, const std::string &key, const std::string &value,
   case Section::Ring:
     ringKey(scene.rings.back(), key, value, lineNumber);
     break;
+  case Section::Character:
+    characterKey(scene.characters.back(), key, value, lineNumber);
+    break;
   }
 }
 
@@ -845,6 +962,16 @@ void checkParsedScene(const SceneParser &p, const std::string &path) {
       throw std::runtime_error("scene parse error, [grid] at line " +
                                std::to_string(p.gridLines[i]) + ": " +
                                *problem);
+  bool playerSeen = false;
+  for (size_t i = 0; i < scene.characters.size(); ++i) {
+    std::optional<std::string> problem = problemWith(scene.characters[i]);
+    if (!problem && scene.characters[i].player && std::exchange(playerSeen, true))
+      problem = "only one character can be the player";
+    if (problem)
+      throw std::runtime_error("scene parse error, [character] at line " +
+                               std::to_string(p.characterLines[i]) + ": " +
+                               *problem);
+  }
   for (const SceneRingEntry &ring : scene.rings)
     if (ring.path.empty())
       throw std::runtime_error("scene file " + path +
@@ -852,6 +979,17 @@ void checkParsedScene(const SceneParser &p, const std::string &path) {
 }
 
 } // namespace
+
+bool readModelKey(SceneModelEntry &model, const std::string &key, const std::string &value,
+                  int lineNumber) {
+  return parseModelKey(model, key, value, lineNumber);
+}
+
+std::string modelKeysText(const SceneModelEntry &model) {
+  std::string out;
+  writeModelKeys(out, model);
+  return out;
+}
 
 namespace SceneIO {
 
@@ -905,6 +1043,12 @@ SceneDescription parse(std::istream &file, const std::string &path) {
     applyKey(p, lowered(trim(line.substr(0, eq))), trim(line.substr(eq + 1)),
              lineNumber);
   }
+  // Only a copy of an object asset needs to know which keys it set itself.
+  for (SceneModelEntry &model : p.scene.models)
+    if (model.object.empty())
+      model.overrides.clear();
+  for (SceneGridEntry &grid : p.scene.grids)
+    grid.model.overrides.clear();
   checkParsedScene(p, path);
   return std::move(p.scene);
 }
@@ -1004,7 +1148,7 @@ std::string write(const SceneDescription &scene) {
 
   // Models, grids and rings live in separate lists; info.order puts them
   // back in the order the file had.
-  enum class Kind { Model, Grid, Ring };
+  enum class Kind { Model, Grid, Ring, Character };
   struct Section {
     int order;
     Kind kind;
@@ -1017,6 +1161,8 @@ std::string write(const SceneDescription &scene) {
     sections.push_back({scene.grids[i].info.order, Kind::Grid, i});
   for (size_t i = 0; i < scene.rings.size(); ++i)
     sections.push_back({scene.rings[i].info.order, Kind::Ring, i});
+  for (size_t i = 0; i < scene.characters.size(); ++i)
+    sections.push_back({scene.characters[i].info.order, Kind::Character, i});
   std::stable_sort(sections.begin(), sections.end(),
                    [](const Section &a, const Section &b) {
                      return a.order < b.order;
@@ -1061,6 +1207,21 @@ std::string write(const SceneDescription &scene) {
         writeKey(out, "height", formatFloat(ring.height));
       if (ring.scale != rd.scale)
         writeKey(out, "scale", formatFloat(ring.scale));
+      break;
+    }
+    case Kind::Character: {
+      const SceneCharacterEntry &character = scene.characters[section.index];
+      const SceneCharacterEntry cd;
+      writeHeader(out, character.info, "character");
+      writeKey(out, "file", character.file);
+      if (character.position != cd.position)
+        writeKey(out, "position", formatVec3(character.position));
+      if (character.yaw != cd.yaw)
+        writeKey(out, "yaw", formatFloat(character.yaw));
+      if (!character.variant.empty())
+        writeKey(out, "variant", character.variant);
+      if (character.player)
+        writeKey(out, "player", "true");
       break;
     }
     }

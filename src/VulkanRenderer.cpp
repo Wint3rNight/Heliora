@@ -244,7 +244,6 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
     //    history, the composite's, the G-buffer, the GPU-driven pass's HZB,
     //    auto-exposure, and the descriptor sets that point at them.
     skinningPass.create(device, pipelineCache.get());
-    previewSkinning.create(device, pipelineCache.get());
     debugLinePass.create(device, renderPassManager.getImGuiRenderPass(),
                          pipelineCache.get());
     createSceneTargets();
@@ -353,6 +352,10 @@ int VulkanRenderer::createMeshModel(const std::string &modelFile) {
 }
 
 namespace {
+
+// The character the Character tab edits, and the player plays when a scene
+// ticks none.
+constexpr const char *kDefaultCharacterFile = "Resources/Characters/ganfaul.character";
 
 // The model cache's name for a generated shape: shape, size, colour and the
 // world grid. Entries with the same key share one model.
@@ -567,6 +570,108 @@ void VulkanRenderer::discoverScenes(const std::string &directory) {
                directory);
 }
 
+// An object file, read once (until Apply to prefab rewrites it), or nothing
+// with a log line.
+const ObjectAsset *VulkanRenderer::objectAsset(const std::string &file) {
+  if (const auto it = objectAssets.find(file); it != objectAssets.end())
+    return &it->second;
+  namespace fs = std::filesystem;
+  const fs::path disk = fs::exists(file) ? fs::path(file) : fs::path("..") / file;
+  try {
+    return &objectAssets.emplace(file, ObjectIO::loadFromFile(disk.string())).first->second;
+  } catch (const std::exception &e) {
+    spdlog::warn("Prefab {}: {}", file, e.what());
+    return nullptr;
+  }
+}
+
+std::string VulkanRenderer::objectsFolderOnDisk() const {
+  return std::filesystem::is_directory("Resources") ? "Resources/Objects"
+                                                    : "../Resources/Objects";
+}
+
+void VulkanRenderer::resolvePrefabs(SceneDescription &scene) {
+  for (SceneModelEntry &model : scene.models)
+    if (!model.object.empty()) {
+      if (const ObjectAsset *asset = objectAsset(model.object))
+        model = resolvePrefab(model, asset->model);
+      else
+        sceneError = "Missing prefab " + model.object;
+    }
+}
+
+// The Inspector's prefab buttons. Make writes a new object file from the
+// object; Apply writes the copy's values into its prefab and every copy
+// takes them; Revert drops the copy's own values; Unpack leaves the prefab.
+// One undo step each (the object files themselves aren't undone).
+void VulkanRenderer::applyPrefabAction(SceneEntryRef ref, DebugUiContext::PrefabAction action) {
+  if (playing || ref.kind != SceneEntryRef::Kind::Model || ref.index < 0 ||
+      ref.index >= static_cast<int>(currentScene.models.size()))
+    return;
+  namespace fs = std::filesystem;
+  using Action = DebugUiContext::PrefabAction;
+  SceneModelEntry &entry = currentScene.models[ref.index];
+  bool rebuild = false;
+  try {
+    switch (action) {
+    case Action::Make: {
+      // Named after what it is, never over a prefab already there.
+      static constexpr const char *kShapes[] = {"box", "sphere", "capsule", "plane"};
+      const std::string base = entry.shape ? kShapes[static_cast<int>(*entry.shape)]
+                                           : fs::path(entry.path).stem().string();
+      std::string name = base;
+      for (int n = 2; fs::exists(fs::path(objectsFolderOnDisk()) / (name + ".object")); ++n)
+        name = std::format("{}-{}", base, n);
+      const std::string file = "Resources/Objects/" + name + ".object";
+      const ObjectAsset asset = prefabFrom(entry, file);
+      ObjectIO::saveToFile(asset, (fs::path(objectsFolderOnDisk()) / (name + ".object")).string());
+      objectAssets[file] = asset;
+      saveStatus = "Made the prefab " + file;
+      break;
+    }
+    case Action::Apply: {
+      const ObjectAsset *old = objectAsset(entry.object);
+      SceneModelEntry values = entry;
+      ObjectAsset updated = prefabFrom(values, entry.object);
+      if (old)
+        updated.comment = old->comment;
+      const fs::path disk = fs::exists(entry.object) ? fs::path(entry.object)
+                                                     : fs::path("..") / entry.object;
+      ObjectIO::saveToFile(updated, disk.string());
+      objectAssets[entry.object] = updated;
+      entry.overrides.clear();
+      // Every copy takes the new values, apart from what each sets itself.
+      for (SceneModelEntry &model : currentScene.models)
+        if (model.object == entry.object)
+          model = resolvePrefab(model, updated.model);
+      saveStatus = "Saved into " + entry.object;
+      rebuild = true;
+      break;
+    }
+    case Action::Revert:
+      if (const ObjectAsset *asset = objectAsset(entry.object)) {
+        entry = revertOverrides(entry, asset->model);
+        rebuild = true;
+      }
+      break;
+    case Action::Unpack:
+      entry = unpackPrefab(entry);
+      break;
+    }
+  } catch (const std::exception &e) {
+    saveStatus = std::format("Prefab: {}", e.what());
+    spdlog::error("{}", saveStatus);
+    return;
+  }
+  if (rebuild) {
+    const std::optional<SceneEntryRef> keep = selection;
+    loadScene(currentScene, /*moveCamera=*/false);
+    selection = keep;
+  }
+  updateEditorLines();
+  recordEdit();
+}
+
 // Copies each model file (and what a .gltf needs) into its own folder under
 // Resources/Models, then shows that folder in the Assets panel.
 void VulkanRenderer::runPendingImports() {
@@ -614,14 +719,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   vkDeviceWaitIdle(device.getLogicalDevice());
   const auto loadStart = std::chrono::steady_clock::now();
 
-  // The character first: it lives in the world replaced below, and its
-  // capsule in the tree cleared below. A new one comes at the end if still
-  // playing.
-  animator.reset();
-  characterPanel.animState = nullptr;
-  characterPanel.playing.clear();
-  player.reset();
-  playerNode = nullptr;
+  // The characters first: their bodies live in the world replaced below,
+  // and their nodes in the tree cleared below. They come back at the end.
+  clearCharacters();
   // Physics next: physicsLinks points into the tree cleared below.
   // HELIORA_PHYSICS_THREADS overrides Jolt's worker count, for measuring.
   physicsLinks.clear();
@@ -637,6 +737,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   playSeconds = 0.0;
   // Stop passes currentScene itself; copying it onto itself is harmless.
   currentScene = desc;
+  // Copies of prefabs get their object's values (a missing file leaves the
+  // copy as it is, which then fails to load with a log line).
+  resolvePrefabs(currentScene);
   rootNode.clearChildren();
   assetPreview = nullptr; // went with the tree
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
@@ -696,10 +799,9 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     ballModelId = -1;
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
   }
-  // The character's capsules, standing and crouched, for the same reason.
-  ensurePlayerModels();
-  if (playing)
-    spawnPlayer();
+  // The characters, for the same reason: standing in edit mode, in play
+  // with bodies.
+  buildCharacters();
   rootNode.update(glm::mat4(1.0f), 0.0f);
   updateEditorLines();
 
@@ -811,6 +913,12 @@ void VulkanRenderer::placeEntry(SceneEntryRef ref) {
     updateEditorLines(); // it's only lines
     return;
   }
+  if (ref.kind == SceneEntryRef::Kind::Character) {
+    placeCharacter(ref.index);
+    rootNode.update(glm::mat4(1.0f), playSeconds);
+    updateEditorLines();
+    return;
+  }
   auto place = [&](SceneNode &node, const SceneModelEntry &entry) {
     node.setTransform(entry.transform);
     if (node.physicsLink() >= 0) {
@@ -853,6 +961,21 @@ void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
       selection.reset();
       recordEdit();
     }
+    return;
+  }
+  // Characters are few: any change rebuilds them all (copies are reused).
+  if (ref.kind == SceneEntryRef::Kind::Character) {
+    if (ref.index < 0 || ref.index >= static_cast<int>(currentScene.characters.size()) ||
+        op == EntryOp::Split)
+      return;
+    if (op == EntryOp::Delete) {
+      removeEntry(currentScene, ref);
+      selection.reset();
+    }
+    buildCharacters();
+    updateEditorLines();
+    if (op == EntryOp::Delete)
+      recordEdit();
     return;
   }
   const size_t count = ref.kind == SceneEntryRef::Kind::Grid
@@ -964,6 +1087,12 @@ NodeTransform VulkanRenderer::dropPlacement(const SceneModelEntry &entry, int mo
 // What an asset's picture is cached under: a shape by what it looks like,
 // a model file by its path, size and date, so editing the file redraws it.
 std::string VulkanRenderer::thumbnailKeyFor(const SceneModelEntry &entry) const {
+  // A copy of a prefab: drawn as its object file says, keyed by that file.
+  if (!entry.object.empty()) {
+    SceneModelEntry asFile;
+    asFile.path = entry.object;
+    return thumbnailKeyFor(asFile);
+  }
   if (entry.shape)
     return thumbnailKey(std::format("shape:{}|{} {} {}|{} {}|{} {} {}",
                                     static_cast<int>(*entry.shape), entry.size.x, entry.size.y,
@@ -987,10 +1116,34 @@ std::string VulkanRenderer::thumbnailKeyFor(const SceneModelEntry &entry) const 
 void VulkanRenderer::makeNextThumbnail() {
   if (thumbnails.full())
     return;
+  if (thumbnailRequests.empty() && !characterRequests.empty()) {
+    // A character file's picture: it standing in its idle pose.
+    const auto [key, file] = characterRequests.front();
+    characterRequests.erase(characterRequests.begin());
+    if (thumbnails.cellOf(key))
+      return;
+    vkDeviceWaitIdle(device.getLogicalDevice());
+    if (thumbnails.loadCached(device, key, thumbnailFolder))
+      return;
+    CharacterFileData *data = characterFile(file);
+    if (data)
+      prepareCharacterMesh(*data);
+    if (!data || data->previewSkin < 0) {
+      thumbnailsFailed.insert(key);
+      return;
+    }
+    const Skeleton &skeleton = data->asset->skeleton;
+    Pose pose = bindPose(skeleton);
+    if (const CharacterClipData *idle = data->asset->clip(ClipSlot::Idle))
+      sampleClip(idle->clip, skeleton, idle->start, idle->loop, pose);
+    if (!renderCharacterThumbnail(*data, key, modelSpace(skeleton, pose)))
+      thumbnailsFailed.insert(key);
+    return;
+  }
   if (thumbnailRequests.empty()) {
-    // A clip's picture: the character posed halfway through it, skinned
-    // into the preview buffer in the same command buffer that draws it.
-    if (clipRequests.empty() || characterModelId < 0 || !previewSkinning.hasMesh())
+    // A clip's picture: the character posed halfway through it.
+    CharacterFileData *data = defaultCharacter();
+    if (clipRequests.empty() || !data || data->previewSkin < 0)
       return;
     const auto [key, file] = clipRequests.front();
     clipRequests.erase(clipRequests.begin());
@@ -1004,35 +1157,10 @@ void VulkanRenderer::makeNextThumbnail() {
       thumbnailsFailed.insert(key);
       return;
     }
-    const Skeleton &skeleton = characterAsset->skeleton;
+    const Skeleton &skeleton = data->asset->skeleton;
     Pose pose = bindPose(skeleton);
     sampleClip(clip->clip, skeleton, 0.5f * clip->clip.duration, true, pose);
-    const std::vector<glm::mat4> model = modelSpace(skeleton, pose);
-    previewSkinning.updateMatrices(0, skinningMatrices(skeleton, model));
-    // Framed around where his joints are in this pose, plus some room for
-    // the body around them: a climb or a roll moves him off his standing
-    // spot.
-    glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
-    for (size_t b = 0; b < skeleton.bones.size(); ++b)
-      if (skeleton.bones[b].name.rfind("mixamorig", 0) == 0) {
-        lo = glm::min(lo, glm::vec3(model[b][3]));
-        hi = glm::max(hi, glm::vec3(model[b][3]));
-      }
-    const float room =
-        0.12f * (characterAsset->boundsMax.y - characterAsset->boundsMin.y);
-    if (lo.x > hi.x) {
-      lo = characterAsset->boundsMin;
-      hi = characterAsset->boundsMax;
-    } else {
-      lo -= glm::vec3(room);
-      hi += glm::vec3(room);
-    }
-    if (!thumbnails.render(device, key, characterPreviewDraws(), lo, hi,
-                           descriptorManager.getBindlessSet(),
-                           thumbnailFolder, [&](VkCommandBuffer cmd) {
-                             previewSkinning.record(cmd, 0, previewVertices.get(),
-                                                    VK_NULL_HANDLE, -1);
-                           }))
+    if (!renderCharacterThumbnail(*data, key, modelSpace(skeleton, pose)))
       thumbnailsFailed.insert(key);
     return;
   }
@@ -1055,6 +1183,48 @@ void VulkanRenderer::makeNextThumbnail() {
     spdlog::warn("No thumbnail for {}: {}", entry.shape ? "a shape" : entry.path, e.what());
     thumbnailsFailed.insert(key);
   }
+}
+
+// Skinned into the file's preview buffer in the same command buffer that
+// draws it, framed around where the joints are in this pose plus some room
+// for the body around them: a climb or a roll moves it off its standing
+// spot. After the GPU is idle, like every picture.
+bool VulkanRenderer::renderCharacterThumbnail(CharacterFileData &data, const std::string &key,
+                                              const std::vector<glm::mat4> &model) {
+  const CharacterAsset &asset = *data.asset;
+  const Skeleton &skeleton = asset.skeleton;
+  skinningPass.updateMatrices(data.previewSkin, 0, skinningMatrices(skeleton, model));
+  glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+  for (size_t b = 0; b < skeleton.bones.size(); ++b)
+    if (skeleton.bones[b].name.rfind("mixamorig", 0) == 0) {
+      lo = glm::min(lo, glm::vec3(model[b][3]));
+      hi = glm::max(hi, glm::vec3(model[b][3]));
+    }
+  const float room = 0.12f * (asset.boundsMax.y - asset.boundsMin.y);
+  if (lo.x > hi.x) {
+    lo = asset.boundsMin;
+    hi = asset.boundsMax;
+  } else {
+    lo -= glm::vec3(room);
+    hi += glm::vec3(room);
+  }
+  const std::vector<SkinningPass::Target> target{{data.previewSkin, data.previewVertices.get()}};
+  return thumbnails.render(device, key, characterPreviewDraws(data), lo, hi,
+                           descriptorManager.getBindlessSet(), thumbnailFolder,
+                           [&](VkCommandBuffer cmd) { skinningPass.record(cmd, 0, target); });
+}
+
+// A character file's picture, under its file, size and date.
+std::string VulkanRenderer::characterThumbnailKey(const std::string &file) const {
+  namespace fs = std::filesystem;
+  std::error_code error;
+  fs::path path(file);
+  if (!fs::exists(path, error))
+    path = fs::path("..") / file;
+  const uint64_t size = fs::file_size(path, error);
+  const auto modified = fs::last_write_time(path, error);
+  return thumbnailKey(file + "|character", error ? 0 : size,
+                      error ? 0 : static_cast<int64_t>(modified.time_since_epoch().count()));
 }
 
 // A clip's picture is cached under its file, size and date, like a model's.
@@ -1088,14 +1258,15 @@ const CharacterClipData *VulkanRenderer::previewClip(const std::string &file) {
   return &previewClips.emplace(file, std::move(*data)).first->second;
 }
 
-// The character's draw, from the preview's own skinned vertices.
-std::vector<ThumbnailDraw> VulkanRenderer::characterPreviewDraws() {
+// A character file's draw, from its preview's own skinned vertices.
+std::vector<ThumbnailDraw> VulkanRenderer::characterPreviewDraws(const CharacterFileData &data) {
   std::vector<ThumbnailDraw> draws;
-  const MeshModel *model = modelManager.getModel(characterModelId);
-  if (!model || !previewVertices)
+  const MeshModel *model =
+      data.copies.empty() ? nullptr : modelManager.getModel(data.copies.front().model);
+  if (!model || !data.previewVertices)
     return draws;
   for (ThumbnailDraw draw : thumbnailDraws(*model)) {
-    draw.vertices = previewVertices.get();
+    draw.vertices = data.previewVertices.get();
     draws.push_back(draw);
   }
   return draws;
@@ -1111,7 +1282,8 @@ void VulkanRenderer::prepareLivePreview() {
                        : std::min(std::chrono::duration<float>(now - liveTick).count(), 0.1f);
   liveTick = now;
   const std::string hovered = std::exchange(hoveredClip, {}); // asked again each frame
-  if (hovered.empty() || characterModelId < 0 || !characterAsset) {
+  const CharacterFileData *previewed = defaultCharacter();
+  if (hovered.empty() || !previewed || previewed->previewSkin < 0 || !characterAsset) {
     liveClip.clear();
     liveSkinning.clear();
     return;
@@ -1162,6 +1334,40 @@ void VulkanRenderer::hideAssetPreview() {
   rootNode.removeChildren([&](const SceneNode &node) { return &node == assetPreview; });
   assetPreview = nullptr;
   assetPreviewModel = -1;
+}
+
+// Where a character from the Assets panel would stand: on the surface under
+// the cursor (or where the camera looks), off a wall by its radius, facing
+// away from the camera, like the player start.
+SceneCharacterEntry VulkanRenderer::characterPlacement(const CharacterPlacement &placement) {
+  const glm::mat4 inverseViewProj = glm::inverse(taaBaseProjection * sceneUbo.view);
+  const PickRay ray =
+      placement.windowPixel
+          ? rayFromScreen(sceneArea.toScene(*placement.windowPixel), sceneArea.size,
+                          inverseViewProj)
+          : rayFromScreen(glm::vec2(0.5f), glm::vec2(1.0f), inverseViewProj);
+  const float reach = placement.windowPixel ? imguiDrawDistance : kSpawnReach;
+  const CharacterTuning &tuning = characterPanel.character;
+  const ScenePlayerStart spot = playerStartAt(
+      ray, physics ? physics->castRay(ray.origin, ray.direction, reach) : std::nullopt,
+      tuning.radius, tuning.height);
+  SceneCharacterEntry entry;
+  entry.file = placement.file;
+  entry.position = spot.position;
+  entry.yaw = spot.yaw;
+  return entry;
+}
+
+// Selected, and one undo step.
+void VulkanRenderer::dropCharacter(const CharacterPlacement &placement) {
+  sceneError.clear();
+  const SceneEntryRef ref = addCharacter(currentScene, characterPlacement(placement));
+  buildCharacters();
+  rootNode.update(glm::mat4(1.0f), playSeconds);
+  selection = ref;
+  updateEditorLines();
+  recordEdit();
+  spdlog::info("Added [character] {}: {}", ref.index, placement.file);
 }
 
 // Let go over the scene: placed where the preview stood.
@@ -1229,7 +1435,8 @@ void VulkanRenderer::applyHistoryStep() {
                          selection->kind == SceneEntryRef::Kind::Player &&
                          !scene->player;
   if (scene->models.size() != currentScene.models.size() ||
-      scene->grids.size() != currentScene.grids.size() || startGone)
+      scene->grids.size() != currentScene.grids.size() ||
+      scene->characters.size() != currentScene.characters.size() || startGone)
     selection.reset();
   // The file and name are where the scene is saved, not part of the edits,
   // so undoing past a Save as still saves to the new file.
@@ -1460,11 +1667,29 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   }
   if (characterPanel.changed) {
     characterPanel.changed = false;
-    const auto [movement, animation] = playedTuning();
-    if (player)
-      player->setTuning(movement, characterPanel.camera);
-    if (animator)
-      animator->setTuning(animation);
+    // Every character made from the Character tab's file, each with its own
+    // variant over it. A body keeps the size it was made with.
+    for (LiveCharacter &c : characters) {
+      if (c.file != defaultCharacter())
+        continue;
+      std::tie(c.tuning, c.animation) = tuningFor(*c.file, c.variant);
+      if (c.body >= 0)
+        roster->body(c.body).setTuning(c.tuning);
+      if (c.animator)
+        c.animator->setTuning(c.animation);
+      if (c.body < 0 && c.copy >= 0) {
+        // Standing in edit mode: drawn at the new height at once.
+        const CharacterAsset &asset = *c.file->asset;
+        const float modelHeight = asset.boundsMax.y - asset.boundsMin.y;
+        c.scale = modelHeight > 0.0f ? c.tuning.height / modelHeight : 1.0f;
+        NodeTransform scaled;
+        scaled.scale = c.scale;
+        c.node->setTransform(scaled);
+        placeCharacter(c.entry.index);
+      }
+    }
+    if (playerController)
+      playerController->setCameraTuning(characterPanel.camera);
     updateCharacterUnsaved();
   }
   if (characterPanel.clipChanged) {
@@ -1496,12 +1721,12 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     alpha = physicsClock.alpha();
   }
   const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
-  if (player)
-    player->control(playerControls);
+  if (playerController)
+    playerController->control(playerControls);
   for (int i = 0; i < steps; ++i) {
-    // The character moves first, then the bodies, like Jolt's samples.
-    if (player)
-      player->step(stepSeconds);
+    // The characters move first, then the bodies, like Jolt's samples.
+    if (roster)
+      roster->step(stepSeconds);
     physics->step(stepSeconds);
   }
   const auto stepped = std::chrono::steady_clock::now();
@@ -1510,8 +1735,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     if (SceneNode *node = physicsLinks[moved.userData].node)
       node->setPose(moved.pose.position, moved.pose.rotation);
   const auto beforePose = std::chrono::steady_clock::now();
-  if (player)
-    posePlayer(alpha, frameSeconds);
+  if (roster)
+    poseCharacters(alpha, frameSeconds);
   const auto posed = std::chrono::steady_clock::now();
   // Posing the character is its own phase, so physics doesn't include it.
   const double animationMs =
@@ -1573,9 +1798,8 @@ void VulkanRenderer::ensurePlayerModels() {
       playerCapsuleEntry(tuning.radius, tuning.crouchHeight);
   // The Play after a change of body size needs new meshes, uploaded while
   // nothing in flight can be drawing.
-  const bool newCharacter = characterAsset && characterModelId < 0;
   if (modelManager.findModel(primitiveModelKey(standing)) < 0 ||
-      modelManager.findModel(primitiveModelKey(crouched)) < 0 || newCharacter)
+      modelManager.findModel(primitiveModelKey(crouched)) < 0)
     vkDeviceWaitIdle(device.getLogicalDevice());
   try {
     playerModelId = createPrimitiveModel(standing);
@@ -1584,186 +1808,349 @@ void VulkanRenderer::ensurePlayerModels() {
     playerModelId = crouchedPlayerModelId = -1;
     spdlog::error("Couldn't make the character's capsule: {}", e.what());
   }
-  if (newCharacter)
-    createCharacterModel();
 }
 
-// The character's mesh as a model with its embedded texture, in the
-// GPU-driven pass's shared buffer too, and handed to the skinning pass.
-// Once: it doesn't change with the scene.
-void VulkanRenderer::createCharacterModel() {
-  const CharacterAsset &asset = *characterAsset;
+VulkanRenderer::CharacterFileData *VulkanRenderer::characterFile(const std::string &file) {
+  for (const std::unique_ptr<CharacterFileData> &data : characterFiles)
+    if (data->file == file)
+      return data->description ? data.get() : nullptr; // read, or failed before
+  // Kept even when it can't be read, so it isn't read again every rebuild.
+  auto data = std::make_unique<CharacterFileData>();
+  data->file = file;
+  CharacterFileData &added = *characterFiles.emplace_back(std::move(data));
+  const std::string path = resolveCharacterPath(file);
+  if (path.empty()) {
+    spdlog::warn("There's no character file {}", file);
+    return nullptr;
+  }
+  std::string error;
   try {
-    const Material material = textureManager.loadMaterialFromMemory(
-        "character|" + asset.albedoName, asset.albedo, device, descriptorManager);
-    characterModelId =
-        modelManager.createModel("#character", asset.mesh, false, false, device,
-                                 textureManager, descriptorManager, &material);
+    added.ownDescription = CharacterIO::loadFromFile(path);
+    added.ownAsset = importCharacter(added.ownDescription, error);
   } catch (const std::exception &e) {
-    characterModelId = -1;
-    spdlog::error("Couldn't make the character's model, keeping the capsule: {}",
-                  e.what());
+    spdlog::warn("Couldn't read the character file {}: {}", file, e.what());
+    return nullptr;
+  }
+  if (!added.ownAsset)
+    spdlog::warn("{}: {}, so it's a capsule", file, error);
+  added.description = &added.ownDescription;
+  added.asset = added.ownAsset ? &*added.ownAsset : nullptr;
+  return &added;
+}
+
+// The file's mesh in the skinning pass, its pictures' copy and buffer, and
+// its first copy, which the pictures are drawn like. Once.
+void VulkanRenderer::prepareCharacterMesh(CharacterFileData &data) {
+  if (!data.asset || data.skinMesh >= 0)
+    return;
+  const CharacterAsset &asset = *data.asset;
+  data.skinMesh =
+      skinningPass.addMesh(asset.mesh.vertices, asset.skin, asset.skeleton.bones.size());
+  if (data.skinMesh < 0) {
+    spdlog::error("{}: its mesh can't be skinned, so it's a capsule", data.file);
+    data.asset = nullptr;
     return;
   }
-  // The bind-pose sphere doesn't hold a crouch or a roll: one around the
-  // whole height, wide enough for the arms out, so culling never drops him.
-  const float height = asset.boundsMax.y - asset.boundsMin.y;
-  modelManager.getModel(characterModelId)
-      ->setBoundingSphere(glm::vec3(0.0f, asset.boundsMin.y + 0.5f * height, 0.0f),
-                          0.75f * height);
-  gpuDrivenGBufferPass.registerModelGeometry(characterModelId, modelManager);
-  skinningPass.setMesh(asset.mesh.vertices, asset.skin,
-                       asset.skeleton.bones.size());
-  // The preview copy: the same mesh, bent into its own buffer.
-  previewSkinning.setMesh(asset.mesh.vertices, asset.skin, asset.skeleton.bones.size());
+  data.previewSkin = skinningPass.addCopy(data.skinMesh);
   createBuffer(device.getAllocator(), sizeof(Vertex) * asset.mesh.vertices.size(),
                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-               VMA_MEMORY_USAGE_AUTO, 0, &previewVertices);
+               VMA_MEMORY_USAGE_AUTO, 0, &data.previewVertices);
+  characterCopy(data, 0);
 }
 
-float VulkanRenderer::characterScale() const {
-  const float modelHeight = characterAsset->boundsMax.y - characterAsset->boundsMin.y;
-  return modelHeight > 0.0f && player
-             ? player->character().tuning().height / modelHeight
-             : 1.0f;
+// The file's index-th copy, made (with every one before it) if it isn't
+// yet: a model with its embedded texture, in the GPU-driven pass's shared
+// buffer too, and the skinning copy that bends it. -1 if it can't be.
+int VulkanRenderer::characterCopy(CharacterFileData &data, size_t index) {
+  prepareCharacterMesh(data);
+  if (data.skinMesh < 0)
+    return -1;
+  const CharacterAsset &asset = *data.asset;
+  while (data.copies.size() <= index) {
+    CharacterFileData::Copy copy;
+    try {
+      const Material material = textureManager.loadMaterialFromMemory(
+          "character|" + data.file + "|" + asset.albedoName, asset.albedo, device,
+          descriptorManager);
+      copy.model = modelManager.createModel(
+          std::format("#character|{}|{}", data.file, data.copies.size()), asset.mesh, false,
+          false, device, textureManager, descriptorManager, &material);
+    } catch (const std::exception &e) {
+      spdlog::error("Couldn't make a copy of {}: {}", data.file, e.what());
+      return -1;
+    }
+    // The bind-pose sphere doesn't hold a crouch or a roll: one around the
+    // whole height, wide enough for the arms out, so culling never drops it.
+    const float height = asset.boundsMax.y - asset.boundsMin.y;
+    modelManager.getModel(copy.model)
+        ->setBoundingSphere(glm::vec3(0.0f, asset.boundsMin.y + 0.5f * height, 0.0f),
+                            0.75f * height);
+    gpuDrivenGBufferPass.registerModelGeometry(copy.model, modelManager);
+    copy.skin = skinningPass.addCopy(data.skinMesh);
+    data.copies.push_back(copy);
+  }
+  return static_cast<int>(index);
 }
 
-// The animator's pose, or idle before there's one.
-std::vector<glm::mat4> VulkanRenderer::characterPose() const {
-  const Skeleton &skeleton = characterAsset->skeleton;
-  if (animator)
-    return modelSpace(skeleton, animator->pose());
-  Pose pose = bindPose(skeleton);
-  if (const CharacterClipData *idle = characterAsset->clip(ClipSlot::Idle))
-    sampleClip(idle->clip, skeleton,
-               static_cast<float>(characterClipTime) + idle->start, idle->loop,
-               pose);
-  return modelSpace(skeleton, pose);
+// A character file's tuning with a variant over it. The default file's
+// comes from the Character tab, saved or not.
+std::pair<CharacterTuning, AnimatorTuning>
+VulkanRenderer::tuningFor(const CharacterFileData &data, const std::string &variant) const {
+  CharacterTuning movement = characterPanel.character;
+  AnimatorTuning animation = characterPanel.animation;
+  if (&data != characterFiles.front().get()) {
+    movement = CharacterTuning{};
+    animation = AnimatorTuning{};
+    applyCharacterTuning(*data.description, "", movement, animation);
+  }
+  applyCharacterVariant(*data.description, variant, movement, animation);
+  return {consistent(movement), animation};
 }
 
-// At the scene's [player], or on the ground below the fly camera facing its
-// way, with the Character tab's tuning. Its capsule is a plain node: not in
-// the scene file, not selectable.
-void VulkanRenderer::spawnPlayer() {
-  if (!physics || player)
+std::string VulkanRenderer::playedVariant() const {
+  if (const std::optional<int> ticked = playerCharacter(currentScene))
+    return currentScene.characters[*ticked].variant;
+  return currentScene.player ? currentScene.player->variant : "";
+}
+
+void VulkanRenderer::clearCharacters() {
+  roster.reset(); // the bodies leave the world, the controller lets go
+  playerController.reset();
+  std::unordered_set<const SceneNode *> nodes;
+  for (const LiveCharacter &character : characters)
+    nodes.insert(character.node);
+  if (!nodes.empty())
+    rootNode.removeChildren([&](const SceneNode &node) { return nodes.contains(&node); });
+  characters.clear();
+  playedCharacter = -1;
+  characterPanel.animState = nullptr;
+  characterPanel.playing.clear();
+  skeletonLines.clear();
+}
+
+void VulkanRenderer::buildCharacters() {
+  clearCharacters();
+  ensurePlayerModels(); // the capsules, at the Character tab's body size
+  if (!physics || characterFiles.empty())
     return;
-  ensurePlayerModels();
-  glm::vec3 feet = flyCameraPosition;
-  float yaw;
-  if (currentScene.player) {
-    feet = currentScene.player->position;
-    yaw = glm::radians(currentScene.player->yaw);
-  } else {
-    if (const std::optional<PhysicsRayHit> ground = physics->castRay(
-            flyCameraPosition, glm::vec3(0.0f, -1.0f, 0.0f), 1000.0f))
-      feet.y -= ground->distance;
-    // Camera's yaw is LearnOpenGL's, in degrees: -90 looks down -z, where
-    // the character's 0 does.
-    yaw = -glm::radians(flyCameraYaw) - glm::half_pi<float>();
+  // The scene's characters, and while playing with none ticked, the default
+  // character at the player start or on the ground below the fly camera,
+  // facing its way.
+  struct Wanted {
+    SceneEntryRef entry;
+    std::string file;
+    glm::vec3 feet;
+    float yaw; // radians
+    std::string variant;
+  };
+  std::vector<Wanted> wanted;
+  for (int i = 0; i < static_cast<int>(currentScene.characters.size()); ++i) {
+    const SceneCharacterEntry &c = currentScene.characters[i];
+    wanted.push_back({{SceneEntryRef::Kind::Character, i}, c.file, c.position,
+                      glm::radians(c.yaw), c.variant});
   }
-  const auto [movement, animation] = playedTuning();
-  player = std::make_unique<Player>(*physics, feet, yaw, movement,
-                                    characterPanel.camera);
-  const bool animated = characterModelId >= 0;
-  if (animated) {
-    animator = std::make_unique<CharacterAnimator>(
-        characterAsset->skeleton, characterAsset->library, characterScale(),
-        animation);
-    player->setDodgePaths(characterDodgePaths());
+  const std::optional<int> ticked = playerCharacter(currentScene);
+  if (playing && !ticked) {
+    Wanted start{{}, characterFiles.front()->file, flyCameraPosition, 0.0f, {}};
+    if (currentScene.player) {
+      start.feet = currentScene.player->position;
+      start.yaw = glm::radians(currentScene.player->yaw);
+      start.variant = currentScene.player->variant;
+    } else {
+      if (const std::optional<PhysicsRayHit> ground = physics->castRay(
+              flyCameraPosition, glm::vec3(0.0f, -1.0f, 0.0f), 1000.0f))
+        start.feet.y -= ground->distance;
+      // Camera's yaw is LearnOpenGL's, in degrees: -90 looks down -z, where
+      // the character's 0 does.
+      start.yaw = -glm::radians(flyCameraYaw) - glm::half_pi<float>();
+    }
+    wanted.push_back(start);
   }
-  if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
+
+  std::map<const CharacterFileData *, size_t> copiesUsed;
+  for (const Wanted &w : wanted) {
+    LiveCharacter c;
+    c.entry = w.entry;
+    c.file = characterFile(w.file);
+    if (!c.file) {
+      sceneError = std::format("Couldn't load the character {}", w.file);
+      continue;
+    }
+    c.variant = w.variant;
+    std::tie(c.tuning, c.animation) = tuningFor(*c.file, w.variant);
+    if (c.file->asset)
+      c.copy = characterCopy(*c.file, copiesUsed[c.file]++);
+    const CharacterAsset *asset = c.copy >= 0 ? c.file->asset : nullptr;
+    if (asset) {
+      const float modelHeight = asset->boundsMax.y - asset->boundsMin.y;
+      c.scale = modelHeight > 0.0f ? c.tuning.height / modelHeight : 1.0f;
+    }
     auto node = std::make_unique<SceneNode>();
-    node->setModelId(model);
-    if (animated) {
+    node->setEntry(w.entry); // clicks find the [character]
+    node->setModelId(asset ? c.file->copies[c.copy].model : playerModelId);
+    if (asset) {
       // Posing keeps the node's scale: the model file's units to the body's.
       NodeTransform scaled;
-      scaled.scale = characterScale();
+      scaled.scale = c.scale;
       node->setTransform(scaled);
     }
-    playerNode = node.get();
+    c.node = node.get();
     rootNode.addChild(std::move(node));
+    if (playing) {
+      if (!roster)
+        roster = std::make_unique<CharacterRoster>();
+      c.body = static_cast<int>(roster->add(
+          std::make_unique<CharacterMovement>(*physics, w.feet, w.yaw, c.tuning)));
+      if (asset) {
+        c.animator = std::make_unique<CharacterAnimator>(asset->skeleton, asset->library,
+                                                         c.scale, c.animation);
+        roster->body(c.body).setDodgePaths(dodgePathsFor(c));
+      }
+    }
+    characters.push_back(std::move(c));
   }
-  posePlayer(1.0f, 0.0f);
+  // The player possesses the ticked one, or the one at the start.
+  if (playing && roster) {
+    const SceneEntryRef played =
+        ticked ? SceneEntryRef{SceneEntryRef::Kind::Character, *ticked} : SceneEntryRef{};
+    for (int i = 0; i < static_cast<int>(characters.size()); ++i)
+      if (characters[i].entry == played) {
+        playerController = std::make_unique<PlayerController>(*physics, characterPanel.camera);
+        roster->possess(*playerController, characters[i].body);
+        playedCharacter = i;
+        break;
+      }
+  }
+  // Edit mode's characters stand in their idle pose from here on.
+  for (int i = 0; i < static_cast<int>(characters.size()); ++i)
+    if (characters[i].body < 0)
+      placeCharacter(characters[i].entry.index);
+  poseCharacters(1.0f, 0.0f);
 }
 
-// The camera follows, and the capsule is drawn where the character is this
-// frame: blended between the last two steps, the short one while crouched.
-void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
-  player->follow(alpha, frameSeconds);
-  if (!playerNode)
+void VulkanRenderer::placeCharacter(int index) {
+  if (index < 0 || index >= static_cast<int>(currentScene.characters.size()))
     return;
-  const CharacterController &character = player->character();
-  const glm::vec3 feet = character.drawnPosition(alpha);
+  const SceneCharacterEntry &entry = currentScene.characters[index];
+  for (LiveCharacter &c : characters) {
+    if (c.entry != SceneEntryRef{SceneEntryRef::Kind::Character, index} || c.body >= 0)
+      continue;
+    const float yaw = glm::radians(entry.yaw);
+    const CharacterAsset *asset = c.copy >= 0 ? c.file->asset : nullptr;
+    if (!asset) {
+      // The capsule mesh is centred on its middle, the entry's position is
+      // its feet.
+      c.node->setPose(entry.position + glm::vec3(0.0f, 0.5f * c.tuning.height, 0.0f),
+                      glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f)));
+      continue;
+    }
+    // Mixamo models face +z, the character's yaw 0 faces -z.
+    c.node->setPose(entry.position,
+                    glm::angleAxis(yaw + glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f)));
+    if (c.skinning.empty()) {
+      // Its idle clip's first frame, or the bind pose without one.
+      const Skeleton &skeleton = asset->skeleton;
+      Pose pose = bindPose(skeleton);
+      if (const CharacterClipData *idle = asset->clip(ClipSlot::Idle))
+        sampleClip(idle->clip, skeleton, idle->start, idle->loop, pose);
+      c.skinning = skinningMatrices(skeleton, modelSpace(skeleton, pose));
+    }
+  }
+}
+
+// The dodges move the way their clips do, from each clip's start to its
+// end, in metres at its size.
+std::array<RootMotion, 5> VulkanRenderer::dodgePathsFor(const LiveCharacter &character) const {
+  std::array<RootMotion, 5> paths;
+  const CharacterAsset *asset = character.copy >= 0 ? character.file->asset : nullptr;
+  if (!asset)
+    return paths;
+  for (size_t k = 0; k < paths.size(); ++k)
+    if (const CharacterClipData *clip = asset->clip(dodgeClip(static_cast<DodgeKind>(k))))
+      paths[k] = rootPath(clip->rootMotion, clip->start, clip->endTime(), character.scale);
+  return paths;
+}
+
+// Play mode: the camera follows the possessed body, and every character is
+// drawn where its body is this frame (blended between the last two steps),
+// animated from what its body does.
+void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
+  if (playerController)
+    playerController->follow(alpha, frameSeconds);
   skeletonLines.clear();
-  if (characterModelId >= 0) {
-    characterClipTime += frameSeconds;
-    if (animator) {
-      // What the controller is doing, in the character's own frame for
-      // the directional clips: x to its right, y ahead.
-      const glm::vec3 velocity = character.velocity();
-      const float yaw = character.yaw();
-      const glm::vec3 ahead = yawForward(yaw);
-      const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
-      AnimatorInput input;
-      input.speed = glm::length(glm::vec2(velocity.x, velocity.z));
-      input.direction = glm::vec2(glm::dot(velocity, right), glm::dot(velocity, ahead));
-      input.grounded = character.grounded();
-      input.crouched = character.height() < character.tuning().height - 1e-3f;
-      input.aiming = playerControls.aim;
-      input.dodging = character.dodging();
-      input.verticalSpeed = velocity.y;
-      // The run, sprint and crouch walk play in full at the controller's
-      // own speeds for them.
-      input.dodgeClip = dodgeClip(character.dodgeKind());
-      input.runSpeed = character.tuning().runSpeed;
-      input.sprintSpeed = character.tuning().sprintSpeed;
-      input.crouchSpeed = character.tuning().crouchSpeed;
-      animator->update(input, frameSeconds);
+  const bool showSkeleton = characterPanel.showSkeleton;
+  for (int i = 0; i < static_cast<int>(characters.size()); ++i) {
+    LiveCharacter &c = characters[i];
+    if (c.body < 0 || !roster)
+      continue; // edit mode's stand where placeCharacter put them
+    const CharacterMovement &body = roster->body(c.body);
+    const glm::vec3 feet = body.drawnPosition(alpha);
+    const CharacterAsset *asset = c.copy >= 0 ? c.file->asset : nullptr;
+    if (!asset) {
+      // The capsule, the short one while crouched, centred on its middle.
+      const float height = body.height();
+      const int model = height < body.tuning().height && crouchedPlayerModelId >= 0
+                            ? crouchedPlayerModelId
+                            : playerModelId;
+      if (c.node->getModelId() != model)
+        c.node->setModelId(model);
+      c.node->setPose(feet + glm::vec3(0.0f, 0.5f * height, 0.0f),
+                      glm::angleAxis(body.drawnYaw(alpha), glm::vec3(0.0f, 1.0f, 0.0f)));
+      continue;
+    }
+    // What the body is doing, in its own frame for the directional clips:
+    // x to its right, y ahead.
+    const glm::vec3 velocity = body.velocity();
+    const float yaw = body.yaw();
+    const glm::vec3 ahead = yawForward(yaw);
+    const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
+    AnimatorInput input;
+    input.speed = glm::length(glm::vec2(velocity.x, velocity.z));
+    input.direction = glm::vec2(glm::dot(velocity, right), glm::dot(velocity, ahead));
+    input.grounded = body.grounded();
+    input.crouched = body.height() < body.tuning().height - 1e-3f;
+    input.aiming = body.aiming();
+    input.dodging = body.dodging();
+    input.verticalSpeed = velocity.y;
+    input.dodgeClip = dodgeClip(body.dodgeKind());
+    // The run, sprint and crouch walk play in full at the body's own speeds
+    // for them.
+    input.runSpeed = body.tuning().runSpeed;
+    input.sprintSpeed = body.tuning().sprintSpeed;
+    input.crouchSpeed = body.tuning().crouchSpeed;
+    c.animator->update(input, frameSeconds);
+    if (i == playedCharacter) {
       // For the Character tab: the state and the clips in this pose.
-      characterPanel.animState = animStateName(animator->state());
+      characterPanel.animState = animStateName(c.animator->state());
       characterPanel.playing.clear();
       for (size_t k = 0; k < static_cast<size_t>(ClipSlot::Count); ++k) {
         const ClipSlot slot = static_cast<ClipSlot>(k);
-        if (const float weight = animator->clipWeight(slot); weight > 0.005f)
+        if (const float weight = c.animator->clipWeight(slot); weight > 0.005f)
           characterPanel.playing.push_back(
-              {clipSlotName(slot), weight, animator->clipTime(slot)});
+              {clipSlotName(slot), weight, c.animator->clipTime(slot)});
       }
     }
-    const std::vector<glm::mat4> model = characterPose();
-    characterSkinning = skinningMatrices(characterAsset->skeleton, model);
+    const std::vector<glm::mat4> model = modelSpace(asset->skeleton, c.animator->pose());
+    c.skinning = skinningMatrices(asset->skeleton, model);
     // Show skeleton draws the bones instead of the body.
-    const bool skeleton = characterPanel.showSkeleton;
-    const int shown = skeleton ? -1 : characterModelId;
-    if (playerNode->getModelId() != shown)
-      playerNode->setModelId(shown);
-    // Feet on the capsule's feet, turned to its facing: Mixamo models face
-    // +z, the character's yaw 0 faces -z.
-    const glm::quat facing = glm::angleAxis(
-        character.drawnYaw(alpha) + glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
-    playerNode->setPose(feet, facing);
-    if (skeleton)
-      updateSkeletonLines(glm::translate(glm::mat4(1.0f), feet) *
-                              glm::mat4_cast(facing) *
-                              glm::scale(glm::mat4(1.0f), glm::vec3(characterScale())),
+    const int shown = showSkeleton ? -1 : c.file->copies[c.copy].model;
+    if (c.node->getModelId() != shown)
+      c.node->setModelId(shown);
+    // Feet on the body's feet, turned to its facing: Mixamo models face +z,
+    // the character's yaw 0 faces -z.
+    const glm::quat facing = glm::angleAxis(body.drawnYaw(alpha) + glm::pi<float>(),
+                                            glm::vec3(0.0f, 1.0f, 0.0f));
+    c.node->setPose(feet, facing);
+    if (showSkeleton)
+      updateSkeletonLines(c,
+                          glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
+                              glm::scale(glm::mat4(1.0f), glm::vec3(c.scale)),
                           model);
-    return;
   }
-  const float height = character.height();
-  const int model = height < character.tuning().height && crouchedPlayerModelId >= 0
-                        ? crouchedPlayerModelId
-                        : playerModelId;
-  if (playerNode->getModelId() != model)
-    playerNode->setModelId(model);
-  // The capsule mesh is centred on its middle, the character's position is
-  // its feet.
-  playerNode->setPose(character.drawnPosition(alpha) +
-                          glm::vec3(0.0f, 0.5f * height, 0.0f),
-                      glm::angleAxis(character.drawnYaw(alpha),
-                                     glm::vec3(0.0f, 1.0f, 0.0f)));
 }
 
 void VulkanRenderer::loadCharacter() {
-  const std::string path = resolveCharacterPath("Resources/Characters/ganfaul.character");
+  const std::string path = resolveCharacterPath(kDefaultCharacterFile);
   if (path.empty()) {
     spdlog::info("No Resources/Characters/ganfaul.character: the character is a capsule");
     return;
@@ -1790,20 +2177,17 @@ void VulkanRenderer::loadCharacter() {
     // The clips to choose from: every FBX next to the character file.
     characterPanel.clipFiles = findFiles("Resources/Characters", {".fbx"});
   }
+  characterFileNames = findFiles("Resources/Characters", {".character"});
   if (std::getenv("HELIORA_SHOW_SKELETON"))
     characterPanel.showSkeleton = true;
-}
-
-// The dodges move the way their clips do, from each clip's start to its
-// end, in metres at his size.
-std::array<RootMotion, 5> VulkanRenderer::characterDodgePaths() const {
-  std::array<RootMotion, 5> paths;
-  for (size_t k = 0; k < paths.size(); ++k)
-    if (const CharacterClipData *clip =
-            characterAsset->clip(dodgeClip(static_cast<DodgeKind>(k))))
-      paths[k] = rootPath(clip->rootMotion, clip->start, clip->endTime(),
-                          characterScale());
-  return paths;
+  // The default character file, the Character tab's: scenes name it, and
+  // the player plays it when no [character] is ticked. Its mesh goes to the
+  // GPU at the first scene load.
+  auto data = std::make_unique<CharacterFileData>();
+  data->file = kDefaultCharacterFile;
+  data->description = &characterPanel.description;
+  data->asset = characterAsset ? &*characterAsset : nullptr;
+  characterFiles.push_back(std::move(data));
 }
 
 // The Clips section changed a move: a new file is read now (a few
@@ -1831,21 +2215,18 @@ void VulkanRenderer::applyClipChange(ClipSlot slot) {
     loaded->end = entry->end;
     loaded->loop = entry->loop;
   }
-  if (player)
-    player->setDodgePaths(characterDodgePaths());
+  for (LiveCharacter &c : characters) {
+    if (c.file != defaultCharacter())
+      continue;
+    if (c.body >= 0) {
+      roster->body(c.body).setDodgePaths(dodgePathsFor(c));
+    } else if (slot == ClipSlot::Idle) {
+      c.skinning.clear(); // posed again from the new idle
+      placeCharacter(c.entry.index);
+    }
+  }
   characterPanel.clipsEdited = true;
   updateCharacterUnsaved();
-}
-
-// What the character plays with: the Character tab's tuning (saved or
-// not), with the open scene's variant over it.
-std::pair<CharacterTuning, AnimatorTuning> VulkanRenderer::playedTuning() const {
-  CharacterTuning movement = characterPanel.character;
-  AnimatorTuning animation = characterPanel.animation;
-  if (currentScene.player)
-    applyCharacterVariant(characterPanel.description, currentScene.player->variant,
-                          movement, animation);
-  return {consistent(movement), animation};
 }
 
 void VulkanRenderer::updateCharacterUnsaved() {
@@ -1858,7 +2239,7 @@ void VulkanRenderer::updateCharacterUnsaved() {
 // For the Character tab: which variant the open scene plays, and what it
 // changes.
 void VulkanRenderer::updateVariantNote() {
-  const std::string name = currentScene.player ? currentScene.player->variant : "";
+  const std::string name = playedVariant();
   if (notedVariant == name)
     return;
   notedVariant = name;
@@ -1914,9 +2295,10 @@ bool VulkanRenderer::saveCharacterFile() {
 
 // Each bone joined to its parent, the rig's own bones only (not the file's
 // root or mesh nodes).
-void VulkanRenderer::updateSkeletonLines(const glm::mat4 &placement,
+void VulkanRenderer::updateSkeletonLines(const LiveCharacter &character,
+                                         const glm::mat4 &placement,
                                          const std::vector<glm::mat4> &model) {
-  const Skeleton &skeleton = characterAsset->skeleton;
+  const Skeleton &skeleton = character.file->asset->skeleton;
   // The UI's warm yellow (kGizmoHot, 0xf5d36b) as RGBA8 bytes.
   constexpr uint32_t kBoneColor = 0xf5u | 0xd3u << 8 | 0x6bu << 16 | 0xffu << 24;
   auto isRig = [&](int i) {
@@ -2020,7 +2402,8 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
   // stands in. It's rough, but these are rare in a physics game.
   for (const auto &node : rootNode.getChildren()) {
     const SceneEntryRef ref = node->entry();
-    if (ref.kind == SceneEntryRef::Kind::None || entryHasBody(ref))
+    if (ref.kind == SceneEntryRef::Kind::None || ref.kind == SceneEntryRef::Kind::Character ||
+        entryHasBody(ref))
       continue;
     const MeshModel *model = modelManager.getModel(node->getModelId());
     if (!model)
@@ -2044,6 +2427,18 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
       picked = SceneEntryRef{SceneEntryRef::Kind::Player, 0};
     }
   }
+  // Characters by the capsule they stand in, like the player start.
+  for (const LiveCharacter &c : characters) {
+    if (c.entry.kind != SceneEntryRef::Kind::Character)
+      continue;
+    const SceneCharacterEntry &entry = currentScene.characters[c.entry.index];
+    const std::optional<float> distance = rayHitsPlayerStart(
+        ray, {entry.position, entry.yaw}, c.tuning.radius, c.tuning.height);
+    if (distance && *distance < nearest) {
+      nearest = *distance;
+      picked = c.entry;
+    }
+  }
   if (picked && picked->kind == SceneEntryRef::Kind::None)
     picked.reset(); // a thrown ball, which isn't part of the layout
   selection = picked;
@@ -2052,6 +2447,8 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
     spdlog::info("Selection cleared");
   else if (selection->kind == SceneEntryRef::Kind::Player)
     spdlog::info("Selected [player]");
+  else if (selection->kind == SceneEntryRef::Kind::Character)
+    spdlog::info("Selected [character] {}", selection->index);
   else
     spdlog::info("Selected {} {}",
                  selection->kind == SceneEntryRef::Kind::Model ? "[model]"
@@ -2072,6 +2469,22 @@ void VulkanRenderer::updateEditorLines() {
     appendPlayerStartLines(editorLines, *currentScene.player, tuning.radius,
                            tuning.height,
                            startSelected ? kSelectionColor : kPlayerStartColor);
+  }
+  if (characterDragShown) {
+    const CharacterTuning &tuning = characterPanel.character;
+    appendPlayerStartLines(editorLines,
+                           {characterDragShown->position, characterDragShown->yaw},
+                           tuning.radius, tuning.height, kPlayerStartColor);
+  }
+  if (selection && selection->kind == SceneEntryRef::Kind::Character) {
+    // The capsule its body is, around it.
+    for (const LiveCharacter &c : characters)
+      if (c.entry == *selection) {
+        const SceneCharacterEntry &entry = currentScene.characters[c.entry.index];
+        appendPlayerStartLines(editorLines, {entry.position, entry.yaw}, c.tuning.radius,
+                               c.tuning.height, kSelectionColor);
+      }
+    return;
   }
   if (!selection || startSelected)
     return;
@@ -2121,6 +2534,22 @@ void VulkanRenderer::applyDuplicate() {
     return;
   const SceneEntryRef ref = *selection;
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  if (ref.kind == SceneEntryRef::Kind::Character) {
+    // Beside it on the camera's right, a body's width and a bit away.
+    const CharacterTuning &tuning = characterPanel.character;
+    const glm::vec3 right = glm::normalize(glm::vec3(sceneUbo.invView[0]));
+    const std::optional<SceneEntryRef> copy = duplicateEntry(
+        currentScene, ref, glm::vec3(right.x, 0.0f, right.z) * (4.0f * tuning.radius));
+    if (!copy)
+      return;
+    buildCharacters();
+    selection = copy;
+    updateEditorLines();
+    recordEdit();
+    sceneError.clear();
+    spdlog::info("Duplicated [character] {} as {}", ref.index, copy->index);
+    return;
+  }
   if (ref.kind != SceneEntryRef::Kind::Model && !isGrid)
     return;
   glm::vec3 lo(std::numeric_limits<float>::max());
@@ -2333,6 +2762,11 @@ void VulkanRenderer::applyPendingChanges() {
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
   }
+  if (pendingPrefabAction) {
+    const auto [ref, action] = *pendingPrefabAction;
+    pendingPrefabAction.reset();
+    applyPrefabAction(ref, action);
+  }
   runPendingImports();
   makeNextThumbnail();
   prepareLivePreview();
@@ -2348,6 +2782,22 @@ void VulkanRenderer::applyPendingChanges() {
     assetHover.reset();
   } else if (std::exchange(assetDragEnded, false) || playing) {
     hideAssetPreview();
+  }
+  // Characters from the Assets panel: let go, or shown where they'd stand.
+  if (characterDrop) {
+    vkDeviceWaitIdle(logicalDevice);
+    const CharacterPlacement drop = std::move(*characterDrop);
+    characterDrop.reset();
+    characterHover.reset();
+    characterDragShown.reset();
+    dropCharacter(drop);
+  } else if (characterHover) {
+    characterDragShown = characterPlacement(*characterHover);
+    characterHover.reset();
+    updateEditorLines();
+  } else if (characterDragShown) { // the drag ended or left the scene
+    characterDragShown.reset();
+    updateEditorLines();
   }
   if (std::exchange(pendingPlayerStart, false))
     placePlayerStart();
@@ -2373,10 +2823,12 @@ void VulkanRenderer::applyPendingChanges() {
     playing = !playing;
     // Stop: back to the layout. Thrown balls, the character and everything
     // physics moved go, since the layout never had them.
-    if (!playing)
+    if (!playing) {
       loadScene(currentScene, /*moveCamera=*/false);
-    else
-      spawnPlayer();
+    } else {
+      vkDeviceWaitIdle(logicalDevice); // the tree changes, a copy may be new
+      buildCharacters();
+    }
   }
 }
 
@@ -3795,8 +4247,7 @@ void VulkanRenderer::cleanup() {
   // The world goes now, while main() runs. Left to the destructor, it would
   // go after main() returns, when Jolt's own statics (its default material)
   // may already be gone, and Jolt would release that material twice.
-  animator.reset();
-  player.reset(); // takes its character out of the world below
+  clearCharacters(); // takes the bodies out of the world below
   physicsLinks.clear();
   physics.reset();
 
@@ -3807,8 +4258,7 @@ void VulkanRenderer::cleanup() {
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
   skinningPass.cleanup();
-  previewSkinning.cleanup();
-  previewVertices.reset();
+  characterFiles.clear(); // their preview buffers
   thumbnails.cleanup(device.getLogicalDevice());
   modelManager.cleanup();
   textureManager.cleanup(device.getLogicalDevice(), device.getAllocator());
@@ -3948,27 +4398,36 @@ void VulkanRenderer::recordGBufferCommands(uint32_t currentImage) {
 
   metrics.resetGpuQueries(cmd);
 
-  // The character bent for this frame, before anything draws it. Timed
-  // every frame, character or not: an unwritten timestamp would hold back
-  // every pass's timing for the frame.
+  // Every character bent for this frame, before anything draws it, and the
+  // hovered clip's live preview into its own buffer. Timed every frame,
+  // characters or not: an unwritten timestamp would hold back every pass's
+  // timing for the frame.
   metrics.beginPassTimestamp(cmd, PerformanceMetrics::GpuPass::Skinning);
-  if (player && characterModelId >= 0 && skinningPass.hasMesh())
-    if (const MeshModel *character = modelManager.getModel(characterModelId);
-        character && character->getMeshCount() > 0) {
-      const Mesh *mesh = character->getMesh(0);
-      skinningPass.updateMatrices(currentFrame, characterSkinning);
-      skinningPass.record(cmd, currentFrame, mesh->getVertexBuffer(),
-                          gpuDrivenGBufferPass.arenaVertexBuffer(),
-                          gpuDrivenGBufferPass.arenaFirstVertex(mesh));
-    }
-  // The hovered clip's live preview, skinned into its own buffer and drawn
-  // into its own image, before the UI pass samples it.
-  if (!liveSkinning.empty() && previewSkinning.hasMesh() && previewVertices) {
-    previewSkinning.updateMatrices(currentFrame, liveSkinning);
-    previewSkinning.record(cmd, currentFrame, previewVertices.get(), VK_NULL_HANDLE, -1);
-    thumbnails.recordLive(cmd, characterPreviewDraws(), characterAsset->boundsMin,
-                          characterAsset->boundsMax, descriptorManager.getBindlessSet());
+  std::vector<SkinningPass::Target> skinned;
+  for (const LiveCharacter &c : characters) {
+    if (c.copy < 0 || c.skinning.empty() || c.node->getModelId() < 0)
+      continue; // a capsule, or its bones are showing instead
+    const CharacterFileData::Copy &copy = c.file->copies[c.copy];
+    const MeshModel *model = modelManager.getModel(copy.model);
+    if (!model || model->getMeshCount() == 0)
+      continue;
+    const Mesh *mesh = model->getMesh(0);
+    skinningPass.updateMatrices(copy.skin, currentFrame, c.skinning);
+    skinned.push_back({copy.skin, mesh->getVertexBuffer(),
+                       gpuDrivenGBufferPass.arenaVertexBuffer(),
+                       gpuDrivenGBufferPass.arenaFirstVertex(mesh)});
   }
+  CharacterFileData *previewed = defaultCharacter();
+  const bool live = !liveSkinning.empty() && previewed && previewed->previewVertices;
+  if (live) {
+    skinningPass.updateMatrices(previewed->previewSkin, currentFrame, liveSkinning);
+    skinned.push_back({previewed->previewSkin, previewed->previewVertices.get()});
+  }
+  skinningPass.record(cmd, currentFrame, skinned);
+  // Drawn into its own image, before the UI pass samples it.
+  if (live)
+    thumbnails.recordLive(cmd, characterPreviewDraws(*previewed), previewed->asset->boundsMin,
+                          previewed->asset->boundsMax, descriptorManager.getBindlessSet());
   metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Skinning);
 
   VkViewport viewport = {};
@@ -4783,6 +5242,18 @@ void VulkanRenderer::buildUi() {
   ui.sceneArea = sceneArea;
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;
+  ui.objectEntry = [this](const std::string &file) -> std::optional<SceneModelEntry> {
+    const ObjectAsset *asset = objectAsset(file);
+    if (!asset)
+      return std::nullopt;
+    SceneModelEntry copy;
+    copy.object = file;
+    return resolvePrefab(copy, asset->model);
+  };
+  ui.onPrefabAction = [this](SceneEntryRef ref, DebugUiContext::PrefabAction action) {
+    if (!playing)
+      pendingPrefabAction = {ref, action};
+  };
   ui.onSpawn = [this](SceneModelEntry entry) {
     if (!playing)
       pendingSpawn = std::move(entry);
@@ -4799,7 +5270,7 @@ void VulkanRenderer::buildUi() {
   ui.thumbnailAtlas = thumbnailTexture;
   ui.livePreview = liveTexture;
   ui.clipThumbnail = [this](const std::string &file) -> std::optional<glm::vec4> {
-    if (characterModelId < 0)
+    if (!defaultCharacter() || defaultCharacter()->previewSkin < 0)
       return std::nullopt;
     const std::string key = clipThumbnailKey(file);
     if (const std::optional<int> cell = thumbnails.cellOf(key))
@@ -4811,6 +5282,34 @@ void VulkanRenderer::buildUi() {
     return std::nullopt;
   };
   ui.onClipHover = [this](const std::string &file) { hoveredClip = file; };
+  ui.characterThumbnail = [this](const std::string &file) -> std::optional<glm::vec4> {
+    const std::string key = characterThumbnailKey(file);
+    if (const std::optional<int> cell = thumbnails.cellOf(key))
+      return thumbnailAtlasRect(*cell);
+    const bool asked = std::ranges::any_of(
+        characterRequests, [&](const auto &request) { return request.first == key; });
+    if (!asked && !thumbnailsFailed.contains(key))
+      characterRequests.push_back({key, file});
+    return std::nullopt;
+  };
+  ui.characterFiles = &characterFileNames;
+  ui.characterVariants = [this](const std::string &file) {
+    std::vector<std::string> names;
+    // Only files already read: the Inspector shouldn't stall on a new one.
+    for (const std::unique_ptr<CharacterFileData> &data : characterFiles)
+      if (data->file == file && data->description)
+        for (const CharacterVariant &variant : data->description->variants)
+          names.push_back(variant.name);
+    return names;
+  };
+  ui.onCharacterHover = [this](const std::string &file, glm::vec2 pixel) {
+    if (!playing)
+      characterHover = CharacterPlacement{file, pixel};
+  };
+  ui.onCharacterDrop = [this](const std::string &file, std::optional<glm::vec2> pixel) {
+    if (!playing)
+      characterDrop = CharacterPlacement{file, pixel};
+  };
   ui.livePreviewClip = &liveClip;
   ui.thumbnail = [this](const SceneModelEntry &entry) -> std::optional<glm::vec4> {
     const std::string key = thumbnailKeyFor(entry);
@@ -4827,7 +5326,10 @@ void VulkanRenderer::buildUi() {
     if (!playing)
       pendingPlayerStart = true;
   };
-  ui.onRescanModels = [this] { discoverModels(); };
+  ui.onRescanModels = [this] {
+    discoverModels();
+    characterFileNames = findFiles("Resources/Characters", {".character"});
+  };
   ui.onImportFiles = [this](std::vector<std::string> paths) { importFiles(std::move(paths)); };
   ui.assetStatus = &assetStatus;
   ui.sceneName = &currentScene.name;

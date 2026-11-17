@@ -1,6 +1,6 @@
 #pragma once
 
-#include "CharacterController.h"
+#include "Controller.h"
 #include "PhysicsWorld.h"
 #include "ThirdPersonCamera.h"
 
@@ -31,40 +31,34 @@ struct PlayerControls {
 // else is skipped.
 PlayerControls scriptedControls(std::string_view script, int frame);
 
-// Play mode's character and its camera. Each frame: control(), then step()
-// before every physics step, then follow().
-class Player {
+// The player's brain: the keys and mouse drive the body it possesses, turned
+// by its third-person camera, which follows that body. Unreal's
+// PlayerController. Each frame: control(), then the roster's step() before
+// every physics step, then follow().
+class PlayerController : public Controller {
 public:
-  Player(PhysicsWorld &world, glm::vec3 feet, float yaw,
-         const CharacterTuning &character = {},
-         const ThirdPersonCameraTuning &camera = {});
+  explicit PlayerController(PhysicsWorld &world,
+                            const ThirdPersonCameraTuning &camera = {});
 
   // The mouse and wheel move the camera at once. Jump and dodge presses
   // wait for the next step: at a high frame rate most frames have none.
   void control(const PlayerControls &controls);
-  // Moves the character one physics step, walking relative to the camera.
-  void step(float dt);
-  // The camera follows where the character is drawn this frame.
+  // WASD in the camera's frame, and the presses since the last step.
+  CharacterInput decide() override;
+  // The camera follows where its body is drawn this frame.
   void follow(float alpha, float frameSeconds);
-  // The Character tab's values, while playing. Movement and the camera
-  // change at once; the body (radius, heights, mass) keeps what it was
-  // spawned with until the next spawn, since the capsule in the physics
-  // world was made at that size.
-  void setTuning(const CharacterTuning &character,
-                 const ThirdPersonCameraTuning &camera);
+  void setCameraTuning(const ThirdPersonCameraTuning &camera);
 
-  const CharacterController &character() const { return controller; }
-  // The animated character's dodge clips, as paths (CharacterController).
-  void setDodgePaths(const std::array<RootMotion, 5> &paths) {
-    controller.setDodgePaths(paths);
-  }
   const ThirdPersonCamera &camera() const { return view; }
+
+protected:
+  // Behind the new body, looking the way it faces.
+  void onPossess() override;
 
 private:
   PhysicsWorld &world;
-  CharacterController controller;
   ThirdPersonCamera view;
-  PlayerControls held;     // this frame's keys
+  PlayerControls held;       // this frame's keys
   bool jumpWaiting = false;  // pressed, no step has taken it yet
   bool dodgeWaiting = false;
 };

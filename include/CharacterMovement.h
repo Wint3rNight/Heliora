@@ -7,15 +7,16 @@
 
 #include <glm/glm.hpp>
 
-// The player's movement: running, sprinting, jumping, crouching, dodging and
-// turning, on top of a PhysicsWorld character. No Vulkan and no input
+// A character's movement: running, sprinting, jumping, crouching, dodging and
+// turning, on top of a PhysicsWorld character. Its controller (Controller.h)
+// says what it should do each step; this works out how the body does it. No Vulkan and no input
 // devices here, so it's tested like the rest of heliora_core.
 //
 // Yaw is in radians about +y, and yaw 0 faces -z, so the facing rotation is
 // glm::angleAxis(yaw, up).
 
 // Every value the Character tab tunes. Radius, heights and mass are read
-// when the controller is made; the rest apply from the next step.
+// when the body is made; the rest apply from the next step.
 struct CharacterTuning {
   float radius = 0.3f;
   float height = 1.8f;
@@ -70,7 +71,7 @@ struct CharacterTuning {
 // height. The Character tab and a hand-edited settings file go through it.
 CharacterTuning consistent(CharacterTuning tuning);
 
-// What the player asks for in one physics step.
+// What its controller asks for in one physics step.
 struct CharacterInput {
   // World space and flat, length 0 to 1: WASD turned by the camera's yaw.
   glm::vec3 move{0.0f};
@@ -88,20 +89,22 @@ enum class DodgeKind { Roll, Forward, Back, Left, Right };
 // The direction a yaw faces, flat.
 glm::vec3 yawForward(float yaw);
 
-class CharacterController {
+class CharacterMovement {
 public:
-  CharacterController(PhysicsWorld &world, glm::vec3 feet, float yaw,
+  CharacterMovement(PhysicsWorld &world, glm::vec3 feet, float yaw,
                       const CharacterTuning &tuning = {});
-  ~CharacterController(); // takes the character out of the world
-  CharacterController(const CharacterController &) = delete;
-  CharacterController &operator=(const CharacterController &) = delete;
+  ~CharacterMovement(); // takes the character out of the world
+  CharacterMovement(const CharacterMovement &) = delete;
+  CharacterMovement &operator=(const CharacterMovement &) = delete;
 
   // One physics step: works out the velocity and moves the character. Call
   // it right before PhysicsWorld::step(), with the same dt.
   void update(const CharacterInput &input, float dt);
   // Puts it there standing still, drawn there at once (spawning, Stop).
   void place(glm::vec3 feet, float yaw);
-  void setTuning(const CharacterTuning &tuning) { tune = tuning; }
+  // The body keeps the radius, heights and mass it was made with: the
+  // capsule in the world is that size. The rest apply from the next step.
+  void setTuning(const CharacterTuning &tuning);
   // The path each dodge moves along, from its clip (rootPath), by
   // DodgeKind. One left empty is the fixed burst.
   void setDodgePaths(const std::array<RootMotion, 5> &paths) { dodgePaths = paths; }
@@ -115,6 +118,7 @@ public:
   float height() const; // drops to crouchHeight while crouched
   bool grounded() const { return onGround; }
   bool dodging() const { return dodgeLeft > 0.0f; }
+  bool aiming() const { return aimed; } // the last step's input aimed
   DodgeKind dodgeKind() const { return dodgeType; } // the last one started
 
   // Blended between the last two steps by the physics clock's alpha, so the
@@ -137,6 +141,7 @@ private:
   // included); after each step no more than what really moved.
   glm::vec3 horizontal{0.0f};
   bool onGround = false;
+  bool aimed = false;
   bool jumpedSinceGround = false;
   float airTime = 0.0f;   // s since it last stood on walkable ground
   float airSpeedCap = 1.5f; // m/s, the most the air may take it to (airSpeedLimit)

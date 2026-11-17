@@ -16,7 +16,7 @@
 
 #include "AssetImport.h"
 #include "CharacterAnimator.h"
-#include "CharacterController.h"
+#include "CharacterMovement.h"
 #include "Controls.h"
 #include "PerformanceMetrics.h"
 #include "Picking.h"
@@ -221,6 +221,10 @@ struct DebugUiContext {
   // Player start places the scene's one start, or moves it.
   const std::vector<std::string> *modelFiles = nullptr;
   std::function<void(SceneModelEntry)> onSpawn;
+  // Prefabs: an object file as a placeable copy, and the Inspector's buttons.
+  enum class PrefabAction { Make, Apply, Revert, Unpack };
+  std::function<std::optional<SceneModelEntry>(const std::string &)> objectEntry;
+  std::function<void(SceneEntryRef, PrefabAction)> onPrefabAction;
   // Dragging from the Assets panel: over the scene each frame (window
   // pixel, turned to the surface or upright), let go there, or left it.
   std::function<void(const SceneModelEntry &, glm::vec2, bool)> onAssetHover;
@@ -241,6 +245,15 @@ struct DebugUiContext {
   std::function<void(const std::string &)> onClipHover;
   ImTextureID livePreview = 0;
   const std::string *livePreviewClip = nullptr;
+  // Characters: the .character files to pick from, and the variants of one
+  // already read; from the Assets panel, one dragged over the scene (each
+  // frame) or let go there, or double-clicked (no pixel: where the camera
+  // looks); a file's picture.
+  const std::vector<std::string> *characterFiles = nullptr;
+  std::function<std::vector<std::string>(const std::string &)> characterVariants;
+  std::function<void(const std::string &, glm::vec2)> onCharacterHover;
+  std::function<void(const std::string &, std::optional<glm::vec2>)> onCharacterDrop;
+  std::function<std::optional<glm::vec4>(const std::string &)> characterThumbnail;
   std::function<void()> onSpawnPlayerStart;
   std::function<void()> onRescanModels;
 
@@ -331,6 +344,7 @@ private:
   void registerPanelSettings();
   void drawInspector(DebugUiContext &ui);
   void drawPlayerStartInspector(DebugUiContext &ui);
+  void drawCharacterInspector(DebugUiContext &ui);
   void flushInspectorRebuild(DebugUiContext &ui);
   void commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
                            SceneModelEntry edited, SceneGridEntry editedGrid,
@@ -348,18 +362,20 @@ private:
   void drawControlsTab(DebugUiContext &ui);
   void drawAssetsPanel(DebugUiContext &ui);
   void updateAssetDrag(DebugUiContext &ui);
+  void updateCharacterDrag(DebugUiContext &ui);
   void drawAssetFolderTree(const std::string &folder);
   const FolderListing &listingOf(const std::string &folder);
   void drawImportPicker(DebugUiContext &ui);
   void drawClipsSection(DebugUiContext &ui, CharacterPanel &panel);
   // A tile in the Assets panel or the clip picker: a shape or model file
-  // (entry), or an animation clip (clip, the file).
+  // (entry), an animation clip (clip, the file), or a character file.
   struct AssetTile {
     std::string label;
     std::string tooltip;
     SceneModelEntry entry;
     std::string clip;
     bool usable = true;
+    std::string character;
   };
   // Draws tiles in rows, pictures where there are some, the hovered clip
   // playing; placing lets models be dragged in or double-clicked. The tile
@@ -411,8 +427,9 @@ private:
   struct GizmoView {
     SceneModelEntry *entry = nullptr;
     SceneGridEntry *grid = nullptr; // set when the entry is a grid's model
-    // Or the player start, which only moves and turns about y.
+    // Or the player start or a character, which only move and turn about y.
     ScenePlayerStart *player = nullptr;
+    SceneCharacterEntry *character = nullptr;
     bool justSelected = false; // selected by this frame's click
     SceneViewport area;
     glm::mat4 viewProj{1.0f};
@@ -424,7 +441,7 @@ private:
     PickRay ray;
     ImVec2 at(glm::vec2 p) const;
     bool axisShown(int axis, GizmoMode mode) const;
-    bool scales() const { return player == nullptr; }
+    bool scales() const { return player == nullptr && character == nullptr; }
     std::optional<glm::vec2> arrowTip(int axis) const;
     // What's selected, as a placement: the player start's yaw is a turn
     // about y and its scale is 1.
@@ -471,6 +488,7 @@ private:
   // whether drops lie along the surface, and whether an old layout file
   // has been given a place for the panel yet.
   std::optional<SceneModelEntry> assetDrag;
+  std::optional<std::string> characterDrag; // a .character file instead
   bool turnToSurface = true;
   bool assetsPlaced = false;
   // The folder the Assets panel shows ("" for the built-in shapes), each

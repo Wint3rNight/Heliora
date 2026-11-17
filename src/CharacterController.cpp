@@ -11,6 +11,12 @@ constexpr float kPi = 3.14159265358979f;
 constexpr float kTimerEpsilon = 1e-4f;
 // Below this the stick counts as untouched.
 constexpr float kDeadZone = 0.01f;
+// Asked to go back more than this far off its heading, faster than walking
+// pace, it plants and brakes before it turns.
+constexpr float kPlantAngle = 2.0943951f; // 120 degrees
+constexpr float kPlantSpeed = 1.5f;       // m/s
+// Slower than this it has no heading of its own and goes by its facing.
+constexpr float kStill = 1e-3f;
 
 glm::vec3 flat(glm::vec3 v) { return glm::vec3(v.x, 0.0f, v.z); }
 
@@ -20,6 +26,12 @@ float angleBetween(float a, float b) {
 }
 
 float yawOf(glm::vec3 direction) { return std::atan2(-direction.x, -direction.z); }
+
+// A flat direction turned about +y by angle (positive turns -z towards -x).
+glm::vec3 turnFlat(glm::vec3 d, float angle) {
+  const float c = std::cos(angle), s = std::sin(angle);
+  return glm::vec3(c * d.x + s * d.z, 0.0f, -s * d.x + c * d.z);
+}
 
 // Moves from towards to by at most maxStep.
 glm::vec3 approach(glm::vec3 from, glm::vec3 to, float maxStep) {
@@ -118,12 +130,46 @@ void CharacterController::update(const CharacterInput &input, float dt) {
       horizontal = flat(groundVelocity) +
                    dodgeDirection * std::min(glm::length(burst), glm::length(wanted));
     }
+  } else if (onGround && !input.aim) {
+    // Momentum: a heading and a speed, relative to the ground under it.
+    const glm::vec3 own = horizontal - flat(groundVelocity);
+    float speed = glm::length(own);
+    glm::vec3 heading = speed > kStill ? own / speed : yawForward(current.yaw);
+    if (!moving) {
+      speed = std::max(0.0f, speed - tune.groundBraking * dt);
+    } else {
+      const glm::vec3 want = glm::normalize(move);
+      // Signed angle from the heading to where it's asked to go.
+      const float angle = std::atan2(heading.z * want.x - heading.x * want.z,
+                                     glm::dot(heading, want));
+      if (std::fabs(angle) > kPlantAngle && speed > kPlantSpeed) {
+        // Plant and brake along the heading; it turns once slow enough.
+        speed = std::max(0.0f, speed - tune.groundBraking * dt);
+      } else {
+        // Turn, as far as the grip allows at this speed.
+        const float rate = std::min(tune.turnRate, tune.turnGrip / std::max(speed, kStill));
+        const float turn = std::clamp(angle, -rate * dt, rate * dt);
+        heading = turnFlat(heading, turn);
+        // Push the way it's heading, fading near the target; facing away
+        // from where it's asked to go slows it instead.
+        const float target = glm::length(wanted);
+        const float along = glm::dot(heading, want);
+        if (along < 0.0f)
+          speed = std::max(0.0f, speed + tune.groundBraking * along * dt);
+        else if (speed < target)
+          speed = std::min(target, speed + tune.groundAcceleration *
+                                               (1.0f - speed / target) * along * dt);
+        else
+          speed = std::max(target, speed - tune.groundBraking * dt);
+      }
+    }
+    horizontal = flat(groundVelocity) + heading * speed;
+    stepHorizontal = horizontal;
   } else {
-    // Ease the velocity towards what the stick asks for (plus the ground's
-    // own motion, so it rides what it stands on).
-    const float rate = !onGround ? tune.airAcceleration
-                       : moving  ? tune.groundAcceleration
-                                 : tune.groundBraking;
+    // Aiming or in the air: ease the velocity straight towards what the
+    // stick asks for (plus the ground's own motion, so it rides what it
+    // stands on).
+    const float rate = onGround ? tune.aimAcceleration : tune.airAcceleration;
     horizontal = approach(horizontal, flat(groundVelocity) + wanted, rate * dt);
     stepHorizontal = horizontal;
   }
@@ -152,13 +198,17 @@ void CharacterController::update(const CharacterInput &input, float dt) {
   jumpQueued = std::max(0.0f, jumpQueued - dt);
   vertical -= gravity * dt;
 
-  // Face where it moves, the dodge's way while dodging, the camera's way
-  // while aiming, turning at turnRate.
+  // Face its heading on the ground, where it's asked to go in the air, the
+  // dodge's way while dodging, the camera's way while aiming, turning at
+  // turnRate.
   float targetYaw = current.yaw;
+  const glm::vec3 ownNow = stepHorizontal - flat(groundVelocity);
   if (input.aim)
     targetYaw = input.aimYaw;
   else if (dodging())
     targetYaw = yawOf(dodgeDirection);
+  else if (onGround && glm::length(ownNow) > kStill)
+    targetYaw = yawOf(ownNow);
   else if (moving)
     targetYaw = yawOf(move);
   const float turn = angleBetween(current.yaw, targetYaw);
@@ -173,6 +223,21 @@ void CharacterController::update(const CharacterInput &input, float dt) {
   step.maxSlope = tune.maxSlope;
   step.pushStrength = tune.pushStrength;
   world.moveCharacter(id, step, dt);
+  // Keep no more speed than really moved when something blocked it: a wall
+  // or a box it pushes takes its share, so it doesn't keep a run stored and
+  // shoot off the end of the wall. What the move lost is told apart by its
+  // direction: lost to a wall, a box or a slope too steep to walk points
+  // more than maxSlope off straight up and comes off the stored speed; lost
+  // to the floor or a walkable slope (the step's gravity, a ramp bending
+  // the move along itself) doesn't, or every ramp would slow it to a crawl.
+  const glm::vec3 requested = step.velocity - groundVelocity;
+  const glm::vec3 moved = world.characterState(id).velocity - groundVelocity;
+  const glm::vec3 lost = requested - moved;
+  const float lostSideways = glm::length(flat(lost));
+  if (!dodging() && lostSideways > kStill &&
+      lostSideways > std::fabs(lost.y) * std::tan(tune.maxSlope) &&
+      glm::length(flat(moved)) < glm::length(flat(requested)))
+    horizontal = flat(groundVelocity) + flat(moved);
 
   previous = current;
   current = {world.characterState(id).position, yaw};

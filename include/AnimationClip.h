@@ -64,3 +64,7 @@ RootMotion removeRootMotion(AnimationClip &clip, const Skeleton &skeleton,
 // for every pass of the seam; otherwise the times are held to the clip.
 glm::vec2 rootDisplacement(const RootMotion &motion, float from, float to,
                            bool loop);
+
+// Keeps the root bone from rising above where it starts: dips stay, rises
+// go. For a jump clip, whose own jump would add to the capsule's.
+void limitRootHeight(AnimationClip &clip, const Skeleton &skeleton, int rootBone);

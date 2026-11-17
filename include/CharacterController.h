@@ -22,12 +22,24 @@ struct CharacterTuning {
   float runSpeed = 5.0f; // m/s
   float sprintSpeed = 8.0f;
   float crouchSpeed = 2.0f;
-  // m/s^2. Braking is when there's no input. In the air both are the air
-  // value, so a jump keeps most of its momentum.
-  float groundAcceleration = 30.0f;
-  float groundBraking = 40.0f;
-  float airAcceleration = 8.0f;
+  // On the ground it keeps a heading and a speed. The push, m/s^2 from
+  // standing, fades as the speed nears the target, like a runner's legs:
+  // walking pace in about 0.2 s, nearly the run by 1.2 s, the sprint
+  // building on after. Braking is letting go, slowing past the target, and
+  // planting to turn back.
+  float groundAcceleration = 10.0f;
+  float groundBraking = 10.0f;
+  // m/s^2 of sideways grip: the heading turns at most turnGrip / speed, so
+  // the faster it goes the wider it turns (about 1.5 m at a run, 4 m at a
+  // sprint), and at most turnRate.
+  float turnGrip = 16.0f;
   float turnRate = 12.566371f; // radians/s, two full turns a second
+  // While aiming it eases in a straight line at this, both ways: quick
+  // footwork rather than momentum.
+  float aimAcceleration = 30.0f;
+  // In the air it eases in a straight line at this, so a jump keeps most of
+  // its momentum.
+  float airAcceleration = 8.0f;
 
   float jumpHeight = 1.2f; // m
   float coyoteTime = 0.1f; // s after walking off a ledge that a jump still works
@@ -104,7 +116,9 @@ private:
   CharacterTuning tune;
   Pose previous;
   Pose current;
-  glm::vec3 horizontal{0.0f}; // world space, flat, what the input built up
+  // World space, flat, what the input built up (the ground's own motion
+  // included); after each step no more than what really moved.
+  glm::vec3 horizontal{0.0f};
   bool onGround = false;
   bool jumpedSinceGround = false;
   float airTime = 0.0f;   // s since it last stood on walkable ground

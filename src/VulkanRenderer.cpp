@@ -478,7 +478,9 @@ void VulkanRenderer::loadSettings() {
       {"character", "ground_acceleration", &ch.groundAcceleration, 1, 200},
       {"character", "ground_braking", &ch.groundBraking, 1, 200},
       {"character", "air_acceleration", &ch.airAcceleration, 0, 100},
+      {"character", "turn_grip", &ch.turnGrip, 1, 100},
       {"character", "turn_rate", &ch.turnRate, 0.5, 63},
+      {"character", "aim_acceleration", &ch.aimAcceleration, 1, 200},
       {"character", "jump_height", &ch.jumpHeight, 0.1, 5},
       {"character", "coyote_time", &ch.coyoteTime, 0, 0.5},
       {"character", "jump_buffer", &ch.jumpBuffer, 0, 0.5},
@@ -590,6 +592,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // The character first: it lives in the world replaced below, and its
   // capsule in the tree cleared below. A new one comes at the end if still
   // playing.
+  animator.reset();
   player.reset();
   playerNode = nullptr;
   // Physics next: physicsLinks points into the tree cleared below.
@@ -1315,9 +1318,11 @@ float VulkanRenderer::characterScale() const {
              : 1.0f;
 }
 
-// For now the idle clip; the state machine (step 8) picks and blends.
+// The animator's pose, or idle before there's one.
 std::vector<glm::mat4> VulkanRenderer::characterPose() const {
   const Skeleton &skeleton = characterAsset->skeleton;
+  if (animator)
+    return modelSpace(skeleton, animator->pose());
   Pose pose = bindPose(skeleton);
   if (const CharacterClipData *idle = characterAsset->clip(ClipSlot::Idle))
     sampleClip(idle->clip, skeleton,
@@ -1350,6 +1355,9 @@ void VulkanRenderer::spawnPlayer() {
                                     characterPanel.character,
                                     characterPanel.camera);
   const bool animated = characterModelId >= 0;
+  if (animated)
+    animator = std::make_unique<CharacterAnimator>(
+        characterAsset->skeleton, characterAsset->library, characterScale());
   if (const int model = animated ? characterModelId : playerModelId; model >= 0) {
     auto node = std::make_unique<SceneNode>();
     node->setModelId(model);
@@ -1376,6 +1384,28 @@ void VulkanRenderer::posePlayer(float alpha, float frameSeconds) {
   skeletonLines.clear();
   if (characterModelId >= 0) {
     characterClipTime += frameSeconds;
+    if (animator) {
+      // What the controller is doing, in the character's own frame for
+      // the directional clips: x to its right, y ahead.
+      const glm::vec3 velocity = character.velocity();
+      const float yaw = character.yaw();
+      const glm::vec3 ahead = yawForward(yaw);
+      const glm::vec3 right(std::cos(yaw), 0.0f, -std::sin(yaw));
+      AnimatorInput input;
+      input.speed = glm::length(glm::vec2(velocity.x, velocity.z));
+      input.direction = glm::vec2(glm::dot(velocity, right), glm::dot(velocity, ahead));
+      input.grounded = character.grounded();
+      input.crouched = character.height() < character.tuning().height - 1e-3f;
+      input.aiming = playerControls.aim;
+      input.dodging = character.dodging();
+      input.verticalSpeed = velocity.y;
+      // The run, sprint and crouch walk play in full at the controller's
+      // own speeds for them.
+      input.runSpeed = character.tuning().runSpeed;
+      input.sprintSpeed = character.tuning().sprintSpeed;
+      input.crouchSpeed = character.tuning().crouchSpeed;
+      animator->update(input, frameSeconds);
+    }
     const std::vector<glm::mat4> model = characterPose();
     characterSkinning = skinningMatrices(characterAsset->skeleton, model);
     // Show skeleton draws the bones instead of the body.
@@ -3294,6 +3324,7 @@ void VulkanRenderer::cleanup() {
   // The world goes now, while main() runs. Left to the destructor, it would
   // go after main() returns, when Jolt's own statics (its default material)
   // may already be gone, and Jolt would release that material twice.
+  animator.reset();
   player.reset(); // takes its character out of the world below
   physicsLinks.clear();
   physics.reset();

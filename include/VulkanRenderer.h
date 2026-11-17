@@ -219,6 +219,9 @@ private:
   // in draw() once the frame slot's fence says it's free.
   std::vector<glm::mat4> characterSkinning;
   std::vector<PhysicsDebugVertex> skeletonLines; // Show skeleton, play mode
+  // Picks and blends the character's clips from what the controller does.
+  // Made with the character at Play, gone with it.
+  std::unique_ptr<CharacterAnimator> animator;
   SkinningPass skinningPass;
   void loadCharacter();
   void createCharacterModel();

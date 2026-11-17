@@ -37,7 +37,8 @@ const std::string kGanfaul =
     "[clip]\n"
     "slot = jump\n"
     "file = Resources/Characters/mixamo/Standing Jump.fbx\n"
-    "start = 0.35\n";
+    "start = 0.35\n"
+    "end = 1.25\n";
 
 } // namespace
 
@@ -51,6 +52,8 @@ TEST(character_file_names_the_model_and_its_clips) {
   CHECK(c.clips[0].file == "Resources/Characters/mixamo/idle.fbx");
   CHECK(c.clips[1].slot == ClipSlot::Jump);
   CHECK_NEAR(c.clips[1].start, 0.35, 1e-6);
+  CHECK_NEAR(c.clips[1].end, 1.25, 1e-6);
+  CHECK(c.clips[0].end == 0.0f); // not given: the file's end
   CHECK(c.clip(ClipSlot::Jump) == &c.clips[1]);
   CHECK(c.clip(ClipSlot::Roll) == nullptr);
 }
@@ -65,6 +68,7 @@ TEST(moves_that_repeat_loop_unless_told_otherwise) {
   CHECK(defaultLoop(ClipSlot::RunForward));
   CHECK(defaultLoop(ClipSlot::Fall));
   CHECK(!defaultLoop(ClipSlot::Land));
+  CHECK(!defaultLoop(ClipSlot::LandHard));
   CHECK(!defaultLoop(ClipSlot::Roll));
   CHECK(!defaultLoop(ClipSlot::DodgeLeft));
   const CharacterDescription told = parseText(
@@ -99,6 +103,14 @@ TEST(broken_character_files_say_what_and_where) {
   CHECK(contains(errorFor("model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\n"
                           "start = soon\n"),
                  "line 5"));
+  CHECK(contains(errorFor("model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\n"
+                          "end = later\n"),
+                 "line 5"));
+  const std::string endBeforeStart =
+      errorFor("model = a.fbx\n[clip]\nslot = jump\nfile = b.fbx\n"
+               "start = 0.5\nend = 0.4\n");
+  CHECK(contains(endBeforeStart, "line 2"));
+  CHECK(contains(endBeforeStart, "end"));
   CHECK(contains(errorFor("model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\n"
                           "[clip]\nslot = idle\nfile = c.fbx\n"),
                  "idle"));

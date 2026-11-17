@@ -192,3 +192,18 @@ TEST(a_clip_whose_root_never_moves_has_no_root_motion) {
   CHECK_NEAR(motion.speed(), 0.0, 1e-6);
   CHECK_NEAR(glm::length(rootDisplacement(motion, 0.0f, 3.0f, true)), 0.0, 1e-6);
 }
+
+TEST(a_jumps_own_rise_can_be_taken_out) {
+  // The jump clip crouches (the hips dip to 0.8) and then rises to 1.5;
+  // the capsule does the rising, so the hips stop at their start height.
+  const Skeleton s = hipsUnderRoot();
+  AnimationClip clip;
+  clip.duration = 1.0f;
+  clip.tracks.resize(2);
+  clip.tracks[1].positions = {{0.0f, glm::vec3(0, 1, 0)},
+                              {0.3f, glm::vec3(0.1f, 0.8f, 0)},
+                              {0.6f, glm::vec3(0.2f, 1.5f, 0)}};
+  limitRootHeight(clip, s, 1);
+  CHECK_NEAR(glm::distance(hipsAt(clip, s, 0.3f), glm::vec3(0.1f, 0.8f, 0)), 0.0, 1e-5);
+  CHECK_NEAR(glm::distance(hipsAt(clip, s, 0.6f), glm::vec3(0.2f, 1.0f, 0)), 0.0, 1e-5);
+}

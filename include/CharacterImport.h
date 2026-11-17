@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnimationClip.h"
+#include "CharacterAnimator.h"
 #include "CharacterFile.h"
 #include "PrimitiveMesh.h"
 #include "Skeleton.h"
@@ -15,13 +16,6 @@
 // types of heliora_core. The game's side, since heliora_core doesn't use
 // Assimp.
 
-struct CharacterClipData {
-  AnimationClip clip;
-  RootMotion rootMotion; // what came out of the hips
-  float start = 0.0f;    // seconds into the clip to start at
-  bool loop = true;
-};
-
 struct CharacterAsset {
   Skeleton skeleton; // every node of the model file, parents first
   int hips = -1;     // the bone root motion comes from
@@ -34,13 +28,8 @@ struct CharacterAsset {
   // Around the mesh in the bind pose, in the skeleton's space.
   glm::vec3 boundsMin{0.0f};
   glm::vec3 boundsMax{0.0f};
-  std::array<std::optional<CharacterClipData>, static_cast<size_t>(ClipSlot::Count)>
-      clips;
-
-  const CharacterClipData *clip(ClipSlot slot) const {
-    const auto &c = clips[static_cast<size_t>(slot)];
-    return c ? &*c : nullptr;
-  }
+  AnimationLibrary library;
+  const CharacterClipData *clip(ClipSlot slot) const { return library.clip(slot); }
 };
 
 // A path from a .character file, as written or one folder up (the game

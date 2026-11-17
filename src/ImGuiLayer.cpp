@@ -1711,12 +1711,23 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Crouch speed", &c.crouchSpeed, 0.2f, 10.0f, "%.1f m/s");
   changed |= slider("Acceleration", &c.groundAcceleration, 1.0f, 200.0f,
                     "%.0f m/s\u00b2");
+  ImGui::SetItemTooltip("The push from standing; it fades as the speed nears "
+                        "the run or sprint, so lower builds up slower");
   changed |= slider("Braking", &c.groundBraking, 1.0f, 200.0f,
                     "%.0f m/s\u00b2");
+  ImGui::SetItemTooltip("Slowing down: letting go, dropping from a sprint to a "
+                        "run, planting to turn back");
+  changed |= slider("Turn grip", &c.turnGrip, 1.0f, 100.0f, "%.0f m/s\u00b2");
+  ImGui::SetItemTooltip("Sideways grip: lower turns wider at speed");
+  changed |= angle("Turn rate", &c.turnRate, 30.0f, 3600.0f, "%.0f\u00b0/s");
+  ImGui::SetItemTooltip("The fastest it turns, standing or slow");
+  changed |= slider("Aim acceleration", &c.aimAcceleration, 1.0f, 200.0f,
+                    "%.0f m/s\u00b2");
+  ImGui::SetItemTooltip("Speeding up and slowing down while aiming, without "
+                        "momentum");
   changed |= slider("Air control", &c.airAcceleration, 0.0f, 100.0f,
                     "%.1f m/s\u00b2");
   ImGui::SetItemTooltip("Acceleration and braking in the air");
-  changed |= angle("Turn rate", &c.turnRate, 30.0f, 3600.0f, "%.0f\u00b0/s");
   ImGui::SeparatorText("Jumping");
   changed |= slider("Jump height", &c.jumpHeight, 0.1f, 5.0f, "%.2f m");
   changed |= slider("Coyote time", &c.coyoteTime, 0.0f, 0.5f, "%.2f s");

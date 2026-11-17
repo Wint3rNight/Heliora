@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <string_view>
+
 // The keys and mouse for one frame, as they are. No input devices here, so
 // the mapping is tested like the rest of heliora_core.
 struct PlayerControls {
@@ -21,6 +23,13 @@ struct PlayerControls {
   glm::vec2 mouse{0.0f};  // pixels, screen style: +x right, +y down
   float wheel = 0.0f;     // notches, positive away from you
 };
+
+// HELIORA_CAPTURE_KEYS, for checking the character in captures, where
+// nothing presses keys: what's pressed on a frame. Space-separated keys
+// (w a s d shift ctrl alt rmb space), each held all the time, or only on one
+// frame ("space@120"), or over a range of frames ("w@60-200"). Anything
+// else is skipped.
+PlayerControls scriptedControls(std::string_view script, int frame);
 
 // Play mode's character and its camera. Each frame: control(), then step()
 // before every physics step, then follow().

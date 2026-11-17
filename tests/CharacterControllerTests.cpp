@@ -87,31 +87,151 @@ TEST(controller_leaves_the_world_with_its_character) {
   CHECK(world.bodyCount() == 1);
 }
 
-TEST(character_reaches_run_and_sprint_speed) {
+TEST(speed_builds_from_a_walk_to_a_run) {
+  // Moving at once, but the push fades near the run (5 m/s): walking pace
+  // after 0.2 s, a jog by 0.6 s, nearly the run by 1.2 s.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  const CharacterInput ahead = moving(yawForward(0.0f));
+  hold(world, character, ahead, 12);
+  const float walking = flatSpeed(character.velocity());
+  CHECK(walking > 1.0f && walking < 2.5f);
+  hold(world, character, ahead, 24);
+  const float jogging = flatSpeed(character.velocity());
+  CHECK(jogging > 2.8f && jogging < 4.0f);
+  hold(world, character, ahead, 36);
+  const float nearly = flatSpeed(character.velocity());
+  CHECK(nearly > 4.3f && nearly < 5.0f);
+  hold(world, character, ahead, 108);
+  CHECK_NEAR(flatSpeed(character.velocity()), 5.0, 0.05);
+}
+
+TEST(sprint_builds_on_from_the_run) {
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  CharacterInput input = moving(yawForward(0.0f));
+  hold(world, character, input, 180);
+  input.sprint = true;
+  hold(world, character, input, 30);
+  const float building = flatSpeed(character.velocity());
+  CHECK(building > 5.5f && building < 7.0f);
+  hold(world, character, input, 150);
+  CHECK_NEAR(flatSpeed(character.velocity()), 8.0, 0.1);
+  // Letting go of sprint slows it back to the run at groundBraking: 1 m/s
+  // slower after 0.1 s, the run by 0.3 s.
+  input.sprint = false;
+  hold(world, character, input, 6);
+  CHECK_NEAR(flatSpeed(character.velocity()), 6.93, 0.1);
+  hold(world, character, input, 24);
+  CHECK_NEAR(flatSpeed(character.velocity()), 5.0, 0.05);
+  // Half a stick is half the speed.
+  input = moving(0.5f * yawForward(0.0f));
+  hold(world, character, input, 60);
+  CHECK_NEAR(flatSpeed(character.velocity()), 2.5, 0.05);
+}
+
+TEST(stopping_takes_a_moment) {
+  // From the run at groundBraking (10 m/s^2): half the speed in 0.25 s,
+  // stopped by 0.5 s, about 1.25 m on.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, moving(yawForward(0.0f)), 180);
+  const float before = character.position().z;
+  hold(world, character, CharacterInput{}, 15);
+  CHECK_NEAR(flatSpeed(character.velocity()), 2.5, 0.1);
+  hold(world, character, CharacterInput{}, 20);
+  CHECK_NEAR(flatSpeed(character.velocity()), 0.0, 1e-3);
+  const float slid = before - character.position().z;
+  CHECK(slid > 1.0f && slid < 1.5f);
+}
+
+TEST(turning_at_a_run_follows_an_arc) {
+  // At 5 m/s with 16 m/s^2 of grip it turns at 3.2 rad/s: a quarter turn
+  // takes about 0.5 s and swings about 1.5 m wide, keeping its speed.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, moving(yawForward(0.0f)), 180);
+  const glm::vec3 start = character.position();
+  const glm::vec3 right(1.0f, 0.0f, 0.0f);
+  hold(world, character, moving(right), 18);
+  const float turned = std::acos(std::clamp(
+      glm::dot(yawForward(character.yaw()), yawForward(0.0f)), -1.0f, 1.0f));
+  CHECK(turned > glm::radians(45.0f) && turned < glm::radians(65.0f));
+  hold(world, character, moving(right), 30);
+  CHECK_NEAR(facingError(character.yaw(), right), 0.0, 1e-3);
+  CHECK(flatSpeed(character.velocity()) > 4.5f);
+  // The arc carried it on ahead before it went right.
+  CHECK(start.z - character.position().z > 1.2f);
+}
+
+TEST(turning_on_the_spot_is_quick) {
+  // Standing, it turns at turnRate first and only then sets off.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, CharacterInput{}, 10);
+  // Half way round it pushes only as much as it faces the way: about half
+  // of a straight push's 0.67 m/s by now.
+  hold(world, character, moving(glm::vec3(1, 0, 0)), 4);
+  CHECK(flatSpeed(character.velocity()) < 0.45f);
+  hold(world, character, moving(glm::vec3(1, 0, 0)), 4);
+  CHECK_NEAR(facingError(character.yaw(), glm::vec3(1, 0, 0)), 0.0, 1e-3);
+  CHECK(glm::length(character.position()) < 0.1f);
+}
+
+TEST(going_back_at_speed_plants_then_turns) {
+  // Asked to go back at a run, it brakes along the way it was going, then
+  // turns and sets off: no wide U-turn.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, moving(yawForward(0.0f)), 180);
+  const glm::vec3 back = -yawForward(0.0f);
+  hold(world, character, moving(back), 18);
+  CHECK_NEAR(facingError(character.yaw(), yawForward(0.0f)), 0.0, 1e-3);
+  CHECK(flatSpeed(character.velocity()) < 3.0f);
+  float widest = 0.0f;
+  for (int i = 0; i < 72; ++i) {
+    hold(world, character, moving(back), 1);
+    widest = std::max(widest, std::fabs(character.position().x));
+  }
+  CHECK_NEAR(facingError(character.yaw(), back), 0.0, 1e-3);
+  CHECK(glm::dot(character.velocity(), back) > 2.0f);
+  CHECK(widest < 0.3f);
+}
+
+TEST(a_wall_takes_the_stored_speed) {
+  // Stopped by a wall, it doesn't keep its run: going along the wall
+  // starts again from standing.
+  PhysicsWorld world;
+  addFloor(world);
+  addStaticBox(world, glm::vec3(0.0f, 1.0f, -3.0f), glm::vec3(5.0f, 1.0f, 0.25f));
+  CharacterController character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, moving(yawForward(0.0f)), 90);
+  CHECK(flatSpeed(character.velocity()) < 0.5f);
+  // With the run still stored it would swing round at 5 m/s, over 3 m/s
+  // along the wall by now.
+  hold(world, character, moving(glm::vec3(1, 0, 0)), 18);
+  CHECK(flatSpeed(character.velocity()) < 2.5f);
+}
+
+TEST(aiming_keeps_quick_footwork) {
+  // While aiming it eases in a straight line at aimAcceleration (30 m/s^2):
+  // the run in a sixth of a second, and a side step reversed as quickly.
   PhysicsWorld world;
   addFloor(world);
   CharacterController character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput input = moving(glm::vec3(1, 0, 0));
-  hold(world, character, input, 60);
+  input.aim = true;
+  hold(world, character, input, 12);
   CHECK_NEAR(character.velocity().x, 5.0, 0.05);
-  input.sprint = true;
-  hold(world, character, input, 60);
-  CHECK_NEAR(character.velocity().x, 8.0, 0.05);
-  // Half a stick is half the speed.
-  input = moving(glm::vec3(0.5f, 0, 0));
-  hold(world, character, input, 60);
-  CHECK_NEAR(character.velocity().x, 2.5, 0.05);
-}
-
-TEST(speed_builds_up_and_brakes) {
-  PhysicsWorld world;
-  addFloor(world);
-  CharacterController character(world, glm::vec3(0.0f), 0.0f);
-  hold(world, character, moving(glm::vec3(1, 0, 0)), 2);
-  CHECK_NEAR(character.velocity().x, 30.0 * 2.0 / 60.0, 0.05); // 30 m/s^2
-  hold(world, character, moving(glm::vec3(1, 0, 0)), 60);
-  hold(world, character, CharacterInput{}, 2);
-  CHECK_NEAR(character.velocity().x, 5.0 - 40.0 * 2.0 / 60.0, 0.05); // 40 m/s^2
+  input.move = glm::vec3(-1, 0, 0);
+  hold(world, character, input, 24);
+  CHECK_NEAR(character.velocity().x, -5.0, 0.05);
 }
 
 TEST(air_control_is_weaker_than_on_the_ground) {
@@ -265,10 +385,10 @@ TEST(crouch_slows_and_waits_for_headroom) {
   hold(world, character, crouchWalk, 90);
   CHECK_NEAR(character.height(), 1.1, 1e-5);
   CHECK_NEAR(character.velocity().x, 2.0, 0.05);
-  CHECK_NEAR(character.position().x, 0.0, 0.3);
+  CHECK_NEAR(character.position().x, 0.0, 0.8); // under the ceiling
   hold(world, character, CharacterInput{}, 10); // let go of crouch under it
   CHECK_NEAR(character.height(), 1.1, 1e-5);
-  hold(world, character, moving(glm::vec3(1, 0, 0)), 60); // walk out
+  hold(world, character, moving(glm::vec3(1, 0, 0)), 90); // walk out
   CHECK(character.position().x > 1.5f);
   CHECK_NEAR(character.height(), 1.8, 1e-5);
 }
@@ -408,8 +528,8 @@ TEST(tuning_reaches_the_physics_character) {
     CharacterTuning tuning;
     tuning.stepUp = stepUp;
     CharacterController character(world, glm::vec3(0.0f), 0.0f, tuning);
-    // 3 m/s, so it's still on the 2 m long step at the end.
-    hold(world, character, moving(glm::vec3(0.6f, 0, 0)), 50);
+    // Building up to 3 m/s, so it's on the 2 m long step at the end.
+    hold(world, character, moving(glm::vec3(0.6f, 0, 0)), 80);
     CHECK((character.position().y > 0.3f) == (stepUp > 0.0f));
   }
   // maxSlope: a 40 degree ramp is too steep at 30.

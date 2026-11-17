@@ -475,15 +475,15 @@ body = static
 
 [model]
 shape = box
-size = 2 0.5 3
-position = 7.1 27.65 -5.99
+size = 2 0.5 6
+position = 7.1 27.65 -7.49
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 3 0.5 3
-position = 7.1 28.65 -14.89
+position = 7.1 28.65 -17.69
 color = 0.74 0.3 0.32
 body = static
 
@@ -491,50 +491,50 @@ body = static
 [model]
 shape = box
 size = 0.4 0.5 0.4
-position = 3.9 29.05 -14.54
+position = 3.9 29.05 -17.34
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 0.4 0.5 0.4
-position = 2 29.45 -15.24
+position = 2 29.45 -18.04
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 0.4 0.5 0.4
-position = 0.1 29.85 -14.54
+position = 0.1 29.85 -17.34
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 2 0.5 2
-position = -2.6 30.35 -14.89
+position = -2.6 30.35 -17.69
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 3 0.5 3
-position = -7.7 31.75 -14.89
+position = -7.7 31.75 -17.69
 color = 0.74 0.3 0.32
 body = static
 
 # Lap 4, side 4: the last sprint jump, then the gold platform.
 [model]
 shape = box
-size = 2 0.5 4
-position = -7.7 32.75 -10.39
+size = 2 0.5 6
+position = -7.7 32.75 -12.19
 color = 0.74 0.3 0.32
 body = static
 
 [model]
 shape = box
 size = 2.5 0.5 2.5
-position = -7.7 32.75 0.46
+position = -7.7 32.75 -0.54
 color = 0.74 0.3 0.32
 body = static
 
@@ -542,7 +542,7 @@ body = static
 [model]
 shape = box
 size = 4 0.5 4
-position = -7.7 34.15 4.71
+position = -7.7 34.15 3.71
 color = 0.95 0.75 0.25
 body = static
 

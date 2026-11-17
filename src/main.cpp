@@ -291,7 +291,10 @@ int main(int argc, char **argv) {
   // settle) and quits. Two builds captured the same way can be compared.
   // HELIORA_CAPTURE_PLAY=1 stays in play mode instead, character and all,
   // and HELIORA_CAPTURE_UI=1 keeps the panels, to check the editor itself.
+  // HELIORA_CAPTURE_KEYS presses the character's keys on a script, so its
+  // moves can be checked too (scriptedControls in Player.h).
   const char *capturePath = std::getenv("HELIORA_CAPTURE");
+  const char *captureKeys = std::getenv("HELIORA_CAPTURE_KEYS");
   const char *captureFramesText = std::getenv("HELIORA_CAPTURE_FRAMES");
   const int captureFrames =
       captureFramesText ? std::max(1, std::atoi(captureFramesText)) : 300;
@@ -335,6 +338,8 @@ int main(int argc, char **argv) {
       handleEditorKeys(fly, typing, asking);
       turnCamera(fly);
       vulkanRenderer.setPlayerControls(readPlayerControls(fly, typing, asking));
+    } else if (captureKeys) {
+      vulkanRenderer.setPlayerControls(scriptedControls(captureKeys, frameNumber));
     }
 
     if (inputManager.wasResized()) {

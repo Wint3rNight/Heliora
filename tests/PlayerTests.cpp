@@ -60,11 +60,12 @@ TEST(a_and_d_strafe_across_the_camera) {
   PhysicsWorld world;
   addFloor(world);
   Player player(world, glm::vec3(0.0f), 0.0f); // the camera looks down -z
-  frames(world, player, pressing(&PlayerControls::right), 30);
+  // Long enough to turn, build up speed and plant to go back.
+  frames(world, player, pressing(&PlayerControls::right), 60);
   CHECK(player.character().position().x > 1.0f);
-  frames(world, player, pressing(&PlayerControls::left), 90);
+  frames(world, player, pressing(&PlayerControls::left), 120);
   CHECK(player.character().position().x < -1.0f);
-  frames(world, player, pressing(&PlayerControls::back), 60);
+  frames(world, player, pressing(&PlayerControls::back), 90);
   CHECK(player.character().position().z > 1.0f);
 }
 
@@ -74,7 +75,7 @@ TEST(diagonal_is_no_faster) {
   Player player(world, glm::vec3(0.0f), 0.0f);
   PlayerControls diagonal;
   diagonal.forward = diagonal.right = true;
-  frames(world, player, diagonal, 60);
+  frames(world, player, diagonal, 240); // up to full speed
   const glm::vec3 v = player.character().velocity();
   CHECK_NEAR(std::sqrt(v.x * v.x + v.z * v.z), 5.0, 0.05);
 }
@@ -109,11 +110,11 @@ TEST(shift_sprints_and_ctrl_crouches) {
   Player player(world, glm::vec3(0.0f), 0.0f);
   PlayerControls sprint = pressing(&PlayerControls::forward);
   sprint.sprint = true;
-  frames(world, player, sprint, 60);
+  frames(world, player, sprint, 300); // the sprint builds for a while
   CHECK_NEAR(-player.character().velocity().z, 8.0, 0.05);
   PlayerControls crouch = pressing(&PlayerControls::forward);
   crouch.crouch = true;
-  frames(world, player, crouch, 60);
+  frames(world, player, crouch, 90);
   CHECK_NEAR(-player.character().velocity().z, 2.0, 0.05);
   CHECK_NEAR(player.character().height(), 1.1, 1e-5);
 }
@@ -179,7 +180,7 @@ TEST(new_movement_tuning_applies_while_playing) {
   CharacterTuning slower;
   slower.runSpeed = 3.0f;
   player.setTuning(slower, ThirdPersonCameraTuning{});
-  frames(world, player, pressing(&PlayerControls::forward), 60);
+  frames(world, player, pressing(&PlayerControls::forward), 180);
   CHECK_NEAR(-player.character().velocity().z, 3.0, 0.05);
 }
 
@@ -214,4 +215,20 @@ TEST(new_camera_tuning_applies_while_playing) {
   close.maxDistance = 3.0f;
   player.setTuning(CharacterTuning{}, close);
   CHECK_NEAR(player.camera().distance(), 3.0, 1e-5); // was 4, now the most
+}
+
+TEST(capture_scripts_hold_keys_or_press_them_on_a_frame) {
+  PlayerControls c = scriptedControls("w shift", 5);
+  CHECK(c.forward && c.sprint && !c.back && !c.jump);
+  CHECK(!scriptedControls("space@120", 119).jump);
+  CHECK(scriptedControls("space@120", 120).jump);
+  CHECK(!scriptedControls("space@120", 121).jump);
+  CHECK(!scriptedControls("w@10-20", 9).forward);
+  CHECK(scriptedControls("w@10-20", 10).forward);
+  CHECK(scriptedControls("w@10-20", 20).forward);
+  CHECK(!scriptedControls("w@10-20", 21).forward);
+  c = scriptedControls("rmb d ctrl alt@3 s a", 3);
+  CHECK(c.aim && c.right && c.crouch && c.dodge && c.back && c.left);
+  c = scriptedControls("q w@x", 1); // unknown keys and bad frames are skipped
+  CHECK(!c.forward && !c.back && !c.left && !c.right && !c.jump);
 }

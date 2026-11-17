@@ -14,10 +14,10 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "walk_left",      "walk_right",    "run_forward",
                   "run_back",       "run_left",      "run_right",
                   "sprint",         "jump",          "fall",
-                  "land",           "crouch_idle",   "crouch_forward",
-                  "crouch_back",    "crouch_left",   "crouch_right",
-                  "roll",           "dodge_forward", "dodge_back",
-                  "dodge_left",     "dodge_right"};
+                  "land",           "land_hard",     "crouch_idle",
+                  "crouch_forward", "crouch_back",   "crouch_left",
+                  "crouch_right",   "roll",          "dodge_forward",
+                  "dodge_back",     "dodge_left",    "dodge_right"};
 
 std::string trim(std::string_view s) {
   const size_t first = s.find_first_not_of(" \t\r");
@@ -103,6 +103,14 @@ private:
           !std::isfinite(start) || start < 0.0f)
         fail(lineNumber, "'start' must be seconds, 0 or more, got '" + value + "'");
       current.start = start;
+    } else if (key == "end") {
+      float stop = 0.0f;
+      const auto [end, error] =
+          std::from_chars(value.data(), value.data() + value.size(), stop);
+      if (error != std::errc() || end != value.data() + value.size() ||
+          !std::isfinite(stop) || stop < 0.0f)
+        fail(lineNumber, "'end' must be seconds, 0 or more, got '" + value + "'");
+      current.end = stop;
     } else if (key == "loop") {
       if (value != "true" && value != "false")
         fail(lineNumber, "'loop' must be true or false, got '" + value + "'");
@@ -124,6 +132,9 @@ private:
     if (result.clip(current.slot))
       fail(clipLine, std::string("slot '") + clipSlotName(current.slot) +
                          "' is given twice");
+    if (current.end != 0.0f && current.end <= current.start)
+      fail(clipLine, std::format("'end' ({}) must come after 'start' ({})",
+                                 current.end, current.start));
     if (!loopGiven)
       current.loop = defaultLoop(current.slot);
     result.clips.push_back(current);
@@ -148,6 +159,7 @@ bool defaultLoop(ClipSlot slot) {
   switch (slot) {
   case ClipSlot::Jump:
   case ClipSlot::Land:
+  case ClipSlot::LandHard:
   case ClipSlot::Roll:
   case ClipSlot::DodgeForward:
   case ClipSlot::DodgeBack:
@@ -186,6 +198,8 @@ std::string write(const CharacterDescription &character) {
                        clip.file);
     if (clip.start != 0.0f)
       out += std::format("start = {}\n", clip.start);
+    if (clip.end != 0.0f)
+      out += std::format("end = {}\n", clip.end);
     if (clip.loop != defaultLoop(clip.slot))
       out += std::format("loop = {}\n", clip.loop ? "true" : "false");
   }

@@ -189,6 +189,7 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
   data.clip.duration = static_cast<float>(animation->mDuration / ticks);
   data.clip.tracks.resize(skeleton.bones.size());
   data.start = entry.start;
+  data.end = entry.end;
   data.loop = entry.loop;
   int matched = 0;
   for (unsigned c = 0; c < animation->mNumChannels; ++c) {
@@ -211,6 +212,9 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
   data.rootMotion = removeRootMotion(data.clip, skeleton, asset.hips,
                                      entry.loop ? RootMotionMode::Progression
                                                 : RootMotionMode::Path);
+  // The capsule does the jumping: the clip's own rise would add to it.
+  if (entry.slot == ClipSlot::Jump)
+    limitRootHeight(data.clip, skeleton, asset.hips);
   spdlog::info("Character clip {}: {:.2f} s, {} of {} channels on the "
                "skeleton, hips moving {:.2f} units/s",
                clipSlotName(entry.slot), data.clip.duration, matched,
@@ -268,8 +272,8 @@ std::optional<CharacterAsset> importCharacter(const CharacterDescription &descri
   takeAlbedo(scene, asset);
   computeBounds(asset);
   for (const CharacterClip &entry : description.clips)
-    asset.clips[static_cast<size_t>(entry.slot)] = importClip(entry, asset);
-  const size_t loaded = std::count_if(asset.clips.begin(), asset.clips.end(),
+    asset.library.clips[static_cast<size_t>(entry.slot)] = importClip(entry, asset);
+  const size_t loaded = std::count_if(asset.library.clips.begin(), asset.library.clips.end(),
                                       [](const auto &c) { return c.has_value(); });
   spdlog::info("Character: {} nodes, hips at {}, {} vertices, {} triangles ({} "
                "meshes skipped), albedo {}, {:.1f} units tall, {} of {} clips, "

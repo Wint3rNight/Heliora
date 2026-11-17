@@ -28,6 +28,7 @@ enum class ClipSlot : uint8_t {
   Jump,
   Fall,
   Land,
+  LandHard, // after a real fall; the plain landing without it
   CrouchIdle,
   CrouchForward,
   CrouchBack,
@@ -52,6 +53,9 @@ struct CharacterClip {
   ClipSlot slot = ClipSlot::Idle;
   std::string file;
   float start = 0.0f; // seconds into the file to start at (past a wind-up)
+  // Seconds into the file to stop at, after start; 0 is the file's end. A
+  // jump stops before its feet come down, a landing begins at that moment.
+  float end = 0.0f;
   bool loop = true;
   bool operator==(const CharacterClip &) const = default;
 };
@@ -71,6 +75,6 @@ namespace CharacterIO {
 CharacterDescription parse(std::istream &in, const std::string &sourceName);
 CharacterDescription loadFromFile(const std::string &path);
 // Text that parses back to the same description; keys at their default
-// (loop matching the slot's, start 0) are left out.
+// (loop matching the slot's, start and end 0) are left out.
 std::string write(const CharacterDescription &character);
 } // namespace CharacterIO

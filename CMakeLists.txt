@@ -109,6 +109,7 @@ file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS
 # and CPU flags.
 set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AnimationClip.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterAnimator.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterController.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CharacterFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EditHistory.cpp
@@ -182,6 +183,7 @@ enable_testing()
 add_executable(heliora_tests
         tests/main.cpp
         tests/AnimationClipTests.cpp
+        tests/CharacterAnimatorTests.cpp
         tests/CharacterControllerTests.cpp
         tests/CharacterFileTests.cpp
         tests/EditHistoryTests.cpp

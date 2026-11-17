@@ -48,18 +48,29 @@ file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Run Left
 slot = run_right
 file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Run Right.fbx
 
-# In the air.
+# In the air: the plain jump, from the moment its feet leave the ground
+# (0.75 s, past the crouch) to just before they come down (1.27 s). The
+# rest of the same file is the landing. The falling loop and the hard
+# landing are only for real falls.
 [clip]
 slot = jump
-file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Jump.fbx
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/jump.fbx
+start = 0.75
+end = 1.27
+
+[clip]
+slot = land
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/jump.fbx
+start = 1.27
 
 [clip]
 slot = fall
 file = Resources/Characters/mixamo/clips/Falling Idle.fbx
 
 [clip]
-slot = land
-file = Resources/Characters/mixamo/packs/Magic Locomotion Pack/Standing Land To Standing Idle.fbx
+slot = land_hard
+file = Resources/Characters/mixamo/clips/Falling To Landing.fbx
+start = 0.25
 
 # Crouching: the Pro Magic pack.
 [clip]

@@ -1,5 +1,6 @@
 #include "Player.h"
 
+#include <charconv>
 #include <cmath>
 
 Player::Player(PhysicsWorld &world, glm::vec3 feet, float yaw,
@@ -54,4 +55,51 @@ void Player::setTuning(const CharacterTuning &character,
   tuning.mass = spawned.mass;
   controller.setTuning(tuning);
   view.setTuning(camera);
+}
+
+namespace {
+
+// The frames a token's "@N" or "@N-M" covers; all of them without one.
+bool coversFrame(std::string_view frames, int frame) {
+  if (frames.empty())
+    return true;
+  int first = 0, last = 0;
+  const char *end = frames.data() + frames.size();
+  auto [p, error] = std::from_chars(frames.data(), end, first);
+  if (error != std::errc())
+    return false;
+  last = first;
+  if (p != end) {
+    if (*p != '-')
+      return false;
+    auto [q, rangeError] = std::from_chars(p + 1, end, last);
+    if (rangeError != std::errc() || q != end)
+      return false;
+  }
+  return frame >= first && frame <= last;
+}
+
+} // namespace
+
+PlayerControls scriptedControls(std::string_view script, int frame) {
+  PlayerControls controls;
+  while (!script.empty()) {
+    const size_t space = script.find(' ');
+    const std::string_view token = script.substr(0, space);
+    script = space == std::string_view::npos ? "" : script.substr(space + 1);
+    const size_t at = token.find('@');
+    const std::string_view key = token.substr(0, at);
+    if (!coversFrame(at == std::string_view::npos ? "" : token.substr(at + 1), frame))
+      continue;
+    if (key == "w") controls.forward = true;
+    else if (key == "s") controls.back = true;
+    else if (key == "a") controls.left = true;
+    else if (key == "d") controls.right = true;
+    else if (key == "shift") controls.sprint = true;
+    else if (key == "ctrl") controls.crouch = true;
+    else if (key == "rmb") controls.aim = true;
+    else if (key == "space") controls.jump = true;
+    else if (key == "alt") controls.dodge = true;
+  }
+  return controls;
 }

@@ -302,6 +302,24 @@ private:
   std::vector<std::string> modelFiles;
   std::optional<SceneModelEntry> pendingSpawn;
   void spawnEntry(SceneModelEntry entry);
+  void addNewEntry(SceneModelEntry entry);
+  // Dragging from the Assets panel: this frame's hover or drop, and the
+  // preview node showing where it would land.
+  struct AssetPlacement {
+    SceneModelEntry entry;
+    glm::vec2 windowPixel{0.0f};
+    bool turnToSurface = true;
+  };
+  std::optional<AssetPlacement> assetHover;
+  std::optional<AssetPlacement> assetDrop;
+  bool assetDragEnded = false;
+  SceneNode *assetPreview = nullptr;
+  int assetPreviewModel = -1;
+  NodeTransform dropPlacement(const SceneModelEntry &entry, int modelId, glm::vec2 windowPixel,
+                              bool turnToSurface);
+  void showAssetPreview(const SceneModelEntry &entry, glm::vec2 windowPixel, bool turnToSurface);
+  void hideAssetPreview();
+  void dropAsset(SceneModelEntry entry, glm::vec2 windowPixel, bool turnToSurface);
   bool pendingPlayerStart = false; // the list's Player start, same timing
   void placePlayerStart();
   bool duplicateRequested = false; // Ctrl+D, same timing

@@ -77,6 +77,55 @@ TEST(new_objects_get_a_body_that_suits_them) {
   CHECK(!problemWith(rock));
 }
 
+// The object's up after a drop, in the world.
+glm::vec3 upOf(const NodeTransform &t) {
+  return rotationFromDegrees(t.rotationDeg) * glm::vec3(0.0f, 1.0f, 0.0f);
+}
+
+TEST(a_dropped_object_sits_on_the_floor) {
+  const PickRay ray{glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)};
+  const PhysicsRayHit floor = surface(5.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+  for (const bool turn : {true, false}) {
+    const NodeTransform t = dropTransform(ray, floor, kBoxMin, kBoxMax, turn);
+    CHECK_NEAR(glm::distance(t.position, glm::vec3(0.0f, 0.5f, 0.0f)), 0.0, 1e-4);
+    CHECK_NEAR(glm::length(t.rotationDeg), 0.0, 1e-3);
+  }
+}
+
+TEST(a_dropped_object_turns_to_the_slope_or_stays_upright) {
+  // A 30 degree slope: turned, the box's bottom lies on it, so it stands
+  // half a metre off along the normal; upright, a corner touches, further
+  // off.
+  const PickRay ray{glm::vec3(0.0f, 5.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)};
+  const glm::vec3 n(-0.5f, std::sqrt(3.0f) * 0.5f, 0.0f);
+  const PhysicsRayHit slope = surface(5.0f, n);
+  const NodeTransform turned = dropTransform(ray, slope, kBoxMin, kBoxMax, true);
+  CHECK_NEAR(glm::distance(upOf(turned), n), 0.0, 1e-4);
+  CHECK_NEAR(glm::distance(turned.position, n * 0.5f), 0.0, 1e-4);
+  const NodeTransform upright = dropTransform(ray, slope, kBoxMin, kBoxMax, false);
+  CHECK_NEAR(glm::length(upright.rotationDeg), 0.0, 1e-3);
+  CHECK_NEAR(glm::distance(upright.position, n * (0.5f * (0.5f + std::sqrt(3.0f) * 0.5f))),
+             0.0, 1e-4);
+}
+
+TEST(a_dropped_object_on_a_wall_stands_out_from_it) {
+  const PickRay ray{glm::vec3(5.0f, 1.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f)};
+  const PhysicsRayHit wall = surface(5.0f, glm::vec3(1.0f, 0.0f, 0.0f));
+  const NodeTransform turned = dropTransform(ray, wall, kBoxMin, kBoxMax, true);
+  CHECK_NEAR(glm::distance(upOf(turned), glm::vec3(1, 0, 0)), 0.0, 1e-4);
+  CHECK_NEAR(glm::distance(turned.position, glm::vec3(0.5f, 1.0f, 0.0f)), 0.0, 1e-4);
+  const NodeTransform upright = dropTransform(ray, wall, kBoxMin, kBoxMax, false);
+  CHECK_NEAR(glm::distance(upOf(upright), glm::vec3(0, 1, 0)), 0.0, 1e-4);
+  CHECK_NEAR(glm::distance(upright.position, glm::vec3(0.5f, 1.0f, 0.0f)), 0.0, 1e-4);
+}
+
+TEST(a_drop_with_nothing_under_it_floats_ahead_upright) {
+  const PickRay ray{glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f)};
+  const NodeTransform t = dropTransform(ray, std::nullopt, kBoxMin, kBoxMax, true);
+  CHECK_NEAR(glm::distance(t.position, glm::vec3(0.0f, 1.0f, -kSpawnFallback)), 0.0, 1e-4);
+  CHECK_NEAR(glm::length(t.rotationDeg), 0.0, 1e-3);
+}
+
 TEST(model_files_are_found_in_subfolders) {
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / "heliora_spawn_test";

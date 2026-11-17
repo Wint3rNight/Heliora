@@ -260,9 +260,9 @@ bool ImGuiLayer::wantsMouse() const {
 }
 
 bool ImGuiLayer::wantsTextInput() const {
-  // Waiting for a key in the Controls tab counts too: nothing else may
-  // take that key (Esc must cancel, not quit).
-  return rebinding.has_value() ||
+  // Waiting for a key in the Controls tab counts too, and so does dragging
+  // an asset: nothing else may take the key (Esc must cancel, not quit).
+  return rebinding.has_value() || assetDrag.has_value() ||
          (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput);
 }
 
@@ -288,7 +288,7 @@ namespace {
 constexpr const char *kPanelNames[] = {"Scene",     "Render",    "Lighting",
                                        "Camera",    "Inspector", "Physics",
                                        "Character", "Controls",  "Performance",
-                                       "Debug"};
+                                       "Debug",     "Assets"};
 
 // The dockspace's id, the same every run so the layout file finds it.
 ImGuiID dockspaceId() { return ImHashStr("HelioraDockspace"); }
@@ -351,6 +351,10 @@ void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
                               360.0f / std::max(width - 380.0f, 1.0f), &right,
                               &centre);
   ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.5f, &top, &bottom);
+  // The Assets panel under the scene; the scene keeps the rest.
+  ImGuiID assets = 0;
+  ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.25f, &assets, &centre);
+  ImGui::DockBuilderDockWindow("Assets", assets);
   for (const char *name : {"Scene", "Render", "Lighting", "Camera"})
     ImGui::DockBuilderDockWindow(name, left);
   // The Inspector edits objects, in edit mode; the Character tab tunes the
@@ -395,6 +399,19 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(),
                                ImGuiDockNodeFlags_PassthruCentralNode |
                                    ImGuiDockNodeFlags_NoDockingOverCentralNode);
+  // A layout saved before the Assets panel has no place for it: the first
+  // time, the scene's area gives it a strip at the bottom. After the
+  // dockspace is submitted, when a loaded layout's nodes exist.
+  if (!assetsPlaced) {
+    assetsPlaced = true;
+    if (!ImGui::FindWindowSettingsByID(ImHashStr("Assets")))
+      if (ImGuiDockNode *central = ImGui::DockBuilderGetCentralNode(dockspace)) {
+        ImGuiID strip = 0, rest = 0;
+        ImGui::DockBuilderSplitNode(central->ID, ImGuiDir_Down, 0.25f, &strip, &rest);
+        ImGui::DockBuilderDockWindow("Assets", strip);
+        ImGui::DockBuilderFinish(dockspace);
+      }
+  }
   if (const ImGuiDockNode *central =
           ImGui::DockBuilderGetCentralNode(dockspace))
     centralArea = SceneViewport{glm::vec2(central->Pos.x, central->Pos.y),
@@ -443,6 +460,8 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   panel(Panel::Controls, [&] { drawControlsTab(ui); });
   panel(Panel::Performance, [&] { drawPerformanceTab(ui); });
   panel(Panel::Debug, [&] { drawDebugTab(ui); });
+  panel(Panel::Assets, [&] { drawAssetsPanel(ui); });
+  updateAssetDrag(ui);
   focusDefaultTabs = false;
   // Even with the Inspector closed or behind another tab.
   flushInspectorRebuild(ui);
@@ -1455,40 +1474,12 @@ void ImGuiLayer::drawSceneTab(DebugUiContext &ui) {
   if (ui.playing)
     ImGui::TextDisabled("Stop (F5) to add objects.");
   ImGui::BeginDisabled(ui.playing);
-  static constexpr std::pair<PrimitiveShape, const char *> kShapes[] = {
-      {PrimitiveShape::Box, "Box"},
-      {PrimitiveShape::Sphere, "Sphere"},
-      {PrimitiveShape::Capsule, "Capsule"},
-      {PrimitiveShape::Plane, "Plane"}};
-  for (const auto &[shape, label] : kShapes) {
-    if (shape != PrimitiveShape::Box)
-      ImGui::SameLine();
-    if (ImGui::Button(label) && ui.onSpawn)
-      ui.onSpawn(newShapeEntry(shape));
-  }
+  ImGui::TextDisabled("Shapes and models: drag them in from the Assets panel.");
   if (ImGui::Button("Player start") && ui.onSpawnPlayerStart)
     ui.onSpawnPlayerStart();
   ImGui::SetItemTooltip(ui.scene && ui.scene->player
                             ? "Moves the scene's player start here"
                             : "Where Play (F5) puts the character");
-  if (ui.modelFiles) {
-    for (const std::string &file : *ui.modelFiles) {
-      const std::string name =
-          std::filesystem::path(file).filename().string() + "##" + file;
-      // A path the scene file couldn't read back (a '#') can't be added.
-      const std::optional<std::string> problem =
-          problemWith(newModelFileEntry(file));
-      ImGui::BeginDisabled(problem.has_value());
-      if (ImGui::Selectable(name.c_str()) && ui.onSpawn)
-        ui.onSpawn(newModelFileEntry(file));
-      ImGui::EndDisabled();
-      ImGui::SetItemTooltip("%s", problem ? problem->c_str() : file.c_str());
-    }
-    if (ui.modelFiles->empty())
-      ImGui::TextDisabled("No .gltf or .glb files in Resources/Models.");
-  }
-  if (ImGui::Button("Rescan models") && ui.onRescanModels)
-    ui.onRescanModels();
   ImGui::EndDisabled();
 }
 
@@ -1950,6 +1941,115 @@ void ImGuiLayer::drawClipsSection(CharacterPanel &panel) {
     }
     ImGui::PopID();
   }
+}
+
+// Tiles for the things a scene can hold: drag one into the scene, or
+// double-click it to add it where the camera looks.
+void ImGuiLayer::drawAssetsPanel(DebugUiContext &ui) {
+  if (ui.playing) {
+    ImGui::TextDisabled("Stop (F5) to place things.");
+    return;
+  }
+  ImGui::Checkbox("Turn to the surface", &turnToSurface);
+  ImGui::SetItemTooltip("Dropped things lie along the slope or wall under "
+                        "them; off, they stay upright");
+  ImGui::SameLine();
+  if (ImGui::Button("Rescan models") && ui.onRescanModels)
+    ui.onRescanModels();
+  ImGui::SameLine();
+  ImGui::TextDisabled("Drag into the scene, or double-click to add where the "
+                      "camera looks.");
+
+  struct Tile {
+    std::string label;
+    std::string tooltip;
+    SceneModelEntry entry;
+    bool usable = true;
+  };
+  auto drawTiles = [&](const std::vector<Tile> &tiles) {
+    constexpr float kSize = 96.0f;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const int columns = std::max(
+        1, int((ImGui::GetContentRegionAvail().x + spacing) / (kSize + spacing)));
+    for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
+      const Tile &tile = tiles[i];
+      if (i % columns != 0)
+        ImGui::SameLine();
+      ImGui::PushID(i);
+      ImGui::BeginDisabled(!tile.usable);
+      ImGui::Button(tile.label.c_str(), ImVec2(kSize, kSize));
+      if (tile.usable && ImGui::IsItemHovered() &&
+          ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && ui.onSpawn)
+        ui.onSpawn(tile.entry);
+      if (tile.usable && ImGui::BeginDragDropSource()) {
+        ImGui::SetDragDropPayload("HELIORA_ASSET", &i, sizeof i);
+        ImGui::TextUnformatted(tile.label.c_str());
+        ImGui::EndDragDropSource();
+        assetDrag = tile.entry;
+      }
+      ImGui::EndDisabled();
+      ImGui::SetItemTooltip("%s", tile.tooltip.c_str());
+      ImGui::PopID();
+    }
+  };
+
+  if (ImGui::BeginTabBar("##assets")) {
+    if (ImGui::BeginTabItem("Shapes")) {
+      std::vector<Tile> tiles;
+      for (const auto &[shape, label] :
+           {std::pair{PrimitiveShape::Box, "Box"}, std::pair{PrimitiveShape::Sphere, "Sphere"},
+            std::pair{PrimitiveShape::Capsule, "Capsule"},
+            std::pair{PrimitiveShape::Plane, "Plane"}})
+        tiles.push_back({label, label, newShapeEntry(shape)});
+      drawTiles(tiles);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Models")) {
+      std::vector<Tile> tiles;
+      if (ui.modelFiles)
+        for (const std::string &file : *ui.modelFiles) {
+          // A path the scene file couldn't read back (a '#') can't be added.
+          const SceneModelEntry entry = newModelFileEntry(file);
+          const std::optional<std::string> problem = problemWith(entry);
+          tiles.push_back({std::filesystem::path(file).stem().string(),
+                           problem ? *problem : file, entry, !problem});
+        }
+      if (tiles.empty())
+        ImGui::TextDisabled("No .gltf or .glb files in Resources/Models.");
+      drawTiles(tiles);
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+}
+
+// A tile being dragged: over the scene it shows where it would land, let
+// go there it's placed, anywhere else (or Esc) it's dropped.
+void ImGuiLayer::updateAssetDrag(DebugUiContext &ui) {
+  if (!assetDrag)
+    return;
+  const ImGuiPayload *payload = ImGui::GetDragDropPayload();
+  const bool dragging = payload && payload->IsDataType("HELIORA_ASSET");
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const glm::vec2 pixel(mouse.x, mouse.y);
+  const bool overScene = centralArea && centralArea->contains(pixel);
+  const bool released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    ImGui::ClearDragDrop();
+  } else if (dragging && !released) {
+    if (overScene && ui.onAssetHover)
+      ui.onAssetHover(*assetDrag, pixel, turnToSurface);
+    else if (ui.onAssetDragEnd)
+      ui.onAssetDragEnd();
+    return;
+  } else if (released && overScene && ui.onAssetDrop) {
+    ui.onAssetDrop(*assetDrag, pixel, turnToSurface);
+    assetDrag.reset();
+    return;
+  }
+  if (ui.onAssetDragEnd)
+    ui.onAssetDragEnd();
+  assetDrag.reset();
 }
 
 void ImGuiLayer::drawControlsTab(DebugUiContext &ui) {

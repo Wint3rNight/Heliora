@@ -596,6 +596,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   // Stop passes currentScene itself; copying it onto itself is harmless.
   currentScene = desc;
   rootNode.clearChildren();
+  assetPreview = nullptr; // went with the tree
   instancedDrawables.clear(); // AllocatedBuffer RAII frees instance buffers
 
   // A new scene's entries are different ones, and its history starts here.
@@ -882,7 +883,14 @@ void VulkanRenderer::spawnEntry(SceneModelEntry entry) {
       physics ? physics->castRay(ray.origin, ray.direction, kSpawnReach)
               : std::nullopt;
   entry.transform.position = spawnPosition(ray, hit, boundsMin, boundsMax);
+  addNewEntry(std::move(entry));
+  if (!hit)
+    spdlog::info("  5 m ahead, with no surface in reach");
+}
 
+// A new object into the scene, its tree and its physics: selected, and one
+// undo step.
+void VulkanRenderer::addNewEntry(SceneModelEntry entry) {
   const SceneEntryRef ref = addModel(currentScene, std::move(entry));
   addEntry(ref);
   rootNode.update(glm::mat4(1.0f), playSeconds);
@@ -890,8 +898,75 @@ void VulkanRenderer::spawnEntry(SceneModelEntry entry) {
   updateEditorLines();
   recordEdit();
   sceneError.clear();
-  spdlog::info("Added [model] {}{}", ref.index,
-               hit ? "" : ", 5 m ahead with no surface in reach");
+  spdlog::info("Added [model] {}", ref.index);
+}
+
+// Where an asset dragged over the scene would land, under the window
+// pixel: on the surface there, out to the draw distance.
+NodeTransform VulkanRenderer::dropPlacement(const SceneModelEntry &entry, int modelId,
+                                            glm::vec2 windowPixel, bool turnToSurface) {
+  const std::optional<ModelManager::Bounds> bounds = modelManager.localBounds(modelId);
+  const float scale = entry.transform.scale;
+  const glm::vec3 boundsMin = bounds ? bounds->min * scale : glm::vec3(0.0f);
+  const glm::vec3 boundsMax = bounds ? bounds->max * scale : glm::vec3(0.0f);
+  const PickRay ray = rayFromScreen(sceneArea.toScene(windowPixel), sceneArea.size,
+                                    glm::inverse(taaBaseProjection * sceneUbo.view));
+  const std::optional<PhysicsRayHit> hit =
+      physics ? physics->castRay(ray.origin, ray.direction, imguiDrawDistance)
+              : std::nullopt;
+  NodeTransform t = dropTransform(ray, hit, boundsMin, boundsMax, turnToSurface);
+  t.scale = scale;
+  return t;
+}
+
+// The dragged asset shown where it would land: a node of its own, with no
+// body and no entry, so nothing picks, saves or undoes it.
+void VulkanRenderer::showAssetPreview(const SceneModelEntry &entry, glm::vec2 windowPixel,
+                                      bool turnToSurface) {
+  int modelId = -1;
+  try {
+    modelId = modelFor(entry);
+  } catch (const std::exception &e) {
+    sceneError = std::format("Couldn't show '{}': {}", entry.path, e.what());
+    return;
+  }
+  if (!assetPreview || assetPreviewModel != modelId) {
+    hideAssetPreview();
+    vkDeviceWaitIdle(device.getLogicalDevice());
+    auto node = std::make_unique<SceneNode>();
+    node->setModelId(modelId);
+    assetPreview = node.get();
+    assetPreviewModel = modelId;
+    rootNode.addChild(std::move(node));
+  }
+  assetPreview->setTransform(dropPlacement(entry, modelId, windowPixel, turnToSurface));
+}
+
+void VulkanRenderer::hideAssetPreview() {
+  if (!assetPreview)
+    return;
+  vkDeviceWaitIdle(device.getLogicalDevice());
+  rootNode.removeChildren([&](const SceneNode &node) { return &node == assetPreview; });
+  assetPreview = nullptr;
+  assetPreviewModel = -1;
+}
+
+// Let go over the scene: placed where the preview stood.
+void VulkanRenderer::dropAsset(SceneModelEntry entry, glm::vec2 windowPixel,
+                               bool turnToSurface) {
+  hideAssetPreview();
+  int modelId = -1;
+  try {
+    modelId = modelFor(entry);
+  } catch (const std::exception &e) {
+    sceneError = std::format("Couldn't add '{}': {}", entry.path, e.what());
+    spdlog::error("{}", sceneError);
+    return;
+  }
+  const NodeTransform t = dropPlacement(entry, modelId, windowPixel, turnToSurface);
+  entry.transform.position = t.position;
+  entry.transform.rotationDeg = t.rotationDeg;
+  addNewEntry(std::move(entry));
 }
 
 // The spawn list's Player start: where the camera looks, facing away from
@@ -2039,6 +2114,19 @@ void VulkanRenderer::applyPendingChanges() {
     SceneModelEntry entry = std::move(*pendingSpawn);
     pendingSpawn.reset();
     spawnEntry(std::move(entry));
+  }
+  // Dragging from the Assets panel.
+  if (assetDrop) {
+    vkDeviceWaitIdle(logicalDevice);
+    AssetPlacement drop = std::move(*assetDrop);
+    assetDrop.reset();
+    assetHover.reset();
+    dropAsset(std::move(drop.entry), drop.windowPixel, drop.turnToSurface);
+  } else if (assetHover) {
+    showAssetPreview(assetHover->entry, assetHover->windowPixel, assetHover->turnToSurface);
+    assetHover.reset();
+  } else if (std::exchange(assetDragEnded, false) || playing) {
+    hideAssetPreview();
   }
   if (std::exchange(pendingPlayerStart, false))
     placePlayerStart();
@@ -4467,6 +4555,15 @@ void VulkanRenderer::buildUi() {
     if (!playing)
       pendingSpawn = std::move(entry);
   };
+  ui.onAssetHover = [this](const SceneModelEntry &entry, glm::vec2 pixel, bool turn) {
+    if (!playing)
+      assetHover = AssetPlacement{entry, pixel, turn};
+  };
+  ui.onAssetDrop = [this](const SceneModelEntry &entry, glm::vec2 pixel, bool turn) {
+    if (!playing)
+      assetDrop = AssetPlacement{entry, pixel, turn};
+  };
+  ui.onAssetDragEnd = [this] { assetDragEnded = true; };
   ui.onDuplicate = [this] { duplicateSelection(); };
   ui.onSpawnPlayerStart = [this] {
     if (!playing)

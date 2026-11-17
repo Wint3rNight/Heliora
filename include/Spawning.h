@@ -41,6 +41,14 @@ glm::vec3 spawnPosition(const PickRay &ray,
                         const std::optional<PhysicsRayHit> &hit,
                         glm::vec3 boundsMin, glm::vec3 boundsMax);
 
+// Where an object dragged in from the Assets panel lands: on the surface
+// the ray hit, turned so its up is the surface's normal (turnToSurface) or
+// left upright, and pushed out along the normal until its box (unscaled
+// size already scaled by the caller) touches it. With nothing hit,
+// kSpawnFallback along the ray, upright. The scale is left at 1.
+NodeTransform dropTransform(const PickRay &ray, const std::optional<PhysicsRayHit> &hit,
+                            glm::vec3 boundsMin, glm::vec3 boundsMax, bool turnToSurface);
+
 // Where Duplicate puts the copy, from the original: one width of its box
 // (lo to hi, in the world) along the world axis, x or z, that points most
 // the camera's right way, so the copy shows up beside it and lines up.

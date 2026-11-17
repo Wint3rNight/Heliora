@@ -1,5 +1,7 @@
 #include "Spawning.h"
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/quaternion.hpp>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -74,6 +76,29 @@ glm::vec3 spawnPosition(const PickRay &ray,
   for (int i = 0; i < 3; ++i)
     reach += std::max(into[i] * boundsMin[i], into[i] * boundsMax[i]);
   return ray.origin + ray.direction * hit->distance + hit->normal * reach;
+}
+
+NodeTransform dropTransform(const PickRay &ray, const std::optional<PhysicsRayHit> &hit,
+                            glm::vec3 boundsMin, glm::vec3 boundsMax, bool turnToSurface) {
+  NodeTransform t;
+  if (!hit) {
+    t.position = ray.origin + ray.direction * kSpawnFallback;
+    return t;
+  }
+  const glm::vec3 normal = glm::normalize(hit->normal);
+  const glm::quat turn = turnToSurface
+                             ? glm::rotation(glm::vec3(0.0f, 1.0f, 0.0f), normal)
+                             : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+  // How far the box reaches into the surface from its origin, as in
+  // spawnPosition but in the object's own frame: turned, that's straight
+  // down to its bottom.
+  const glm::vec3 into = glm::inverse(turn) * -normal;
+  float reach = 0.0f;
+  for (int i = 0; i < 3; ++i)
+    reach += std::max(into[i] * boundsMin[i], into[i] * boundsMax[i]);
+  t.position = ray.origin + ray.direction * hit->distance + normal * reach;
+  t.rotationDeg = degreesFromRotation(turn);
+  return t;
 }
 
 glm::vec3 duplicateOffset(glm::vec3 lo, glm::vec3 hi, glm::vec3 cameraRight) {

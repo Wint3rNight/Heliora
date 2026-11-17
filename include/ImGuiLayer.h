@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <functional>
 #include <optional>
 #include <string>
@@ -217,6 +218,11 @@ struct DebugUiContext {
   // Player start places the scene's one start, or moves it.
   const std::vector<std::string> *modelFiles = nullptr;
   std::function<void(SceneModelEntry)> onSpawn;
+  // Dragging from the Assets panel: over the scene each frame (window
+  // pixel, turned to the surface or upright), let go there, or left it.
+  std::function<void(const SceneModelEntry &, glm::vec2, bool)> onAssetHover;
+  std::function<void(const SceneModelEntry &, glm::vec2, bool)> onAssetDrop;
+  std::function<void()> onAssetDragEnd;
   std::function<void()> onSpawnPlayerStart;
   std::function<void()> onRescanModels;
 
@@ -288,6 +294,7 @@ private:
     Controls,
     Performance,
     Debug,
+    Assets,
     Count
   };
   static constexpr int kPanelCount = static_cast<int>(Panel::Count);
@@ -313,13 +320,21 @@ private:
   void drawPhysicsTab(DebugUiContext &ui);
   void drawCharacterTab(DebugUiContext &ui);
   void drawControlsTab(DebugUiContext &ui);
+  void drawAssetsPanel(DebugUiContext &ui);
+  void updateAssetDrag(DebugUiContext &ui);
   void drawClipsSection(CharacterPanel &panel);
   void drawSettingsButtons(DebugUiContext &ui, const char *section);
   void drawPerformanceTab(DebugUiContext &ui);
   void drawCameraTab(DebugUiContext &ui);
 
-  bool panelOpen[kPanelCount] = {true, true, true, true, true,
-                                 true, true, true, true};
+  // Every panel starts open, new ones included: a layout file only closes
+  // the ones it says were closed.
+  static constexpr std::array<bool, kPanelCount> allOpen() {
+    std::array<bool, kPanelCount> open{};
+    open.fill(true);
+    return open;
+  }
+  std::array<bool, kPanelCount> panelOpen = allOpen();
   bool resetLayoutRequested = false;
   bool focusDefaultTabs = false; // once, after the default layout is built
   std::string layoutPath;        // ImGui keeps a pointer to it
@@ -408,6 +423,12 @@ private:
   bool rebindArmed = false;
   std::string rebindNote; // why the last key wasn't taken
   char clipFilter[64] = ""; // the Clips section's file filter
+  // The Assets panel: what's being dragged (until it's dropped or let go),
+  // whether drops lie along the surface, and whether an old layout file
+  // has been given a place for the panel yet.
+  std::optional<SceneModelEntry> assetDrag;
+  bool turnToSurface = true;
+  bool assetsPlaced = false;
 
   bool visible = true;
 

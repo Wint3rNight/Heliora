@@ -1,18 +1,22 @@
-# A climbing course: four laps of a square spiral, each harder than the
-# last, up to the gold platform. Every piece is a static box, so it
-# gets the 1 m grid. The character walks up 40 cm steps, gets onto
-# ledges up to 1.5 m, and jumps about 5 m running and 8 m sprinting.
-# Fall and you land on the lap below, or the ground. F5 twice starts
+# The climb: a heap of junk to climb, about 53 m up to the gold platform,
+# built for the character's "rage" variant (ganfaul.character). Five zones,
+# two or three ways through each, crossing back and forth over each other,
+# so a fall lands on whatever is below, or all the way down. Every jump on
+# the routes was run in the physics with the rage tuning. F5 twice starts
 # over.
 
 name = Climb
 environment = Resources/HDRIs/kloppenheim_02_1k.hdr
 
 [camera]
-position = 28 18 34
+position = 44 22 52
 yaw = -130
-pitch = 0
-speed = 10
+pitch = 4
+speed = 12
+
+[player]
+position = 0 0 21
+variant = rage
 
 # Ground, 160 x 160 m
 [model]
@@ -21,534 +25,1546 @@ size = 160 1 160
 color = 0.45
 body = static
 
-# Lap 1, side 1: steps of 20 and 30 cm walk up; the two 45 cm
-# ones need a jump (the character walks up 40 cm at most).
+# Zone A, the yard pile, three ways up: crates on the west (easy), a
+# steep plank and poles in the middle, balls on the east (hardest).
+# They all reach the billboard.
 [model]
 shape = box
-size = 3 0.5 3
-position = -6.5 -0.05 8
-color = 0.42 0.52 0.68
+size = 7 0.7 4.5
+position = 0 9.15 3
+rotation = 0 6 0
+color = 0.76 0.73 0.66
 body = static
 
+# Zone B, west (a narrow plank, poles, a pipe to balance along) or east
+# (wider gaps, a steep plank), both to the rooftop.
 [model]
 shape = box
-size = 0.5 0.5 2
-position = -4.75 0.15 8
-color = 0.42 0.52 0.68
+size = 6 0.7 4
+position = 0 19.65 -16
+rotation = 0 -10 0
+color = 0.56 0.55 0.52
 body = static
 
+# Zone C, back south over the yard: a tower of tall steps on the west, or
+# a pipe, a sprint gap and a steep ramp on the east.
 [model]
 shape = box
-size = 0.5 0.5 2
-position = -4.25 0.35 8
-color = 0.42 0.52 0.68
+size = 4.5 0.7 3.5
+position = 1 30.45 9
+rotation = 0 -14 0
+color = 0.41 0.43 0.26
 body = static
 
+# Zone D, north again: poles beside slabs too steep to stand on, or
+# planks and a ball.
 [model]
 shape = box
-size = 0.5 0.5 2
-position = -3.75 0.55 8
-color = 0.42 0.52 0.68
+size = 4 0.7 3
+position = 2 41.05 -12
+rotation = 0 9 0
+color = 0.56 0.55 0.52
 body = static
 
+# Zone E, to the gold summit: small slabs far apart, or balls and a pipe.
 [model]
 shape = box
-size = 0.6 0.5 2
-position = -3.2 0.85 8
-color = 0.42 0.52 0.68
+size = 3 0.7 3
+position = 0.5 52.65 0.5
+color = 0.86 0.68 0.2
 body = static
 
 [model]
 shape = box
-size = 0.6 0.5 2
-position = -2.6 1.15 8
-color = 0.42 0.52 0.68
+size = 2 1 2
+position = -3 0.5 14
+rotation = 0 12 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 0.6 0.5 2
-position = -2 1.45 8
-color = 0.42 0.52 0.68
+size = 1.6 2.1 1.6
+position = -7.14 1.05 12.89
+rotation = 0 -14.09 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 1 0.5 2
-position = -1.2 1.9 8
-color = 0.42 0.52 0.68
+size = 1.5 3.3 1.5
+position = -9.674 1.65 9.272
+rotation = 0 -27.93 0
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 1 0.5 2
-position = -0.2 2.35 8
-color = 0.42 0.52 0.68
+size = 1.4 0.8 1.8
+position = -10.05 4.1 4.992
+rotation = 0 12.07 0
+color = 0.22 0.28 0.42
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = 2.8 2.35 8
-color = 0.42 0.52 0.68
+size = 1.2 0.8 1.2
+position = -8.912 5.3 0.7494
+rotation = 0 -34.21 0
+color = 0.33 0.35 0.38
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 6.8 2.85 8
-color = 0.42 0.52 0.68
+size = 1 0.8 1
+position = -10.27 6.5 -2.982
+rotation = 0 2.871 0
+color = 0.55 0.31 0.21
 body = static
 
-# Lap 1, side 2: a 40 degree ramp walks up; under the slab, crouch
-# (Ctrl); the 50 degree ramp is too steep, jump past it.
 [model]
 shape = box
-size = 2 0.3 3.111
-position = 6.8 3.985 5.212
-rotation = 40 0 0
-color = 0.42 0.52 0.68
+size = 1.2 0.6 1.2
+position = -6.63 7.9 -0.8619
+rotation = 0 32.78 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 2 0.5 4
-position = 6.8 4.85 2.116
-color = 0.42 0.52 0.68
+size = 0.6 0.3 8.575
+position = 2.012 2.451 12.92
+rotation = -34.45 171.9 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 2 0.3 3
-position = 6.8 6.5 2.116
-color = 0.42 0.52 0.68
+size = 0.8 1.2 0.8
+position = 4.085 5.7 6.754
+rotation = 0 -37 0
+color = 0.33 0.35 0.38
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = 6.8 4.85 -2.384
-color = 0.42 0.52 0.68
+size = 0.7 1.2 0.7
+position = 7.983 6.9 7.095
+rotation = 0 -5.308 0
+color = 0.33 0.35 0.38
 body = static
 
 [model]
 shape = box
-size = 2 0.3 1.566
-position = 6.8 5.604 -4.002
-rotation = 50 0 0
-color = 0.42 0.52 0.68
+size = 0.8 2 0.8
+position = 5.64 7.5 5.893
+rotation = 0 -34.41 0
+color = 0.33 0.35 0.38
 body = static
 
 [model]
 shape = box
-size = 3 0.5 5
-position = 6.8 6.05 -6.89
-color = 0.42 0.52 0.68
+size = 1.4 1.2 1.4
+position = 6.5 0.6 17
+rotation = 0 -8 0
+color = 0.52 0.39 0.26
 body = static
 
-# Lap 1, side 3: three jumps, each a bit longer and higher.
 [model]
+shape = sphere
+radius = 1.2
+position = 9.345 1.3 13.61
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = sphere
+radius = 1
+position = 10.25 2.6 10.22
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = sphere
+radius = 1.3
+position = 9.938 3.5 6.63
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = 8.745 5.7 3.352
+rotation = 0 -32.74 0
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 0.7 1.2 0.7
+position = 6.941 6.6 -0.5158
+rotation = 0 -35.27 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = 5.076 8.05 0.429
+rotation = 0 5.236 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 1.1 0.6 1.1
+position = -7.341 10.4 2.358
+rotation = 0 10.45 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = box
+size = 0.45 0.3 6.001
+position = -13.47 12.06 -1.183
+rotation = -23.57 -120 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -17.52 14.2 -5.509
+rotation = 0 6.168 0
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -21.1 15.4 -7.57
+rotation = 0 -36.03 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 1.4 0.5 1.2
+position = -20.34 17.05 -11.85
+rotation = 6 6.64 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = capsule
+radius = 0.45
+height = 4.9
+position = -14.47 17.85 -13.98
+rotation = 90 110 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = -8.003 18.85 -15.15
+rotation = 0 4.533 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = box
+size = 1.6 0.5 1.4
+position = 7.464 10.55 1.684
+rotation = 0 -16.83 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = box
+size = 1.4 0.5 1.4
+position = 12.47 11.35 3.506
+rotation = 0 -28.46 7
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = 13.3 12.6 -1.203
+rotation = 0 -30.58 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = box
+size = 1 0.6 0.8
+position = 11.1 14.1 -5.023
+rotation = 0 -15.32 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 0.5 0.3 3.883
+position = 5.356 15.78 -7.112
+rotation = -34.51 -110 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = 2.681 18.2 -10.29
+rotation = 0 5.696 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 1.2 0.6 1.2
+position = -2.021 21 -10.45
+rotation = 0 -10.21 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = -5.448 22.5 -7.572
+rotation = 0 3.82 0
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = -4.719 24 -3.436
+rotation = 0 -34.98 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = sphere
+radius = 1.4
+position = -7.585 23.8 0.6567
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = -5.799 26.1 3.75
+rotation = 0 -35.23 0
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+shape = box
+size = 1.3 0.5 1
+position = -8.978 27.55 6.929
+rotation = 0 -23.52 8
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -4.762 28.7 7.804
+rotation = 0 33.88 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = capsule
+radius = 0.45
+height = 5.4
+position = 7.982 20.25 -11.39
+rotation = 90 60 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = box
+size = 1.2 0.6 1.2
+position = 11.36 21.7 -6.34
+rotation = 0 -16.02 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 1.4 0.6 1.4
+position = 9.69 23 -1.753
+rotation = 0 23.55 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = box
+size = 1.2 0.6 1.2
+position = 10.4 23 6.342
+rotation = 0 15.92 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = 7.577 24.2 10.37
+rotation = 0 -20.47 0
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+shape = box
+size = 0.6 0.3 5.441
+position = 3.65 26.28 15.98
+rotation = -36.03 -35 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = 1.923 29.1 14.59
+rotation = 0 30.01 0
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -2.062 31.6 3.697
+rotation = 0 38.41 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -6.156 32.8 2.207
+rotation = 0 0.9546 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -5.076 34.2 -1.824
+rotation = 0 20.57 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -8.947 35.4 -4.059
+rotation = 0 34.66 0
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 1.4 0.5 1
+position = -7.373 36.95 -8.384
+rotation = 8 -16.96 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -5.204 38 -12.14
+rotation = 0 36.96 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = box
+size = 0.6 1.2 0.6
+position = -2.507 39.4 -12.09
+rotation = 0 21.17 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 0.45 0.3 5.636
+position = 7.877 32.37 3.23
+rotation = -27.47 130 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = 11.77 34.8 -1.847
+rotation = 0 23.13 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = sphere
+radius = 1.1
+position = 9.767 35.1 -6.138
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = 11 37.1 -9.526
+rotation = 0 25.47 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = box
+size = 0.4 0.3 3.311
+position = 6.537 38.26 -5.063
+rotation = -25.02 -45 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = box
+size = 0.8 0.6 0.8
+position = 4.158 39.95 -7.126
+rotation = 0 7.55 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 1 0.6 1
+position = -3.612 42.3 -15.24
+rotation = 0 23.75 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = box
+size = 0.9 0.6 0.9
+position = -8.427 43.5 -14.39
+rotation = 0 -34.5 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = box
+size = 0.8 0.6 0.8
+position = -11.07 44.7 -10.61
+rotation = 0 -32.51 0
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+shape = box
+size = 0.8 0.6 0.8
+position = -10.64 45.9 -5.716
+rotation = 0 -18.4 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = box
+size = 0.7 0.6 0.7
+position = -12.28 47.1 -1.229
+rotation = 0 15.76 0
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = box
+size = 0.7 0.6 0.7
+position = -8.561 48.4 1.373
+rotation = 0 -34.8 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = box
+size = 0.6 0.6 0.6
+position = -7.056 49.7 5.507
+rotation = 0 18.49 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
 shape = box
-size = 2 0.5 2
-position = 2.3 6.55 -6.89
-color = 0.42 0.52 0.68
+size = 0.6 0.6 0.6
+position = -3.991 51.2 3.476
+rotation = 0 35.25 0
+color = 0.22 0.28 0.42
 body = static
 
 [model]
+shape = sphere
+radius = 1
+position = 8.11 41.5 -9.776
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = sphere
+radius = 0.9
+position = 10.68 42.7 -7.202
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = sphere
+radius = 1.1
+position = 11.02 43.6 -3.402
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = capsule
+radius = 0.4
+height = 4.8
+position = 10.12 45.3 1.699
+rotation = 90 -10 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = box
+size = 0.8 0.6 0.8
+position = 8.403 46.8 7.424
+rotation = 0 -26.56 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = box
+size = 0.7 0.6 0.7
+position = 4.15 48.2 8.972
+rotation = 0 -30.63 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = box
+size = 0.6 0.6 0.6
+position = 0.2068 49.7 7.537
+rotation = 0 -35.28 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = box
+size = 0.6 0.6 0.6
+position = 0.3295 51.2 4.591
+rotation = 0 -8.168 0
+color = 0.41 0.43 0.26
+body = static
+
+# Junk floating around the routes: some of it can be stood on.
+[model]
+shape = box
+size = 1.6 0.25 1.4
+position = -6.156 33.78 5.407
+rotation = 55 30 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = box
+size = 1.6 0.25 1.4
+position = -9.775 36.38 -0.9684
+rotation = 58 -50 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
 shape = box
-size = 2 0.5 2
-position = -2.2 7.05 -6.89
-color = 0.42 0.52 0.68
+size = 1.6 0.25 1.4
+position = -2.941 38.98 -9.878
+rotation = 55 70 0
+color = 0.76 0.73 0.66
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = -7.2 7.55 -6.89
-color = 0.42 0.52 0.68
+size = 1.452 0.8133 1.658
+position = 14.9 21.68 20.06
+rotation = 6.239 -2.707 -16.61
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = sphere
+radius = 1.177
+position = 17.88 49.6 7.306
+color = 0.56 0.26 0.22
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -11.7 8.05 -6.89
-color = 0.42 0.52 0.68
+size = 1.572 1.048 1.401
+position = 3.909 7.274 -21.14
+rotation = -34.98 -80.54 -24.41
+color = 0.24 0.44 0.45
 body = static
 
-# Lap 1, side 4: a walkway that narrows to a 40 cm beam.
 [model]
 shape = box
-size = 0.8 0.5 4
-position = -11.7 8.05 -3.39
-color = 0.42 0.52 0.68
+size = 2.192 2.402 3.147
+position = 3.004 53.94 -20.77
+rotation = -1.809 18.41 -26.93
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 0.4 0.5 4
-position = -11.7 8.05 0.61
-color = 0.42 0.52 0.68
+size = 1.178 0.8825 2.068
+position = -3.496 57.17 -1.744
+rotation = -23.7 59.19 -33.38
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = capsule
+radius = 0.6227
+height = 6.478
+position = 6.426 21.65 17.92
+rotation = 103.6 -25.73 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = sphere
+radius = 1.824
+position = -16.65 20.71 11.51
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = capsule
+radius = 0.6017
+height = 5.58
+position = 2.952 37.04 12.24
+rotation = 93.9 46.91 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -11.7 8.85 5.61
-color = 0.42 0.52 0.68
+size = 1.834 1.824 1.759
+position = -8.355 30.08 -22.67
+rotation = -3.694 82.17 30.59
+color = 0.22 0.28 0.42
 body = static
 
-# Lap 2, side 1: a 30 cm beam, then two run jumps and a ledge.
 [model]
 shape = box
-size = 4 0.5 0.3
-position = -8.2 8.85 5.61
-color = 0.42 0.62 0.45
+size = 1.528 1.673 1.556
+position = -7.956 54.64 -13.86
+rotation = 23.83 72.06 -1.437
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -20.27 45.8 6.387
+rotation = 0 270.1 0
+scale = 1.226
 body = static
 
 [model]
+shape = sphere
+radius = 1.615
+position = -22.79 56 3.177
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = capsule
+radius = 0.3203
+height = 5.161
+position = -4.943 53.97 16.07
+rotation = 97.9 44.67 0
+color = 0.33 0.35 0.38
+body = static
+
+[model]
 shape = box
-size = 2 0.5 2
-position = -1.7 8.85 5.61
-color = 0.42 0.62 0.45
+size = 3.538 1.757 4.122
+position = -0.04848 19.38 14.37
+rotation = 1.173 56.71 22.9
+color = 0.76 0.73 0.66
 body = static
 
 [model]
+shape = capsule
+radius = 0.2749
+height = 9.026
+position = -17.33 9.049 -0.4895
+rotation = 84.39 -19.54 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
 shape = box
-size = 2 0.5 2
-position = 3.3 9.35 5.61
-color = 0.42 0.62 0.45
+size = 2.87 2.148 4.29
+position = 14.57 40.08 19.34
+rotation = -26.49 -65.32 -4.052
+color = 0.24 0.44 0.45
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 6.8 10.55 5.61
-color = 0.42 0.62 0.45
+size = 4.074 1.769 1.402
+position = -3.42 8.802 10.35
+rotation = 14.44 -49.73 34.59
+color = 0.56 0.26 0.22
 body = static
 
-# Lap 2, side 2: stepping stones, left and right.
 [model]
+shape = capsule
+radius = 0.209
+height = 3.56
+position = -15.39 20.78 -9.36
+rotation = 93.26 -9.729 0
+color = 0.22 0.28 0.42
+body = static
+
+[model]
 shape = box
-size = 0.8 0.5 0.8
-position = 6.3 10.85 2.71
-color = 0.42 0.62 0.45
+size = 4.199 2.228 1.646
+position = -11 29.86 20.2
+rotation = -15.97 -74.87 28.41
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = capsule
+radius = 0.6314
+height = 5.077
+position = 17.48 5.462 5.09
+rotation = 109.9 -64.12 0
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = 19.75 1.769 -4.783
+rotation = 0 15.55 0
+scale = 1.097
 body = static
 
 [model]
 shape = box
-size = 0.8 0.5 0.8
-position = 7.3 11.15 0.91
-color = 0.42 0.62 0.45
+size = 4.249 1.468 3.126
+position = 18.65 53.8 -11.95
+rotation = -3.802 -52.94 12.05
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = capsule
+radius = 0.6912
+height = 7.162
+position = -4.986 47.17 -1.163
+rotation = 84.41 -1.203 0
+color = 0.22 0.28 0.42
 body = static
 
 [model]
 shape = box
-size = 0.8 0.5 0.8
-position = 6.3 11.45 -0.89
-color = 0.42 0.62 0.45
+size = 4.461 2.141 4.433
+position = 14.8 12.05 9.527
+rotation = 8.781 -87.43 26.59
+color = 0.56 0.26 0.22
+body = static
+
+[model]
+shape = capsule
+radius = 0.3465
+height = 8.426
+position = -20.3 10.8 14.67
+rotation = 95.74 39.25 0
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 0.8 0.5 0.8
-position = 7.3 11.75 -2.69
-color = 0.42 0.62 0.45
+size = 2.017 1.012 4.444
+position = -12.16 11.87 -23.83
+rotation = 26.77 -83.8 -19.75
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = sphere
+radius = 0.8417
+position = -7.208 1.218 -2.166
+color = 0.76 0.73 0.66
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = 6.8 12.75 -6.59
-color = 0.42 0.62 0.45
+size = 2.971 0.9592 2.258
+position = -20 44.99 13.58
+rotation = -29.09 23.34 32.03
+color = 0.56 0.55 0.52
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 6.8 13.25 -10.59
-color = 0.42 0.62 0.45
+size = 2.007 0.6288 4.443
+position = 7.504 38.51 16.44
+rotation = 10.03 40.35 -31.93
+color = 0.76 0.73 0.66
 body = static
 
-# Lap 2, side 3: a long 25 cm beam, then a run jump.
 [model]
 shape = box
-size = 6 0.5 0.25
-position = 2.3 13.25 -10.59
-color = 0.42 0.62 0.45
+size = 2.738 2.137 2.666
+position = 8.289 36.06 13.36
+rotation = 22.85 54.84 5.884
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -22.16 6.044 5.308
+rotation = 0 162.5 0
+scale = 0.9013
+body = static
+
+[model]
+shape = sphere
+radius = 0.5056
+position = 3.554 36.65 7.311
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = capsule
+radius = 0.2372
+height = 4.016
+position = -1.836 43.67 0.5825
+rotation = 102.1 -42.62 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = sphere
+radius = 1.283
+position = 9.283 13.87 -13.39
+color = 0.56 0.26 0.22
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = -5.2 13.25 -10.59
-color = 0.42 0.62 0.45
+size = 3.141 1.619 1.534
+position = 16.06 5.488 -10.78
+rotation = 10.61 -30.28 13.5
+color = 0.33 0.35 0.38
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -9.7 14.25 -10.59
-color = 0.42 0.62 0.45
+size = 3.286 1.787 3.361
+position = -23.45 32.9 -21.21
+rotation = 1.157 -37.65 -2.474
+color = 0.41 0.43 0.26
 body = static
 
-# Lap 2, side 4: drop down, then climb a 1.4 m ledge.
 [model]
 shape = box
-size = 2 0.5 2
-position = -9.7 13.25 -4.09
-color = 0.42 0.62 0.45
+size = 1.118 0.9371 2.55
+position = 19.71 44.49 1.258
+rotation = 0.4633 -76.24 34.62
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = capsule
+radius = 0.3881
+height = 6.619
+position = -16.99 23.68 19.69
+rotation = 92.47 -40.89 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = capsule
+radius = 0.6508
+height = 5.195
+position = -24.03 48.41 10.56
+rotation = 80.55 -76.75 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = sphere
+radius = 0.7532
+position = -21.73 16.96 6.451
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = capsule
+radius = 0.4
+height = 6.845
+position = -10.06 26.03 11.57
+rotation = 82.54 84.78 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = capsule
+radius = 0.3431
+height = 6.857
+position = 7.644 32.41 -21.71
+rotation = 85.97 -45.48 0
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = -9.7 14.65 -1.09
-color = 0.42 0.62 0.45
+size = 1.842 1.925 1.746
+position = 0.2048 52.1 -16.14
+rotation = -6.565 27.51 -18.29
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -9.7 15.65 3.41
-color = 0.42 0.62 0.45
+size = 1.569 1.394 4.152
+position = -6.648 32.51 -16.3
+rotation = 28.44 -50.4 34.75
+color = 0.41 0.43 0.26
 body = static
 
-# Lap 3, side 1: climb, then the first sprint jump (hold Shift).
 [model]
 shape = box
-size = 2 0.5 2
-position = -6.2 17.05 3.41
-color = 0.8 0.56 0.32
+size = 1.8 1.396 3.583
+position = -7.155 50.06 10.31
+rotation = -9.79 13.37 13.07
+color = 0.76 0.73 0.66
 body = static
 
 [model]
 shape = box
-size = 3.5 0.5 2
-position = -2.45 17.55 3.41
-color = 0.8 0.56 0.32
+size = 1.719 1.281 2.279
+position = 13.97 36.62 -14.07
+rotation = 24.41 81.71 26.1
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -23.95 45.61 0.7239
+rotation = 0 113.9 0
+scale = 0.8229
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -13.67 27.69 -12.64
+rotation = 0 110.7 0
+scale = 1.164
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 6.8 18.05 3.41
-color = 0.8 0.56 0.32
+size = 3.927 1.391 1.05
+position = -6.56 21.59 -23.69
+rotation = 18.61 -53.93 -21.42
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -5.651 13.93 6.604
+rotation = 0 141.6 0
+scale = 0.7171
+body = static
+
+[model]
+shape = capsule
+radius = 0.3571
+height = 5.05
+position = 2.238 2.97 -4.841
+rotation = 81.56 9.064 0
+color = 0.24 0.44 0.45
 body = static
 
-# Lap 3, side 2: small stones, then a sprint jump up.
 [model]
 shape = box
-size = 0.7 0.5 0.7
-position = 6.4 18.45 0.36
-color = 0.8 0.56 0.32
+size = 4.263 0.3702 3.561
+position = 16.99 57.68 -8.855
+rotation = -8.497 29.6 -8.828
+color = 0.22 0.28 0.42
 body = static
 
 [model]
 shape = box
-size = 0.7 0.5 0.7
-position = 7.2 18.85 -1.54
-color = 0.8 0.56 0.32
+size = 2.355 1.534 4.075
+position = -19.21 26.01 -20.4
+rotation = -8.391 46.58 18.81
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = sphere
+radius = 1.134
+position = -4.972 46.9 -21.73
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 0.7 0.5 0.7
-position = 6.4 19.25 -3.44
-color = 0.8 0.56 0.32
+size = 2.32 1.987 3.804
+position = -7.973 11.82 17.26
+rotation = -32.56 -82.68 -30.62
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 2 0.5 3.5
-position = 6.8 19.55 -6.54
-color = 0.8 0.56 0.32
+size = 1.808 1.657 4.343
+position = 8.881 15.56 17.33
+rotation = 15.16 -42.81 -12.85
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = capsule
+radius = 0.2536
+height = 10.18
+position = 7.774 18.4 3.401
+rotation = 84.2 78.24 0
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 6.8 20.55 -14.99
-color = 0.8 0.56 0.32
+size = 2.342 1.783 3.095
+position = 7.23 29.02 -3.44
+rotation = 24.29 44.64 11.51
+color = 0.24 0.44 0.45
 body = static
 
-# Lap 3, side 3: beams with gaps between them.
 [model]
 shape = box
-size = 3 0.5 0.3
-position = 2.3 20.95 -14.99
-color = 0.8 0.56 0.32
+size = 1.71 1.729 2.747
+position = -15.72 51.96 -21.02
+rotation = -2.526 -71.9 -32.41
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = 12.04 28.08 14.67
+rotation = 0 105.7 0
+scale = 0.6323
 body = static
 
 [model]
 shape = box
-size = 3 0.5 0.3
-position = -2.2 21.35 -14.99
-color = 0.8 0.56 0.32
+size = 2.176 0.4715 3.098
+position = 11.85 52.95 13.67
+rotation = -0.3062 -84.34 -1.155
+color = 0.56 0.26 0.22
 body = static
 
 [model]
 shape = box
-size = 2 0.5 0.3
-position = -6.7 21.85 -14.99
-color = 0.8 0.56 0.32
+size = 1.938 0.9872 4.327
+position = 6.598 10.67 -5.15
+rotation = -9.997 11.97 -5.849
+color = 0.22 0.28 0.42
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -11.7 22.35 -14.99
-color = 0.8 0.56 0.32
+size = 2.087 0.6779 1.399
+position = 16.8 33.74 9.913
+rotation = -8.139 -77.92 17.75
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = 12.84 18.21 -22
+rotation = 0 218.8 0
+scale = 0.8516
+body = static
+
+[model]
+shape = capsule
+radius = 0.5264
+height = 4.804
+position = 16.46 8.796 -9.452
+rotation = 71.59 -45.37 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = capsule
+radius = 0.3439
+height = 4.629
+position = -20.99 3.119 4.29
+rotation = 72.93 66.31 0
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -3.918 51.9 -12.31
+rotation = 0 213.1 0
+scale = 0.9841
 body = static
 
-# Lap 3, side 4: a long sprint jump down, then a high ledge.
 [model]
 shape = box
-size = 2 0.5 4
-position = -11.7 23.55 -10.49
-color = 0.8 0.56 0.32
+size = 4.465 1.093 2.936
+position = -6.653 36.72 12.69
+rotation = -4.04 47.64 -22.63
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 2 0.5 3
-position = -11.7 22.55 0.01
-color = 0.8 0.56 0.32
+size = 1.295 2.123 2.155
+position = -0.499 30.23 -4.991
+rotation = -34.01 -61.45 21.11
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = sphere
+radius = 1.523
+position = 15.28 46.45 3.357
+color = 0.76 0.73 0.66
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -11.7 23.95 4.01
-color = 0.8 0.56 0.32
+size = 2.767 0.8229 2.302
+position = -13.07 42.67 17.56
+rotation = 19.52 -79.49 -34.14
+color = 0.76 0.73 0.66
 body = static
 
-# Lap 4, side 1: posts, 50 cm across, zigzagging up.
 [model]
+shape = sphere
+radius = 1.593
+position = -15.32 37.19 -4.994
+color = 0.56 0.26 0.22
+body = static
+
+[model]
 shape = box
-size = 0.5 0.5 0.5
-position = -8.55 24.4 3.56
-color = 0.74 0.3 0.32
+size = 0.9794 2.023 4.091
+position = -16.32 46.54 -9.768
+rotation = -34.56 38.77 24.11
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = 4.843 5.859 -15.93
+rotation = 0 231.8 0
+scale = 0.8091
+body = static
+
+[model]
+shape = capsule
+radius = 0.418
+height = 8.819
+position = 8.99 20.37 7.981
+rotation = 88.84 42.12 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = capsule
+radius = 0.6524
+height = 5.037
+position = -10.99 55.8 18.54
+rotation = 105.4 -1.337 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = capsule
+radius = 0.5153
+height = 6.47
+position = 8.915 54.4 -8.885
+rotation = 77.01 46.95 0
+color = 0.76 0.73 0.66
+body = static
+
+[model]
+shape = capsule
+radius = 0.3539
+height = 6.772
+position = 12.94 27.94 8.1
+rotation = 88.01 -40.43 0
+color = 0.52 0.39 0.26
 body = static
 
 [model]
 shape = box
-size = 0.5 0.5 0.5
-position = -6.65 24.85 4.46
-color = 0.74 0.3 0.32
+size = 0.9218 1.668 1.214
+position = 1.755 23.09 1.999
+rotation = 33.42 -60.87 14.05
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 0.5 0.5 0.5
-position = -4.75 25.3 3.56
-color = 0.74 0.3 0.32
+size = 4.011 2.378 4.183
+position = 12.06 46.59 17
+rotation = -20.6 -70.72 -27.16
+color = 0.55 0.31 0.21
 body = static
 
 [model]
 shape = box
-size = 0.5 0.5 0.5
-position = -2.85 25.75 4.46
-color = 0.74 0.3 0.32
+size = 3.58 1.35 3.139
+position = 16.09 54.48 10.67
+rotation = 20.44 -66.12 10.24
+color = 0.72 0.58 0.25
 body = static
 
 [model]
 shape = box
-size = 3 0.5 2
-position = 0.9 26.25 4.01
-color = 0.74 0.3 0.32
+size = 1.846 1.11 3.448
+position = -5.354 19.32 -23.04
+rotation = 32.48 -32.25 0.2616
+color = 0.72 0.58 0.25
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 7.1 26.75 4.01
-color = 0.74 0.3 0.32
+size = 3.66 1.85 2.083
+position = -22.64 35.7 -5.006
+rotation = -19.84 6.818 25.36
+color = 0.24 0.44 0.45
 body = static
 
-# Lap 4, side 2: a 20 cm beam, then a sprint jump near the limit.
 [model]
 shape = box
-size = 0.2 0.5 5
-position = 7.1 27.25 -0.99
-color = 0.74 0.3 0.32
+size = 3.372 2.428 3.854
+position = -21.63 42.82 -8.001
+rotation = 32 16.66 1.06
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = sphere
+radius = 1.105
+position = 6.675 45.02 12.2
+color = 0.56 0.26 0.22
 body = static
 
 [model]
 shape = box
-size = 2 0.5 6
-position = 7.1 27.65 -7.49
-color = 0.74 0.3 0.32
+size = 2.998 1.632 3.35
+position = 3.753 56.2 19.42
+rotation = 5.711 -83.9 1.521
+color = 0.41 0.43 0.26
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = 7.1 28.65 -17.69
-color = 0.74 0.3 0.32
+size = 3.662 0.5773 2.943
+position = 8.647 38.79 -16.2
+rotation = 26.96 -6.837 -18.34
+color = 0.52 0.39 0.26
 body = static
 
-# Lap 4, side 3: tiny posts, then a high ledge off a short run.
 [model]
 shape = box
-size = 0.4 0.5 0.4
-position = 3.9 29.05 -17.34
-color = 0.74 0.3 0.32
+size = 1.674 0.8691 4.336
+position = 7.819 56.15 3.733
+rotation = 34.64 81.89 -23.48
+color = 0.24 0.44 0.45
 body = static
 
 [model]
 shape = box
-size = 0.4 0.5 0.4
-position = 2 29.45 -18.04
-color = 0.74 0.3 0.32
+size = 1.9 0.5404 1.813
+position = -17.36 12.67 -17.18
+rotation = -15.34 74.05 26.97
+color = 0.41 0.43 0.26
+body = static
+
+[model]
+shape = sphere
+radius = 1.196
+position = -5.362 14.81 -3.061
+color = 0.56 0.55 0.52
+body = static
+
+[model]
+shape = capsule
+radius = 0.3089
+height = 10
+position = -9.589 51.78 -23.52
+rotation = 94.56 70.85 0
+color = 0.52 0.39 0.26
+body = static
+
+[model]
+shape = sphere
+radius = 1.719
+position = -19.55 29.36 2.43
+color = 0.76 0.73 0.66
 body = static
 
 [model]
 shape = box
-size = 0.4 0.5 0.4
-position = 0.1 29.85 -17.34
-color = 0.74 0.3 0.32
+size = 3.546 2.479 2.491
+position = 10.87 1.663 -6.984
+rotation = 0.9654 -56.92 30.29
+color = 0.33 0.35 0.38
+body = static
+
+[model]
+shape = capsule
+radius = 0.4741
+height = 9.683
+position = -8.466 55.5 5.351
+rotation = 94.05 5.742 0
+color = 0.56 0.55 0.52
 body = static
 
 [model]
 shape = box
-size = 2 0.5 2
-position = -2.6 30.35 -17.69
-color = 0.74 0.3 0.32
+size = 3.406 2.462 3.344
+position = -3.346 44.44 12.05
+rotation = -1.29 32.19 21.38
+color = 0.72 0.58 0.25
 body = static
 
 [model]
 shape = box
-size = 3 0.5 3
-position = -7.7 31.75 -17.69
-color = 0.74 0.3 0.32
+size = 2.225 1.542 1.116
+position = 15.47 6.013 -16.97
+rotation = 30.98 -31.55 2.145
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -23.34 36.56 -23.47
+rotation = 0 90.01 0
+scale = 1.125
+body = static
+
+[model]
+shape = sphere
+radius = 1.834
+position = 13.58 32.56 -15.46
+color = 0.52 0.39 0.26
 body = static
 
-# Lap 4, side 4: the last sprint jump, then the gold platform.
 [model]
+shape = capsule
+radius = 0.647
+height = 8.57
+position = 10.8 51.98 -16.25
+rotation = 86.02 -50.63 0
+color = 0.72 0.58 0.25
+body = static
+
+[model]
+shape = sphere
+radius = 1.631
+position = 12.99 0.739 -2.474
+color = 0.41 0.43 0.26
+body = static
+
+[model]
 shape = box
-size = 2 0.5 6
-position = -7.7 32.75 -12.19
-color = 0.74 0.3 0.32
+size = 3.157 0.3628 3.154
+position = -5.572 22.82 20.19
+rotation = 12.78 19.74 30.2
+color = 0.22 0.28 0.42
+body = static
+
+[model]
+shape = capsule
+radius = 0.2635
+height = 4.546
+position = -19.88 47.02 -1.738
+rotation = 93.61 51.59 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = capsule
+radius = 0.4932
+height = 6.337
+position = 18.87 29.87 6.063
+rotation = 96.46 32.92 0
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = capsule
+radius = 0.6113
+height = 10.63
+position = -16.01 7.065 -22.32
+rotation = 92.4 -28.03 0
+color = 0.72 0.58 0.25
 body = static
 
 [model]
 shape = box
-size = 2.5 0.5 2.5
-position = -7.7 32.75 -0.54
-color = 0.74 0.3 0.32
+size = 1.978 1.712 2.393
+position = -12.65 32.62 -10.11
+rotation = -31.18 78.09 4.726
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+shape = capsule
+radius = 0.6479
+height = 8.138
+position = 5.006 56.97 -16.86
+rotation = 90.7 75.07 0
+color = 0.55 0.31 0.21
+body = static
+
+[model]
+path = Resources/Models/boulder_01/boulder_01_1k.gltf
+position = -23.59 24.88 6.791
+rotation = 0 78.57 0
+scale = 1.287
 body = static
 
-# The top. Well done.
 [model]
 shape = box
-size = 4 0.5 4
-position = -7.7 34.15 3.71
-color = 0.95 0.75 0.25
+size = 3.514 0.4103 1.493
+position = -23.22 9.017 9.09
+rotation = 14.95 49.32 24.88
+color = 0.24 0.44 0.45
+body = static
+
+[model]
+shape = capsule
+radius = 0.216
+height = 9.759
+position = 0.5594 18.2 -1.096
+rotation = 98.27 -74.43 0
+color = 0.55 0.31 0.21
 body = static
 
-# Where Play starts the character: on the ground, facing the first
-# steps.
-[player]
-position = -12 0 8
-yaw = -90
-variant = arcade
+[model]
+shape = capsule
+radius = 0.5224
+height = 5.08
+position = 1.341 22.06 -3.85
+rotation = 95.83 -53.52 0
+color = 0.56 0.26 0.22
+body = static

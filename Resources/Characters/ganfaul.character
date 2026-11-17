@@ -164,7 +164,17 @@ slot = dodge_right
 file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx
 start = 0.1
 
-# For the climb (01_climb.scene asks for it): the air speeds him up like
-# an arcade game, which its jumps were built around.
-[variant arcade]
+# For the climb (01_climb.scene asks for it), the way 3D rage climbers
+# play: he starts, stops and turns on a coin so feet land exactly where
+# they're aimed; the air steers him all the way to running speed, even from
+# a standing jump; the jump goes a bit higher; and a ledge only forgives a
+# late press for a moment.
+[variant rage]
+ground_acceleration = 30
+ground_braking = 40
+turn_grip = 60
+sprint_speed = 7
+air_acceleration = 10
 air_speed_limit = false
+jump_height = 1.4
+coyote_time = 0.06

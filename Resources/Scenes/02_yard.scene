@@ -23,7 +23,9 @@ size = 160 1 160
 color = 0.45
 body = static
 
-# A concrete wall: a heavy ball punches a hole, the top falls in
+# A concrete wall: a heavy ball punches a hole, the top falls in. Three times
+# the strength it had in 1.3, when one heavy ball was meant to blow it open:
+# a thrown stone piece went straight through.
 [model]
 shape = box
 size = 6 3 0.3
@@ -33,7 +35,7 @@ body = static
 material = stone
 break = 12
 break_seed = 1
-break_strength = 120
+break_strength = 360
 
 # A wooden fence: lighter, it splinters into fewer, longer pieces
 [model]
@@ -59,7 +61,7 @@ body = static
 material = stone
 break = 10
 break_seed = 2
-break_strength = 150
+break_strength = 450
 
 [model]
 shape = box
@@ -70,7 +72,7 @@ body = static
 material = stone
 break = 9
 break_seed = 3
-break_strength = 150
+break_strength = 450
 
 [model]
 shape = box
@@ -81,7 +83,7 @@ body = static
 material = stone
 break = 9
 break_seed = 5
-break_strength = 150
+break_strength = 450
 
 [model]
 shape = box
@@ -92,7 +94,7 @@ body = static
 material = stone
 break = 6
 break_seed = 6
-break_strength = 150
+break_strength = 450
 
 [model]
 shape = box
@@ -103,7 +105,7 @@ body = static
 material = stone
 break = 6
 break_seed = 7
-break_strength = 150
+break_strength = 450
 
 # Over the doorway, mortared in (glued): nothing under it holds it up.
 [model]
@@ -115,7 +117,7 @@ body = static
 material = stone
 break = 3
 break_seed = 8
-break_strength = 150
+break_strength = 450
 glued = true
 
 # The roof

@@ -31,7 +31,9 @@ struct PowerTuning {
   float lostSeconds = 1.0f;
   // Throwing.
   float throwSpeed = 30.0f;  // m/s
-  float throwHeavy = 200.0f; // kg: heavier is slower by (this / mass)^0.5
+  // kg: heavier is slower by (this / mass)^0.5, so a 100 kg stone piece goes
+  // half as fast and hits like one heavy ball
+  float throwHeavy = 25.0f;
   float throwReach = 60.0f;  // m out, when the crosshair hits nothing
   float throwDelay = 0.1f;   // s from the click to letting go
   float throwRecover = 0.45f; // s from the click until another power

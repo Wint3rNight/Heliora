@@ -192,9 +192,9 @@ TEST(a_held_things_spin_eases_to_a_slow_tumble) {
 
 TEST(heavier_things_are_thrown_slower) {
   const PowerTuning t;
-  CHECK_NEAR(throwSpeed(50.0f, t), t.throwSpeed, 1e-4);
-  CHECK_NEAR(throwSpeed(200.0f, t), t.throwSpeed, 1e-4);
-  CHECK_NEAR(throwSpeed(800.0f, t), 0.5 * t.throwSpeed, 1e-4);
+  CHECK_NEAR(throwSpeed(25.0f, t), t.throwSpeed, 1e-4);         // a crate, full speed
+  CHECK_NEAR(throwSpeed(100.0f, t), 0.5 * t.throwSpeed, 1e-4);  // a stone piece: one heavy ball's hit
+  CHECK_NEAR(throwSpeed(400.0f, t), 0.25 * t.throwSpeed, 1e-4);
 }
 
 TEST(a_throw_lands_where_it_was_aimed_on_the_low_arc) {

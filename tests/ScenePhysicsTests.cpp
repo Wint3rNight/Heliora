@@ -278,3 +278,18 @@ TEST(materials_break_their_own_way) {
   CHECK(findMaterial("metal")->pattern == FracturePattern::None);
   CHECK(findMaterial("rubber")->pattern == FracturePattern::None);
 }
+
+TEST(materials_hold_loads_their_own_way) {
+  // Real ratios: concrete about ten times weaker pulled than pushed, wood
+  // about as strong both ways, ice weak, metal strongest.
+  const PhysicsMaterial stone = *findMaterial("stone");
+  const PhysicsMaterial wood = *findMaterial("wood");
+  const PhysicsMaterial ice = *findMaterial("ice");
+  const PhysicsMaterial metal = *findMaterial("metal");
+  for (const PhysicsMaterial &m : physicsMaterials())
+    CHECK(m.pullStrength > 0.0f && m.pushStrength > 0.0f && m.slideStrength > 0.0f);
+  CHECK_NEAR(stone.pushStrength / stone.pullStrength, 10.0, 0.5);
+  CHECK_NEAR(wood.pushStrength / wood.pullStrength, 1.0, 0.1);
+  CHECK(ice.pullStrength < stone.pullStrength);
+  CHECK(metal.pullStrength > wood.pullStrength);
+}

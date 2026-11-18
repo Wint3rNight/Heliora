@@ -90,6 +90,9 @@ struct SceneModelEntry {
   std::optional<int> breakPieces;
   uint32_t breakSeed = 0;
   std::optional<float> breakStrength; // unset: kDefaultBreakStrength
+  // Cast together with the breakables it touches: its links to them are
+  // glued (they pull) instead of resting, as for a balcony out of a wall.
+  bool glued = false;
   NodeTransform transform;
   NodeAnimation animation;
   // A copy of an object asset (a prefab, Resources/Objects/*.object): its

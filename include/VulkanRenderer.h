@@ -33,6 +33,7 @@
 #include "PhysicsWorld.h"
 #include "BreakGraph.h"
 #include "Rubble.h"
+#include "Stress.h"
 #include "CharacterRoster.h"
 #include "PlayerController.h"
 #include "Prefab.h"
@@ -473,6 +474,11 @@ private:
     FracturePattern pattern = FracturePattern::Clustered;
     glm::vec3 grain{1.0f, 0.0f, 0.0f}; // its longest side, in its own space
     glm::vec3 colour{0.8f};
+    // Weight: what its links hold out against (its material's strengths,
+    // scaled by its break_strength), its friction, and whether it's glued to
+    // the breakables it touches.
+    LinkLimits limits;
+    bool glued = false;
   };
   struct BreakPiece {
     int object = 0; // into breakables
@@ -536,6 +542,37 @@ private:
   std::vector<BreakBody> breakBodies;
   std::vector<BreakLink> breakLinks;
   std::vector<glm::vec3> breakLinkPoints; // in piece a's mesh frame
+  // Weight (step 1.3d, Stress.h): every link's face in piece a's mesh frame,
+  // and whether it only rests (between objects that aren't glued); a link
+  // from a piece to the fixed thing it rests on (the ground) for each face
+  // that does. A piece is an anchor while one of its ground links holds.
+  std::vector<LinkFace> breakLinkFaces;
+  std::vector<char> breakLinkContact;
+  struct GroundLink {
+    int piece = 0;
+    LinkFace face; // in the piece's mesh frame
+    bool broken = false;
+  };
+  std::vector<GroundLink> groundLinks;
+  std::vector<std::vector<int>> pieceGroundLinks; // by piece
+  // The solve over the pieces that stay put, redone when the structure
+  // changes and spread over frames; each piece's last shift and turn start
+  // the next one. Each link's overload is kept for the load view.
+  StressSolver stressSolver;
+  bool stressDirty = false;
+  bool stressFirst = false; // the first settle after Play only reports
+  bool stressJudged = false; // settled and its links judged: nothing to do until a change
+  std::vector<glm::vec3> pieceShift, pieceTurn;
+  std::vector<int> stressPieceOf; // by piece, into the solve or -1
+  std::vector<int> stressOrder;   // by solve index, the piece
+  struct SolvedLink {
+    int index = 0;       // into breakLinks or groundLinks
+    bool ground = false;
+  };
+  std::vector<SolvedLink> solvedLinks;
+  std::vector<float> solvedLoad; // overload, by solved link
+  std::vector<PhysicsDebugVertex> loadLines;
+  double stressStarted = 0.0; // ms spent on the current solve so far
   std::vector<std::vector<int>> pieceLinks; // by piece, its links
   std::map<std::string, std::shared_ptr<const Fracture>> fractures; // cut once each
   std::unique_ptr<RubbleLayer> rubbleLayer;
@@ -574,6 +611,14 @@ private:
   void regroupBreakables(const std::vector<BreakHit> &hits);
   void splitPiece(const PendingSplit &split);
   void settleRubble();
+  // Each frame in play: the weight on what stays put, and the links it
+  // breaks (step 1.3d).
+  void updateStress();
+  // The faces of a placed piece that rest against something fixed, by index.
+  std::vector<int> restingFaces(const PlacedPiece &piece) const;
+  void addGroundLinks(int piece, const PlacedPiece &placed);
+  LinkLimits linkLimits(int link) const;
+  LinkLimits groundLimits(int piece) const;
   // Rubble into the layer around where (its ground found below it), fed in
   // over a moment.
   void addRubble(glm::vec3 where, float volume, float radius, glm::vec3 colour);
@@ -581,7 +626,6 @@ private:
   // re-meshed and their height fields set, a few a frame.
   void updateRubble(float seconds);
   int pieceModel(const Breakable &object, const FracturePiece &shape, const std::string &key);
-  bool restsOnFixed(const PlacedPiece &piece) const;
   PhysicsPose pieceWorld(const BreakPiece &piece) const;
   int addBreakBody(const std::vector<int> &pieces, const std::vector<PhysicsPose> &worlds,
                    bool fixed, glm::vec3 velocity, glm::vec3 spin);

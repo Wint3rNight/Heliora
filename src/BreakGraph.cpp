@@ -60,9 +60,10 @@ Bounds boundsOf(const PlacedPiece &piece) {
   return b;
 }
 
-// The overlap of two outside faces lying against each other, or 0.
+// The overlap of two outside faces lying against each other, or 0, and its
+// corners if asked.
 float faceOverlap(const FractureFace &a, const FractureFace &b, float tolerance,
-                  glm::vec3 &centre) {
+                  glm::vec3 &centre, std::vector<glm::vec3> *corners = nullptr) {
   if (glm::dot(a.normal, b.normal) > -0.999f)
     return 0.0f;
   // b's plane within tolerance of a's (b lies on a's outside).
@@ -89,6 +90,11 @@ float faceOverlap(const FractureFace &a, const FractureFace &b, float tolerance,
   glm::vec2 middle;
   const float area = area2d(polygon, &middle);
   centre = origin + u * middle.x + v * middle.y + a.normal * (0.5f * apart);
+  if (corners) {
+    corners->clear();
+    for (const glm::vec2 &p : polygon)
+      corners->push_back(origin + u * p.x + v * p.y + a.normal * (0.5f * apart));
+  }
   return std::max(area, 0.0f);
 }
 
@@ -171,8 +177,10 @@ std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, f
       if (glm::any(glm::greaterThan(a.lo, b.hi + tolerance)) ||
           glm::any(glm::greaterThan(b.lo, a.hi + tolerance)))
         continue;
-      float area = 0.0f;
+      float area = 0.0f, biggest = 0.0f;
       glm::vec3 weighted(0.0f);
+      LinkFace face;
+      std::vector<glm::vec3> corners;
       for (const FractureFace &fa : pieces[i].faces) {
         if (fa.neighbour != kOutsideFace)
           continue;
@@ -180,15 +188,19 @@ std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, f
           if (fb.neighbour != kOutsideFace)
             continue;
           glm::vec3 centre;
-          const float overlap = faceOverlap(fa, fb, tolerance, centre);
+          const float overlap = faceOverlap(fa, fb, tolerance, centre, &corners);
           if (overlap > 1e-6f) {
             area += overlap;
             weighted += centre * overlap;
+            if (overlap > biggest) {
+              biggest = overlap;
+              face = linkFace(corners, fa.normal);
+            }
           }
         }
       }
       if (area > 1e-6f)
-        touches.push_back({i, j, area, weighted / area});
+        touches.push_back({i, j, area, weighted / area, face});
     }
   return touches;
 }
@@ -264,4 +276,35 @@ bool restsOn(const PlacedPiece &piece, float height, float tolerance) {
       return true;
   }
   return false;
+}
+
+LinkFace touchFace(const PlacedPiece &a, const PlacedPiece &b, float tolerance) {
+  LinkFace face;
+  float biggest = 0.0f;
+  std::vector<glm::vec3> corners;
+  for (const FractureFace &fa : a.faces)
+    for (const FractureFace &fb : b.faces) {
+      glm::vec3 middle;
+      const float overlap = faceOverlap(fa, fb, tolerance, middle, &corners);
+      if (overlap > 1e-7f && overlap > biggest) {
+        biggest = overlap;
+        face = linkFace(corners, fa.normal);
+      }
+    }
+  return face;
+}
+
+std::vector<LinkFace> cutFaces(const Fracture &fracture) {
+  std::vector<LinkFace> faces;
+  faces.reserve(fracture.links.size());
+  for (const FractureLink &link : fracture.links) {
+    LinkFace face;
+    for (const FractureFace &f : fracture.pieces[link.a].faces)
+      if (f.neighbour == link.b) {
+        face = linkFace(f.points, f.normal);
+        break;
+      }
+    faces.push_back(face);
+  }
+  return faces;
 }

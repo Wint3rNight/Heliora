@@ -30,7 +30,15 @@ struct PhysicsMaterial {
   // m^2 of cut face) and how its pieces split where they're hit.
   float breakStrength = 300.0f;
   FracturePattern pattern = FracturePattern::Clustered;
+  // Weight (Stress.h): what a link of it holds out against pulled, pushed
+  // and slid (Pa): real ratios times kGameStrength.
+  float pullStrength = 0.0f;
+  float pushStrength = 0.0f;
+  float slideStrength = 0.0f;
 };
+// Real strengths scaled down, so undermined structures give way in a game's
+// time and size instead of standing as real concrete would.
+constexpr float kGameStrength = 0.2f;
 
 // The material called name (any case), or nothing if there isn't one.
 std::optional<PhysicsMaterial> findMaterial(std::string_view name);

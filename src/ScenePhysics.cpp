@@ -37,11 +37,17 @@ boundsBox(const std::shared_ptr<const PhysicsMeshParts> &parts) {
 // Densities of the real, solid materials. Friction and bounce are picked to
 // feel right next to each other, not measured.
 constexpr PhysicsMaterial kMaterials[] = {
-    {"wood", 600.0f, 0.5f, 0.2f, 150.0f, FracturePattern::Splinters},
-    {"stone", 2400.0f, 0.6f, 0.1f, 300.0f, FracturePattern::Clustered},
-    {"metal", 7800.0f, 0.4f, 0.1f, 1200.0f, FracturePattern::None}, // bends, later
-    {"rubber", 1100.0f, 0.9f, 0.7f, 400.0f, FracturePattern::None}, // grippy and bouncy
-    {"ice", 920.0f, 0.05f, 0.05f, 80.0f, FracturePattern::Shards},  // slippery
+    // Last three: pulled, pushed and slid (real strengths in Pa, scaled).
+    {"wood", 600.0f, 0.5f, 0.2f, 150.0f, FracturePattern::Splinters, 40e6f * kGameStrength,
+     40e6f * kGameStrength, 6e6f * kGameStrength},
+    {"stone", 2400.0f, 0.6f, 0.1f, 300.0f, FracturePattern::Clustered, 3e6f * kGameStrength,
+     30e6f * kGameStrength, 4e6f * kGameStrength}, // concrete: weak pulled
+    {"metal", 7800.0f, 0.4f, 0.1f, 1200.0f, FracturePattern::None, 250e6f * kGameStrength,
+     250e6f * kGameStrength, 150e6f * kGameStrength}, // bends, later
+    {"rubber", 1100.0f, 0.9f, 0.7f, 400.0f, FracturePattern::None, 10e6f * kGameStrength,
+     10e6f * kGameStrength, 5e6f * kGameStrength}, // grippy and bouncy
+    {"ice", 920.0f, 0.05f, 0.05f, 80.0f, FracturePattern::Shards, 1e6f * kGameStrength,
+     3e6f * kGameStrength, 1e6f * kGameStrength}, // slippery
 };
 
 } // namespace

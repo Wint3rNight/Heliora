@@ -105,7 +105,7 @@ break = 6
 break_seed = 7
 break_strength = 150
 
-# Over the doorway
+# Over the doorway, mortared in (glued): nothing under it holds it up.
 [model]
 shape = box
 size = 1.6 0.8 0.3
@@ -116,6 +116,7 @@ material = stone
 break = 3
 break_seed = 8
 break_strength = 150
+glued = true
 
 # The roof
 [model]
@@ -224,3 +225,91 @@ mass = 25
 break = 4
 break_seed = 22
 break_strength = 120
+
+# Weight (step 1.3d): things that only their weight brings down.
+# A canopy: a slab resting on four columns. Shoot out two on one side and it
+# tips off the other two.
+[model]
+shape = box
+size = 0.4 2.6 0.4
+position = -17.5 1.3 6.5
+color = 0.6 0.58 0.55
+body = static
+material = stone
+break = 3
+break_seed = 30
+
+[model]
+shape = box
+size = 0.4 2.6 0.4
+position = -14.5 1.3 6.5
+color = 0.6 0.58 0.55
+body = static
+material = stone
+break = 3
+break_seed = 31
+
+[model]
+shape = box
+size = 0.4 2.6 0.4
+position = -17.5 1.3 9.5
+color = 0.6 0.58 0.55
+body = static
+material = stone
+break = 3
+break_seed = 32
+
+[model]
+shape = box
+size = 0.4 2.6 0.4
+position = -14.5 1.3 9.5
+color = 0.6 0.58 0.55
+body = static
+material = stone
+break = 3
+break_seed = 33
+
+[model]
+shape = box
+size = 3.8 0.3 3.8
+position = -16 2.75 8
+color = 0.5 0.5 0.52
+body = static
+material = stone
+break = 10
+break_seed = 34
+
+# A balcony cast with its wall (glued): it holds out until its root is cut
+# into, then snaps from its top edge, the pulled one. The wall is thick
+# enough to carry it; a thin one would tip over.
+[model]
+shape = box
+size = 5 4 0.6
+position = -16 2 -8
+color = 0.66 0.62 0.56
+body = static
+material = stone
+break = 12
+break_seed = 35
+
+[model]
+shape = box
+size = 2 0.3 1.2
+position = -16 2.6 -7.1
+color = 0.62 0.58 0.52
+body = static
+material = stone
+break = 6
+break_seed = 36
+glued = true
+
+# A tall thin wall: cut into its base on one side and it topples.
+[model]
+shape = box
+size = 3 5 0.25
+position = -22 2.5 0
+color = 0.64 0.6 0.55
+body = static
+material = stone
+break = 10
+break_seed = 37

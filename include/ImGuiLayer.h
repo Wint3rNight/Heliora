@@ -33,6 +33,7 @@ struct PhysicsPanel {
   bool paused = false;
   bool stepRequested = false;  // one step while paused
   bool showWireframes = false; // also F2
+  bool showLoads = false;      // weight on breakables' links, in play
   uint32_t bodies = 0;
   uint32_t awakeBodies = 0;
   uint32_t droppedContactSteps = 0;

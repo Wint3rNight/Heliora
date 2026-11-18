@@ -1749,6 +1749,7 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   if (steps > 0) {
     handleImpacts();
     updateRubble(static_cast<float>(steps) * stepSeconds);
+    updateStress();
   }
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
@@ -5409,6 +5410,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     sources.push_back(&editorLines);
   if (playing && !skeletonLines.empty())
     sources.push_back(&skeletonLines);
+  if (playing && physicsPanel.showLoads && !loadLines.empty())
+    sources.push_back(&loadLines);
   const std::vector<PhysicsDebugVertex> *lines = nullptr;
   if (sources.size() == 1) {
     lines = sources.front();

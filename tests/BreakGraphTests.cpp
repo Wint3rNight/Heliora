@@ -243,3 +243,36 @@ TEST(two_pieces_touch_through_any_face) {
   const PlacedPiece far = placePiece(f.pieces[link.b], glm::translate(glm::mat4(1.0f), glm::vec3(0, 3, 0)), 0);
   CHECK(touchArea(a, far, 0.01f, centre) == 0.0f);
 }
+
+TEST(cut_faces_agree_with_their_links) {
+  const Fracture f = fractureBox(glm::vec3(2.0f, 1.5f, 0.3f), 12, 5);
+  const std::vector<LinkFace> faces = cutFaces(f);
+  CHECK(faces.size() == f.links.size());
+  for (size_t i = 0; i < faces.size() && i < f.links.size(); ++i) {
+    CHECK_NEAR(faces[i].area, f.links[i].area, 1e-4);
+    CHECK_NEAR(glm::distance(faces[i].centre, f.links[i].centre), 0.0, 1e-3);
+    // From the link's first piece towards its second.
+    const glm::vec3 across = f.pieces[f.links[i].b].centre - f.pieces[f.links[i].a].centre;
+    CHECK(glm::dot(faces[i].normal, across) > 0.0f);
+    CHECK(faces[i].inertiaU > 0.0f && faces[i].inertiaV > 0.0f);
+  }
+}
+
+TEST(a_touch_carries_its_overlap_face) {
+  // A 1 m cube on a 2 m slab: they touch over 1 m^2, the cube's bottom.
+  const Fracture cube = fractureBox(glm::vec3(1.0f), 1, 1);
+  const Fracture slab = fractureBox(glm::vec3(2.0f, 0.5f, 2.0f), 1, 1);
+  const std::vector<PlacedPiece> placed = {
+      placePiece(slab.pieces[0], glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.25f, 0)), 0),
+      placePiece(cube.pieces[0], glm::translate(glm::mat4(1.0f), glm::vec3(0.5f, 1.0f, 0)), 1)};
+  const std::vector<PieceTouch> touches = touchingPieces(placed, 0.01f);
+  CHECK(touches.size() == 1);
+  if (!touches.empty()) {
+    CHECK_NEAR(touches[0].face.area, 1.0, 1e-4);
+    CHECK_NEAR(glm::distance(touches[0].face.centre, glm::vec3(0.5f, 0.5f, 0)), 0.0, 1e-3);
+    CHECK_NEAR(touches[0].face.normal.y, 1.0, 1e-4); // slab (first) up into the cube
+  }
+  const LinkFace face = touchFace(placed[1], placed[0], 0.01f);
+  CHECK_NEAR(face.area, 1.0, 1e-4);
+  CHECK_NEAR(face.normal.y, -1.0, 1e-4); // the cube's down into the slab
+}

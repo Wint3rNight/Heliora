@@ -714,6 +714,7 @@ void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
       edited.breakPieces.reset();
       edited.breakSeed = 0;
       edited.breakStrength.reset();
+      edited.glued = false;
     } else {
       edited.body = static_cast<PhysicsMotion>(body - 1);
     }
@@ -780,6 +781,7 @@ void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
         edited.breakPieces.reset();
         edited.breakSeed = 0;
         edited.breakStrength.reset();
+        edited.glued = false;
       }
       edit.changed = true;
     }
@@ -800,6 +802,9 @@ void physicsFields(const DebugUiContext &ui, SceneModelEntry &edited,
                                     1.0f, 1.0e6f, "%.0f N s/m\u00b2");
       ImGui::SetItemTooltip("How hard a hit its pieces hold out against, per square metre "
                             "of cut face. A 5 kg ball thrown with F hits with about 125 N s");
+      edit.changed |= ImGui::Checkbox("Glued", &edited.glued);
+      ImGui::SetItemTooltip("Cast together with the breakables it touches, so it can hang off "
+                            "them (a balcony). Otherwise it only rests on them.");
     }
   }
 }
@@ -2592,6 +2597,9 @@ void ImGuiLayer::drawPhysicsTab(DebugUiContext &ui) {
   if (!ui.playing)
     ImGui::TextDisabled("Editing: physics waits for Play (F5)");
   ImGui::Checkbox("Wireframes (F2)", &physics.showWireframes);
+  ImGui::Checkbox("Loads", &physics.showLoads);
+  ImGui::SetItemTooltip("In play, every breakable link that holds weight, green to red as it "
+                        "nears its limit");
   ImGui::Text("F throws a ball (%u thrown)", physics.thrownBalls);
 
   ImGui::SeparatorText("Settings");

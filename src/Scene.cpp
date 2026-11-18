@@ -159,6 +159,8 @@ std::optional<std::string> modelProblem(const SceneModelEntry &model) {
     return "'restitution' must be between 0 and 1";
   if (!model.breakPieces && (model.breakSeed != 0 || model.breakStrength))
     return "'break_seed' and 'break_strength' need 'break'";
+  if (!model.breakPieces && model.glued)
+    return "'glued' needs 'break'";
   if (model.breakPieces) {
     if (model.shape != PrimitiveShape::Box)
       return "only boxes break for now ('break' needs 'shape = box')";
@@ -334,6 +336,12 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
   }
   else if (key == "break_strength")
     model.breakStrength = parseFloat(value, lineNumber);
+  else if (key == "glued") {
+    if (value != "true" && value != "false")
+      throw std::runtime_error("scene parse error, line " + std::to_string(lineNumber) +
+                               ": 'glued' is true or false");
+    model.glued = value == "true";
+  }
   else if (key == "position")
     model.transform.position = parseVec3(value, lineNumber);
   else if (key == "rotation")
@@ -360,7 +368,7 @@ bool parseModelKey(SceneModelEntry &model, const std::string &key,
 bool isModelDataKey(std::string_view key) {
   for (std::string_view data : {"path", "shape", "size", "radius", "height", "color", "body",
                                 "mass", "density", "collider", "material", "friction",
-                                "restitution", "break", "break_seed", "break_strength"})
+                                "restitution", "break", "break_seed", "break_strength", "glued"})
     if (key == data)
       return true;
   return false;
@@ -475,6 +483,8 @@ void writeModelKeys(std::string &out, const SceneModelEntry &model) {
     writeKey(out, "break_seed", std::format("{}", model.breakSeed));
   if (keep("break_strength", model.breakStrength.has_value()) && model.breakStrength)
     writeKey(out, "break_strength", formatFloat(*model.breakStrength));
+  if (keep("glued", model.glued) && model.glued)
+    writeKey(out, "glued", "true");
   const NodeAnimation &a = model.animation;
   if (a.spinDegPerSec != d.animation.spinDegPerSec)
     writeKey(out, "spin", formatVec3(a.spinDegPerSec));

@@ -34,6 +34,7 @@ void copyDataKey(SceneModelEntry &to, const SceneModelEntry &from, std::string_v
   else if (key == "break") to.breakPieces = from.breakPieces;
   else if (key == "break_seed") to.breakSeed = from.breakSeed;
   else if (key == "break_strength") to.breakStrength = from.breakStrength;
+  else if (key == "glued") to.glued = from.glued;
 }
 
 bool dataKeyDiffers(const SceneModelEntry &a, const SceneModelEntry &b, std::string_view key) {
@@ -45,7 +46,8 @@ bool dataKeyDiffers(const SceneModelEntry &a, const SceneModelEntry &b, std::str
 constexpr std::string_view kDataKeys[] = {"path",     "shape",       "size",       "radius",
                                           "height",   "color",       "body",       "mass",
                                           "density",  "collider",    "material",   "friction",
-                                          "restitution", "break",    "break_seed", "break_strength"};
+                                          "restitution", "break",    "break_seed", "break_strength",
+                                          "glued"};
 
 bool listed(const std::vector<std::string> &keys, std::string_view key) {
   return std::ranges::find(keys, key) != keys.end();

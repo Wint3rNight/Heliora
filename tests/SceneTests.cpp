@@ -1002,6 +1002,20 @@ TEST(breakable_boxes_read_and_write) {
   CHECK(reparse(scene) == scene);
 }
 
+TEST(glued_breakables_read_and_write) {
+  const SceneDescription scene =
+      parseText("[model]\nshape = box\nbody = static\nbreak = 6\nglued = true\n"
+                "[model]\nshape = box\nbody = static\nbreak = 6\n");
+  CHECK(scene.models[0].glued);
+  CHECK(!scene.models[1].glued);
+  const std::string text = SceneIO::write(scene);
+  CHECK(text.find("glued = true") != std::string::npos);
+  CHECK(text.find("glued = false") == std::string::npos);
+  CHECK(reparse(scene) == scene);
+  CHECK(errorOf("[model]\nshape = box\nbody = static\nglued = true\n").find("'break'") !=
+        std::string::npos);
+}
+
 TEST(only_boxes_with_bodies_break) {
   CHECK(errorOf("[model]\nshape = sphere\nbody = static\nbreak = 8\n").find("box") !=
         std::string::npos);

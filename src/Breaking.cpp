@@ -44,6 +44,14 @@ constexpr int kSlumpPasses = 8;       // a frame
 constexpr int kTilesPerFrame = 6;     // re-meshed at a time, the rest wait
 constexpr float kRemeshSeconds = 0.05f; // tiles re-meshed at most 20 times a second (each time a submit)
 constexpr float kRemeshMove = 0.002f; // m: a tile changing less isn't re-meshed yet
+// Weight (Stress.h): iterations of the solve a frame until it settles, and
+// links it breaks a frame, the worst first, so a collapse runs instead of
+// happening all at once.
+constexpr int kStressIterations = 40;
+// A solve that hasn't settled after this many is judged as it is: a piece
+// tipping off its support is a nearly free mode the solver crawls along.
+constexpr int kStressMostIterations = 2000;
+constexpr int kStressBreaksPerFrame = 3;
 // Room kept in the GPU-driven pass's shared buffers at Play for what's made
 // while playing (runtime pieces and rubble tiles), so it never grows, and
 // waits for the GPU, mid-game.
@@ -121,6 +129,16 @@ void VulkanRenderer::clearBreakables() {
   breakBodies.clear();
   breakLinks.clear();
   breakLinkPoints.clear();
+  breakLinkFaces.clear();
+  breakLinkContact.clear();
+  groundLinks.clear();
+  pieceGroundLinks.clear();
+  pieceShift.clear();
+  pieceTurn.clear();
+  solvedLinks.clear();
+  solvedLoad.clear();
+  loadLines.clear();
+  stressDirty = false;
   pieceLinks.clear();
   rubbleTiles.clear();
   rubbleWaiting.clear();
@@ -184,6 +202,13 @@ void VulkanRenderer::rebuildBreakables() {
                    : size.y >= size.z                   ? glm::vec3(0, 1, 0)
                                                         : glm::vec3(0, 0, 1);
     object.colour = entry.color;
+    // Weight: its material's strengths (stone's if it has none), scaled by
+    // its break_strength against that material's default.
+    const PhysicsMaterial base = material ? *material : *findMaterial("stone");
+    const float scale = object.strength / base.breakStrength;
+    object.limits = {base.pullStrength * scale, base.pushStrength * scale,
+                     base.slideStrength * scale, false, desc.friction};
+    object.glued = entry.glued;
     const int objectIndex = static_cast<int>(breakables.size());
     breakables.push_back(object);
     std::vector<int> pieces;
@@ -290,8 +315,10 @@ void VulkanRenderer::poseBreakBody(const BreakBody &body, const PhysicsPose &pos
 // An anchor: an outside face against something that isn't breakable and
 // doesn't move (the ground, a rock, a cliff for a bridge). Short rays out of
 // the face, from just outside it.
-bool VulkanRenderer::restsOnFixed(const PlacedPiece &placed) const {
-  for (const FractureFace &face : placed.faces) {
+std::vector<int> VulkanRenderer::restingFaces(const PlacedPiece &placed) const {
+  std::vector<int> resting;
+  for (int f = 0; f < static_cast<int>(placed.faces.size()); ++f) {
+    const FractureFace &face = placed.faces[f];
     if (face.neighbour != kOutsideFace)
       continue;
     glm::vec3 middle(0.0f);
@@ -304,11 +331,45 @@ bool VulkanRenderer::restsOnFixed(const PlacedPiece &placed) const {
     for (const glm::vec3 &origin : from) {
       const std::optional<PhysicsRayHit> hit =
           physics->castRay(origin + face.normal * 0.002f, face.normal, kAnchorReach);
-      if (hit && !(hit->userData & kBreakBodyFlag) && physics->mass(hit->body) == 0.0f)
-        return true;
+      if (hit && !(hit->userData & kBreakBodyFlag) && physics->mass(hit->body) == 0.0f) {
+        resting.push_back(f);
+        break;
+      }
     }
   }
-  return false;
+  return resting;
+}
+
+// A ground link for each of the piece's faces resting on something fixed
+// (the whole face, for now); with one it's an anchor.
+void VulkanRenderer::addGroundLinks(int piece, const PlacedPiece &placed) {
+  for (int f : restingFaces(placed)) {
+    const FractureFace &face = breakPieces[piece].shape->faces[f];
+    pieceGroundLinks[piece].push_back(static_cast<int>(groundLinks.size()));
+    groundLinks.push_back({piece, linkFace(face.points, face.normal), false});
+  }
+  breakPieces[piece].anchor = !pieceGroundLinks[piece].empty();
+}
+
+LinkLimits VulkanRenderer::linkLimits(int link) const {
+  const Breakable &a = breakables[breakPieces[breakLinks[link].a].object];
+  const Breakable &b = breakables[breakPieces[breakLinks[link].b].object];
+  LinkLimits limits = a.limits;
+  if (&a != &b) {
+    // Between objects: the weaker of the two, and only resting unless glued.
+    limits.pull = std::min(a.limits.pull, b.limits.pull);
+    limits.push = std::min(a.limits.push, b.limits.push);
+    limits.slide = std::min(a.limits.slide, b.limits.slide);
+    limits.friction = std::min(a.limits.friction, b.limits.friction);
+  }
+  limits.contact = breakLinkContact[link] != 0;
+  return limits;
+}
+
+LinkLimits VulkanRenderer::groundLimits(int piece) const {
+  LinkLimits limits = breakables[breakPieces[piece].object].limits;
+  limits.contact = true;
+  return limits;
 }
 
 // On Play: the links inside each object from its cut (each Play's seed
@@ -317,6 +378,9 @@ bool VulkanRenderer::restsOnFixed(const PlacedPiece &placed) const {
 void VulkanRenderer::prepareBreakGraph() {
   breakLinks.clear();
   breakLinkPoints.clear();
+  breakLinkFaces.clear();
+  breakLinkContact.clear();
+  groundLinks.clear();
   breakGraphReady = false;
   if (breakables.empty() || !physics)
     return;
@@ -325,9 +389,12 @@ void VulkanRenderer::prepareBreakGraph() {
   splitsMade = 0;
   for (const Breakable &object : breakables) {
     const std::vector<BreakLink> cut = cutLinks(*object.fracture, object.strength, object.firstPiece);
+    const std::vector<LinkFace> faces = cutFaces(*object.fracture);
     for (size_t i = 0; i < cut.size(); ++i) {
       breakLinks.push_back(cut[i]);
       breakLinkPoints.push_back(object.fracture->links[i].centre);
+      breakLinkFaces.push_back(faces[i]);
+      breakLinkContact.push_back(0);
     }
   }
   std::vector<PlacedPiece> placed;
@@ -347,6 +414,10 @@ void VulkanRenderer::prepareBreakGraph() {
                                                  breakables[breakPieces[touch.b].object].strength);
     breakLinks.push_back({touch.a, touch.b, strength});
     breakLinkPoints.push_back(glm::vec3(glm::inverse(worlds[touch.a]) * glm::vec4(touch.centre, 1.0f)));
+    // Things rest on each other unless one is glued (cast together).
+    breakLinkFaces.push_back(movedFace(touch.face, glm::inverse(worlds[touch.a])));
+    breakLinkContact.push_back(!breakables[breakPieces[touch.a].object].glued &&
+                               !breakables[breakPieces[touch.b].object].glued);
   }
   varyStrengths(breakLinks, playSeed, 0.25f);
   pieceLinks.assign(breakPieces.size(), {});
@@ -355,11 +426,17 @@ void VulkanRenderer::prepareBreakGraph() {
     pieceLinks[breakLinks[i].b].push_back(i);
   }
   int anchors = 0;
+  pieceGroundLinks.assign(breakPieces.size(), {});
   for (size_t p = 0; p < breakPieces.size(); ++p) {
-    BreakPiece &piece = breakPieces[p];
-    piece.anchor = !breakables[piece.object].moving && restsOnFixed(placed[p]);
-    anchors += piece.anchor;
+    breakPieces[p].anchor = false;
+    if (!breakables[breakPieces[p].object].moving)
+      addGroundLinks(static_cast<int>(p), placed[p]);
+    anchors += breakPieces[p].anchor;
   }
+  pieceShift.assign(breakPieces.size(), glm::vec3(0.0f));
+  pieceTurn.assign(breakPieces.size(), glm::vec3(0.0f));
+  stressDirty = true;
+  stressFirst = true;
   gpuDrivenGBufferPass.reserveGeometry(kReservedVertices, kReservedIndices);
   if (!rubbleLayer)
     // The ground under rubble: the first thing below that doesn't break,
@@ -479,8 +556,10 @@ void VulkanRenderer::handleImpacts() {
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cutting)
                      .count(),
                  runtimePieces);
-  if (!hits.empty() || made > 0)
+  if (!hits.empty() || made > 0) {
+    stressFirst = false; // damage: from now on what's overloaded breaks
     regroupBreakables(hits);
+  }
   settleRubble();
 }
 
@@ -531,20 +610,38 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
     piece.body = old.body;
     piece.localPosition = old.localPosition;
     piece.localRotation = old.localRotation;
-    piece.anchor = old.anchor && restsOnFixed(placePiece(shape, where, 0));
     made[k] = static_cast<int>(breakPieces.size());
     breakPieces.push_back(std::move(piece));
     pieceLinks.emplace_back();
+    pieceGroundLinks.emplace_back();
+    pieceShift.push_back(glm::vec3(0.0f));
+    pieceTurn.push_back(glm::vec3(0.0f));
+    // Resting where the old piece rested, if it still did: ground links of
+    // its own (a piece of something already falling gets none).
+    if (old.anchor)
+      addGroundLinks(made[k], placePiece(shape, where, 0));
     if (old.body >= 0)
       breakBodies[old.body].pieces.push_back(made[k]);
     ++runtimePieces;
   }
   breakPieces[split.piece].alive = false;
+  for (int g : pieceGroundLinks[split.piece])
+    groundLinks[g].broken = true;
+  stressDirty = true;
   SceneNode *goneNode = old.node;
   rootNode.removeChildren([&](const SceneNode &node) { return &node == goneNode; });
 
-  auto addLink = [&](int a, int b, float strength, glm::vec3 pointInA) {
+  // faceWorld faces from a to b; it's kept, like the point, in the frame of
+  // the link's first (lower) piece.
+  auto addLink = [&](int a, int b, float strength, glm::vec3 pointInA, LinkFace faceWorld,
+                     bool contact) {
     const int index = static_cast<int>(breakLinks.size());
+    const int lower = std::min(a, b);
+    if (a != lower)
+      faceWorld.normal = -faceWorld.normal;
+    breakLinkFaces.push_back(
+        movedFace(faceWorld, glm::inverse(poseMatrix(pieceWorld(breakPieces[lower])))));
+    breakLinkContact.push_back(contact);
     // The point is kept in the frame of the link's first (lower) piece.
     glm::vec3 point = pointInA;
     if (a > b) {
@@ -559,9 +656,11 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
   // Between the new pieces, through their new faces.
   std::vector<BreakLink> inner = cutLinks(cut, object.strength, 0);
   varyStrengths(inner, seed, 0.25f);
+  const std::vector<LinkFace> innerFaces = cutFaces(cut);
   for (size_t i = 0; i < cut.links.size(); ++i)
     if (made[cut.links[i].a] >= 0 && made[cut.links[i].b] >= 0)
-      addLink(made[cut.links[i].a], made[cut.links[i].b], inner[i].strength, cut.links[i].centre);
+      addLink(made[cut.links[i].a], made[cut.links[i].b], inner[i].strength, cut.links[i].centre,
+              movedFace(innerFaces[i], where), false);
   // To the old piece's neighbours, where they touch.
   const std::vector<int> oldLinks = pieceLinks[split.piece];
   for (int link : oldLinks) {
@@ -574,15 +673,17 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
     const PlacedPiece placedOther =
         placePiece(*breakPieces[other].shape, poseMatrix(pieceWorld(breakPieces[other])), 1);
     const float strength = std::min(object.strength, breakables[breakPieces[other].object].strength);
+    const bool contact = breakLinkContact[link] != 0;
     for (size_t k = 0; k < made.size(); ++k) {
       if (made[k] < 0)
         continue;
       glm::vec3 centre;
-      const float area =
-          touchArea(placePiece(cut.pieces[k], where, 0), placedOther, kTouchTolerance, centre);
+      const PlacedPiece placedNew = placePiece(cut.pieces[k], where, 0);
+      const float area = touchArea(placedNew, placedOther, kTouchTolerance, centre);
       if (area > 1e-5f)
         addLink(made[k], other, area * strength,
-                glm::vec3(glm::inverse(where) * glm::vec4(centre, 1.0f)));
+                glm::vec3(glm::inverse(where) * glm::vec4(centre, 1.0f)),
+                touchFace(placedNew, placedOther, kTouchTolerance), contact);
     }
   }
 }
@@ -595,6 +696,7 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
 // hit carries on with what's left.
 void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
   const auto start = std::chrono::steady_clock::now();
+  stressDirty = true; // links broke: the weight goes other ways now
   const int count = static_cast<int>(breakPieces.size());
   std::vector<bool> anchors(count);
   std::vector<int> objectOf(count);
@@ -921,6 +1023,214 @@ void VulkanRenderer::updateRubble(float seconds) {
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                     .count(),
                 rubbleTiles.size(), rubbleLayer->volume());
+}
+
+// Weight: the pieces that stay put, balanced under gravity by the springs
+// at their links (Stress.h). Built again when the structure changes, solved
+// a few dozen iterations a frame until it settles, then the links over
+// their limits break, the worst few a frame, and what that frees falls.
+void VulkanRenderer::updateStress() {
+  if (!breakGraphReady)
+    return;
+  const auto start = std::chrono::steady_clock::now();
+  if (stressDirty) {
+    stressDirty = false;
+    // What stays put now, and the links among it; if that's what's being
+    // solved already (a regroup of things that move), it carries on.
+    std::vector<int> pieceOf(breakPieces.size(), -1);
+    std::vector<int> order;
+    for (int p = 0; p < static_cast<int>(breakPieces.size()); ++p) {
+      const BreakPiece &piece = breakPieces[p];
+      if (!piece.alive || piece.body < 0 || !breakBodies[piece.body].fixed ||
+          !breakBodies[piece.body].id.isValid())
+        continue;
+      pieceOf[p] = static_cast<int>(order.size());
+      order.push_back(p);
+    }
+    std::vector<SolvedLink> solved;
+    for (int l = 0; l < static_cast<int>(breakLinks.size()); ++l)
+      if (!breakLinks[l].broken && pieceOf[breakLinks[l].a] >= 0 && pieceOf[breakLinks[l].b] >= 0)
+        solved.push_back({l, false});
+    for (int g = 0; g < static_cast<int>(groundLinks.size()); ++g)
+      if (!groundLinks[g].broken && pieceOf[groundLinks[g].piece] >= 0)
+        solved.push_back({g, true});
+    const bool same = order == stressOrder && solved.size() == solvedLinks.size() &&
+                      std::equal(solved.begin(), solved.end(), solvedLinks.begin(),
+                                 [](const SolvedLink &x, const SolvedLink &y) {
+                                   return x.index == y.index && x.ground == y.ground;
+                                 });
+    if (!same) {
+      stressPieceOf = std::move(pieceOf);
+      stressOrder = std::move(order);
+      solvedLinks = std::move(solved);
+      std::vector<StressPiece> pieces;
+      std::vector<glm::mat4> frames;
+      for (int p : stressOrder) {
+        const PhysicsPose world = pieceWorld(breakPieces[p]);
+        frames.push_back(poseMatrix(world));
+        pieces.push_back({world.position + world.rotation * breakPieces[p].shape->centre,
+                          breakPieces[p].shape->volume * breakables[breakPieces[p].object].density});
+      }
+      std::vector<StressLink> links;
+      for (const SolvedLink &link : solvedLinks) {
+        if (link.ground) {
+          const int a = stressPieceOf[groundLinks[link.index].piece];
+          links.push_back({a, -1, movedFace(groundLinks[link.index].face, frames[a]), true});
+        } else {
+          const int a = stressPieceOf[breakLinks[link.index].a];
+          const int b = stressPieceOf[breakLinks[link.index].b];
+          links.push_back({a, b, movedFace(breakLinkFaces[link.index], frames[a]),
+                           breakLinkContact[link.index] != 0});
+        }
+      }
+      stressSolver.build(pieces, links);
+      std::vector<glm::vec3> shifts(pieces.size()), turns(pieces.size());
+      for (size_t k = 0; k < stressOrder.size(); ++k) {
+        shifts[k] = pieceShift[stressOrder[k]];
+        turns[k] = pieceTurn[stressOrder[k]];
+      }
+      stressSolver.setStart(shifts, turns);
+      solvedLoad.clear();
+      loadLines.clear();
+      stressStarted = 0.0;
+      stressJudged = false;
+    }
+  }
+  if (stressJudged)
+    return; // nothing changed since it settled
+  const bool settled = stressSolver.solve(kStressIterations);
+  stressStarted +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  if (!settled && stressSolver.iterations() < kStressMostIterations)
+    return;
+  if (!settled) {
+    // It crawls when something is tipping off its support: a nearly free
+    // mode. Its unfinished answer is no good for judging the rest, so only
+    // the contacts tipping open (they're why), and it's solved again.
+    std::vector<int> tipping;
+    for (size_t i = 0; i < solvedLinks.size(); ++i) {
+      const SolvedLink &solved = solvedLinks[i];
+      const LinkLimits limits =
+          solved.ground ? groundLimits(groundLinks[solved.index].piece) : linkLimits(solved.index);
+      if (::tipping(stressSolver.stress(static_cast<int>(i)), limits) > 1.0f)
+        tipping.push_back(static_cast<int>(i));
+    }
+    if (tipping.empty()) {
+      // Nothing tipping: just slow. It carries on, up to a few times the
+      // cap, then gives up on this structure until it changes again.
+      if (stressSolver.iterations() < 4 * kStressMostIterations)
+        return;
+      spdlog::warn("[weight] {} pieces didn't settle in {} iterations; not judged",
+                   stressOrder.size(), stressSolver.iterations());
+      stressJudged = true;
+      return;
+    }
+    spdlog::info("[weight] {} pieces didn't settle in {} iterations, {:.2f} ms; {} contacts tipping",
+                 stressOrder.size(), stressSolver.iterations(), stressStarted, tipping.size());
+    stressJudged = true;
+    for (int i : tipping) {
+      const SolvedLink &solved = solvedLinks[i];
+      if (solved.ground) {
+        GroundLink &ground = groundLinks[solved.index];
+        ground.broken = true;
+        bool holds = false;
+        for (int g : pieceGroundLinks[ground.piece])
+          holds = holds || !groundLinks[g].broken;
+        breakPieces[ground.piece].anchor = holds;
+      } else {
+        breakLinks[solved.index].broken = true;
+      }
+    }
+    regroupBreakables({});
+    return;
+  }
+  const std::vector<glm::vec3> shifts = stressSolver.shifts(), turns = stressSolver.turns();
+  for (size_t i = 0; i < stressOrder.size(); ++i) {
+    pieceShift[stressOrder[i]] = shifts[i];
+    pieceTurn[stressOrder[i]] = turns[i];
+  }
+
+  // How close every link is to breaking, and the load view's lines.
+  stressJudged = true;
+  solvedLoad.assign(solvedLinks.size(), 0.0f);
+  std::vector<std::pair<float, int>> over;
+  std::vector<int> open; // contacts that lifted off: they hold nothing
+  for (size_t i = 0; i < solvedLinks.size(); ++i) {
+    const SolvedLink &solved = solvedLinks[i];
+    const LinkLimits limits =
+        solved.ground ? groundLimits(groundLinks[solved.index].piece) : linkLimits(solved.index);
+    const LinkStress stress = stressSolver.stress(static_cast<int>(i));
+    if (limits.contact && stress.liftedShare >= 1.0f) {
+      open.push_back(static_cast<int>(i));
+      continue;
+    }
+    solvedLoad[i] = overload(stress, limits);
+    if (solvedLoad[i] > 1.0f)
+      over.push_back({solvedLoad[i], static_cast<int>(i)});
+  }
+  loadLines.clear();
+  for (size_t i = 0; i < solvedLinks.size(); ++i) {
+    const SolvedLink &solved = solvedLinks[i];
+    const float t = std::clamp(solvedLoad[i], 0.0f, 1.0f);
+    const uint32_t r = static_cast<uint32_t>(255.0f * std::min(1.0f, 2.0f * t));
+    const uint32_t g = static_cast<uint32_t>(255.0f * std::min(1.0f, 2.0f * (1.0f - t)));
+    const uint32_t colour = r | g << 8 | 0x20u << 16 | 0xffu << 24;
+    auto middle = [&](int piece) {
+      const PhysicsPose w = pieceWorld(breakPieces[piece]);
+      return w.position + w.rotation * breakPieces[piece].shape->centre;
+    };
+    const int a = solved.ground ? groundLinks[solved.index].piece : breakLinks[solved.index].a;
+    const PhysicsPose wa = pieceWorld(breakPieces[a]);
+    const LinkFace face =
+        movedFace(solved.ground ? groundLinks[solved.index].face : breakLinkFaces[solved.index],
+                  poseMatrix(wa));
+    const glm::vec3 far = solved.ground ? face.centre + face.normal * 0.2f
+                                        : middle(breakLinks[solved.index].b);
+    for (const glm::vec3 &q : {middle(a), face.centre, face.centre, far})
+      loadLines.push_back({q, colour});
+  }
+
+  std::sort(over.begin(), over.end(), std::greater<>());
+  spdlog::info("[weight] {} pieces, {} links settled in {} iterations, {:.2f} ms; {} open, {} over "
+               "their limits{}",
+               stressOrder.size(), solvedLinks.size(), stressSolver.iterations(), stressStarted,
+               open.size(), over.size(),
+               over.empty() ? std::string() : std::format(" (the worst {:.2f})", over.front().first));
+  auto breakSolved = [&](int i) {
+    const SolvedLink &solved = solvedLinks[i];
+    if (solved.ground) {
+      GroundLink &ground = groundLinks[solved.index];
+      ground.broken = true;
+      bool holds = false;
+      for (int g : pieceGroundLinks[ground.piece])
+        holds = holds || !groundLinks[g].broken;
+      breakPieces[ground.piece].anchor = holds;
+    } else {
+      breakLinks[solved.index].broken = true;
+    }
+  };
+  // Open contacts aren't failures: things resting side by side, a roof off
+  // a wall it doesn't press. They open now, even on Play, and the rest is
+  // solved again without them.
+  if (!open.empty()) {
+    for (int i : open)
+      breakSolved(i);
+    regroupBreakables({});
+    return;
+  }
+  if (stressFirst) {
+    stressFirst = false;
+    if (!over.empty())
+      spdlog::warn("[weight] {} links can't hold this scene up as it is; they break once anything "
+                   "changes",
+                   over.size());
+    return;
+  }
+  if (over.empty())
+    return;
+  for (int k = 0; k < std::min<int>(kStressBreaksPerFrame, static_cast<int>(over.size())); ++k)
+    breakSolved(over[k].second);
+  regroupBreakables({});
 }
 
 // Edit mode: a breakable moved in the Inspector or with the gizmo. A new

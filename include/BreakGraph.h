@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Fracture.h"
+#include "Stress.h"
 
 #include <glm/glm.hpp>
 
@@ -28,6 +29,9 @@ struct BreakLink {
 // weaker than a quarter of the object's average link, so the slivers where
 // cells barely touch don't snap at any tap anywhere.
 std::vector<BreakLink> cutLinks(const Fracture &fracture, float strengthPerArea, int firstPiece);
+// Each of the cut's links' shared face (in the cut's space), facing from its
+// first piece to its second, for the stress solver; in the links' order.
+std::vector<LinkFace> cutFaces(const Fracture &fracture);
 
 // Pieces joined by unbroken links, smallest index first, and whether any of
 // them is an anchor (if not, the group falls).
@@ -69,12 +73,15 @@ struct PieceTouch {
   int b = 0;
   float area = 0.0f;
   glm::vec3 centre{0.0f};
+  LinkFace face; // the biggest overlap's, facing from a to b
 };
 std::vector<PieceTouch> touchingPieces(const std::vector<PlacedPiece> &pieces, float tolerance);
 
 // How much two pieces touch through any of their faces (opposite normals,
 // within tolerance apart), and the contact's middle; 0 if they don't.
 float touchArea(const PlacedPiece &a, const PlacedPiece &b, float tolerance, glm::vec3 &centre);
+// The face of their biggest overlap, facing from a to b (area 0 if none).
+LinkFace touchFace(const PlacedPiece &a, const PlacedPiece &b, float tolerance);
 
 // Whether an outside face of the piece faces down at this height (within
 // tolerance): it rests on a floor there.

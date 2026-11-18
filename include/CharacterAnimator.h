@@ -35,6 +35,11 @@ struct AnimationLibrary {
   }
 };
 
+// What the powers' layer plays on the upper body: the lift running into the
+// hold while something is held out (lifted, torn at or strained against), a
+// throw, a burst.
+enum class PowerAnim : uint8_t { None, Hold, Throw, Burst };
+
 // What the controller is doing this frame.
 struct AnimatorInput {
   float speed = 0.0f; // m/s along the ground
@@ -55,6 +60,13 @@ struct AnimatorInput {
   float runSpeed = 0.0f;
   float sprintSpeed = 0.0f;
   float crouchSpeed = 0.0f;
+  // The powers (the player's character only).
+  PowerAnim power = PowerAnim::None;
+  float aimPitch = 0.0f; // radians the camera looks up; the spine leans with it while aiming
+  // The right arm reaches toward reachTarget while something is held out
+  // (power is Hold) and a power's light goes to it; a throw lets it go.
+  bool reaching = false;
+  glm::vec3 reachTarget{0.0f}; // in the skeleton's space
 };
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
@@ -95,6 +107,11 @@ struct AnimatorTuning {
   // The moving clips play this much faster than the speed calls for (1 has
   // the feet keep up with the ground).
   float playbackRate = 1.0f;
+  // The powers' upper-body layer, the arm's reach and the aim's lean fade
+  // in and out over this, seconds.
+  float powerFade = 0.12f;
+  // Radians the spine leans with the camera at most, up or down (40 degrees).
+  float aimLean = 0.7f;
   bool operator==(const AnimatorTuning &) const = default;
 };
 
@@ -117,6 +134,11 @@ public:
   void setTuning(const AnimatorTuning &t) { tune = t; }
 
 private:
+  // The powers on top of the state's pose: the upper body's clip, the lean
+  // with the aim, the right arm's reach.
+  void layerPowers(const AnimatorInput &input, float dt);
+  void startPower(ClipSlot slot);
+
   const Skeleton &skeleton;
   const AnimationLibrary &library;
   float unitsToMetres;
@@ -133,9 +155,26 @@ private:
   float phase = 0.0f;     // 0 to 1, shared by the moving loops
   ClipSlot oneShot = ClipSlot::Jump; // the clip a Jump, Land or Dodge plays
 
-  Pose current;
-  Pose fadeFrom;          // the pose when the state last changed
+  Pose current;           // the state's pose with the powers on top
+  Pose base;              // the state's pose alone, cross-fade included
+  Pose fadeFrom;          // base when the state last changed
   float fadeTime = 0.0f;  // how long that change's cross-fade takes
   std::array<float, static_cast<size_t>(ClipSlot::Count)> weights{};
   std::array<float, static_cast<size_t>(ClipSlot::Count)> times{};
+
+  // The powers' layer.
+  std::vector<float> upperBody; // 1 from the first spine bone up, empty without one
+  std::vector<int> spine;       // the spine bones the aim leans
+  int arm = -1, foreArm = -1, hand = -1; // the right arm, for the reach
+  PowerAnim powerWas = PowerAnim::None;
+  ClipSlot powerSlot = ClipSlot::Count;     // the layer's clip, Count for none yet
+  ClipSlot powerFromSlot = ClipSlot::Count; // the one before, fading out
+  float powerTime = 0.0f;   // seconds into the layer's clip
+  float powerSwitch = 0.0f; // seconds since the layer's clip changed
+  float powerWeight = 0.0f; // the layer's share of the upper body
+  bool powerMissing = false; // the power asked for has no clip: the layer fades out
+  Pose powerPose;           // the layer's pose last frame
+  Pose powerFrom;           // and when its clip changed
+  float leanWeight = 0.0f, reachWeight = 0.0f;
+  glm::vec3 reachTarget{0.0f}; // held while the arm lets go
 };

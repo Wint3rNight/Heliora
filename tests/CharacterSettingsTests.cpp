@@ -80,3 +80,17 @@ TEST(the_powers_tuning_is_saved_with_the_character) {
   applyCharacterTuning(c, "", back, animation);
   CHECK(back.powers == movement.powers);
 }
+
+TEST(the_powers_animation_timing_is_saved_with_the_character) {
+  CharacterDescription c = parseText("model = a.fbx\n[tuning]\nanim_fade_power = 0.3\n");
+  CharacterTuning movement;
+  AnimatorTuning animation;
+  applyCharacterTuning(c, "", movement, animation);
+  CHECK_NEAR(animation.powerFade, 0.3, 1e-4);
+  animation.aimLean = 0.5f;
+  storeCharacterTuning(c, movement, animation);
+  AnimatorTuning back;
+  applyCharacterTuning(c, "", movement, back);
+  CHECK_NEAR(back.aimLean, 0.5, 1e-4);
+  CHECK(back == animation);
+}

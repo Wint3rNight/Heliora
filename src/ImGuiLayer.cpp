@@ -2059,6 +2059,12 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   ImGui::SetItemTooltip("Less time in the air than this skips the landing");
   changed |= slider("Shortest landing", &an.landMinTime, 0.0f, 1.0f, "%.2f s");
   ImGui::SetItemTooltip("Moving cuts a landing short, but not before this");
+  changed |= slider("Fade the powers", &an.powerFade, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("The powers' clips on the upper body, the arm's reach and "
+                        "the lean with the aim come and go over this");
+  changed |= angle("Lean with the aim", &an.aimLean, 0.0f, 85.0f, "%.0f\u00b0");
+  ImGui::SetItemTooltip("While aiming the spine leans with the camera, up or down, "
+                        "at most this much");
   // The powers' tuning (step 1.4a), saved with the character.
   if (ImGui::CollapsingHeader("Powers")) {
     PowerTuning &pw = c.powers;

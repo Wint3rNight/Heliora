@@ -71,6 +71,11 @@ TEST(moves_that_repeat_loop_unless_told_otherwise) {
   CHECK(!defaultLoop(ClipSlot::LandHard));
   CHECK(!defaultLoop(ClipSlot::Roll));
   CHECK(!defaultLoop(ClipSlot::DodgeLeft));
+  CHECK(!defaultLoop(ClipSlot::PowerLift)); // the powers happen once, but the hold
+  CHECK(defaultLoop(ClipSlot::PowerHold));
+  CHECK(!defaultLoop(ClipSlot::PowerThrow));
+  CHECK(!defaultLoop(ClipSlot::PowerBurst));
+  CHECK(clipSlotFromName("power_throw") == ClipSlot::PowerThrow);
   const CharacterDescription told = parseText(
       "model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\nloop = false\n");
   CHECK(told.clips.size() == 1 && !told.clips[0].loop);

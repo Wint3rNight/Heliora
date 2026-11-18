@@ -52,6 +52,8 @@ std::vector<SettingBinding> characterTuningBindings(CharacterTuning &c, Animator
       {kSection, "anim_air_pose_delay", &a.fallDelay, 0, 1},
       {kSection, "anim_landing_after", &a.landAirTime, 0, 2},
       {kSection, "anim_shortest_landing", &a.landMinTime, 0, 1},
+      {kSection, "anim_fade_power", &a.powerFade, 0, 1},
+      {kSection, "anim_aim_lean", &a.aimLean, 0, 1.5},
       // The powers.
       {kSection, "power_lift_cap", &c.powers.liftCap, 10, 100000},
       {kSection, "power_hold_distance", &c.powers.holdDistance, 0.5, 20},

@@ -1,10 +1,29 @@
 #include "CharacterAnimator.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string_view>
 #include <vector>
 
 namespace {
+
+// The hand reaches no further than this share of the arm's length, so the
+// elbow stays a little bent pointing at something far off.
+constexpr float kReachBend = 0.92f;
+
+// The bone named this after Mixamo's prefix ("mixamorig:Spine"), or -1.
+int boneNamed(const Skeleton &skeleton, std::string_view name) {
+  for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i) {
+    const std::string_view bone = skeleton.bones[i].name;
+    if (bone.size() < name.size() || bone.substr(bone.size() - name.size()) != name)
+      continue;
+    if (bone.size() == name.size() ||
+        !std::isalnum(static_cast<unsigned char>(bone[bone.size() - name.size() - 1])))
+      return i;
+  }
+  return -1;
+}
 
 size_t index(ClipSlot slot) { return static_cast<size_t>(slot); }
 
@@ -82,7 +101,20 @@ CharacterAnimator::CharacterAnimator(const Skeleton &skeleton,
                                      const AnimationLibrary &clips,
                                      float unitsToMetres, const AnimatorTuning &tuning)
     : skeleton(skeleton), library(clips), unitsToMetres(unitsToMetres),
-      tune(tuning), current(bindPose(skeleton)), fadeFrom(current) {}
+      tune(tuning), current(bindPose(skeleton)), fadeFrom(current) {
+  base = current;
+  powerPose = current;
+  powerFrom = current;
+  if (const int first = boneNamed(skeleton, "Spine"); first >= 0) {
+    upperBody = upperBodyMask(skeleton, first);
+    for (const char *name : {"Spine", "Spine1", "Spine2"})
+      if (const int bone = boneNamed(skeleton, name); bone >= 0)
+        spine.push_back(bone);
+  }
+  arm = boneNamed(skeleton, "RightArm");
+  foreArm = boneNamed(skeleton, "RightForeArm");
+  hand = boneNamed(skeleton, "RightHand");
+}
 
 float CharacterAnimator::clipWeight(ClipSlot slot) const {
   return weights[index(slot)];
@@ -177,7 +209,9 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     }
   }
   if (next != active) {
-    fadeFrom = current;
+    // From the state's own pose: the powers' layers fade by themselves, and
+    // baked in here they'd be laid on twice through the cross-fade.
+    fadeFrom = base;
     switch (next) {
     case AnimState::Locomotion: fadeTime = tune.locomotionFade; break;
     case AnimState::Crouch: fadeTime = tune.crouchFade; break;
@@ -321,10 +355,105 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
   // --- Cross-fade from the pose the last change left.
   const float t = fadeTime > 0.0f ? std::min(stateTime / fadeTime, 1.0f) : 1.0f;
   if (t < 1.0f) {
-    blendPoses(fadeFrom, statePose, t, current);
+    blendPoses(fadeFrom, statePose, t, base);
     for (float &w : weights)
       w *= t;
   } else {
-    current = statePose;
+    base = statePose;
+  }
+  current = base;
+  layerPowers(input, dt);
+}
+
+void CharacterAnimator::startPower(ClipSlot slot) {
+  // Without its clip the layer fades out on what it was playing.
+  const CharacterClipData *clip = library.clip(slot);
+  powerMissing = !clip;
+  if (!clip)
+    return;
+  // From what the layer shows, if it shows anything.
+  powerFromSlot = powerWeight > 0.0f ? powerSlot : ClipSlot::Count;
+  powerFrom = powerPose;
+  powerSwitch = powerFromSlot == ClipSlot::Count ? tune.powerFade : 0.0f;
+  powerSlot = slot;
+  powerTime = clip->start;
+}
+
+void CharacterAnimator::layerPowers(const AnimatorInput &input, float dt) {
+  const float step = tune.powerFade > 0.0f ? dt / tune.powerFade : 1.0f;
+  const auto toward = [&](float value, bool on) {
+    return std::clamp(value + (on ? step : -step), 0.0f, 1.0f);
+  };
+
+  // --- The upper body's clip: the lift running into the hold, a throw, a
+  // burst. Only their own clips: a stand-in like the idle would lay a second
+  // copy of the legs' pose over the top.
+  if (input.power != powerWas) {
+    switch (input.power) {
+    case PowerAnim::Hold:
+      startPower(library.clip(ClipSlot::PowerLift) ? ClipSlot::PowerLift : ClipSlot::PowerHold);
+      break;
+    case PowerAnim::Throw: startPower(ClipSlot::PowerThrow); break;
+    case PowerAnim::Burst: startPower(ClipSlot::PowerBurst); break;
+    case PowerAnim::None: break; // the last clip plays on while it fades out
+    }
+    powerWas = input.power;
+  } else {
+    powerTime += dt;
+  }
+  powerSwitch += dt;
+  if (powerSlot == ClipSlot::PowerLift && input.power == PowerAnim::Hold) {
+    const CharacterClipData *lift = library.clip(ClipSlot::PowerLift);
+    if (!lift || powerTime >= lift->endTime())
+      startPower(ClipSlot::PowerHold);
+  }
+  const CharacterClipData *clip =
+      powerSlot != ClipSlot::Count ? library.clip(powerSlot) : nullptr;
+  powerWeight = toward(powerWeight, input.power != PowerAnim::None && !powerMissing && clip &&
+                                        !upperBody.empty());
+  if (clip && powerWeight > 0.0f) {
+    if (clip->loop && clip->clip.duration > 0.0f)
+      powerTime = std::fmod(powerTime, clip->clip.duration);
+    const float time = clip->loop ? powerTime : std::min(powerTime, clip->endTime());
+    Pose pose = bindPose(skeleton);
+    sampleClip(clip->clip, skeleton, time, clip->loop, pose);
+    const float t = tune.powerFade > 0.0f ? std::min(powerSwitch / tune.powerFade, 1.0f) : 1.0f;
+    if (t < 1.0f)
+      blendPoses(powerFrom, pose, t, pose);
+    powerPose = pose;
+    blendPosesMasked(current, powerPose, powerWeight, upperBody, current);
+    weights[index(powerSlot)] = powerWeight * t;
+    times[index(powerSlot)] = time;
+    if (t < 1.0f && powerFromSlot != ClipSlot::Count && powerFromSlot != powerSlot)
+      weights[index(powerFromSlot)] = powerWeight * (1.0f - t);
+  }
+
+  // --- The spine leans with the camera while aiming. The model faces +z, so
+  // looking up turns its chest back about x.
+  leanWeight = toward(leanWeight, input.aiming);
+  if (leanWeight > 0.0f && !spine.empty()) {
+    const float lean = std::clamp(input.aimPitch, -tune.aimLean, tune.aimLean) * leanWeight;
+    turnBones(skeleton, current, spine, glm::vec3(1.0f, 0.0f, 0.0f), -lean);
+  }
+
+  // --- The right arm reaches toward what the power has hold of.
+  // Only while something is held out: a throw's arm follows its clip from
+  // the click, fading from the reach as the layer fades into the throw.
+  const bool reaching = input.reaching && input.power == PowerAnim::Hold;
+  reachWeight = toward(reachWeight, reaching);
+  if (reaching)
+    reachTarget = input.reachTarget;
+  if (reachWeight > 0.0f && arm >= 0 && foreArm >= 0 && hand >= 0) {
+    const std::vector<glm::mat4> model = modelSpace(skeleton, current);
+    const glm::vec3 shoulder(model[arm][3]), elbow(model[foreArm][3]), wrist(model[hand][3]);
+    const float far =
+        kReachBend * (glm::distance(elbow, shoulder) + glm::distance(wrist, elbow));
+    glm::vec3 target = reachTarget;
+    if (glm::distance(target, shoulder) > far)
+      target = shoulder + glm::normalize(target - shoulder) * far;
+    Pose reached = current;
+    // The elbow down and out: the model faces +z, so its right is -x.
+    twoBoneIk(skeleton, reached, arm, foreArm, hand, target, glm::vec3(-0.7f, -0.7f, 0.0f));
+    blendPoses(current, reached, reachWeight, current);
   }
 }

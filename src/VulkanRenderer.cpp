@@ -2166,6 +2166,31 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     input.runSpeed = body.tuning().runSpeed;
     input.sprintSpeed = body.tuning().sprintSpeed;
     input.crouchSpeed = body.tuning().crouchSpeed;
+    // Feet on the body's feet, turned to its facing: Mixamo models face +z,
+    // the character's yaw 0 faces -z.
+    const glm::quat facing = glm::angleAxis(body.drawnYaw(alpha) + glm::pi<float>(),
+                                            glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::mat4 placement = glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
+                                glm::scale(glm::mat4(1.0f), glm::vec3(c.scale));
+    if (i == playedCharacter) {
+      // The powers: their clip on the upper body, the spine leaning with the
+      // camera while aiming, the right arm reaching for what the light holds.
+      switch (powerController.state()) {
+      case PowerState::Lifting:
+      case PowerState::Holding:
+      case PowerState::Tearing:
+      case PowerState::Straining: input.power = PowerAnim::Hold; break;
+      case PowerState::Throwing: input.power = PowerAnim::Throw; break;
+      case PowerState::Bursting: input.power = PowerAnim::Burst; break;
+      case PowerState::Idle: break;
+      }
+      if (playerController)
+        input.aimPitch = playerController->camera().pitch();
+      if (const std::optional<glm::vec3> reach = powerReach()) {
+        input.reaching = true;
+        input.reachTarget = glm::vec3(glm::inverse(placement) * glm::vec4(*reach, 1.0f));
+      }
+    }
     c.animator->update(input, frameSeconds);
     if (i == playedCharacter) {
       // For the Character tab: the state and the clips in this pose.
@@ -2184,10 +2209,6 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     const int shown = showSkeleton ? -1 : c.file->copies[c.copy].model;
     if (c.node->getModelId() != shown)
       c.node->setModelId(shown);
-    // Feet on the body's feet, turned to its facing: Mixamo models face +z,
-    // the character's yaw 0 faces -z.
-    const glm::quat facing = glm::angleAxis(body.drawnYaw(alpha) + glm::pi<float>(),
-                                            glm::vec3(0.0f, 1.0f, 0.0f));
     c.node->setPose(feet, facing);
     if (i == playedCharacter) {
       // Where the powers' light leaves from: its right hand.
@@ -2201,16 +2222,11 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
           }
         }
       }
-      const glm::mat4 placement = glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
-                                  glm::scale(glm::mat4(1.0f), glm::vec3(c.scale));
       handPosition = handBone >= 0 ? glm::vec3(placement * model[handBone][3])
                                    : feet + glm::vec3(0.0f, 0.75f * body.height(), 0.0f);
     }
     if (showSkeleton)
-      updateSkeletonLines(c,
-                          glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
-                              glm::scale(glm::mat4(1.0f), glm::vec3(c.scale)),
-                          model);
+      updateSkeletonLines(c, placement, model);
   }
 }
 

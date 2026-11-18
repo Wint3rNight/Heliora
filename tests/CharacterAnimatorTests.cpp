@@ -445,3 +445,242 @@ TEST(every_state_has_its_own_name) {
         CHECK(std::string(animStateName(a)) != animStateName(b));
   }
 }
+
+namespace {
+
+// A Mixamo-named body: hips, a leg, three spine bones and a right arm.
+enum PowerBone { kRoot, kHips, kLeg, kSpine, kSpine1, kSpine2, kArm, kForeArm, kHand, kBones };
+Skeleton powerRig() {
+  Skeleton s;
+  auto add = [&](const char *name, int parent, glm::vec3 at) {
+    Bone b;
+    b.name = name;
+    b.parent = parent;
+    b.bind.translation = at;
+    s.bones.push_back(b);
+  };
+  add("root", -1, {0, 0, 0});
+  add("mixamorig:Hips", kRoot, {0, 1, 0});
+  add("mixamorig:LeftUpLeg", kHips, {0.1f, -0.1f, 0});
+  add("mixamorig:Spine", kHips, {0, 0.1f, 0});
+  add("mixamorig:Spine1", kSpine, {0, 0.15f, 0});
+  add("mixamorig:Spine2", kSpine1, {0, 0.15f, 0});
+  add("mixamorig:RightArm", kSpine2, {-0.2f, 0.1f, 0});
+  add("mixamorig:RightForeArm", kArm, {-0.3f, 0, 0});
+  add("mixamorig:RightHand", kForeArm, {-0.25f, 0, 0});
+  return s;
+}
+
+// A clip that turns one bone of the power rig about x by its angle (and a
+// second one, if asked).
+CharacterClipData turning(int bone, float degrees, float duration, bool loop, int other = -1,
+                          float otherDegrees = 0.0f) {
+  CharacterClipData d;
+  d.loop = loop;
+  d.clip.duration = duration;
+  d.clip.tracks.resize(kBones);
+  const glm::quat turn = glm::angleAxis(glm::radians(degrees), glm::vec3(1, 0, 0));
+  d.clip.tracks[bone].rotations = {{0.0f, turn}, {duration, turn}};
+  if (other >= 0) {
+    const glm::quat t2 = glm::angleAxis(glm::radians(otherDegrees), glm::vec3(1, 0, 0));
+    d.clip.tracks[other].rotations = {{0.0f, t2}, {duration, t2}};
+  }
+  return d;
+}
+
+float degreesOf(const CharacterAnimator &a, int bone) {
+  const glm::quat q = a.pose().local[bone].rotation;
+  return glm::degrees(2.0f * std::acos(std::min(1.0f, std::abs(q.w))));
+}
+
+AnimationLibrary powerLibrary() {
+  AnimationLibrary l;
+  put(l, ClipSlot::Idle, turning(kLeg, 10, 2.0f, true));
+  // The hold turns the spine, and the leg too, which the mask keeps out.
+  put(l, ClipSlot::PowerHold, turning(kSpine, 30, 1.0f, true, kLeg, 50));
+  return l;
+}
+
+AnimatorInput powering(PowerAnim power) {
+  AnimatorInput in;
+  in.power = power;
+  return in;
+}
+
+glm::vec3 boneAt(const Skeleton &s, const CharacterAnimator &a, int bone) {
+  return glm::vec3(modelSpace(s, a.pose())[bone][3]);
+}
+
+} // namespace
+
+TEST(the_powers_play_on_the_upper_body_and_leave_the_legs) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary();
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, powering(PowerAnim::Hold), 1.0f);
+  CHECK_NEAR(degreesOf(a, kSpine), 30.0, 0.5);
+  CHECK_NEAR(degreesOf(a, kLeg), 10.0, 0.5); // still the idle's
+  CHECK_NEAR(degreesOf(a, kHips), 0.0, 0.5);
+  CHECK(a.clipWeight(ClipSlot::PowerHold) > 0.99f);
+}
+
+TEST(the_power_layer_fades_in_and_out_in_its_fade_time) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary();
+  AnimatorTuning t;
+  t.powerFade = 0.2f;
+  CharacterAnimator a(s, l, 1.0f, t);
+  runFor(a, powering(PowerAnim::Hold), 0.1f);
+  CHECK_NEAR(degreesOf(a, kSpine), 15.0, 1.5);
+  runFor(a, powering(PowerAnim::Hold), 0.1f);
+  CHECK_NEAR(degreesOf(a, kSpine), 30.0, 0.5);
+  runFor(a, powering(PowerAnim::None), 0.1f);
+  CHECK_NEAR(degreesOf(a, kSpine), 15.0, 1.5);
+  runFor(a, powering(PowerAnim::None), 0.1f);
+  CHECK_NEAR(degreesOf(a, kSpine), 0.0, 0.5);
+  CHECK(a.clipWeight(ClipSlot::PowerHold) < 0.01f);
+}
+
+TEST(the_lift_runs_into_the_hold) {
+  const Skeleton s = powerRig();
+  AnimationLibrary l = powerLibrary();
+  put(l, ClipSlot::PowerLift, turning(kSpine, 60, 0.5f, false));
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, powering(PowerAnim::Hold), 0.3f);
+  CHECK(a.clipWeight(ClipSlot::PowerLift) > 0.99f);
+  CHECK_NEAR(degreesOf(a, kSpine), 60.0, 0.5);
+  runFor(a, powering(PowerAnim::Hold), 0.5f); // past the lift's end and the fade
+  CHECK(a.clipWeight(ClipSlot::PowerHold) > 0.99f);
+  CHECK(a.clipWeight(ClipSlot::PowerLift) < 0.01f);
+  CHECK_NEAR(degreesOf(a, kSpine), 30.0, 0.5);
+}
+
+TEST(the_throw_starts_from_its_offset_and_holds_its_end) {
+  const Skeleton s = powerRig();
+  AnimationLibrary l = powerLibrary();
+  CharacterClipData throwing = turning(kSpine, 45, 2.0f, false);
+  throwing.start = 0.5f;
+  throwing.end = 1.5f;
+  put(l, ClipSlot::PowerThrow, throwing);
+  CharacterAnimator a(s, l, 1.0f);
+  a.update(powering(PowerAnim::Throw), kDt);
+  CHECK(std::fabs(a.clipTime(ClipSlot::PowerThrow) - 0.5f) <= kDt + 1e-4f);
+  runFor(a, powering(PowerAnim::Throw), 3.0f);
+  CHECK_NEAR(a.clipTime(ClipSlot::PowerThrow), 1.5, 1e-4);
+}
+
+TEST(a_power_without_its_clip_plays_nothing) {
+  const Skeleton s = powerRig();
+  AnimationLibrary l;
+  put(l, ClipSlot::Idle, turning(kLeg, 10, 2.0f, true));
+  // A walk that turns the spine, its hips going forward at 1.5 m/s.
+  CharacterClipData walk = turning(kSpine, 40, 1.0f, true);
+  walk.clip.tracks[kHips].positions = {{0.0f, glm::vec3(0, 1, 0)}, {1.0f, glm::vec3(0, 1, 1.5f)}};
+  walk.rootMotion = removeRootMotion(walk.clip, s, kHips, RootMotionMode::Progression);
+  put(l, ClipSlot::WalkForward, walk);
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = moving(1.5f);
+  in.power = PowerAnim::Burst;
+  runFor(a, in, 0.5f);
+  // The walk's spine, not the idle's laid over it as a stand-in.
+  CHECK_NEAR(degreesOf(a, kSpine), 40.0, 0.5);
+  CHECK(a.clipWeight(ClipSlot::PowerBurst) == 0.0f);
+}
+
+TEST(aiming_leans_the_spine_with_the_camera) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary();
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput up;
+  up.aiming = true;
+  up.aimPitch = 0.3f;
+  runFor(a, up, 0.5f);
+  // The chest's up leans back (the model faces +z) by the camera's pitch.
+  const glm::vec3 chestUp = glm::normalize(glm::vec3(modelSpace(s, a.pose())[kSpine2][1]));
+  CHECK_NEAR(std::acos(chestUp.y), 0.3, 1e-3);
+  CHECK(chestUp.z < 0.0f);
+  CHECK_NEAR(degreesOf(a, kLeg), 10.0, 0.5);
+  up.aimPitch = 1.4f; // looking far up: no more than aimLean
+  runFor(a, up, 0.5f);
+  const glm::vec3 capped = glm::normalize(glm::vec3(modelSpace(s, a.pose())[kSpine2][1]));
+  CHECK_NEAR(std::acos(capped.y), AnimatorTuning{}.aimLean, 1e-3);
+  AnimatorInput relaxed;
+  relaxed.aimPitch = 0.3f; // not aiming: upright
+  runFor(a, relaxed, 0.5f);
+  const glm::vec3 upright = glm::normalize(glm::vec3(modelSpace(s, a.pose())[kSpine2][1]));
+  CHECK(upright.y > 0.9999f);
+}
+
+TEST(reaching_puts_the_right_hand_toward_the_target) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary();
+  CharacterAnimator a(s, l, 1.0f);
+  a.update(AnimatorInput{}, kDt);
+  const glm::vec3 rest = boneAt(s, a, kHand);
+  // Something held out: the hold's clip turns the spine, and the shoulder with it.
+  runFor(a, powering(PowerAnim::Hold), 0.5f);
+  const glm::vec3 shoulder = boneAt(s, a, kArm);
+  AnimatorInput reach = powering(PowerAnim::Hold);
+  reach.reaching = true;
+  reach.reachTarget = shoulder + glm::vec3(-0.2f, -0.1f, 0.3f); // well in reach
+  runFor(a, reach, 0.5f);
+  CHECK(glm::distance(boneAt(s, a, kHand), reach.reachTarget) < 1e-3f);
+  // Far off it points at it, the elbow a little bent.
+  reach.reachTarget = shoulder + glm::vec3(0, 0, 5);
+  runFor(a, reach, 0.5f);
+  const glm::vec3 toHand = boneAt(s, a, kHand) - shoulder;
+  CHECK(glm::dot(glm::normalize(toHand), glm::vec3(0, 0, 1)) > 0.999f);
+  CHECK(glm::length(toHand) < 0.55f - 1e-3f); // the arm is 0.55 m: not locked straight
+  // Let go and it comes back.
+  runFor(a, AnimatorInput{}, 0.5f);
+  CHECK(glm::distance(boneAt(s, a, kHand), rest) < 1e-3f);
+}
+
+TEST(aiming_through_a_change_of_state_keeps_the_lean_steady) {
+  const Skeleton s = powerRig();
+  AnimationLibrary l = powerLibrary();
+  put(l, ClipSlot::CrouchIdle, turning(kLeg, 20, 1.0f, true));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput aim;
+  aim.aiming = true;
+  aim.aimPitch = 0.5f;
+  runFor(a, aim, 0.5f);
+  aim.crouched = true; // a new state, its cross-fade starting
+  a.update(aim, kDt);
+  const glm::vec3 chestUp = glm::normalize(glm::vec3(modelSpace(s, a.pose())[kSpine2][1]));
+  CHECK_NEAR(std::acos(chestUp.y), 0.5, 0.01);
+}
+
+TEST(a_throw_lets_the_arm_go_with_its_clip) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary();
+  AnimatorTuning t;
+  t.powerFade = 0.2f;
+  CharacterAnimator a(s, l, 1.0f, t);
+  a.update(AnimatorInput{}, kDt);
+  const glm::vec3 rest = boneAt(s, a, kHand);
+  AnimatorInput hold = powering(PowerAnim::Hold);
+  hold.reaching = true;
+  hold.reachTarget = boneAt(s, a, kArm) + glm::vec3(-0.2f, -0.1f, 0.3f);
+  runFor(a, hold, 0.5f);
+  CHECK(glm::distance(boneAt(s, a, kHand), hold.reachTarget) < 1e-3f);
+  // Thrown: the arm follows the throw's clip from the click, not the spot
+  // the thing was held at until it leaves.
+  AnimatorInput thrown = hold;
+  thrown.power = PowerAnim::Throw;
+  runFor(a, thrown, 0.2f);
+  CHECK(glm::distance(boneAt(s, a, kHand), rest) < 1e-3f);
+}
+
+TEST(a_power_whose_clip_is_missing_fades_the_layer_out) {
+  const Skeleton s = powerRig();
+  const AnimationLibrary l = powerLibrary(); // a hold, no throw
+  AnimatorTuning t;
+  t.powerFade = 0.2f;
+  CharacterAnimator a(s, l, 1.0f, t);
+  runFor(a, powering(PowerAnim::Hold), 0.5f);
+  a.update(powering(PowerAnim::Throw), kDt);
+  CHECK(degreesOf(a, kSpine) > 25.0f); // still mostly the hold, not dropped
+  runFor(a, powering(PowerAnim::Throw), 0.2f);
+  CHECK_NEAR(degreesOf(a, kSpine), 0.0, 0.5);
+}

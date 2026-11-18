@@ -477,6 +477,27 @@ void VulkanRenderer::updatePowers(float seconds) {
   characterPanel.powerState = powerStateName(powerController.state());
 }
 
+std::optional<glm::vec3> VulkanRenderer::powerReach() const {
+  const bool pieceAlive = powerGrabbed.piece >= 0 && breakPieces[powerGrabbed.piece].alive;
+  switch (powerController.state()) {
+  case PowerState::Lifting:
+  case PowerState::Holding:
+  case PowerState::Throwing: // until it leaves the hand
+    if (heldBody.isValid())
+      return heldCentre();
+    break;
+  case PowerState::Tearing:
+    if (pieceAlive)
+      return pieceCentre(powerGrabbed.piece);
+    break;
+  case PowerState::Straining:
+    return pieceAlive ? pieceCentre(powerGrabbed.piece) : bodyCentre(powerGrabbed.body);
+  default:
+    break;
+  }
+  return std::nullopt;
+}
+
 void VulkanRenderer::holdPowers(float stepSeconds) {
   const PowerState state = powerController.state();
   if (!heldBody.isValid() ||
@@ -678,32 +699,18 @@ void VulkanRenderer::drawPowerLines() {
                                      : powerTarget->kind == GrabKind::Tear ? kTearRgb
                                                                            : kStrainRgb));
   // What's held and the light from the hand to it.
-  switch (powerController.state()) {
-  case PowerState::Lifting:
-  case PowerState::Holding:
-  case PowerState::Throwing:
-    if (heldBody.isValid()) {
-      addRibbon(powerLines, handPosition, heldCentre(), time, lineColour(kHoldRgb));
+  if (const std::optional<glm::vec3> end = powerReach()) {
+    const PowerState state = powerController.state();
+    const uint32_t rgb = state == PowerState::Tearing     ? kTearRgb
+                         : state == PowerState::Straining ? kStrainRgb
+                                                          : kHoldRgb;
+    addRibbon(powerLines, handPosition, *end, time, lineColour(rgb));
+    if (state == PowerState::Tearing || state == PowerState::Straining) {
+      outline(powerGrabbed, lineColour(rgb));
+    } else {
       const auto [lo, hi] = physics->bounds(heldBody);
       addBox(powerLines, lo, hi, lineColour(kHoldRgb, 0.7f));
     }
-    break;
-  case PowerState::Tearing:
-    if (powerGrabbed.piece >= 0 && breakPieces[powerGrabbed.piece].alive) {
-      addRibbon(powerLines, handPosition, pieceCentre(powerGrabbed.piece), time, lineColour(kTearRgb));
-      outline(powerGrabbed, lineColour(kTearRgb));
-    }
-    break;
-  case PowerState::Straining: {
-    const glm::vec3 at = powerGrabbed.piece >= 0 && breakPieces[powerGrabbed.piece].alive
-                             ? pieceCentre(powerGrabbed.piece)
-                             : bodyCentre(powerGrabbed.body);
-    addRibbon(powerLines, handPosition, at, time, lineColour(kStrainRgb));
-    outline(powerGrabbed, lineColour(kStrainRgb));
-    break;
-  }
-  default:
-    break;
   }
   // The burst's cone opening from the hand.
   if (burstSince >= 0.0f) {

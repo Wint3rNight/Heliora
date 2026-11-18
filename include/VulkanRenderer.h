@@ -727,6 +727,9 @@ private:
   void burstPower();
   glm::vec3 bodyCentre(PhysicsBodyId body) const; // its bounding box's middle
   glm::vec3 heldCentre() const;
+  // Where the power's light goes: what's held, or the piece torn at or
+  // strained against; nothing without a light out.
+  std::optional<glm::vec3> powerReach() const;
   float pieceMass(int piece) const;
   glm::vec3 pieceCentre(int piece) const;
   glm::vec3 randomAxis();

@@ -65,6 +65,15 @@ public:
   void registerModelGeometry(int modelId, ModelManager &modelManager);
   // Many at once, with one upload: pieces cut in the same frame.
   void registerModelGeometries(const std::vector<int> &modelIds, ModelManager &modelManager);
+  // A registered model whose vertices were rewritten in place (the same
+  // count): its range of the arena too, in the open upload batch. Call it
+  // after any registering in the same batch, since growing the arena
+  // replaces its buffer.
+  void updateModelVertices(int modelId, ModelManager &modelManager);
+  // Room for this many more vertices and indices than the arena holds now,
+  // so what's added later doesn't grow it (which waits for the GPU). Waits
+  // itself if it has to grow now; call it with no upload batch open.
+  void reserveGeometry(size_t moreVertices, size_t moreIndices);
   // Scene switches must call this: the depth pyramid still holds the OLD
   // scene's depth, and occlusion-testing the new scene's AABBs against it
   // wrongly culls visible meshes for the first frame.

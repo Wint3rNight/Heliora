@@ -60,6 +60,12 @@ public:
   // own CPU copy. Skipped under 4 triangles.
   void generateLods(VkQueue transferQueue, VkCommandPool transferCommandPool);
 
+  // The same number of vertices, new values: the CPU copy and the GPU
+  // buffer, copied in the open upload batch (none open, or a different
+  // count: false, nothing changed). For meshes that change in place, like
+  // rubble.
+  bool updateVertices(const std::vector<Vertex> &vertices);
+
   void destroyBuffers();
 
   ~Mesh();
@@ -109,6 +115,8 @@ public:
   // For a skinned mesh, whose bind-pose sphere doesn't hold its other poses:
   // the model's and every mesh's culling sphere.
   void setBoundingSphere(glm::vec3 center, float radius);
+  // See Mesh::updateVertices.
+  bool updateMeshVertices(size_t meshIndex, const std::vector<Vertex> &vertices);
 
   void destroyMeshModel();
 

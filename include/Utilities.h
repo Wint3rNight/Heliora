@@ -544,8 +544,15 @@ public:
 
   void copy(AllocatedBuffer staging, VkBuffer destination, VkDeviceSize size,
             VkDeviceSize destinationOffset = 0) {
-    if (cmd == VK_NULL_HANDLE)
+    if (cmd == VK_NULL_HANDLE) {
       cmd = beginCommandBuffer(device, pool);
+      // A copy may overwrite what frames already submitted are still reading
+      // (a mesh rewritten in place): wait for their reads first.
+      vkCmdPipelineBarrier(cmd,
+                           VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 0, nullptr);
+    }
     const VkBufferCopy region{0, destinationOffset, size};
     vkCmdCopyBuffer(cmd, staging.get(), destination, 1, &region);
     staging_.push_back(std::move(staging));

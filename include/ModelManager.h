@@ -45,6 +45,10 @@ public:
   void cleanup();
 
   MeshModel *getModel(int modelId);
+  // A generated model's mesh rewritten in place, the same vertex count, in
+  // the open upload batch (Mesh::updateVertices). Its cached collision
+  // parts and bounds are dropped.
+  bool updateModelVertices(int modelId, const std::vector<Vertex> &vertices);
 
   // The model's vertex positions and triangles, one part per mesh, for a
   // physics collider. Built the first time it's asked for, then shared.

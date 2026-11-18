@@ -32,6 +32,7 @@
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
 #include "BreakGraph.h"
+#include "Rubble.h"
 #include "CharacterRoster.h"
 #include "PlayerController.h"
 #include "Prefab.h"
@@ -492,15 +493,36 @@ private:
     bool fixed = false; // static
     double madeAt = 0.0; // playSeconds, for turning small pieces to rubble
   };
-  // A heap of rubble on a half-metre patch of ground (part f).
-  struct RubbleHeap {
-    glm::vec3 base{0.0f};
-    float volume = 0.0f;
-    glm::vec3 colour{0.0f}; // volume weighted
+  // Rubble (step 1.3c): a layer of rubble over the ground (Rubble.h),
+  // drawn and walked on in 4 m tiles, each a node with a mesh rewritten in
+  // place and a static height field. Its bodies' userData has
+  // kRubbleBodyFlag set.
+  static constexpr uint64_t kRubbleBodyFlag = 1ull << 61;
+  struct RubbleTileDraw {
     SceneNode *node = nullptr;
+    int modelId = -1;
     PhysicsBodyId body;
-    float bodyRadius = 0.0f; // the radius its body was made at
-    uint32_t seed = 0;
+    std::vector<float> heights; // what its body was given, to see how much it rose
+  };
+  // Rubble on its way into the layer, fed in over kFeedSeconds so a pile
+  // grows rather than jumps (a height field rising past what rests on it
+  // would push it out of its back).
+  struct RubbleFeed {
+    glm::vec2 at{0.0f};
+    float volume = 0.0f; // m^3 still to come
+    float rate = 0.0f;   // m^3 a second
+    float radius = 0.0f;
+    float castTop = 0.0f; // where rays down for the ground start
+    glm::vec3 colour{0.5f};
+  };
+  // A small piece that settled: no body any more, it lies on the pile as a
+  // stone and follows the surface down if the pile slumps away under it.
+  struct RubbleStone {
+    SceneNode *node = nullptr;
+    glm::vec2 at{0.0f}; // its middle, across the ground
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    float below = 0.0f; // from its node down to its lowest point
   };
   // A piece queued to be cut where it was hit, in its own space.
   struct PendingSplit {
@@ -516,8 +538,13 @@ private:
   std::vector<glm::vec3> breakLinkPoints; // in piece a's mesh frame
   std::vector<std::vector<int>> pieceLinks; // by piece, its links
   std::map<std::string, std::shared_ptr<const Fracture>> fractures; // cut once each
-  std::map<std::pair<int, int>, RubbleHeap> rubble; // by half-metre patch
-  std::shared_ptr<PhysicsMeshParts> rubbleParts; // the unit mound, for heaps' bodies
+  std::unique_ptr<RubbleLayer> rubbleLayer;
+  std::map<RubbleKey, RubbleTileDraw> rubbleTiles;
+  std::vector<RubbleKey> rubbleWaiting; // changed, waiting for a re-mesh
+  std::vector<RubbleFeed> rubbleFeed;
+  std::vector<RubbleStone> rubbleStones;
+  float rubbleCastTop = 50.0f; // m: the ground rays of the deposit being made start here
+  float rubbleRemeshWait = 0.0f; // s until tiles may be re-meshed again
   std::vector<PendingSplit> pendingSplits;
   // Cuts' uploads the GPU may still be doing; dropped once their fence says
   // it's done (UploadBatch).
@@ -547,7 +574,12 @@ private:
   void regroupBreakables(const std::vector<BreakHit> &hits);
   void splitPiece(const PendingSplit &split);
   void settleRubble();
-  void addRubble(glm::vec3 where, float volume, glm::vec3 colour);
+  // Rubble into the layer around where (its ground found below it), fed in
+  // over a moment.
+  void addRubble(glm::vec3 where, float volume, float radius, glm::vec3 colour);
+  // Each frame in play: rubble fed in, slumped, and the changed tiles
+  // re-meshed and their height fields set, a few a frame.
+  void updateRubble(float seconds);
   int pieceModel(const Breakable &object, const FracturePiece &shape, const std::string &key);
   bool restsOnFixed(const PlacedPiece &piece) const;
   PhysicsPose pieceWorld(const BreakPiece &piece) const;

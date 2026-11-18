@@ -54,6 +54,23 @@ void MeshModel::setBoundingSphere(glm::vec3 center, float radius) {
   }
 }
 
+bool MeshModel::updateMeshVertices(size_t meshIndex, const std::vector<Vertex> &vertices) {
+  return meshIndex < meshList.size() && meshList[meshIndex].updateVertices(vertices);
+}
+
+bool Mesh::updateVertices(const std::vector<Vertex> &vertices) {
+  if (!gUploadBatch || vertices.size() != cpuVertices.size() || vertices.empty())
+    return false;
+  cpuVertices = vertices;
+  const VkDeviceSize size = sizeof(Vertex) * vertices.size();
+  AllocatedBuffer staging;
+  createBuffer(allocator, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
+               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, &staging);
+  uploadToAllocation(allocator, staging.getAllocation(), vertices.data(), size);
+  gUploadBatch->copy(std::move(staging), vertexBuffer.get(), size);
+  return true;
+}
+
 void Mesh::generateLods(VkQueue transferQueue,
                         VkCommandPool transferCommandPool) {
   if (cpuIndices.size() < 12)

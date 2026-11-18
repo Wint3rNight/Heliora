@@ -196,6 +196,17 @@ void ModelManager::cleanup() {
   boundsCache.clear();
 }
 
+bool ModelManager::updateModelVertices(int modelId, const std::vector<Vertex> &vertices) {
+  MeshModel *model = getModel(modelId);
+  if (!model || !model->updateMeshVertices(0, vertices))
+    return false;
+  if (modelId < static_cast<int>(collisionCache.size()))
+    collisionCache[modelId].reset();
+  if (modelId < static_cast<int>(boundsCache.size()))
+    boundsCache[modelId].reset();
+  return true;
+}
+
 MeshModel *ModelManager::getModel(int modelId) {
   if (modelId < 0 || modelId >= models.size()) {
     return nullptr;

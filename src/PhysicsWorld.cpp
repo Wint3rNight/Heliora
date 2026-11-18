@@ -12,6 +12,7 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
@@ -33,6 +34,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -248,6 +250,31 @@ JPH::ShapeRefC makeHulls(const PhysicsMeshParts &parts) {
 }
 
 // Every triangle of every part, as one static mesh.
+// A height field, its samples spacing apart along x and z from the body's
+// position; NaN is a hole. Null if Jolt refuses it (all holes, too small).
+JPH::ShapeRefC makeHeightField(const std::vector<float> &heights, int samples, float spacing) {
+  if (samples < 2 || heights.size() != static_cast<size_t>(samples) * samples)
+    return nullptr;
+  std::vector<float> values(heights.size());
+  bool any = false;
+  for (size_t i = 0; i < heights.size(); ++i) {
+    any = any || !std::isnan(heights[i]);
+    values[i] = std::isnan(heights[i]) ? JPH::HeightFieldShapeConstants::cNoCollisionValue
+                                       : heights[i];
+  }
+  if (!any)
+    return nullptr;
+  JPH::HeightFieldShapeSettings settings(values.data(), JPH::Vec3::sZero(),
+                                         JPH::Vec3(spacing, 1.0f, spacing),
+                                         static_cast<JPH::uint32>(samples));
+  const JPH::ShapeSettings::ShapeResult result = settings.Create();
+  if (result.HasError()) {
+    spdlog::warn("[physics] height field refused: {}", result.GetError().c_str());
+    return nullptr;
+  }
+  return result.Get();
+}
+
 JPH::ShapeRefC makeTriangleMesh(const PhysicsMeshParts &parts) {
   JPH::VertexList vertices;
   JPH::IndexedTriangleList triangles;
@@ -527,6 +554,13 @@ struct PhysicsWorld::Impl {
     }
     if (fromParts)
       spdlog::warn("[physics] a hull or mesh body without parts, using a box");
+    if (desc.shape == PhysicsShape::HeightField) {
+      if (desc.motion != PhysicsMotion::Static) {
+        spdlog::warn("[physics] a height field must be static");
+        return nullptr;
+      }
+      return makeHeightField(desc.heights, desc.heightSamples, desc.heightSpacing);
+    }
 
     std::tuple<PhysicsShape, float, float, float> key{PhysicsShape::Box,
                                                       desc.halfExtents.x,
@@ -689,6 +723,8 @@ PhysicsBodyId PhysicsWorld::addBody(const PhysicsBodyDesc &desc) {
   const bool isStatic = motion == JPH::EMotionType::Static;
 
   const JPH::ShapeRefC shape = impl->shapeFor(desc);
+  if (shape == nullptr)
+    return {};
 
   JPH::BodyCreationSettings settings(
       shape, toJoltPosition(desc.position), toJolt(desc.rotation),
@@ -1030,4 +1066,21 @@ PhysicsWorld::debugLines(glm::vec3 cameraPosition) {
   (void)cameraPosition;
   return impl->noLines;
 #endif
+}
+
+void PhysicsWorld::setHeights(PhysicsBodyId id, const std::vector<float> &heights, int samples,
+                              float spacing) {
+  JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
+  const JPH::BodyID bodyId(id.value);
+  if (!id.isValid() || !bodies.IsAdded(bodyId))
+    return;
+  const JPH::ShapeRefC shape = makeHeightField(heights, samples, spacing);
+  if (shape == nullptr)
+    return; // keeps what it had
+  bodies.SetShape(bodyId, shape, false, JPH::EActivation::DontActivate);
+}
+
+void PhysicsWorld::activateBodiesIn(glm::vec3 lo, glm::vec3 hi) {
+  impl->system.GetBodyInterfaceNoLock().ActivateBodiesInAABox(
+      JPH::AABox(toJolt(lo), toJolt(hi)), JPH::BroadPhaseLayerFilter(), JPH::ObjectLayerFilter());
 }

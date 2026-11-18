@@ -22,7 +22,7 @@ struct PhysicsBodyId {
 };
 
 // Hulls and TriangleMesh are built from a model's own triangles.
-enum class PhysicsShape : uint8_t { Box, Sphere, Capsule, Hulls, TriangleMesh };
+enum class PhysicsShape : uint8_t { Box, Sphere, Capsule, Hulls, TriangleMesh, HeightField };
 
 // Kinematic bodies are moved by our code and push dynamic bodies aside.
 enum class PhysicsMotion : uint8_t { Static, Dynamic, Kinematic };
@@ -48,6 +48,12 @@ struct PhysicsBodyDesc {
   // scale, and bodies with the same parts share one Jolt shape.
   std::shared_ptr<const PhysicsMeshParts> parts;
   glm::vec3 scale{1.0f};
+  // HeightField, static only (rubble on the ground): heightSamples x
+  // heightSamples heights, x fastest, heightSpacing m apart along x and z
+  // from the body's position; NaN is a hole.
+  std::vector<float> heights;
+  int heightSamples = 0;
+  float heightSpacing = 1.0f;
   PhysicsMotion motion = PhysicsMotion::Dynamic;
   float mass = 0.0f;           // kg; 0 = volume times density
   float density = 1000.0f;     // kg/m^3, used when mass is 0
@@ -227,6 +233,12 @@ public:
   glm::vec3 linearVelocity(PhysicsBodyId id) const;
   // Sets a moving body's velocity and wakes it; static bodies ignore it.
   void setLinearVelocity(PhysicsBodyId id, glm::vec3 velocity);
+  // A height field body's new heights, as in PhysicsBodyDesc; nothing
+  // asleep on it is woken (see activateBodiesIn).
+  void setHeights(PhysicsBodyId id, const std::vector<float> &heights, int samples,
+                  float spacing);
+  // Wakes every body overlapping the box, for when what's under them changed.
+  void activateBodiesIn(glm::vec3 lo, glm::vec3 hi);
   glm::vec3 angularVelocity(PhysicsBodyId id) const; // radians/s
 
   // New contacts on bodies that report impacts since the last call, closing

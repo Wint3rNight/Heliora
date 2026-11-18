@@ -1746,8 +1746,10 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       roster->step(stepSeconds);
     physics->step(stepSeconds);
   }
-  if (steps > 0)
+  if (steps > 0) {
     handleImpacts();
+    updateRubble(static_cast<float>(steps) * stepSeconds);
+  }
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.
   for (const PhysicsMovedPose &moved : physics->movedPoses(alpha)) {
@@ -2424,7 +2426,7 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
     nearest = hit->distance;
     if (const int object = breakableOf(hit->userData); object >= 0)
       picked = breakables[object].entry;
-    else if (hit->userData & kBreakBodyFlag)
+    else if (hit->userData & (kBreakBodyFlag | kRubbleBodyFlag))
       picked.reset();
     else if (const SceneNode *node = physicsLinks[hit->userData].node)
       picked = node->entry();

@@ -1,6 +1,6 @@
-// Destruction in the renderer (steps 1.3 and 1.3b): breakable boxes as
-// pieces and the bodies that carry them, pieces cut again where they're
-// hit, and rubble. The cutting and the graph are in heliora_core
+// Destruction in the renderer (steps 1.3, 1.3b and 1.3c): breakable boxes
+// as pieces and the bodies that carry them, pieces cut again where they're
+// hit, and rubble as a layer over the ground. The cutting and the graph are in heliora_core
 // (Fracture.h, BreakGraph.h); this is where they meet the scene, the physics
 // world and the nodes that draw the pieces.
 #include "VulkanRenderer.h"
@@ -30,8 +30,38 @@ constexpr float kShareReach = 2.0f; // m: freed groups further than this get non
 constexpr float kSmallestPiece = 0.15f; // m, the cube root of its volume
 constexpr float kPickUp = 0.2f;         // m
 constexpr float kSettleSeconds = 4.0f;  // a small piece still moving after this is rubble too
-constexpr float kRubblePatch = 0.5f;    // m
-constexpr float kLargestHeap = 1.6f;    // m of radius
+// Rubble (Rubble.h): broken stuff takes about half again its solid volume;
+// every cut sheds a share of the piece cut as fines (dust and gravel our
+// pieces don't have) on the ground under the hit; a settled piece's volume
+// goes around it. All of it fed in over kFeedSeconds.
+constexpr float kBulking = 1.5f;
+constexpr float kFines = 0.15f;
+constexpr float kFinesReach = 0.5f;   // m
+constexpr float kDepositReach = 0.25f; // m, at least
+constexpr float kFeedSeconds = 0.5f;
+constexpr float kCastAbove = 2.0f;    // m: ground rays start this far over the rubble
+constexpr int kSlumpPasses = 8;       // a frame
+constexpr int kTilesPerFrame = 6;     // re-meshed at a time, the rest wait
+constexpr float kRemeshSeconds = 0.05f; // tiles re-meshed at most 20 times a second (each time a submit)
+constexpr float kRemeshMove = 0.002f; // m: a tile changing less isn't re-meshed yet
+// Room kept in the GPU-driven pass's shared buffers at Play for what's made
+// while playing (runtime pieces and rubble tiles), so it never grows, and
+// waits for the GPU, mid-game.
+constexpr size_t kReservedVertices = 256 * 1024;
+constexpr size_t kReservedIndices = 768 * 1024;
+
+// True if any height moved more than kRemeshMove, or rubble came or went.
+bool movedMuch(const std::vector<float> &before, const std::vector<float> &after) {
+  if (before.size() != after.size())
+    return true;
+  for (size_t k = 0; k < after.size(); ++k) {
+    if (std::isnan(before[k]) != std::isnan(after[k]))
+      return true;
+    if (!std::isnan(after[k]) && std::fabs(after[k] - before[k]) > kRemeshMove)
+      return true;
+  }
+  return false;
+}
 // The budget: cuts a frame (the rest wait), and pieces cut in a whole Play.
 constexpr int kSplitsPerFrame = 4;
 constexpr int kRuntimePieceBudget = 2000;
@@ -75,15 +105,15 @@ void VulkanRenderer::clearBreakables() {
     for (const BreakBody &body : breakBodies)
       if (body.id.isValid())
         physics->removeBody(body.id);
-    for (const auto &[patch, heap] : rubble)
-      if (heap.body.isValid())
-        physics->removeBody(heap.body);
+    for (const auto &[key, tile] : rubbleTiles)
+      if (tile.body.isValid())
+        physics->removeBody(tile.body);
   }
   std::unordered_set<const SceneNode *> nodes;
   for (const BreakPiece &piece : breakPieces)
-    nodes.insert(piece.node);
-  for (const auto &[patch, heap] : rubble)
-    nodes.insert(heap.node);
+    nodes.insert(piece.node); // the stones among them
+  for (const auto &[key, tile] : rubbleTiles)
+    nodes.insert(tile.node);
   if (!nodes.empty())
     rootNode.removeChildren([&](const SceneNode &node) { return nodes.contains(&node); });
   breakables.clear();
@@ -92,7 +122,12 @@ void VulkanRenderer::clearBreakables() {
   breakLinks.clear();
   breakLinkPoints.clear();
   pieceLinks.clear();
-  rubble.clear();
+  rubbleTiles.clear();
+  rubbleWaiting.clear();
+  rubbleFeed.clear();
+  rubbleStones.clear();
+  if (rubbleLayer)
+    rubbleLayer->clear();
   pendingSplits.clear();
   uploadsInFlight.clear(); // each waits for its fence first
   runtimePieces = 0;
@@ -325,14 +360,27 @@ void VulkanRenderer::prepareBreakGraph() {
     piece.anchor = !breakables[piece.object].moving && restsOnFixed(placed[p]);
     anchors += piece.anchor;
   }
-  if (!rubbleParts) {
-    // The unit mound's points, the hull every heap's body is scaled from.
-    rubbleParts = std::make_shared<PhysicsMeshParts>();
-    PhysicsMeshPart part;
-    for (const Vertex &v : makeRubbleMound(0, glm::vec3(1.0f)).vertices)
-      part.positions.push_back(v.pos);
-    rubbleParts->parts.push_back(std::move(part));
-  }
+  gpuDrivenGBufferPass.reserveGeometry(kReservedVertices, kReservedIndices);
+  if (!rubbleLayer)
+    // The ground under rubble: the first thing below that doesn't break,
+    // move or belong to the rubble itself.
+    rubbleLayer = std::make_unique<RubbleLayer>([this](glm::vec2 p) -> std::optional<float> {
+      glm::vec3 from(p.x, rubbleCastTop, p.y);
+      for (int tries = 0; tries < 8; ++tries) {
+        const std::optional<PhysicsRayHit> hit =
+            physics->castRay(from, glm::vec3(0.0f, -1.0f, 0.0f), 100.0f);
+        if (!hit)
+          return std::nullopt;
+        if (hit->distance < 1e-3f) {
+          from.y += 10.0f; // started inside something: look again from above it
+          continue;
+        }
+        if (!(hit->userData & (kBreakBodyFlag | kRubbleBodyFlag)) && physics->mass(hit->body) == 0.0f)
+          return from.y - hit->distance;
+        from.y -= hit->distance + 0.01f;
+      }
+      return std::nullopt;
+    });
   breakGraphReady = true;
   spdlog::info("[break] {} objects, {} pieces, {} links ({} between objects), {} anchors, {:.2f} ms",
                breakables.size(), breakPieces.size(), breakLinks.size(), breakLinks.size() - inside,
@@ -427,10 +475,10 @@ void VulkanRenderer::handleImpacts() {
     uploadsInFlight.push_back(std::move(batch));
   }
   if (made > 0)
-    spdlog::info("[break] {} cuts, {:.2f} ms ({} pieces cut so far, {} rubble heaps)", made,
+    spdlog::info("[break] {} cuts, {:.2f} ms ({} pieces cut so far)", made,
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cutting)
                      .count(),
-                 runtimePieces, rubble.size());
+                 runtimePieces);
   if (!hits.empty() || made > 0)
     regroupBreakables(hits);
   settleRubble();
@@ -455,14 +503,18 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
                                       splinters ? kSplinterStretch : 1.0f);
   const PhysicsPose world = pieceWorld(old);
   const glm::mat4 where = poseMatrix(world);
+  // Fines: what a real break grinds to dust and gravel, on the ground under
+  // the hit.
+  addRubble(glm::vec3(where * glm::vec4(split.hit, 1.0f)), kFines * old.shape->volume * kBulking,
+            kFinesReach, rawColour(object.colour));
 
   // The new pieces: big enough to stay pieces, or rubble now.
   std::vector<int> made(cut.pieces.size(), -1);
   for (size_t k = 0; k < cut.pieces.size(); ++k) {
     const FracturePiece &shape = cut.pieces[k];
     if (pieceSize(shape) < kSmallestPiece) {
-      addRubble(glm::vec3(where * glm::vec4(shape.centre, 1.0f)), shape.volume,
-                rawColour(object.colour));
+      addRubble(glm::vec3(where * glm::vec4(shape.centre, 1.0f)), shape.volume * kBulking,
+                kDepositReach, rawColour(object.colour));
       continue;
     }
     BreakPiece piece;
@@ -698,9 +750,9 @@ void VulkanRenderer::settleRubble() {
       continue;
     const PhysicsPose world = pieceWorld(piece);
     const glm::vec3 middle = world.position + world.rotation * piece.shape->centre;
-    // Under it: the ground or something else that doesn't break or move.
-    // Its own body is in the way of a ray from its middle, so it's ignored
-    // by starting just under its lowest point.
+    // Under it: the ground, the rubble or something else that doesn't break
+    // or move. Its own body is in the way of a ray from its middle, so it's
+    // ignored by starting just under its lowest point.
     float lowest = middle.y;
     for (const FractureFace &face : piece.shape->faces)
       for (const glm::vec3 &q : face.points)
@@ -713,83 +765,162 @@ void VulkanRenderer::settleRubble() {
     body.id = {};
     body.pieces.clear();
     piece.alive = false;
-    SceneNode *node = piece.node;
-    rootNode.removeChildren([&](const SceneNode &n) { return &n == node; });
     for (int link : pieceLinks[index])
       breakLinks[link].broken = true;
-    addRubble(middle, piece.shape->volume, rawColour(breakables[piece.object].colour));
+    // It stays where it lies, a stone on the pile, which rises around it.
+    piece.node->setPose(world.position, world.rotation);
+    rubbleStones.push_back({piece.node, glm::vec2(middle.x, middle.z), world.position, world.rotation,
+                            world.position.y - lowest});
+    addRubble(middle, piece.shape->volume * kBulking,
+              std::max(kDepositReach, 1.5f * pieceSize(*piece.shape)),
+              rawColour(breakables[piece.object].colour));
   }
 }
 
-// Rubble joins the heap on the half-metre patch of ground under where.
-void VulkanRenderer::addRubble(glm::vec3 where, float volume, glm::vec3 colour) {
-  if (!rubbleParts || volume <= 0.0f)
+void VulkanRenderer::addRubble(glm::vec3 where, float volume, float radius, glm::vec3 colour) {
+  if (!rubbleLayer || !(volume > 0.0f))
     return;
-  std::optional<PhysicsRayHit> ground;
-  // The first thing below that isn't a breakable piece (pieces may be in
-  // the way while a wall comes down).
-  glm::vec3 from = where + glm::vec3(0.0f, 0.05f, 0.0f);
-  for (int tries = 0; tries < 8; ++tries) {
-    ground = physics->castRay(from, glm::vec3(0.0f, -1.0f, 0.0f), 40.0f);
-    if (!ground || !(ground->userData & kBreakBodyFlag))
-      break;
-    from.y -= ground->distance + 0.02f;
-    ground.reset();
+  rubbleFeed.push_back({glm::vec2(where.x, where.z), volume, volume / kFeedSeconds, radius,
+                        where.y + kCastAbove, colour});
+}
+
+void VulkanRenderer::updateRubble(float seconds) {
+  if (!rubbleLayer)
+    return;
+  const auto start = std::chrono::steady_clock::now();
+  for (RubbleFeed &feed : rubbleFeed) {
+    const float amount = std::min(feed.volume, feed.rate * seconds);
+    rubbleCastTop = feed.castTop;
+    rubbleLayer->deposit(feed.at, amount, feed.radius, feed.colour);
+    feed.volume -= amount;
   }
-  if (!ground)
-    return; // over nothing: dust
-  const glm::vec3 at(from.x, from.y - ground->distance, from.z);
-  const std::pair<int, int> patch{static_cast<int>(std::floor(at.x / kRubblePatch)),
-                                  static_cast<int>(std::floor(at.z / kRubblePatch))};
-  RubbleHeap &heap = rubble[patch];
-  if (heap.volume == 0.0f) {
-    heap.base = glm::vec3((patch.first + 0.5f) * kRubblePatch, at.y,
-                          (patch.second + 0.5f) * kRubblePatch);
-    heap.seed = static_cast<uint32_t>(patch.first * 73856093) ^
-                static_cast<uint32_t>(patch.second * 19349663);
+  std::erase_if(rubbleFeed, [](const RubbleFeed &feed) { return feed.volume <= 1e-7f; });
+  rubbleLayer->settle(kSlumpPasses);
+  for (RubbleKey key : rubbleLayer->takeChanged())
+    if (std::find(rubbleWaiting.begin(), rubbleWaiting.end(), key) == rubbleWaiting.end())
+      rubbleWaiting.push_back(key);
+  rubbleRemeshWait -= seconds;
+  if (rubbleWaiting.empty() || rubbleRemeshWait > 0.0f)
+    return;
+  rubbleRemeshWait = kRemeshSeconds;
+
+  // A few tiles at a time, skipping those that barely changed (slumping's
+  // last fractions of a millimetre).
+  std::vector<RubbleKey> keys;
+  std::vector<std::vector<float>> newHeights;
+  size_t looked = 0;
+  while (looked < rubbleWaiting.size() && keys.size() < static_cast<size_t>(kTilesPerFrame)) {
+    const RubbleKey key = rubbleWaiting[looked++];
+    std::vector<float> heights = rubbleLayer->tileHeights(key);
+    const auto drawn = rubbleTiles.find(key);
+    if (drawn != rubbleTiles.end() && drawn->second.modelId >= 0 &&
+        !movedMuch(drawn->second.heights, heights))
+      continue;
+    keys.push_back(key);
+    newHeights.push_back(std::move(heights));
   }
-  heap.colour = (heap.colour * heap.volume + colour * volume) / (heap.volume + volume);
-  heap.volume += volume;
-  const float radius = std::min(rubbleRadius(heap.volume), kLargestHeap);
-  // Its look: a few rough mounds and colours, shared between heaps.
-  const glm::vec3 c = glm::round(heap.colour * 16.0f) / 16.0f;
-  const uint32_t variant = heap.seed % 4;
-  const std::string key = std::format("#rubble|{}|{} {} {}", variant, c.r, c.g, c.b);
-  int modelId = modelManager.findModel(key);
-  if (modelId < 0) {
-    modelId = modelManager.createModel(key, makeRubbleMound(variant, c), false, false, device,
-                                       textureManager, descriptorManager);
-    if (gDeferredGeometry)
-      gDeferredGeometry->push_back(modelId);
-    else
-      gpuDrivenGBufferPass.registerModelGeometry(modelId, modelManager);
+  rubbleWaiting.erase(rubbleWaiting.begin(), rubbleWaiting.begin() + looked);
+  if (keys.empty())
+    return;
+  std::erase_if(uploadsInFlight, [](const std::unique_ptr<UploadBatch> &b) { return b->finished(); });
+  auto batch = std::make_unique<UploadBatch>(device.getLogicalDevice(), device.getGraphicsCommandPool(),
+                                             device.getGraphicsQueue());
+  gUploadBatch = batch.get();
+  // New tiles' models first: registering them may grow the shared buffer,
+  // which replaces it, so the rewrites in place come after.
+  std::vector<int> fresh;
+  std::vector<std::pair<int, std::vector<Vertex>>> rewrites;
+  for (size_t n = 0; n < keys.size(); ++n) {
+    const RubbleKey key = keys[n];
+    MeshData mesh = rubbleLayer->tileMesh(key);
+    if (mesh.vertices.empty())
+      continue;
+    RubbleTileDraw &tile = rubbleTiles[key];
+    const glm::vec2 corner = rubbleTileCorner(key);
+    if (tile.modelId < 0) {
+      // A tile's model is kept under its place, so another Play rewrites it
+      // instead of making a new one.
+      const std::string name = std::format("#rubble|{}|{}", key.first, key.second);
+      tile.modelId = modelManager.findModel(name);
+      float middle = 0.0f;
+      for (const Vertex &v : mesh.vertices)
+        middle += v.pos.y;
+      middle /= static_cast<float>(mesh.vertices.size());
+      if (tile.modelId < 0) {
+        tile.modelId = modelManager.createModel(name, mesh, false, false, device, textureManager,
+                                                descriptorManager);
+        fresh.push_back(tile.modelId);
+      } else {
+        rewrites.emplace_back(tile.modelId, std::move(mesh.vertices));
+      }
+      // Culling: a sphere over the whole tile and a pile up to about 2.5 m.
+      if (MeshModel *model = modelManager.getModel(tile.modelId))
+        model->setBoundingSphere(glm::vec3(0.5f * kRubbleTile, middle + 1.0f, 0.5f * kRubbleTile),
+                                 3.2f);
+      auto node = std::make_unique<SceneNode>();
+      node->setModelId(tile.modelId);
+      node->setPose(glm::vec3(corner.x, 0.0f, corner.y), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+      tile.node = node.get();
+      rootNode.addChild(std::move(node));
+    } else {
+      rewrites.emplace_back(tile.modelId, std::move(mesh.vertices));
+    }
+
+    // Its height field, and whatever rests on it woken, whichever way it
+    // moved: risen, so it's lifted a little at a time instead of left inside
+    // once the field passes its middle (a height field is one-sided);
+    // dropped, so it doesn't hover.
+    std::vector<float> heights = std::move(newHeights[n]);
+    float low = std::numeric_limits<float>::max(), high = -low;
+    for (const std::vector<float> *list : {&heights, &tile.heights})
+      for (float h : *list)
+        if (!std::isnan(h)) {
+          low = std::min(low, h);
+          high = std::max(high, h);
+        }
+    if (!tile.body.isValid()) {
+      PhysicsBodyDesc desc;
+      desc.shape = PhysicsShape::HeightField;
+      desc.motion = PhysicsMotion::Static;
+      desc.heights = heights;
+      desc.heightSamples = kRubbleSamples;
+      desc.heightSpacing = kRubbleSpacing;
+      desc.position = glm::vec3(corner.x, 0.0f, corner.y);
+      desc.friction = 0.8f;
+      desc.userData = kRubbleBodyFlag;
+      tile.body = physics->addBody(desc); // invalid while it's all too thin: made next time
+    } else {
+      physics->setHeights(tile.body, heights, kRubbleSamples, kRubbleSpacing);
+    }
+    if (high >= low)
+      physics->activateBodiesIn(glm::vec3(corner.x, low - 1.0f, corner.y),
+                                glm::vec3(corner.x + kRubbleTile, high + 1.0f, corner.y + kRubbleTile));
+    tile.heights = std::move(heights);
   }
-  if (!heap.node) {
-    auto node = std::make_unique<SceneNode>();
-    heap.node = node.get();
-    rootNode.addChild(std::move(node));
+  if (!fresh.empty())
+    gpuDrivenGBufferPass.registerModelGeometries(fresh, modelManager);
+  for (auto &[modelId, vertices] : rewrites) {
+    modelManager.updateModelVertices(modelId, vertices);
+    gpuDrivenGBufferPass.updateModelVertices(modelId, modelManager);
   }
-  heap.node->setModelId(modelId);
-  NodeTransform t;
-  t.position = heap.base;
-  t.rotationDeg.y = static_cast<float>(heap.seed % 360);
-  t.scale = radius;
-  heap.node->setTransform(t);
-  // Its body, made again once it has grown by a fifth.
-  if (!heap.body.isValid() || radius > heap.bodyRadius * 1.2f) {
-    if (heap.body.isValid())
-      physics->removeBody(heap.body);
-    PhysicsBodyDesc desc;
-    desc.shape = PhysicsShape::Hulls;
-    desc.parts = rubbleParts;
-    desc.scale = glm::vec3(radius);
-    desc.motion = PhysicsMotion::Static;
-    desc.position = heap.base;
-    desc.rotation = rotationFromDegrees(t.rotationDeg);
-    desc.friction = 0.8f;
-    heap.body = physics->addBody(desc);
-    heap.bodyRadius = radius;
+  gUploadBatch = nullptr;
+  batch->submit();
+  uploadsInFlight.push_back(std::move(batch));
+
+  // Stones follow the surface down where the pile slumped away under them.
+  for (RubbleStone &stone : rubbleStones) {
+    if (std::find(keys.begin(), keys.end(), rubbleKeyAt(stone.at)) == keys.end())
+      continue;
+    const float surface = rubbleLayer->surface(stone.at);
+    if (!std::isnan(surface) && stone.position.y - stone.below > surface + 0.02f) {
+      stone.position.y = surface + stone.below;
+      stone.node->setPose(stone.position, stone.rotation);
+    }
   }
+  spdlog::debug("[rubble] {} tiles, {:.3f} ms ({} in all, {:.2f} m^3)", keys.size(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count(),
+                rubbleTiles.size(), rubbleLayer->volume());
 }
 
 // Edit mode: a breakable moved in the Inspector or with the gizmo. A new

@@ -3,6 +3,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -655,4 +656,74 @@ TEST(a_body_can_be_given_a_velocity) {
   const PhysicsBodyId id = world.addBody(box);
   world.setLinearVelocity(id, glm::vec3(0.0f, 0.0f, -6.0f));
   CHECK_NEAR(glm::distance(world.linearVelocity(id), glm::vec3(0.0f, 0.0f, -6.0f)), 0.0, 1e-4);
+}
+
+namespace {
+
+// A 2 m square of height field, 9 x 9 samples 0.25 m apart, at this height,
+// with a hole in the middle cell if asked.
+std::vector<float> fieldHeights(float height, bool hole) {
+  std::vector<float> heights(81, height);
+  if (hole)
+    for (int z = 3; z <= 5; ++z)
+      for (int x = 3; x <= 5; ++x)
+        heights[z * 9 + x] = std::numeric_limits<float>::quiet_NaN();
+  return heights;
+}
+
+PhysicsBodyId addField(PhysicsWorld &world, float height, bool hole) {
+  PhysicsBodyDesc field;
+  field.shape = PhysicsShape::HeightField;
+  field.motion = PhysicsMotion::Static;
+  field.heights = fieldHeights(height, hole);
+  field.heightSamples = 9;
+  field.heightSpacing = 0.25f;
+  field.position = glm::vec3(-1.0f, 0.0f, -1.0f);
+  return world.addBody(field);
+}
+
+PhysicsBodyId addBall(PhysicsWorld &world, glm::vec3 position) {
+  PhysicsBodyDesc ball;
+  ball.shape = PhysicsShape::Sphere;
+  ball.radius = 0.1f;
+  ball.position = position;
+  return world.addBody(ball);
+}
+
+} // namespace
+
+TEST(a_ball_rests_on_a_height_field_at_its_height) {
+  PhysicsWorld world;
+  addFloor(world);
+  addField(world, 0.4f, false);
+  const PhysicsBodyId ball = addBall(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  stepFor(world, 120);
+  CHECK_NEAR(world.pose(ball).position.y, 0.5, 0.02);
+}
+
+TEST(a_ball_falls_through_a_hole_in_a_height_field) {
+  PhysicsWorld world;
+  addFloor(world);
+  addField(world, 0.4f, true);
+  const PhysicsBodyId ball = addBall(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  stepFor(world, 120);
+  CHECK(world.pose(ball).position.y < 0.2f); // through it, on the floor under it
+}
+
+// Raised by less than the ball's radius: a height field is one-sided, so
+// anything whose middle ends up under the new surface is pushed out of its
+// back instead (why the renderer feeds rubble in gradually).
+TEST(a_height_field_raised_under_a_sleeping_ball_lifts_it) {
+  PhysicsWorld world;
+  addFloor(world);
+  const PhysicsBodyId field = addField(world, 0.2f, false);
+  const PhysicsBodyId ball = addBall(world, glm::vec3(0.0f, 1.0f, 0.0f));
+  stepFor(world, 240);
+  CHECK(!world.isActive(ball));
+  CHECK_NEAR(world.pose(ball).position.y, 0.3, 0.02);
+  world.setHeights(field, fieldHeights(0.25f, false), 9, 0.25f);
+  world.activateBodiesIn(glm::vec3(-1.0f, -1.0f, -1.0f), glm::vec3(1.0f, 2.0f, 1.0f));
+  CHECK(world.isActive(ball));
+  stepFor(world, 60);
+  CHECK_NEAR(world.pose(ball).position.y, 0.35, 0.03);
 }

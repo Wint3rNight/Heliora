@@ -323,32 +323,3 @@ TEST(shards_spread_across_the_face_that_was_hit) {
   }
   CHECK(spread > 4.0f * depth);
 }
-
-TEST(a_rubble_mound_is_a_low_rough_dome) {
-  const MeshData mound = makeRubbleMound(4, glm::vec3(0.5f));
-  CHECK(!mound.vertices.empty());
-  CHECK(mound.indices.size() % 3 == 0);
-  float top = 0.0f;
-  int badWinding = 0;
-  for (const Vertex &v : mound.vertices) {
-    CHECK(v.pos.y >= -1e-5f);
-    CHECK(glm::length(glm::vec2(v.pos.x, v.pos.z)) <= 1.0f + 1e-4f);
-    top = std::max(top, v.pos.y);
-  }
-  for (size_t i = 0; i < mound.indices.size(); i += 3) {
-    const Vertex &a = mound.vertices[mound.indices[i]];
-    const Vertex &b = mound.vertices[mound.indices[i + 1]];
-    const Vertex &c = mound.vertices[mound.indices[i + 2]];
-    if (glm::dot(glm::cross(b.pos - a.pos, c.pos - a.pos), a.normal + b.normal + c.normal) <= 0.0f)
-      ++badWinding;
-  }
-  CHECK(badWinding == 0);
-  CHECK(top > 0.25f && top < 0.5f); // low: about a third as high as it's wide
-}
-
-TEST(rubble_spreads_wider_as_more_settles) {
-  // A mound of radius r holds pi r^2 h / 2 with h a third of r or so.
-  CHECK(rubbleRadius(0.1f) < rubbleRadius(0.2f));
-  const float r = rubbleRadius(1.0f);
-  CHECK_NEAR(3.14159265f * r * r * (kRubbleHeight * r) / 2.0f, 1.0, 1e-3);
-}

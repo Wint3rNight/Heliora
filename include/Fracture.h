@@ -79,12 +79,3 @@ Fracture fractureConvex(const FracturePiece &piece, const std::vector<glm::vec3>
 // The same seed gives the same points.
 std::vector<glm::vec3> pointsAround(const FracturePiece &piece, glm::vec3 hit, glm::vec3 push,
                                     int count, FracturePattern pattern, uint32_t seed);
-
-// Rubble: what's too small to pick up settles into a heap that's part of
-// the ground. A heap is a low, rough dome, radius 1 and kRubbleHeight high
-// at its middle, base at y = 0; it's scaled to the volume it holds.
-constexpr float kRubbleHeight = 0.35f;
-MeshData makeRubbleMound(uint32_t seed, glm::vec3 colour);
-// The radius of a heap holding this volume (m^3): a paraboloid dome holds
-// pi r^2 h / 2.
-float rubbleRadius(float volume);

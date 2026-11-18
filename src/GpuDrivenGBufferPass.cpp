@@ -197,6 +197,48 @@ void GpuDrivenGBufferPass::registerModelGeometries(const std::vector<int> &model
     syncGeometry();
 }
 
+void GpuDrivenGBufferPass::reserveGeometry(size_t moreVertices, size_t moreIndices) {
+  if (!device || staticVertices.empty() || staticIndices.empty())
+    return;
+  if (growArenaBuffer(staticVertexBuffer, staticVertexBufferSize,
+                      (staticVertices.size() + moreVertices) * sizeof(Vertex),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+    uploadedVertexCount = 0;
+  if (growArenaBuffer(staticIndexBuffer, staticIndexBufferSize,
+                      (staticIndices.size() + moreIndices) * sizeof(uint32_t),
+                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT))
+    uploadedIndexCount = 0;
+  syncGeometry(); // what a grown buffer lost, uploaded again
+}
+
+void GpuDrivenGBufferPass::updateModelVertices(int modelId, ModelManager &modelManager) {
+  MeshModel *model = modelManager.getModel(modelId);
+  if (!model)
+    return;
+  for (size_t meshIndex = 0; meshIndex < model->getMeshCount(); ++meshIndex) {
+    const Mesh *mesh = model->getMesh(meshIndex);
+    const auto found = mesh ? meshVertexOffsets.find(mesh) : meshVertexOffsets.end();
+    if (found == meshVertexOffsets.end())
+      continue;
+    const std::vector<Vertex> &vertices = mesh->getCpuVertices();
+    const size_t first = static_cast<size_t>(found->second);
+    if (first + vertices.size() > staticVertices.size())
+      continue;
+    std::copy(vertices.begin(), vertices.end(), staticVertices.begin() + first);
+    // Not on the GPU yet: the next sync uploads it from the CPU copy.
+    if (!device || !gUploadBatch || !staticVertexBuffer ||
+        first + vertices.size() > uploadedVertexCount)
+      continue;
+    const VkDeviceSize bytes = vertices.size() * sizeof(Vertex);
+    AllocatedBuffer staging;
+    createBuffer(device->getAllocator(), bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VMA_MEMORY_USAGE_AUTO, RENDER_UPLOAD_ALLOCATION_FLAGS, &staging);
+    uploadToAllocation(device->getAllocator(), staging.getAllocation(), vertices.data(), bytes);
+    gUploadBatch->copy(std::move(staging), staticVertexBuffer.get(), bytes,
+                       first * sizeof(Vertex));
+  }
+}
+
 // Adds the model's meshes to the arena's CPU copy; true if anything was new.
 // Before the pass is created (no device yet) that's all: create() uploads.
 bool GpuDrivenGBufferPass::appendModelGeometry(int modelId,

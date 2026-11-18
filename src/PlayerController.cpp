@@ -77,6 +77,9 @@ bool coversFrame(std::string_view frames, int frame) {
 
 } // namespace
 
+// Pixels a scripted mouse key moves the mouse each frame it's held.
+constexpr float kScriptedMouse = 8.0f;
+
 PlayerControls scriptedControls(std::string_view script, int frame) {
   PlayerControls controls;
   while (!script.empty()) {
@@ -96,6 +99,13 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     else if (key == "rmb") controls.aim = true;
     else if (key == "space") controls.jump = true;
     else if (key == "alt") controls.dodge = true;
+    else if (key == "q") controls.reveal = true;
+    else if (key == "lmb") controls.cast = true;
+    else if (key == "e") controls.burst = true;
+    else if (key == "mu") controls.mouse.y -= kScriptedMouse;
+    else if (key == "md") controls.mouse.y += kScriptedMouse;
+    else if (key == "ml") controls.mouse.x -= kScriptedMouse;
+    else if (key == "mr") controls.mouse.x += kScriptedMouse;
   }
   return controls;
 }

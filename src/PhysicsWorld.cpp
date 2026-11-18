@@ -7,6 +7,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -104,6 +105,20 @@ public:
   bool ShouldCollide(JPH::ObjectLayer layer) const override {
     return layer != Layers::Character;
   }
+};
+
+constexpr float kAlongSurface = 1e-3f; // a move this little into what it touches is along it
+
+// For sweeps that only stop at what doesn't move.
+class StillOnlyBroadPhaseFilter final : public JPH::BroadPhaseLayerFilter {
+public:
+  bool ShouldCollide(JPH::BroadPhaseLayer layer) const override {
+    return layer == BroadPhaseLayers::NonMoving;
+  }
+};
+class StillOnlyFilter final : public JPH::ObjectLayerFilter {
+public:
+  bool ShouldCollide(JPH::ObjectLayer layer) const override { return layer == Layers::NonMoving; }
 };
 
 void traceToLog(const char *format, ...) {
@@ -901,16 +916,55 @@ float PhysicsWorld::mass(PhysicsBodyId id) const {
   return 1.0f / lock.GetBody().GetMotionProperties()->GetInverseMass();
 }
 
+std::pair<glm::vec3, glm::vec3> PhysicsWorld::bounds(PhysicsBodyId id) const {
+  if (!id.isValid())
+    return {};
+  JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id.value));
+  if (!lock.Succeeded())
+    return {};
+  const JPH::AABox box = lock.GetBody().GetWorldSpaceBounds();
+  return {toGlm(box.mMin), toGlm(box.mMax)};
+}
+
+void PhysicsWorld::setAngularVelocity(PhysicsBodyId id, glm::vec3 velocity) {
+  JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
+  const JPH::BodyID bodyId(id.value);
+  if (!id.isValid() || !bodies.IsAdded(bodyId) ||
+      bodies.GetMotionType(bodyId) != JPH::EMotionType::Dynamic)
+    return;
+  bodies.SetAngularVelocity(bodyId, toJolt(velocity));
+  bodies.ActivateBody(bodyId);
+}
+
+std::vector<PhysicsBodyFound> PhysicsWorld::bodiesInSphere(glm::vec3 centre, float radius) const {
+  // The broad phase only: bounding boxes against the sphere.
+  JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> hits;
+  impl->system.GetBroadPhaseQuery().CollideSphere(toJolt(centre), radius, hits, {},
+                                                  impl->ignoreCharacters);
+  std::vector<PhysicsBodyFound> found;
+  found.reserve(hits.mHits.size());
+  const JPH::BodyInterface &bodies = impl->system.GetBodyInterfaceNoLock();
+  for (const JPH::BodyID &id : hits.mHits)
+    found.push_back({PhysicsBodyId{id.GetIndexAndSequenceNumber()}, impl->userData[id.GetIndex()],
+                     bodies.GetMotionType(id) == JPH::EMotionType::Dynamic});
+  return found;
+}
+
 std::optional<PhysicsRayHit> PhysicsWorld::castRay(glm::vec3 origin,
                                                    glm::vec3 direction,
-                                                   float maxDistance) const {
+                                                   float maxDistance,
+                                                   const std::vector<PhysicsBodyId> &skip) const {
   // Jolt's ray is as long as its direction vector, and a hit comes back as
   // the fraction of that length.
   const glm::vec3 ray = glm::normalize(direction) * maxDistance;
   const JPH::RRayCast cast(toJoltPosition(origin), toJolt(ray));
   JPH::RayCastResult hit;
-  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(
-          cast, hit, {}, impl->ignoreCharacters))
+  JPH::IgnoreMultipleBodiesFilter skipping;
+  skipping.Reserve(static_cast<JPH::uint>(skip.size()));
+  for (PhysicsBodyId id : skip)
+    skipping.IgnoreBody(JPH::BodyID(id.value));
+  if (!impl->system.GetNarrowPhaseQueryNoLock().CastRay(cast, hit, {}, impl->ignoreCharacters,
+                                                         skipping))
     return std::nullopt;
   PhysicsRayHit result{PhysicsBodyId{hit.mBodyID.GetIndexAndSequenceNumber()},
                        impl->userData[hit.mBodyID.GetIndex()],
@@ -952,6 +1006,47 @@ std::optional<PhysicsRayHit> PhysicsWorld::castSphere(glm::vec3 origin,
   return PhysicsRayHit{PhysicsBodyId{hit.mBodyID2.GetIndexAndSequenceNumber()},
                        impl->userData[hit.mBodyID2.GetIndex()],
                        hit.mFraction * maxDistance, toGlm(normal)};
+}
+
+std::optional<PhysicsSweepHit> PhysicsWorld::sweepBody(PhysicsBodyId body, glm::vec3 move,
+                                                       glm::vec3 offset) const {
+  JPH::RefConst<JPH::Shape> shape;
+  JPH::RMat44 transform;
+  {
+    JPH::BodyLockRead lock(impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(body.value));
+    if (!lock.Succeeded())
+      return std::nullopt;
+    shape = lock.GetBody().GetShape();
+    transform = lock.GetBody().GetCenterOfMassTransform().PostTranslated(toJolt(offset));
+  }
+  const JPH::Vec3 sweep = toJolt(move);
+  const JPH::Vec3 way = sweep.NormalizedOr(JPH::Vec3::sZero());
+  const JPH::RShapeCast cast =
+      JPH::RShapeCast::sFromWorldTransform(shape, JPH::Vec3::sOne(), transform, sweep);
+  JPH::ShapeCastSettings settings;
+  // Cast sharp, a body flush with a wall reads as hit whichever way it goes,
+  // with no axis to tell (Jolt hands back the sweep's own direction). With
+  // its edges rounded it keeps a true one.
+  settings.mUseShrunkenShapeAndConvexRadius = true;
+  settings.mReturnDeepestPoint = true; // a true axis for what it starts in
+  JPH::AllHitCollisionCollector<JPH::CastShapeCollector> hits;
+  impl->system.GetNarrowPhaseQueryNoLock().CastShape(cast, settings, JPH::RVec3::sZero(), hits,
+                                                     StillOnlyBroadPhaseFilter(),
+                                                     StillOnlyFilter());
+  std::optional<PhysicsSweepHit> first;
+  for (const JPH::ShapeCastResult &hit : hits.mHits) {
+    if (first && hit.mFraction >= first->fraction)
+      continue;
+    // The penetration axis points from the body into what it hit. Not the
+    // face's normal: at an edge the face found can be the one beside it,
+    // and sliding along that would go on through.
+    const JPH::Vec3 normal = -hit.mPenetrationAxis.NormalizedOr(way);
+    // Touching it already: only a move into it counts, not along or away.
+    if (hit.mFraction <= 0.0f && normal.Dot(way) > -kAlongSurface)
+      continue;
+    first = PhysicsSweepHit{hit.mFraction, toGlm(normal)};
+  }
+  return first;
 }
 
 PhysicsCharacterId PhysicsWorld::addCharacter(const PhysicsCharacterDesc &desc) {

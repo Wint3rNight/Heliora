@@ -211,6 +211,15 @@ TEST(capture_scripts_hold_keys_or_press_them_on_a_frame) {
   CHECK(!scriptedControls("w@10-20", 21).forward);
   c = scriptedControls("rmb d ctrl alt@3 s a", 3);
   CHECK(c.aim && c.right && c.crouch && c.dodge && c.back && c.left);
-  c = scriptedControls("q w@x", 1); // unknown keys and bad frames are skipped
+  c = scriptedControls("q lmb@4 e@4", 4); // the powers' reveal, cast and burst
+  CHECK(c.reveal && c.cast && c.burst && !c.aim);
+  CHECK(!scriptedControls("lmb@4", 5).cast);
+  c = scriptedControls("mu@2-3 mr@3", 3); // the mouse: 8 px a frame up, down, left, right
+  CHECK_NEAR(c.mouse.y, -8.0, 1e-6);
+  CHECK_NEAR(c.mouse.x, 8.0, 1e-6);
+  c = scriptedControls("md ml", 0);
+  CHECK_NEAR(c.mouse.y, 8.0, 1e-6);
+  CHECK_NEAR(c.mouse.x, -8.0, 1e-6);
+  c = scriptedControls("z w@x", 1); // unknown keys and bad frames are skipped
   CHECK(!c.forward && !c.back && !c.left && !c.right && !c.jump);
 }

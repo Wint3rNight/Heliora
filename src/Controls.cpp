@@ -27,6 +27,9 @@ constexpr std::array<ActionInfo, static_cast<size_t>(Action::Count)> kActions = 
     {"aim", "Aim"},
     {"jump", "Jump"},
     {"dodge", "Dodge"},
+    {"reveal", "Reveal"},
+    {"cast", "Cast"},
+    {"burst", "Burst"},
 }};
 
 // Keys with names of their own; letters, digits, F keys and keypad digits
@@ -156,6 +159,9 @@ ControlBindings::ControlBindings() {
   (*this)[Action::Aim] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_RIGHT};
   (*this)[Action::Jump] = key(GLFW_KEY_SPACE);
   (*this)[Action::Dodge] = key(GLFW_KEY_LEFT_ALT);
+  (*this)[Action::Reveal] = key(GLFW_KEY_Q);
+  (*this)[Action::Cast] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_LEFT};
+  (*this)[Action::Burst] = key(GLFW_KEY_E);
 }
 
 void ControlBindings::bind(Action action, InputBinding binding) {
@@ -164,4 +170,14 @@ void ControlBindings::bind(Action action, InputBinding binding) {
     if (&other != &mine && other == binding)
       other = mine;
   mine = binding;
+}
+
+bool PressEdges::justPressed(int code, bool down) {
+  Edge &e = edges[code];
+  if (e.frame != frame) {
+    e.pressed = down && !e.down;
+    e.down = down;
+    e.frame = frame;
+  }
+  return e.pressed;
 }

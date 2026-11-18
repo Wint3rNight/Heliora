@@ -34,6 +34,16 @@ TEST(the_default_keys_are_the_old_ones) {
   CHECK(bindingName(c[Action::Dodge]) == "Left Alt");
 }
 
+TEST(the_powers_reveal_on_q_cast_on_the_left_mouse_and_burst_on_e) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Reveal]) == "Q");
+  CHECK(bindingName(c[Action::Cast]) == "Left mouse");
+  CHECK(bindingName(c[Action::Burst]) == "E");
+  CHECK(std::string(actionName(Action::Reveal)) == "reveal");
+  CHECK(std::string(actionName(Action::Cast)) == "cast");
+  CHECK(std::string(actionName(Action::Burst)) == "burst");
+}
+
 TEST(every_action_has_its_own_name) {
   std::set<std::string> names, labels;
   for (int i = 0; i < static_cast<int>(Action::Count); ++i) {
@@ -94,4 +104,19 @@ TEST(controls_are_saved_by_name) {
   readSettings(parseText("[controls]\njump = Banana\n"), bindings); // ignored
   CHECK(bindingName(jump) == "Mouse 4");
   CHECK(hasUnsavedSettings(file, bindings));
+}
+
+TEST(a_press_is_new_however_often_its_frame_asks) {
+  PressEdges edges;
+  edges.nextFrame();
+  CHECK(edges.justPressed(1, true));
+  CHECK(edges.justPressed(1, true)); // the editor asked first: still new for the character
+  edges.nextFrame();
+  CHECK(!edges.justPressed(1, true)); // held, no longer new
+  edges.nextFrame();
+  CHECK(!edges.justPressed(1, false));
+  edges.nextFrame();
+  CHECK(edges.justPressed(1, true));  // let go and pressed again
+  CHECK(edges.justPressed(1, false)); // a tap GLFW hands back once: the frame's answer stands
+  CHECK(edges.justPressed(2, true));  // each code on its own
 }

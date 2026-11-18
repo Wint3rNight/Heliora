@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 // Rigid-body physics on Jolt. Jolt and Vulkan stay out of this header, so the
@@ -93,6 +94,20 @@ struct PhysicsRayHit {
   uint64_t userData; // the body's
   float distance;    // m from the ray's start
   glm::vec3 normal{0.0f, 1.0f, 0.0f}; // unit, the way the surface faces
+};
+
+// What a swept body runs into: how far along the move it gets, 0 to 1, and
+// the way the surface it meets faces (unit).
+struct PhysicsSweepHit {
+  float fraction = 1.0f;
+  glm::vec3 normal{0.0f, 1.0f, 0.0f};
+};
+
+// A body found by bodiesInSphere: whether it moves (a static one doesn't).
+struct PhysicsBodyFound {
+  PhysicsBodyId body;
+  uint64_t userData = 0; // the body's
+  bool moving = false;
 };
 
 struct PhysicsMovedPose {
@@ -255,6 +270,14 @@ public:
   // Wakes every body overlapping the box, for when what's under them changed.
   void activateBodiesIn(glm::vec3 lo, glm::vec3 hi);
   glm::vec3 angularVelocity(PhysicsBodyId id) const; // radians/s
+  // Its bounding box in the world, lowest corner then highest; zeros for a
+  // body that isn't there.
+  std::pair<glm::vec3, glm::vec3> bounds(PhysicsBodyId id) const;
+  // Sets a moving body's spin and wakes it; static bodies ignore it.
+  void setAngularVelocity(PhysicsBodyId id, glm::vec3 velocity);
+  // Every body whose bounding box the sphere touches (characters' bodies
+  // left out); the caller checks what it needs closer.
+  std::vector<PhysicsBodyFound> bodiesInSphere(glm::vec3 centre, float radius) const;
 
   // New contacts on bodies that report impacts since the last call, closing
   // at 1 m/s or more and harder than a knock (1 N s), gathered during
@@ -266,9 +289,11 @@ public:
   std::vector<PhysicsRest> takeRests();
 
   // The nearest body the ray hits within maxDistance, for clicking on
-  // things. direction needn't be unit length. Characters don't block it.
+  // things. direction needn't be unit length. Characters don't block it,
+  // and neither do the bodies in skip.
   std::optional<PhysicsRayHit> castRay(glm::vec3 origin, glm::vec3 direction,
-                                       float maxDistance) const;
+                                       float maxDistance,
+                                       const std::vector<PhysicsBodyId> &skip = {}) const;
   // Sweeps a ball of the radius from origin along direction and returns the
   // first body it touches; distance is how far its centre got. A ball that
   // starts touching something hits at 0. Characters don't block it, so a
@@ -276,6 +301,13 @@ public:
   std::optional<PhysicsRayHit> castSphere(glm::vec3 origin,
                                           glm::vec3 direction, float radius,
                                           float maxDistance) const;
+
+  // Sweeps a body's own shape by `move`, from `offset` off where it is, and
+  // returns the first thing that doesn't move it would run into. Something
+  // it already touches counts only if the move goes deeper into it, so it
+  // can slide along a wall or lift off the ground.
+  std::optional<PhysicsSweepHit> sweepBody(PhysicsBodyId body, glm::vec3 move,
+                                           glm::vec3 offset = glm::vec3(0.0f)) const;
 
   // Characters. Each one also gets a body of its own shape, so thrown and
   // falling bodies hit it; that body never shows up in movedPoses().

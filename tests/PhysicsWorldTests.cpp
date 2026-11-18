@@ -1,4 +1,5 @@
 #include "PhysicsWorld.h"
+#include "Powers.h"
 #include "TestRunner.h"
 
 #include <glm/gtc/quaternion.hpp>
@@ -656,6 +657,141 @@ TEST(a_body_can_be_given_a_velocity) {
   const PhysicsBodyId id = world.addBody(box);
   world.setLinearVelocity(id, glm::vec3(0.0f, 0.0f, -6.0f));
   CHECK_NEAR(glm::distance(world.linearVelocity(id), glm::vec3(0.0f, 0.0f, -6.0f)), 0.0, 1e-4);
+}
+
+TEST(a_body_can_be_given_a_spin) {
+  PhysicsWorld world;
+  PhysicsBodyDesc box;
+  box.shape = PhysicsShape::Box;
+  const PhysicsBodyId id = world.addBody(box);
+  world.setAngularVelocity(id, glm::vec3(0.0f, 0.0f, 3.0f));
+  CHECK_NEAR(glm::distance(world.angularVelocity(id), glm::vec3(0.0f, 0.0f, 3.0f)), 0.0, 1e-4);
+  CHECK(world.isActive(id));
+  const PhysicsBodyId floor = addFloor(world);
+  world.setAngularVelocity(floor, glm::vec3(1.0f, 0.0f, 0.0f)); // static: it doesn't turn
+  CHECK(glm::length(world.angularVelocity(floor)) == 0.0f);
+}
+
+TEST(bodies_in_a_sphere_are_found_moving_or_not) {
+  PhysicsWorld world;
+  const PhysicsBodyId floor = addFloor(world);
+  const PhysicsBodyId near = addBox(world, glm::vec3(0.0f, 0.5f, 0.0f));
+  const PhysicsBodyId far = addBox(world, glm::vec3(10.0f, 0.5f, 0.0f));
+  bool sawFloor = false, sawNear = false, sawFar = false;
+  for (const PhysicsBodyFound &f : world.bodiesInSphere(glm::vec3(0.0f, 0.5f, 0.0f), 2.0f)) {
+    if (f.body.value == floor.value)
+      sawFloor = !f.moving;
+    if (f.body.value == near.value)
+      sawNear = f.moving;
+    if (f.body.value == far.value)
+      sawFar = true;
+  }
+  CHECK(sawFloor && sawNear && !sawFar);
+}
+
+TEST(a_body_tells_its_bounding_box_in_the_world) {
+  PhysicsWorld world;
+  const PhysicsBodyId id = addBox(world, glm::vec3(2.0f, 3.0f, 4.0f));
+  const auto [lo, hi] = world.bounds(id);
+  CHECK_NEAR(glm::distance(lo, glm::vec3(1.5f, 2.5f, 3.5f)), 0.0, 0.05); // Jolt pads it a little
+  CHECK_NEAR(glm::distance(hi, glm::vec3(2.5f, 3.5f, 4.5f)), 0.0, 0.05);
+  const auto [none, nothing] = world.bounds(PhysicsBodyId{});
+  CHECK(none == glm::vec3(0.0f) && nothing == glm::vec3(0.0f));
+}
+
+TEST(a_ray_can_skip_bodies) {
+  PhysicsWorld world;
+  const PhysicsBodyId near = addBox(world, glm::vec3(0.0f, 0.0f, -3.0f));
+  const PhysicsBodyId far = addBox(world, glm::vec3(0.0f, 0.0f, -8.0f));
+  const std::optional<PhysicsRayHit> first =
+      world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f);
+  CHECK(first && first->body.value == near.value);
+  const std::optional<PhysicsRayHit> past =
+      world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f, {near});
+  CHECK(past && past->body.value == far.value);
+  CHECK(past && std::fabs(past->distance - 7.5f) < 1e-3f);
+  CHECK(!world.castRay(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), 100.0f, {near, far}));
+}
+
+namespace {
+
+// A static wall 4 m wide and tall, 0.5 m thick, its face toward +z at z = -2.75.
+void addWall(PhysicsWorld &world) {
+  PhysicsBodyDesc wall;
+  wall.shape = PhysicsShape::Box;
+  wall.halfExtents = glm::vec3(2.0f, 2.0f, 0.25f);
+  wall.motion = PhysicsMotion::Static;
+  wall.position = glm::vec3(0.0f, 2.0f, -3.0f);
+  world.addBody(wall);
+}
+
+} // namespace
+
+TEST(a_body_swept_at_a_wall_stops_where_it_would_touch_it) {
+  PhysicsWorld world;
+  addWall(world);
+  const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 2.0f, 0.0f)); // 2.25 m from the face
+  addBox(world, glm::vec3(0.0f, 2.0f, -1.5f)); // in the way, but it moves: pushed, not stopped at
+  const std::optional<PhysicsSweepHit> hit = world.sweepBody(box, glm::vec3(0.0f, 0.0f, -4.5f));
+  CHECK(hit && std::fabs(hit->fraction - 0.5f) < 0.02f);
+  CHECK(hit && hit->normal.z > 0.99f);
+  CHECK(!world.sweepBody(box, glm::vec3(0.0f, 0.0f, 4.0f))); // away from it
+  const std::optional<PhysicsSweepHit> nearer =
+      world.sweepBody(box, glm::vec3(0.0f, 0.0f, -2.5f), glm::vec3(0.0f, 0.0f, -1.0f));
+  CHECK(nearer && std::fabs(nearer->fraction - 0.5f) < 0.02f); // from 1 m nearer
+  // Turned 30 degrees it reaches 0.683 m toward the wall; the offset is in the
+  // world, not turned with it (that would start it 0.87 m nearer, at 0.48).
+  const PhysicsBodyId turned = addBox(world, glm::vec3(4.0f, 2.0f, 0.0f),
+                                      glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0)));
+  const std::optional<PhysicsSweepHit> offset =
+      world.sweepBody(turned, glm::vec3(0.0f, 0.0f, -2.5f), glm::vec3(-4.0f, 0.0f, -1.0f));
+  CHECK(offset && std::fabs(offset->fraction - 0.427f) < 0.02f);
+}
+
+TEST(a_body_swept_at_a_walls_corner_gets_the_face_it_meets) {
+  PhysicsWorld world;
+  addWall(world); // its end at x = 2
+  // Turned 30 degrees, its face meets the wall's edge by the end, where the
+  // end's face (1, 0, 0) is as near. The way they meet is its own face's,
+  // (0.5, 0, 0.87): along that it slides off past the end, while along the
+  // end's face it would go straight on through the wall.
+  const PhysicsBodyId box = addBox(world, glm::vec3(1.9f, 2.0f, 0.0f),
+                                   glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0)));
+  const std::optional<PhysicsSweepHit> hit = world.sweepBody(box, glm::vec3(-0.05f, 0.0f, -4.5f));
+  CHECK(hit && std::fabs(hit->normal.x - 0.5f) < 0.05f && std::fabs(hit->normal.z - 0.866f) < 0.05f);
+}
+
+TEST(a_body_against_a_wall_is_swept_along_it_but_not_into_it) {
+  // Flush with its face (z = -2.25), and 1 cm into it.
+  for (const float z : {-2.25f, -2.26f}) {
+    PhysicsWorld world;
+    addWall(world);
+    const PhysicsBodyId box = addBox(world, glm::vec3(0.0f, 2.0f, z));
+    CHECK(!world.sweepBody(box, glm::vec3(1.0f, 0.0f, 0.0f)));
+    CHECK(!world.sweepBody(box, glm::vec3(0.0f, 0.0f, 1.0f)));
+    const std::optional<PhysicsSweepHit> hit = world.sweepBody(box, glm::vec3(0.5f, 0.0f, -1.0f));
+    CHECK(hit && hit->fraction < 0.01f);
+    CHECK(hit && hit->normal.z > 0.99f);
+  }
+}
+
+TEST(a_held_box_against_a_wall_slides_along_it) {
+  for (const float z : {-2.25f, -2.26f}) {
+    PhysicsWorld world;
+    addWall(world);
+    const glm::vec3 at(0.0f, 2.0f, z);
+    const PhysicsBodyId box = addBox(world, at);
+    const glm::vec3 to = slideHoldPoint(at, at + glm::vec3(1.0f, 0.0f, -1.0f),
+                                        [&](glm::vec3 start, glm::vec3 move) -> std::optional<HoldContact> {
+                                          const std::optional<PhysicsSweepHit> hit =
+                                              world.sweepBody(box, move, start - at);
+                                          if (!hit)
+                                            return std::nullopt;
+                                          return HoldContact{hit->fraction, hit->normal};
+                                        });
+    CHECK(std::fabs(to.x - 1.0f) < 0.02f); // across it
+    CHECK(std::fabs(to.z - z) < 0.02f);    // not into it
+  }
 }
 
 namespace {

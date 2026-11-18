@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 // The player's controls: each action bound to one key or mouse button,
 // rebound in the Controls tab and saved in settings.cfg by name ("jump =
@@ -20,6 +21,9 @@ enum class Action : uint8_t {
   Aim,
   Jump,
   Dodge,
+  Reveal, // the powers: show what can be picked up
+  Cast,   // the powers: throw what's held
+  Burst,  // the powers: a blast from the hand
   Count
 };
 
@@ -44,7 +48,7 @@ bool reservedForEditor(InputBinding binding);
 
 class ControlBindings {
 public:
-  ControlBindings(); // the defaults: WASD, Left Shift, Left Ctrl, right mouse, Space, Left Alt
+  ControlBindings(); // the defaults: WASD, Left Shift, Left Ctrl, right mouse, Space, Left Alt, Q, left mouse, E
   const InputBinding &operator[](Action action) const {
     return keys[static_cast<size_t>(action)];
   }
@@ -55,4 +59,24 @@ public:
 
 private:
   std::array<InputBinding, static_cast<size_t>(Action::Count)> keys;
+};
+
+// Which keys or buttons went down this frame. Asked any number of times in
+// one frame it gives the same answer: the editor and the character both ask
+// about the left mouse, and the first to ask mustn't take the press.
+class PressEdges {
+public:
+  void nextFrame() { ++frame; }
+  // Whether `code`, down or not right now, went down since the frame it was
+  // last asked about.
+  bool justPressed(int code, bool down);
+
+private:
+  struct Edge {
+    bool down = false;    // as of the frame it was last asked about
+    bool pressed = false; // that frame's answer
+    uint64_t frame = ~uint64_t{0};
+  };
+  std::unordered_map<int, Edge> edges;
+  uint64_t frame = 0;
 };

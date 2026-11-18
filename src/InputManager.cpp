@@ -41,6 +41,8 @@ void InputManager::pollEvents() {
   deltaX = 0.0f;
   deltaY = 0.0f;
   scrollY = 0.0f;
+  keyEdges.nextFrame();
+  buttonEdges.nextFrame();
   glfwPollEvents();
 }
 
@@ -49,11 +51,7 @@ bool InputManager::isKeyPressed(int key) const {
 }
 
 bool InputManager::wasKeyJustPressed(int key) {
-  bool down = isKeyPressed(key);
-  bool &prev = prevKeyDown[key];
-  bool justPressed = down && !prev;
-  prev = down;
-  return justPressed;
+  return keyEdges.justPressed(key, isKeyPressed(key));
 }
 
 glm::vec2 InputManager::getMouseDelta() const { return {deltaX, deltaY}; }
@@ -76,11 +74,7 @@ bool InputManager::isMouseButtonPressed(int button) const {
 }
 
 bool InputManager::wasMouseButtonJustPressed(int button) {
-  const bool down = isMouseButtonPressed(button);
-  bool &prev = prevButtonDown[button];
-  const bool justPressed = down && !prev;
-  prev = down;
-  return justPressed;
+  return buttonEdges.justPressed(button, isMouseButtonPressed(button));
 }
 
 void InputManager::setCursorCaptured(bool captured) {

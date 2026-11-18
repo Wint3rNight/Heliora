@@ -117,6 +117,7 @@ int VulkanRenderer::breakableOf(uint64_t userData) const {
 }
 
 void VulkanRenderer::clearBreakables() {
+  clearPowers(); // what they hold or tear points into what goes here
   if (physics) {
     for (const BreakBody &body : breakBodies)
       if (body.id.isValid())
@@ -484,7 +485,10 @@ void VulkanRenderer::prepareBreakGraph() {
 }
 
 void VulkanRenderer::handleImpacts() {
-  const std::vector<PhysicsImpact> impacts = physics->takeImpacts();
+  std::vector<PhysicsImpact> impacts = physics->takeImpacts();
+  // The burst's hits come the same way (PowerPlay.cpp).
+  impacts.insert(impacts.end(), powerImpacts.begin(), powerImpacts.end());
+  powerImpacts.clear();
   if (!breakGraphReady)
     return;
   std::vector<BreakHit> hits;
@@ -879,7 +883,8 @@ void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
 void VulkanRenderer::settleRubble() {
   for (int b = 0; b < static_cast<int>(breakBodies.size()); ++b) {
     BreakBody &body = breakBodies[b];
-    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1)
+    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1 ||
+        body.id.value == heldBody.value) // held still in the air isn't settled
       continue;
     const int index = body.pieces.front();
     BreakPiece &piece = breakPieces[index];
@@ -1329,6 +1334,26 @@ void VulkanRenderer::updateStress(float seconds) {
 // What rests on the structure: moving bodies' weight shared among the
 // contacts holding them up, and every character's where it stands, on the
 // piece under each point; summed per piece and smoothed.
+// The body's piece the point is least outside of: the one it's on, or in.
+int VulkanRenderer::pieceAt(const BreakBody &body, glm::vec3 point) const {
+  int on = -1;
+  float least = std::numeric_limits<float>::max();
+  for (int p : body.pieces) {
+    if (!breakPieces[p].alive)
+      continue;
+    const PhysicsPose world = pieceWorld(breakPieces[p]);
+    float outside = -std::numeric_limits<float>::max();
+    for (const FractureFace &face : breakPieces[p].shape->faces)
+      outside = std::max(outside, glm::dot(world.rotation * face.normal,
+                                           point - (world.position + world.rotation * face.points[0])));
+    if (outside < least) {
+      least = outside;
+      on = p;
+    }
+  }
+  return on;
+}
+
 void VulkanRenderer::gatherLiveLoads() {
   if (liveForce.size() != breakPieces.size())
     return;
@@ -1354,22 +1379,7 @@ void VulkanRenderer::gatherLiveLoads() {
     const uint64_t index = userData & ~kBreakBodyFlag;
     if (index >= breakBodies.size() || !breakBodies[index].fixed || !breakBodies[index].id.isValid())
       return;
-    // The body's piece the point is least outside of: the one it's on.
-    int on = -1;
-    float least = std::numeric_limits<float>::max();
-    for (int p : breakBodies[index].pieces) {
-      if (!breakPieces[p].alive)
-        continue;
-      const PhysicsPose world = pieceWorld(breakPieces[p]);
-      float outside = -std::numeric_limits<float>::max();
-      for (const FractureFace &face : breakPieces[p].shape->faces)
-        outside = std::max(outside, glm::dot(world.rotation * face.normal,
-                                             point - (world.position + world.rotation * face.points[0])));
-      if (outside < least) {
-        least = outside;
-        on = p;
-      }
-    }
+    const int on = pieceAt(breakBodies[index], point);
     if (on < 0)
       return;
     const PhysicsPose world = pieceWorld(breakPieces[on]);
@@ -1383,7 +1393,8 @@ void VulkanRenderer::gatherLiveLoads() {
     int holding = 0;
     for (const PhysicsRest &rest : rests)
       holding += rest.normal.y >= kSupportFacing;
-    if (mass <= 0.0f || holding == 0)
+    // What the power holds weighs nothing on what it touches.
+    if (mass <= 0.0f || holding == 0 || id == heldBody.value)
       continue;
     for (const PhysicsRest &rest : rests)
       if (rest.normal.y >= kSupportFacing)

@@ -6,7 +6,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
-#include <unordered_map>
+
+#include "Controls.h"
 
 class InputManager {
 public:
@@ -18,8 +19,7 @@ public:
 
   // --- Key state ---
   bool isKeyPressed(int key) const;
-  // Rising-edge detection: true exactly once per press. Tracks previous
-  // state per key internally — call at most once per key per frame.
+  // True in the frame a key goes down, however many times that frame asks.
   bool wasKeyJustPressed(int key);
 
   // --- Mouse state ---
@@ -27,7 +27,7 @@ public:
   glm::vec2 getMousePosition() const;
   void resetMouseDelta();
   bool isMouseButtonPressed(int button) const;
-  // True once per press, like wasKeyJustPressed.
+  // True in the frame a button goes down, like wasKeyJustPressed.
   bool wasMouseButtonJustPressed(int button);
   // Files dropped on the window from the file manager since the last call.
   std::vector<std::string> takeDroppedFiles() { return std::exchange(droppedFiles, {}); }
@@ -56,9 +56,10 @@ private:
   // Resize flag
   bool framebufferResized = false;
 
-  // Per-key previous state for wasKeyJustPressed edge detection
-  std::unordered_map<int, bool> prevKeyDown;
-  std::unordered_map<int, bool> prevButtonDown;
+  // What went down this frame, for wasKeyJustPressed and
+  // wasMouseButtonJustPressed.
+  PressEdges keyEdges;
+  PressEdges buttonEdges;
 
   // Static callbacks (GLFW requires free/static functions)
   static void mouseCallback(GLFWwindow *w, double xpos, double ypos);

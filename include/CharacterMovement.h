@@ -2,6 +2,7 @@
 
 #include "AnimationClip.h"
 #include "PhysicsWorld.h"
+#include "Powers.h"
 
 #include <array>
 
@@ -63,6 +64,8 @@ struct CharacterTuning {
   float stepUp = 0.3f;        // m, see PhysicsCharacterMove::stepUp
   float stickDown = 0.5f;     // m
   float pushStrength = 100.0f; // N
+  // What its powers can do (step 1.4a), saved with the rest of its tuning.
+  PowerTuning powers;
   bool operator==(const CharacterTuning &) const = default;
 };
 

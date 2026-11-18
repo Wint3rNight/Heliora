@@ -67,6 +67,7 @@ struct CharacterPanel {
   };
   const char *animState = nullptr;
   std::vector<PlayingClip> playing;
+  const char *powerState = nullptr; // the powers' state while playing
   // The .character file: the tuning above (movement, animation timing,
   // body) and the Clips section's choices, saved together by Save
   // character. The files to pick clips from, and what the tab asked for.
@@ -212,6 +213,8 @@ struct DebugUiContext {
   // Where the scene is in the window: the handles are worked out in its
   // pixels and drawn there, clipped to it.
   SceneViewport sceneArea;
+  // Playing and aiming: the crosshair in the scene area's middle.
+  bool crosshair = false;
 
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
   // nothing is held any more, so it's one undo step.
@@ -351,6 +354,7 @@ private:
                            SceneModelEntry edited, SceneGridEntry editedGrid,
                            bool moved, bool changed);
   void drawGizmo(DebugUiContext &ui);
+  void drawCrosshair(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
   void finishSceneEdit(DebugUiContext &ui);
   void drawPrompt(DebugUiContext &ui);

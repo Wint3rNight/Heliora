@@ -1738,12 +1738,20 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
     alpha = physicsClock.alpha();
   }
   const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
-  if (playerController)
-    playerController->control(playerControls);
+  // The powers decide first: what they hold takes the wheel from the camera.
+  if (playing && !physicsPanel.paused)
+    updatePowers(frameSeconds);
+  if (playerController) {
+    PlayerControls forCamera = playerControls;
+    if (powerController.holding())
+      forCamera.wheel = 0.0f;
+    playerController->control(forCamera);
+  }
   for (int i = 0; i < steps; ++i) {
     // The characters move first, then the bodies, like Jolt's samples.
     if (roster)
       roster->step(stepSeconds);
+    holdPowers(stepSeconds);
     physics->step(stepSeconds);
   }
   if (steps > 0) {
@@ -1762,9 +1770,13 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       node->setPose(moved.pose.position, moved.pose.rotation);
     }
   }
+  if (playing)
+    shakePowers();
   const auto beforePose = std::chrono::steady_clock::now();
   if (roster)
     poseCharacters(alpha, frameSeconds);
+  if (playing)
+    drawPowerLines();
   const auto posed = std::chrono::steady_clock::now();
   // Posing the character is its own phase, so physics doesn't include it.
   const double animationMs =
@@ -1951,6 +1963,7 @@ void VulkanRenderer::clearCharacters() {
     rootNode.removeChildren([&](const SceneNode &node) { return nodes.contains(&node); });
   characters.clear();
   playedCharacter = -1;
+  handBone = -2; // the asset may change before the next one
   characterPanel.animState = nullptr;
   characterPanel.playing.clear();
   skeletonLines.clear();
@@ -2124,6 +2137,13 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
         c.node->setModelId(model);
       c.node->setPose(feet + glm::vec3(0.0f, 0.5f * height, 0.0f),
                       glm::angleAxis(body.drawnYaw(alpha), glm::vec3(0.0f, 1.0f, 0.0f)));
+      if (i == playedCharacter) {
+        // The capsule's "hand": in front of its right shoulder.
+        const float drawnYaw = body.drawnYaw(alpha);
+        handPosition = feet + glm::vec3(0.0f, 0.75f * height, 0.0f) +
+                       glm::vec3(std::cos(drawnYaw), 0.0f, -std::sin(drawnYaw)) * 0.3f +
+                       yawForward(drawnYaw) * 0.3f;
+      }
       continue;
     }
     // What the body is doing, in its own frame for the directional clips:
@@ -2169,6 +2189,23 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     const glm::quat facing = glm::angleAxis(body.drawnYaw(alpha) + glm::pi<float>(),
                                             glm::vec3(0.0f, 1.0f, 0.0f));
     c.node->setPose(feet, facing);
+    if (i == playedCharacter) {
+      // Where the powers' light leaves from: its right hand.
+      if (handBone == -2) {
+        handBone = -1;
+        for (int b = 0; b < static_cast<int>(asset->skeleton.bones.size()); ++b) {
+          const std::string &name = asset->skeleton.bones[b].name;
+          if (name.size() >= 9 && name.compare(name.size() - 9, 9, "RightHand") == 0) {
+            handBone = b;
+            break;
+          }
+        }
+      }
+      const glm::mat4 placement = glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
+                                  glm::scale(glm::mat4(1.0f), glm::vec3(c.scale));
+      handPosition = handBone >= 0 ? glm::vec3(placement * model[handBone][3])
+                                   : feet + glm::vec3(0.0f, 0.75f * body.height(), 0.0f);
+    }
     if (showSkeleton)
       updateSkeletonLines(c,
                           glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
@@ -5293,6 +5330,7 @@ void VulkanRenderer::buildUi() {
   };
   ui.viewProj = taaBaseProjection * sceneUbo.view;
   ui.sceneArea = sceneArea;
+  ui.crosshair = playing && hasPlayer() && playerControls.aim;
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;
   ui.objectEntry = [this](const std::string &file) -> std::optional<SceneModelEntry> {
@@ -5412,6 +5450,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     sources.push_back(&skeletonLines);
   if (playing && physicsPanel.showLoads && !loadLines.empty())
     sources.push_back(&loadLines);
+  if (playing && !powerLines.empty())
+    sources.push_back(&powerLines);
   const std::vector<PhysicsDebugVertex> *lines = nullptr;
   if (sources.size() == 1) {
     lines = sources.front();

@@ -61,3 +61,22 @@ TEST(tuning_stored_in_a_character_reads_back) {
   CHECK(c.tuning.size() == characterTuningBindings(movement, animation).size());
   CHECK(c.variant("arcade") && c.variant("arcade")->values.size() == 2);
 }
+
+TEST(the_powers_tuning_is_saved_with_the_character) {
+  CharacterDescription c = parseText("model = a.fbx\n[tuning]\npower_lift_cap = 1800\n"
+                                     "[variant mighty]\npower_lift_cap = 6000\n");
+  CharacterTuning movement;
+  AnimatorTuning animation;
+  applyCharacterTuning(c, "", movement, animation);
+  CHECK_NEAR(movement.powers.liftCap, 1800.0, 1e-3);
+  CHECK_NEAR(movement.powers.throwSpeed, PowerTuning{}.throwSpeed, 1e-6); // not in the file
+  CharacterTuning mighty;
+  applyCharacterTuning(c, "mighty", mighty, animation);
+  CHECK_NEAR(mighty.powers.liftCap, 6000.0, 1e-3);
+  movement.powers.burstReach = 11.0f;
+  movement.powers.pickDwell = 0.3f;
+  storeCharacterTuning(c, movement, animation);
+  CharacterTuning back;
+  applyCharacterTuning(c, "", back, animation);
+  CHECK(back.powers == movement.powers);
+}

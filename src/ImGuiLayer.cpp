@@ -477,8 +477,24 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   flushInspectorRebuild(ui);
 
   drawGizmo(ui);
+  drawCrosshair(ui);
   finishSceneEdit(ui);
   drawPrompt(ui);
+}
+
+// A dot in a thin ring in the middle of the scene, where the powers aim:
+// light with a dark edge, so it shows on the sky and on stone.
+void ImGuiLayer::drawCrosshair(const DebugUiContext &ui) const {
+  if (!ui.crosshair || ui.sceneArea.size.x <= 0.0f)
+    return;
+  ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  const ImVec2 middle(ui.sceneArea.origin.x + 0.5f * ui.sceneArea.size.x,
+                      ui.sceneArea.origin.y + 0.5f * ui.sceneArea.size.y);
+  const ImU32 dark = IM_COL32(0, 0, 0, 150), light = IM_COL32(235, 245, 255, 220);
+  draw->AddCircle(middle, 9.0f, dark, 32, 3.0f);
+  draw->AddCircle(middle, 9.0f, light, 32, 1.2f);
+  draw->AddCircleFilled(middle, 2.6f, dark, 12);
+  draw->AddCircleFilled(middle, 1.6f, light, 12);
 }
 
 // The renderer's question as a modal window in the middle of the screen,
@@ -2043,6 +2059,69 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   ImGui::SetItemTooltip("Less time in the air than this skips the landing");
   changed |= slider("Shortest landing", &an.landMinTime, 0.0f, 1.0f, "%.2f s");
   ImGui::SetItemTooltip("Moving cuts a landing short, but not before this");
+  // The powers' tuning (step 1.4a), saved with the character.
+  if (ImGui::CollapsingHeader("Powers")) {
+    PowerTuning &pw = c.powers;
+    ImGui::Text("State: %s", panel.powerState ? panel.powerState : "-");
+    ImGui::TextDisabled("Q reveals, right mouse grabs, left mouse throws, E bursts");
+    ImGui::SeparatorText("Lifting and holding");
+    changed |= slider("Heaviest", &pw.liftCap, 10.0f, 20000.0f, "%.0f kg");
+    ImGui::SetItemTooltip("Anything heavier only shudders");
+    changed |= slider("Hold distance", &pw.holdDistance, 0.5f, 20.0f, "%.1f m");
+    ImGui::SetItemTooltip("Past the character, along the aim; the wheel moves it");
+    changed |= slider("Nearest", &pw.holdNearest, 0.5f, 20.0f, "%.1f m");
+    changed |= slider("Farthest", &pw.holdFarthest, 0.5f, 40.0f, "%.1f m");
+    changed |= slider("Raised", &pw.holdRaise, -2.0f, 5.0f, "%.2f m");
+    changed |= slider("Lift time", &pw.liftSeconds, 0.0f, 3.0f, "%.2f s");
+    ImGui::SetItemTooltip("From where it was to the hold point");
+    changed |= slider("Lag", &pw.holdLag, 0.02f, 2.0f, "%.2f s");
+    ImGui::SetItemTooltip("It closes its distance to the hold point in about this");
+    changed |= slider("Fastest", &pw.holdSpeed, 0.5f, 100.0f, "%.1f m/s");
+    changed |= slider("Response", &pw.holdResponse, 1.0f, 200.0f, "%.0f /s");
+    ImGui::SetItemTooltip("How quickly its velocity turns to what it wants");
+    changed |= slider("Slower from", &pw.holdHeavy, 1.0f, 20000.0f, "%.0f kg");
+    ImGui::SetItemTooltip("Heavier is slower, by the square root of how much heavier");
+    changed |= slider("Tumble", &pw.tumble, 0.0f, 10.0f, "%.2f rad/s");
+    changed |= slider("Lost after", &pw.lostSeconds, 0.05f, 10.0f, "%.2f s");
+    ImGui::SetItemTooltip("Stuck this long further than Lost distance from the hold point: dropped");
+    changed |= slider("Lost distance", &pw.lostDistance, 0.5f, 50.0f, "%.1f m");
+    ImGui::SeparatorText("Throwing");
+    changed |= slider("Throw speed", &pw.throwSpeed, 1.0f, 200.0f, "%.1f m/s");
+    changed |= slider("Throw slower from", &pw.throwHeavy, 1.0f, 20000.0f, "%.0f kg");
+    changed |= slider("Throw reach", &pw.throwReach, 1.0f, 500.0f, "%.0f m");
+    ImGui::SetItemTooltip("How far out it aims when the crosshair is on nothing");
+    changed |= slider("Throw delay", &pw.throwDelay, 0.0f, 2.0f, "%.2f s");
+    changed |= slider("Throw recover", &pw.throwRecover, 0.0f, 3.0f, "%.2f s");
+    changed |= slider("Throw tumble", &pw.throwTumble, 0.0f, 20.0f, "%.1f rad/s");
+    changed |= slider("Regrab after", &pw.regrabSeconds, 0.0f, 10.0f, "%.1f s");
+    ImGui::SetItemTooltip("After a throw or a burst, before resting the crosshair on something grabs it (a press always does)");
+    ImGui::SeparatorText("Tearing");
+    changed |= slider("Tear pace", &pw.tearPace, 0.0f, 2.0f, "%.3f");
+    ImGui::SetItemTooltip("Seconds per square root of its links' strength (N s)");
+    changed |= slider("Shortest tear", &pw.tearShortest, 0.0f, 10.0f, "%.2f s");
+    changed |= slider("Longest tear", &pw.tearLongest, 0.0f, 30.0f, "%.2f s");
+    changed |= slider("Shake", &pw.tearShake, 0.0f, 0.5f, "%.3f m");
+    ImGui::SeparatorText("Burst");
+    changed |= slider("Width", &pw.burstWidth, 1.0f, 180.0f, "%.0f\u00b0");
+    changed |= slider("Reach", &pw.burstReach, 0.5f, 50.0f, "%.1f m");
+    changed |= slider("Speed", &pw.burstSpeed, 0.0f, 200.0f, "%.1f m/s");
+    ImGui::SetItemTooltip("Given to what's at the hand, less further out");
+    changed |= slider("Burst slower from", &pw.burstHeavy, 1.0f, 20000.0f, "%.0f kg");
+    changed |= slider("Upward", &pw.burstLift, 0.0f, 3.0f, "%.2f");
+    changed |= slider("Hit", &pw.burstImpulse, 0.0f, 100000.0f, "%.0f N s");
+    ImGui::SetItemTooltip("On what breaks, at the hand");
+    changed |= slider("Burst delay", &pw.burstDelay, 0.0f, 2.0f, "%.2f s");
+    changed |= slider("Burst recover", &pw.burstRecover, 0.0f, 3.0f, "%.2f s");
+    changed |= slider("Cooldown", &pw.burstCooldown, 0.0f, 30.0f, "%.2f s");
+    ImGui::SeparatorText("Picking and revealing");
+    changed |= slider("Pick angle", &pw.pickAngle, 0.1f, 45.0f, "%.1f\u00b0");
+    changed |= slider("Pick reach", &pw.pickReach, 1.0f, 200.0f, "%.0f m");
+    changed |= slider("Pick dwell", &pw.pickDwell, 0.0f, 2.0f, "%.2f s");
+    ImGui::SetItemTooltip("Right mouse held, the crosshair resting on something this long grabs it");
+    changed |= slider("Pulse speed", &pw.revealSpeed, 1.0f, 500.0f, "%.0f m/s");
+    changed |= slider("Pulse reach", &pw.revealReach, 1.0f, 500.0f, "%.0f m");
+    changed |= slider("Glow time", &pw.revealSeconds, 0.1f, 60.0f, "%.1f s");
+  }
   ImGui::SeparatorText("Camera");
   // The camera is the player's preference: settings.cfg, not the character.
   drawSettingsButtons(ui, "camera");

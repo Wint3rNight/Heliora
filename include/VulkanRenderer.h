@@ -36,6 +36,7 @@
 #include "Stress.h"
 #include "CharacterRoster.h"
 #include "PlayerController.h"
+#include "Powers.h"
 #include "Prefab.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
@@ -646,6 +647,91 @@ private:
   void placeBreakable(SceneEntryRef ref);
   void appendPieceLines(SceneEntryRef ref);
   int breakableOf(uint64_t userData) const; // into breakables, or -1
+  int pieceAt(const BreakBody &body, glm::vec3 point) const; // the piece a point is on, or -1
+
+  // The powers (step 1.4a, Powers.h; src/PowerPlay.cpp): with the aim held
+  // the player grabs what the crosshair is on, holds it out along the aim,
+  // throws it, tears pieces out of what they're part of, and bursts.
+  // Something the power can take: a whole moving body (a scene object's or
+  // a breakable chunk's), or one piece of a breakable, torn out first.
+  struct PowerTarget {
+    int id = -1; // the controller's: index * 4, plus 0 a piece, 1 a chunk's body, 2 a scene body
+    GrabKind kind = GrabKind::Lift;
+    PhysicsBodyId body;
+    int piece = -1; // the piece; for a chunk's body, one it carries
+    glm::vec3 centre{0.0f};
+    float radius = 0.0f;
+  };
+  PowerController powerController;
+  std::vector<PowerTarget> powerCandidates; // near the player, this frame
+  std::optional<PowerTarget> powerTarget;    // under the crosshair and in sight
+  PowerTarget powerGrabbed;                  // what was grabbed, while it's held
+  // The moving body held out (lifting, holding, a throw not yet gone), a
+  // piece it carries so it's found again when a regroup replaces it, where
+  // its lift began and how long ago, its tumble, the wheel's distance, and
+  // how long it's been stuck away from the hold point.
+  PhysicsBodyId heldBody;
+  int heldPiece = -1;
+  std::vector<int> heldPieces; // the held chunk's, for another to follow if heldPiece is cut
+  glm::vec3 heldFrom{0.0f};
+  float heldSeconds = 0.0f;
+  glm::vec3 heldAxis{0.0f, 1.0f, 0.0f};
+  float heldDistance = 0.0f;
+  float heldAway = 0.0f;
+  glm::vec3 holdTarget{0.0f}; // this frame's hold point
+  // A tear under way: the piece's links and ground links, when each gives
+  // way, and how far along it is.
+  struct PowerTear {
+    std::vector<int> links, grounds;
+    std::vector<float> linkTimes, groundTimes;
+    float seconds = 0.0f;
+    float total = 0.0f;
+    bool done = false; // every link it had is broken, and it's still not free to lift
+  } powerTear;
+
+  // The last throw's path, for its trail.
+  struct PowerTrail {
+    PhysicsBodyId body;
+    std::vector<glm::vec3> points;
+    float seconds = 0.0f;
+  } powerTrail;
+  float revealSince = -1.0f; // s since Q, or -1
+  glm::vec3 revealFrom{0.0f};
+  float burstSince = -1.0f; // s since the blast, or -1
+  glm::vec3 burstFrom{0.0f}, burstAim{0.0f, 0.0f, -1.0f};
+  std::vector<PhysicsImpact> powerImpacts; // the burst's hits, for handleImpacts
+  // Nodes shaken last frame (a tear, a strain): put back where their
+  // bodies are before this frame's shake.
+  std::vector<int> shakenPieces;
+  int shakenLink = -1; // into physicsLinks
+  glm::vec3 handPosition{0.0f}; // the player's right hand this frame
+  int handBone = -2;            // into the skeleton; -1 none, -2 not looked for
+  std::vector<PhysicsDebugVertex> powerLines;
+  uint32_t powerDraws = 0; // for the tumble axes, varied each grab and throw
+  void clearPowers();
+  // Each frame in play, before the steps: what's near and under the
+  // crosshair, the controller, and what it says to do.
+  void updatePowers(float seconds);
+  // Each physics step: the held body pulled toward the hold point.
+  void holdPowers(float stepSeconds);
+  // After the poses: the piece being torn out, or what's strained against,
+  // shaken where it's drawn.
+  void shakePowers();
+  // After the characters are posed: the powers as lines, for now.
+  void drawPowerLines();
+  void gatherPowerCandidates(glm::vec3 around, float radius);
+  bool followHeld(); // false once the held body is gone for good
+  void startTear(int piece);
+  bool advanceTear(float seconds); // true once the piece is loose and light enough
+  void throwHeld();
+  void burstPower();
+  glm::vec3 bodyCentre(PhysicsBodyId body) const; // its bounding box's middle
+  glm::vec3 heldCentre() const;
+  float pieceMass(int piece) const;
+  glm::vec3 pieceCentre(int piece) const;
+  glm::vec3 randomAxis();
+  // The played character's (its variant's), or the Character tab's.
+  const PowerTuning &powerTuning() const;
   DebugLinePass debugLinePass;
   PhysicsPanel physicsPanel;
   // The character's and its camera's tuning (the Character tab). The player

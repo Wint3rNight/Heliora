@@ -1749,7 +1749,7 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   if (steps > 0) {
     handleImpacts();
     updateRubble(static_cast<float>(steps) * stepSeconds);
-    updateStress();
+    updateStress(static_cast<float>(steps) * stepSeconds);
   }
   const auto stepped = std::chrono::steady_clock::now();
   // Runs on frames with no step too: alpha still moved, so the blend did.

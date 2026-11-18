@@ -111,6 +111,7 @@ public:
   const CharacterTuning &tuning() const { return tune; }
 
   glm::vec3 position() const { return current.position; } // feet
+  PhysicsCharacterId physicsId() const { return id; }
   float yaw() const { return current.yaw; }
   // Its actual velocity after the last step: walls and floors take away
   // what they blocked.

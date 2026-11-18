@@ -74,6 +74,14 @@ struct LinkStress {
   float liftedShare = 0.0f;
 };
 
+// Weight put on a piece by what rests on it (debris, a character): a force
+// through its middle and a torque about it.
+struct LiveLoad {
+  int piece = 0;
+  glm::vec3 force{0.0f};
+  glm::vec3 torque{0.0f};
+};
+
 class StressSolver {
 public:
   // The pieces, their links and gravity (each piece loaded by its weight).
@@ -84,6 +92,10 @@ public:
   void setStart(const std::vector<glm::vec3> &shifts, const std::vector<glm::vec3> &turns);
   // More load on a piece: a force through its middle and a torque.
   void addLoad(int piece, glm::vec3 force, glm::vec3 torque = glm::vec3(0.0f));
+  // What rests on the pieces now, instead of what rested before; the answer
+  // so far is where the next solve starts. Pieces outside the solve are
+  // skipped.
+  void setLiveLoads(const std::vector<LiveLoad> &loads);
   // Up to maxIterations more steps; true once the answer has settled (what's
   // left unbalanced under tolerance times the load).
   bool solve(int maxIterations, float tolerance = 1e-4f);
@@ -126,7 +138,8 @@ private:
   std::vector<char> loose_; // by solved index: held by nothing now (all its contacts lifted)
   int rounds_ = 0;          // contact rounds since the last build
   std::vector<glm::dmat3> shiftBlock_, turnBlock_; // inverted diagonal blocks
-  std::vector<glm::dvec3> loadForce_, loadTorque_;
+  std::vector<glm::dvec3> loadForce_, loadTorque_; // gravity and addLoad
+  std::vector<glm::dvec3> liveForce_, liveTorque_; // setLiveLoads
   std::vector<glm::dvec3> shift_, turn_;
   // Conjugate gradient state, kept between solve() calls.
   std::vector<glm::dvec3> rForce_, rTorque_, zShift_, zTurn_, pShift_, pTurn_;
@@ -154,3 +167,6 @@ float overload(const LinkStress &stress, const LinkLimits &limits);
 // Only the tipping part of a contact's overload (0 for a glued link or a
 // contact pressed wider than a line): over 1, it's tipping off its edge.
 float tipping(const LinkStress &stress, const LinkLimits &limits);
+// How long a link has been over its limits: before plus seconds while its
+// overload is over 1, back to 0 once it isn't.
+float overloadTime(float before, float overload, float seconds);

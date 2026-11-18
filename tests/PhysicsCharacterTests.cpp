@@ -375,3 +375,22 @@ TEST(cast_sphere_passes_through_characters) {
   CHECK(hit.has_value());
   CHECK_NEAR(hit ? hit->distance : -1.0f, 4.25, 1e-3);
 }
+
+TEST(a_character_standing_on_a_body_has_it_as_its_ground) {
+  PhysicsWorld world;
+  PhysicsBodyDesc slab;
+  slab.shape = PhysicsShape::Box;
+  slab.halfExtents = glm::vec3(3.0f, 0.5f, 3.0f);
+  slab.motion = PhysicsMotion::Static;
+  slab.position = glm::vec3(0.0f, -0.5f, 0.0f);
+  slab.userData = 9;
+  const PhysicsBodyId body = world.addBody(slab);
+  const PhysicsCharacterId character = addCharacter(world, glm::vec3(0.5f, 0.5f, 0.0f));
+  walk(world, character, glm::vec3(0.0f), 60);
+  const PhysicsCharacterState state = world.characterState(character);
+  CHECK(state.ground == PhysicsGround::OnGround);
+  CHECK(state.groundBody.value == body.value);
+  CHECK(state.groundUserData == 9u);
+  CHECK_NEAR(state.groundPoint.y, 0.0, 0.05);
+  CHECK_NEAR(state.groundPoint.x, 0.5, 0.3);
+}

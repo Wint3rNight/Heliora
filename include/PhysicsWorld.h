@@ -145,6 +145,21 @@ struct PhysicsCharacterState {
   glm::vec3 groundNormal{0.0f, 1.0f, 0.0f};
   glm::vec3 groundVelocity{0.0f}; // of what it stands on, to ride along
   float height = 0.0f;            // the capsule's current height
+  // What it stands on (invalid in the air), that body's userData, and the
+  // point it stands on there: its weight on it.
+  PhysicsBodyId groundBody;
+  uint64_t groundUserData = 0;
+  glm::vec3 groundPoint{0.0f};
+};
+
+// A moving body resting on a static one (any: the ground too): where, and the
+// contact's normal pointing up out of the static body. Its weight on it.
+struct PhysicsRest {
+  PhysicsBodyId body; // the static one
+  uint64_t userData = 0;
+  PhysicsBodyId on;   // the moving one resting on it
+  glm::vec3 point{0.0f};
+  glm::vec3 normal{0.0f, 1.0f, 0.0f};
 };
 
 // One end of a debug line, laid out to go straight into a vertex buffer.
@@ -245,6 +260,10 @@ public:
   // at 1 m/s or more and harder than a knock (1 N s), gathered during
   // step(). Settling and resting contacts don't count.
   std::vector<PhysicsImpact> takeImpacts();
+  // Moving bodies resting on static ones: the contacts that began or carried
+  // on since the last call (a sleeping body's don't come again until it
+  // wakes).
+  std::vector<PhysicsRest> takeRests();
 
   // The nearest body the ray hits within maxDistance, for clicking on
   // things. direction needn't be unit length. Characters don't block it.

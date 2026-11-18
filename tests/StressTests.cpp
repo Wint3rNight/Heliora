@@ -280,3 +280,52 @@ TEST(a_piece_held_only_by_a_link_with_no_face_carries_nothing) {
   CHECK(solver.solve(2000, 1e-6f));
   CHECK_NEAR(solver.stress(0).normalForce, -kWeight, 1.0);
 }
+
+TEST(a_load_near_one_end_of_a_slab_moves_its_supports_shares_by_the_lever) {
+  // Two more weights on the fourth of five cubes resting at both ends: the
+  // near end takes three quarters of them.
+  StressSolver solver;
+  buildSlab(solver);
+  solver.setLiveLoads({{3, {0, -2.0f * kWeight, 0}, {0, 0, 0}}});
+  settle(solver);
+  CHECK_NEAR(solver.stress(0).normalForce, -3.0 * kWeight, 0.15 * kWeight);
+  CHECK_NEAR(solver.stress(1).normalForce, -4.0 * kWeight, 0.15 * kWeight);
+}
+
+TEST(no_live_loads_gives_gravitys_answer_back) {
+  StressSolver solver;
+  buildSlab(solver);
+  solver.setLiveLoads({{3, {0, -2.0f * kWeight, 0}, {0, 0, 0}}});
+  settle(solver);
+  solver.setLiveLoads({});
+  settle(solver);
+  CHECK_NEAR(solver.stress(0).normalForce, -2.5 * kWeight, 0.01 * kWeight);
+  CHECK_NEAR(solver.stress(1).normalForce, -2.5 * kWeight, 0.01 * kWeight);
+}
+
+TEST(a_live_load_on_a_piece_outside_the_solve_does_nothing) {
+  StressSolver solver;
+  solver.build({cube({0, 0.5f, 0}), cube({3, 2.5f, 0})},
+               {squareLink(0, -1, {0, 0, 0}, kDown, 1.0f, true)});
+  solver.setLiveLoads({{1, {0, -5.0f * kWeight, 0}, {0, 0, 0}}, {7, {0, -kWeight, 0}, {0, 0, 0}}});
+  CHECK(solver.solve(2000, 1e-6f));
+  CHECK_NEAR(solver.stress(0).normalForce, -kWeight, 1.0);
+}
+
+TEST(the_overload_time_adds_up_while_over_and_drops_to_zero_under) {
+  CHECK_NEAR(overloadTime(0.0f, 1.5f, 0.05f), 0.05, 1e-6);
+  CHECK_NEAR(overloadTime(0.05f, 1.2f, 0.05f), 0.1, 1e-6);
+  CHECK(overloadTime(0.1f, 0.9f, 0.05f) == 0.0f);
+}
+
+TEST(a_settled_solve_counts_afresh_when_its_live_loads_change) {
+  // Otherwise every change adds to the count until the solve looks stuck.
+  StressSolver solver;
+  buildSlab(solver);
+  settle(solver);
+  CHECK(solver.iterations() > 0);
+  solver.setLiveLoads({{3, {0, -kWeight, 0}, {0, 0, 0}}});
+  CHECK(solver.iterations() == 0);
+  settle(solver);
+  CHECK(solver.settled());
+}

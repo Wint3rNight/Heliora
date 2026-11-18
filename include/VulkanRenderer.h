@@ -573,6 +573,19 @@ private:
   std::vector<float> solvedLoad; // overload, by solved link
   std::vector<PhysicsDebugVertex> loadLines;
   double stressStarted = 0.0; // ms spent on the current solve so far
+  // Live loads (C2): what moving bodies rest on, by the moving body (kept
+  // while it sleeps), and each piece's load from them and from characters,
+  // smoothed, and as last handed to the solve. A link breaks once it's been
+  // over its limits for kOverloadSeconds.
+  std::unordered_map<uint32_t, std::vector<PhysicsRest>> restsOn;
+  std::vector<glm::vec3> liveForce, liveTorque;               // by piece, smoothed
+  std::vector<glm::vec3> liveAppliedForce, liveAppliedTorque; // by piece
+  std::vector<float> overloadSeconds;                         // by solved link
+  float sinceJudged = 0.0f;                                   // s
+  float stressFrame = 0.0f;                                   // s, this frame's
+  int loggedIterations = -1; // the solve's count when last logged
+  void gatherLiveLoads();
+  void applyLiveLoads();
   std::vector<std::vector<int>> pieceLinks; // by piece, its links
   std::map<std::string, std::shared_ptr<const Fracture>> fractures; // cut once each
   std::unique_ptr<RubbleLayer> rubbleLayer;
@@ -613,7 +626,7 @@ private:
   void settleRubble();
   // Each frame in play: the weight on what stays put, and the links it
   // breaks (step 1.3d).
-  void updateStress();
+  void updateStress(float seconds);
   // The faces of a placed piece that rest against something fixed, by index.
   std::vector<int> restingFaces(const PlacedPiece &piece) const;
   void addGroundLinks(int piece, const PlacedPiece &placed);

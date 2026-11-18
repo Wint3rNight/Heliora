@@ -190,6 +190,8 @@ void StressSolver::build(const std::vector<StressPiece> &pieces, const std::vect
     springs_.push_back(sp);
   }
   loose_.assign(solved, 0);
+  liveForce_.assign(solved, glm::dvec3(0.0));
+  liveTorque_.assign(solved, glm::dvec3(0.0));
   rebuildBlocks();
   shift_.assign(solved, glm::dvec3(0.0));
   turn_.assign(solved, glm::dvec3(0.0));
@@ -395,8 +397,8 @@ void StressSolver::restart() {
   rTorque_.resize(kt.size());
   double norm = 0.0;
   for (size_t i = 0; i < kf.size(); ++i) {
-    const glm::dvec3 f = loose_[i] ? glm::dvec3(0.0) : loadForce_[i];
-    const glm::dvec3 t = loose_[i] ? glm::dvec3(0.0) : loadTorque_[i];
+    const glm::dvec3 f = loose_[i] ? glm::dvec3(0.0) : loadForce_[i] + liveForce_[i];
+    const glm::dvec3 t = loose_[i] ? glm::dvec3(0.0) : loadTorque_[i] + liveTorque_[i];
     norm += glm::dot(f, f) + glm::dot(t, t);
     rForce_[i] = f - kf[i];
     rTorque_[i] = t - kt[i];
@@ -574,4 +576,28 @@ float tipping(const LinkStress &stress, const LinkLimits &limits) {
   axis(stress.bendU, stress.reachV);
   axis(stress.bendV, stress.reachU);
   return worst;
+}
+
+void StressSolver::setLiveLoads(const std::vector<LiveLoad> &loads) {
+  // Settled, this is a fresh solve; mid-solve it keeps counting, so one
+  // that crawls still reaches the cap.
+  if (settled_) {
+    iterations_ = 0;
+    rounds_ = 0;
+  }
+  std::fill(liveForce_.begin(), liveForce_.end(), glm::dvec3(0.0));
+  std::fill(liveTorque_.begin(), liveTorque_.end(), glm::dvec3(0.0));
+  for (const LiveLoad &load : loads) {
+    if (load.piece < 0 || load.piece >= static_cast<int>(solvedOf_.size()) ||
+        solvedOf_[load.piece] < 0)
+      continue;
+    liveForce_[solvedOf_[load.piece]] += glm::dvec3(load.force);
+    liveTorque_[solvedOf_[load.piece]] += glm::dvec3(load.torque);
+  }
+  started_ = false;
+  settled_ = false;
+}
+
+float overloadTime(float before, float overload, float seconds) {
+  return overload > 1.0f ? before + seconds : 0.0f;
 }

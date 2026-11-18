@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <numeric>
 #include <format>
 #include <random>
 #include <unordered_set>
@@ -52,6 +53,13 @@ constexpr int kStressIterations = 40;
 // tipping off its support is a nearly free mode the solver crawls along.
 constexpr int kStressMostIterations = 2000;
 constexpr int kStressBreaksPerFrame = 3;
+// Live loads: smoothed this much a frame, handed to the solve once anything
+// moved more than kLiveLoadStep, and a link breaks only after being over its
+// limits this long, so one noisy frame doesn't break it.
+constexpr float kLiveSmoothing = 0.3f;
+constexpr float kLiveLoadStep = 50.0f; // N, or N m
+constexpr float kOverloadSeconds = 0.1f;
+constexpr float kSupportFacing = 0.3f; // a contact facing at least this much up holds weight
 // Room kept in the GPU-driven pass's shared buffers at Play for what's made
 // while playing (runtime pieces and rubble tiles), so it never grows, and
 // waits for the GPU, mid-game.
@@ -138,6 +146,12 @@ void VulkanRenderer::clearBreakables() {
   solvedLinks.clear();
   solvedLoad.clear();
   loadLines.clear();
+  restsOn.clear();
+  liveForce.clear();
+  liveTorque.clear();
+  liveAppliedForce.clear();
+  liveAppliedTorque.clear();
+  overloadSeconds.clear();
   stressDirty = false;
   pieceLinks.clear();
   rubbleTiles.clear();
@@ -435,6 +449,9 @@ void VulkanRenderer::prepareBreakGraph() {
   }
   pieceShift.assign(breakPieces.size(), glm::vec3(0.0f));
   pieceTurn.assign(breakPieces.size(), glm::vec3(0.0f));
+  for (std::vector<glm::vec3> *loads : {&liveForce, &liveTorque, &liveAppliedForce, &liveAppliedTorque})
+    loads->assign(breakPieces.size(), glm::vec3(0.0f));
+  restsOn.clear();
   stressDirty = true;
   stressFirst = true;
   gpuDrivenGBufferPass.reserveGeometry(kReservedVertices, kReservedIndices);
@@ -616,6 +633,8 @@ void VulkanRenderer::splitPiece(const PendingSplit &split) {
     pieceGroundLinks.emplace_back();
     pieceShift.push_back(glm::vec3(0.0f));
     pieceTurn.push_back(glm::vec3(0.0f));
+    for (std::vector<glm::vec3> *loads : {&liveForce, &liveTorque, &liveAppliedForce, &liveAppliedTorque})
+      loads->push_back(glm::vec3(0.0f));
     // Resting where the old piece rested, if it still did: ground links of
     // its own (a piece of something already falling gets none).
     if (old.anchor)
@@ -756,6 +775,25 @@ void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
       loose[p] = true;
     }
   }
+  // Where each replaced body was: what sleeps on it is woken once the new
+  // bodies are in, or it would hang in the air (Jolt doesn't wake what
+  // rests on a removed body) and its weight would rest on nothing.
+  std::vector<std::pair<glm::vec3, glm::vec3>> wake;
+  for (int b : dirty) {
+    glm::vec3 lo(std::numeric_limits<float>::max()), hi(-std::numeric_limits<float>::max());
+    for (int p : breakBodies[b].pieces) {
+      if (!breakPieces[p].alive)
+        continue;
+      for (const FractureFace &face : breakPieces[p].shape->faces)
+        for (const glm::vec3 &q : face.points) {
+          const glm::vec3 w = world[p].position + world[p].rotation * q;
+          lo = glm::min(lo, w);
+          hi = glm::max(hi, w);
+        }
+    }
+    if (lo.x <= hi.x)
+      wake.push_back({lo - glm::vec3(0.1f), hi + glm::vec3(0.1f)});
+  }
   std::unordered_set<int> affected;
   for (int b : dirty) {
     for (int p : breakBodies[b].pieces)
@@ -829,6 +867,8 @@ void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
   }
   for (const NewBody &nb : made)
     addBreakBody(nb.pieces, nb.worlds, nb.fixed, nb.velocity, nb.spin);
+  for (const auto &[lo, hi] : wake)
+    physics->activateBodiesIn(lo, hi);
   spdlog::info("[break] {} bodies replaced by {}, {:.2f} ms", dirty.size(), made.size(),
                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                    .count());
@@ -1029,10 +1069,13 @@ void VulkanRenderer::updateRubble(float seconds) {
 // at their links (Stress.h). Built again when the structure changes, solved
 // a few dozen iterations a frame until it settles, then the links over
 // their limits break, the worst few a frame, and what that frees falls.
-void VulkanRenderer::updateStress() {
+void VulkanRenderer::updateStress(float seconds) {
   if (!breakGraphReady)
     return;
   const auto start = std::chrono::steady_clock::now();
+  sinceJudged += seconds;
+  stressFrame = seconds;
+  gatherLiveLoads();
   if (stressDirty) {
     stressDirty = false;
     // What stays put now, and the links among it; if that's what's being
@@ -1059,8 +1102,10 @@ void VulkanRenderer::updateStress() {
                                  [](const SolvedLink &x, const SolvedLink &y) {
                                    return x.index == y.index && x.ground == y.ground;
                                  });
+    // The mapping goes with breakPieces' size even when nothing that stays
+    // put changed (a moving chunk was cut).
+    stressPieceOf = std::move(pieceOf);
     if (!same) {
-      stressPieceOf = std::move(pieceOf);
       stressOrder = std::move(order);
       solvedLinks = std::move(solved);
       std::vector<StressPiece> pieces;
@@ -1092,10 +1137,15 @@ void VulkanRenderer::updateStress() {
       stressSolver.setStart(shifts, turns);
       solvedLoad.clear();
       loadLines.clear();
+      overloadSeconds.assign(solvedLinks.size(), 0.0f);
       stressStarted = 0.0;
       stressJudged = false;
+      // What rests on it carries over into the new solve.
+      std::fill(liveAppliedForce.begin(), liveAppliedForce.end(), glm::vec3(0.0f));
+      std::fill(liveAppliedTorque.begin(), liveAppliedTorque.end(), glm::vec3(0.0f));
     }
   }
+  applyLiveLoads();
   if (stressJudged)
     return; // nothing changed since it settled
   const bool settled = stressSolver.solve(kStressIterations);
@@ -1155,13 +1205,37 @@ void VulkanRenderer::updateStress() {
   solvedLoad.assign(solvedLinks.size(), 0.0f);
   std::vector<std::pair<float, int>> over;
   std::vector<int> open; // contacts that lifted off: they hold nothing
+  // Structures (pieces joined by the solved links) carrying live loads: a
+  // contact lifted there stays lifted rather than opening for good, since
+  // what lifted it may move off and it should press back down.
+  std::vector<int> joined(stressOrder.size());
+  std::iota(joined.begin(), joined.end(), 0);
+  auto root = [&](int x) {
+    while (joined[x] != x)
+      x = joined[x] = joined[joined[x]];
+    return x;
+  };
+  for (const SolvedLink &solved : solvedLinks)
+    if (!solved.ground)
+      joined[root(stressPieceOf[breakLinks[solved.index].a])] = root(stressPieceOf[breakLinks[solved.index].b]);
+  std::vector<char> loadedRoot(stressOrder.size(), 0);
+  for (size_t k = 0; k < stressOrder.size(); ++k) {
+    const int p = stressOrder[k];
+    if (glm::length(liveAppliedForce[p]) > 1.0f || glm::length(liveAppliedTorque[p]) > 1.0f)
+      loadedRoot[root(static_cast<int>(k))] = 1;
+  }
+  std::vector<char> loaded(stressOrder.size(), 0);
+  for (size_t k = 0; k < stressOrder.size(); ++k)
+    loaded[k] = loadedRoot[root(static_cast<int>(k))];
   for (size_t i = 0; i < solvedLinks.size(); ++i) {
     const SolvedLink &solved = solvedLinks[i];
     const LinkLimits limits =
         solved.ground ? groundLimits(groundLinks[solved.index].piece) : linkLimits(solved.index);
     const LinkStress stress = stressSolver.stress(static_cast<int>(i));
     if (limits.contact && stress.liftedShare >= 1.0f) {
-      open.push_back(static_cast<int>(i));
+      if (!loaded[stressPieceOf[solved.ground ? groundLinks[solved.index].piece
+                                              : breakLinks[solved.index].a]])
+        open.push_back(static_cast<int>(i));
       continue;
     }
     solvedLoad[i] = overload(stress, limits);
@@ -1191,11 +1265,26 @@ void VulkanRenderer::updateStress() {
   }
 
   std::sort(over.begin(), over.end(), std::greater<>());
-  spdlog::info("[weight] {} pieces, {} links settled in {} iterations, {:.2f} ms; {} open, {} over "
-               "their limits{}",
-               stressOrder.size(), solvedLinks.size(), stressSolver.iterations(), stressStarted,
-               open.size(), over.size(),
-               over.empty() ? std::string() : std::format(" (the worst {:.2f})", over.front().first));
+  // How long each has been over: a link breaks only once it has been for
+  // kOverloadSeconds (live loads flicker).
+  // A link newly over counts from this frame, not from the last judging
+  // (the solve may have sat idle for seconds in between).
+  for (size_t i = 0; i < solvedLinks.size(); ++i)
+    overloadSeconds[i] = overloadTime(overloadSeconds[i], solvedLoad[i],
+                                      overloadSeconds[i] > 0.0f ? sinceJudged : stressFrame);
+  sinceJudged = 0.0f;
+  std::vector<std::pair<float, int>> due;
+  for (const auto &[load, i] : over)
+    if (overloadSeconds[i] >= kOverloadSeconds)
+      due.push_back({load, i});
+  if (stressSolver.iterations() != loggedIterations || !open.empty() || !due.empty())
+    spdlog::info("[weight] {} pieces, {} links settled in {} iterations, {:.2f} ms; {} open, {} over "
+                 "their limits{}",
+                 stressOrder.size(), solvedLinks.size(), stressSolver.iterations(), stressStarted,
+                 open.size(), over.size(),
+                 over.empty() ? std::string() : std::format(" (the worst {:.2f})", over.front().first));
+  stressStarted = 0.0;
+  loggedIterations = stressSolver.iterations();
   auto breakSolved = [&](int i) {
     const SolvedLink &solved = solvedLinks[i];
     if (solved.ground) {
@@ -1211,7 +1300,7 @@ void VulkanRenderer::updateStress() {
   };
   // Open contacts aren't failures: things resting side by side, a roof off
   // a wall it doesn't press. They open now, even on Play, and the rest is
-  // solved again without them.
+  // solved again without them (not where live loads are on, above).
   if (!open.empty()) {
     for (int i : open)
       breakSolved(i);
@@ -1228,9 +1317,109 @@ void VulkanRenderer::updateStress() {
   }
   if (over.empty())
     return;
-  for (int k = 0; k < std::min<int>(kStressBreaksPerFrame, static_cast<int>(over.size())); ++k)
-    breakSolved(over[k].second);
+  if (due.empty()) {
+    stressJudged = false; // over, not for long enough yet: judged again next frame
+    return;
+  }
+  for (int k = 0; k < std::min<int>(kStressBreaksPerFrame, static_cast<int>(due.size())); ++k)
+    breakSolved(due[k].second);
   regroupBreakables({});
+}
+
+// What rests on the structure: moving bodies' weight shared among the
+// contacts holding them up, and every character's where it stands, on the
+// piece under each point; summed per piece and smoothed.
+void VulkanRenderer::gatherLiveLoads() {
+  if (liveForce.size() != breakPieces.size())
+    return;
+  std::unordered_map<uint32_t, std::vector<PhysicsRest>> fresh;
+  for (const PhysicsRest &rest : physics->takeRests())
+    fresh[rest.on.value].push_back(rest);
+  // A body that said nothing is still resting if it sleeps; awake and
+  // silent, or gone, it has lifted off.
+  std::erase_if(restsOn, [&](const auto &entry) {
+    if (fresh.contains(entry.first))
+      return false;
+    const PhysicsBodyId body{entry.first};
+    return physics->mass(body) <= 0.0f || physics->isActive(body);
+  });
+  for (auto &[id, list] : fresh)
+    restsOn[id] = std::move(list);
+
+  std::vector<glm::vec3> force(breakPieces.size(), glm::vec3(0.0f));
+  std::vector<glm::vec3> torque(breakPieces.size(), glm::vec3(0.0f));
+  auto put = [&](uint64_t userData, glm::vec3 point, glm::vec3 weight) {
+    if (!(userData & kBreakBodyFlag))
+      return;
+    const uint64_t index = userData & ~kBreakBodyFlag;
+    if (index >= breakBodies.size() || !breakBodies[index].fixed || !breakBodies[index].id.isValid())
+      return;
+    // The body's piece the point is least outside of: the one it's on.
+    int on = -1;
+    float least = std::numeric_limits<float>::max();
+    for (int p : breakBodies[index].pieces) {
+      if (!breakPieces[p].alive)
+        continue;
+      const PhysicsPose world = pieceWorld(breakPieces[p]);
+      float outside = -std::numeric_limits<float>::max();
+      for (const FractureFace &face : breakPieces[p].shape->faces)
+        outside = std::max(outside, glm::dot(world.rotation * face.normal,
+                                             point - (world.position + world.rotation * face.points[0])));
+      if (outside < least) {
+        least = outside;
+        on = p;
+      }
+    }
+    if (on < 0)
+      return;
+    const PhysicsPose world = pieceWorld(breakPieces[on]);
+    force[on] += weight;
+    torque[on] += glm::cross(point - (world.position + world.rotation * breakPieces[on].shape->centre),
+                             weight);
+  };
+  const glm::vec3 gravity = physics->gravity();
+  for (const auto &[id, rests] : restsOn) {
+    const float mass = physics->mass(PhysicsBodyId{id});
+    int holding = 0;
+    for (const PhysicsRest &rest : rests)
+      holding += rest.normal.y >= kSupportFacing;
+    if (mass <= 0.0f || holding == 0)
+      continue;
+    for (const PhysicsRest &rest : rests)
+      if (rest.normal.y >= kSupportFacing)
+        put(rest.userData, rest.point, gravity * (mass / static_cast<float>(holding)));
+  }
+  if (roster)
+    for (size_t i = 0; i < roster->size(); ++i) {
+      const PhysicsCharacterState state = physics->characterState(roster->body(i).physicsId());
+      if (state.groundBody.isValid())
+        put(state.groundUserData, state.groundPoint, gravity * roster->body(i).tuning().mass);
+    }
+  for (size_t p = 0; p < breakPieces.size(); ++p) {
+    liveForce[p] = glm::mix(liveForce[p], force[p], kLiveSmoothing);
+    liveTorque[p] = glm::mix(liveTorque[p], torque[p], kLiveSmoothing);
+  }
+}
+
+// The smoothed live loads into the solve, once they've moved enough to
+// matter (a person walking on a slab: every few frames, not every one).
+void VulkanRenderer::applyLiveLoads() {
+  if (liveForce.size() != breakPieces.size() || stressPieceOf.size() != breakPieces.size())
+    return;
+  float moved = 0.0f;
+  for (size_t p = 0; p < breakPieces.size(); ++p)
+    moved = std::max({moved, glm::length(liveForce[p] - liveAppliedForce[p]),
+                      glm::length(liveTorque[p] - liveAppliedTorque[p])});
+  if (moved <= kLiveLoadStep)
+    return;
+  liveAppliedForce = liveForce;
+  liveAppliedTorque = liveTorque;
+  std::vector<LiveLoad> loads;
+  for (size_t p = 0; p < breakPieces.size(); ++p)
+    if (stressPieceOf[p] >= 0 && (glm::length(liveForce[p]) > 1.0f || glm::length(liveTorque[p]) > 1.0f))
+      loads.push_back({stressPieceOf[p], liveForce[p], liveTorque[p]});
+  stressSolver.setLiveLoads(loads);
+  stressJudged = false;
 }
 
 // Edit mode: a breakable moved in the Inspector or with the gizmo. A new

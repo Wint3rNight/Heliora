@@ -727,3 +727,38 @@ TEST(a_height_field_raised_under_a_sleeping_ball_lifts_it) {
   stepFor(world, 60);
   CHECK_NEAR(world.pose(ball).position.y, 0.35, 0.03);
 }
+
+TEST(a_box_resting_on_a_reporting_body_is_reported_with_its_normal_up) {
+  PhysicsWorld world;
+  const PhysicsBodyId target = addTarget(world, 3);
+  const PhysicsBodyId box = addBox(world, glm::vec3(1.0f, 0.6f, 0.0f));
+  std::vector<PhysicsRest> rests;
+  for (int i = 0; i < 30; ++i) {
+    world.step(kStep);
+    for (const PhysicsRest &rest : world.takeRests())
+      rests.push_back(rest);
+  }
+  CHECK(!rests.empty());
+  if (!rests.empty()) {
+    const PhysicsRest &last = rests.back();
+    CHECK(last.body.value == target.value);
+    CHECK(last.userData == 3u);
+    CHECK(last.on.value == box.value);
+    CHECK(last.normal.y > 0.9f);
+    CHECK_NEAR(last.point.y, 0.0, 0.05);
+  }
+}
+
+TEST(a_box_resting_on_a_body_that_doesnt_report_is_reported_too) {
+  // So what holds something up is all counted, the ground included.
+  PhysicsWorld world;
+  const PhysicsBodyId floor = addFloor(world);
+  addBox(world, glm::vec3(0.0f, 0.6f, 0.0f));
+  bool seen = false;
+  for (int i = 0; i < 30; ++i) {
+    world.step(kStep);
+    for (const PhysicsRest &rest : world.takeRests())
+      seen = seen || (rest.body.value == floor.value && rest.normal.y > 0.9f);
+  }
+  CHECK(seen);
+}

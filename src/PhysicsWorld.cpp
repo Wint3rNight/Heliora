@@ -321,9 +321,39 @@ public:
   const std::vector<uint64_t> *userData = nullptr;
   std::mutex mutex;
   std::vector<PhysicsImpact> impacts;
+  std::vector<PhysicsRest> rests;
+
+  // A moving body resting on a static one (the ground too, so whoever asks
+  // knows everything holding it up): its weight on it.
+  void rest(const JPH::Body &one, const JPH::Body &two, const JPH::ContactManifold &manifold) {
+    const bool oneStill = one.IsStatic();
+    const bool twoStill = two.IsStatic();
+    if (manifold.mRelativeContactPointsOn1.empty() || !((oneStill && two.IsDynamic()) ||
+                                                        (twoStill && one.IsDynamic())))
+      return;
+    JPH::RVec3 point = manifold.GetWorldSpaceContactPointOn1(0);
+    for (JPH::uint i = 1; i < manifold.mRelativeContactPointsOn1.size(); ++i)
+      point += manifold.GetWorldSpaceContactPointOn1(i);
+    point /= static_cast<float>(manifold.mRelativeContactPointsOn1.size());
+    const JPH::Body &still = oneStill ? one : two;
+    const JPH::Body &moving = oneStill ? two : one;
+    // The normal points from one towards two: up out of the static one.
+    const JPH::Vec3 normal = oneStill ? manifold.mWorldSpaceNormal : -manifold.mWorldSpaceNormal;
+    std::lock_guard lock(mutex);
+    rests.push_back({PhysicsBodyId{still.GetID().GetIndexAndSequenceNumber()},
+                     (*userData)[still.GetID().GetIndex()],
+                     PhysicsBodyId{moving.GetID().GetIndexAndSequenceNumber()}, toGlm(point),
+                     toGlm(normal)});
+  }
+
+  void OnContactPersisted(const JPH::Body &one, const JPH::Body &two,
+                          const JPH::ContactManifold &manifold, JPH::ContactSettings &) override {
+    rest(one, two, manifold);
+  }
 
   void OnContactAdded(const JPH::Body &one, const JPH::Body &two,
                       const JPH::ContactManifold &manifold, JPH::ContactSettings &) override {
+    rest(one, two, manifold);
     const bool reportOne = (*reports)[one.GetID().GetIndex()] != 0;
     const bool reportTwo = (*reports)[two.GetID().GetIndex()] != 0;
     if ((!reportOne && !reportTwo) || manifold.mRelativeContactPointsOn1.empty())
@@ -1031,6 +1061,13 @@ PhysicsCharacterState PhysicsWorld::characterState(PhysicsCharacterId id) const 
   state.groundNormal = toGlm(character.GetGroundNormal());
   state.groundVelocity = toGlm(character.GetGroundVelocity());
   state.height = slot->height;
+  const JPH::BodyID ground = character.GetGroundBodyID();
+  if (!ground.IsInvalid() && state.ground != PhysicsGround::InAir) {
+    state.groundBody = PhysicsBodyId{ground.GetIndexAndSequenceNumber()};
+    if (ground.GetIndex() < impl->userData.size())
+      state.groundUserData = impl->userData[ground.GetIndex()];
+    state.groundPoint = toGlm(character.GetGroundPosition());
+  }
   return state;
 }
 
@@ -1083,4 +1120,9 @@ void PhysicsWorld::setHeights(PhysicsBodyId id, const std::vector<float> &height
 void PhysicsWorld::activateBodiesIn(glm::vec3 lo, glm::vec3 hi) {
   impl->system.GetBodyInterfaceNoLock().ActivateBodiesInAABox(
       JPH::AABox(toJolt(lo), toJolt(hi)), JPH::BroadPhaseLayerFilter(), JPH::ObjectLayerFilter());
+}
+
+std::vector<PhysicsRest> PhysicsWorld::takeRests() {
+  std::lock_guard lock(impl->impactContacts.mutex);
+  return std::exchange(impl->impactContacts.rests, {});
 }

@@ -68,6 +68,7 @@ struct CharacterPanel {
   const char *animState = nullptr;
   std::vector<PlayingClip> playing;
   const char *powerState = nullptr; // the powers' state while playing
+  bool powerLines = false; // the powers' debug lines over their look
   // The .character file: the tuning above (movement, animation timing,
   // body) and the Clips section's choices, saved together by Save
   // character. The files to pick clips from, and what the tab asked for.

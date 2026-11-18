@@ -143,6 +143,156 @@ glm::vec3 VulkanRenderer::heldCentre() const {
   return volume > 0.0f ? sum / volume : physics->pose(heldBody).position;
 }
 
+// The look (step 4) ---------------------------------------------------------
+
+namespace {
+
+// Linear HDR colours: the light's warm core and blue edge, the reveal's and
+// the target's pale blue, the tear's orange, the strain's red.
+const glm::vec3 kGoldCore(1.0f, 0.62f, 0.22f);
+const glm::vec3 kBlueEdge(0.20f, 0.45f, 1.0f);
+const glm::vec3 kPaleBlue(0.25f, 0.55f, 1.0f);
+const glm::vec3 kTearOrange(1.0f, 0.45f, 0.12f);
+const glm::vec3 kStrainRed(1.0f, 0.18f, 0.08f);
+// How bright each is: multipliers on those colours, above bloom's threshold.
+constexpr float kRevealBright = 1.2f;
+constexpr float kTargetBright = 1.0f;
+constexpr float kHeldBright = 1.4f;
+constexpr float kTearBright = 1.3f;
+constexpr float kRibbonCore = 1.4f;
+constexpr float kRibbonEdge = 0.9f;
+constexpr float kTrailBright = 2.0f;
+constexpr float kBurstBright = 1.2f;
+constexpr float kRingBright = 1.6f;
+// The even light over a target's, a held or a torn thing's faces (the
+// reveal's glow is the rim alone).
+constexpr float kGlowFloor = 0.15f;
+constexpr int kStrands = 3;
+constexpr int kStrandSegments = 24;
+constexpr int kRingSegments = 96;
+constexpr int kConeSegments = 40;
+
+} // namespace
+
+void VulkanRenderer::addPowerGlow(const PowerTarget &target, glm::vec3 colour, float strength,
+                                  float floor) {
+  const auto add = [&](int piece) {
+    if (piece >= 0 && piece < static_cast<int>(breakPieces.size()) && breakPieces[piece].alive &&
+        breakPieces[piece].node)
+      powerGlows.push_back({breakPieces[piece].node, colour, strength, floor});
+  };
+  switch (targetKind(target.id)) {
+  case kPieceTarget:
+    add(target.piece);
+    break;
+  case kChunkTarget:
+    if (const size_t b = targetIndex(target.id); b < breakBodies.size())
+      for (int p : breakBodies[b].pieces)
+        add(p);
+    break;
+  case kSceneTarget:
+    if (const size_t i = targetIndex(target.id); i < physicsLinks.size() && physicsLinks[i].node)
+      powerGlows.push_back({physicsLinks[i].node, colour, strength, floor});
+    break;
+  default:
+    break;
+  }
+}
+
+// What glows and the light's strips this frame, from the state the debug
+// lines draw: what the reveal's pulse passed, what the crosshair is on, what
+// the power has hold of and the ribbons to it, the throw's trail, the
+// burst's cone and the reveal's ring.
+void VulkanRenderer::buildPowerEffects() {
+  powerGlows.clear();
+  powerStrips.clear();
+  if (!physics || !playerController || !playerController->body())
+    return;
+  const PowerTuning &t = powerTuning();
+  const float time = static_cast<float>(playSeconds); // a float stays fine for hours
+  const glm::vec3 eye = playerController->camera().position();
+
+  if (revealSince >= 0.0f) {
+    const float out = t.revealReach / t.revealSpeed;
+    const float fade = 1.0f - std::clamp((revealSince - out) / kRingFade, 0.0f, 1.0f);
+    const float radius = std::min(revealSince * t.revealSpeed, t.revealReach);
+    if (fade > 0.0f && radius > 0.1f)
+      addGroundRing(powerStrips, revealFrom + glm::vec3(0.0f, 0.04f, 0.0f), radius, 0.35f,
+                    glm::vec4(kPaleBlue * kRingBright, fade), glm::vec4(kPaleBlue, 1.0f),
+                    kRingSegments);
+    for (const PowerTarget &c : powerCandidates) {
+      const float glow = revealGlow(glm::distance(c.centre, revealFrom), revealSince, t);
+      if (glow > 0.02f)
+        addPowerGlow(c, kPaleBlue, kRevealBright * glow);
+    }
+  }
+  if (powerTarget) {
+    const glm::vec3 colour = powerTarget->kind == GrabKind::Lift   ? kPaleBlue
+                             : powerTarget->kind == GrabKind::Tear ? kTearOrange
+                                                                   : kStrainRed;
+    addPowerGlow(*powerTarget, colour, kTargetBright * (0.85f + 0.15f * std::sin(6.0f * time)),
+                 kGlowFloor);
+  }
+
+  const PowerState state = powerController.state();
+  if (const std::optional<glm::vec3> end = powerReach()) {
+    glm::vec3 core = kGoldCore;
+    if (state == PowerState::Tearing || state == PowerState::Straining) {
+      core = state == PowerState::Tearing ? kTearOrange : kStrainRed;
+      // Brighter as the tear goes on, flickering while it pulls.
+      const float progress =
+          powerTear.total > 0.0f ? std::clamp(powerTear.seconds / powerTear.total, 0.0f, 1.0f) : 0.0f;
+      addPowerGlow(powerGrabbed, core,
+                   kTearBright * (0.7f + 0.6f * progress) * (0.85f + 0.15f * std::sin(14.0f * time)),
+                   kGlowFloor);
+    } else if (!heldPieces.empty()) {
+      for (int p : heldPieces)
+        if (breakPieces[p].alive && breakPieces[p].node)
+          powerGlows.push_back({breakPieces[p].node, kGoldCore, kHeldBright, kGlowFloor});
+    } else {
+      for (const PhysicsLink &link : physicsLinks)
+        if (link.body.value == heldBody.value && link.node)
+          powerGlows.push_back({link.node, kGoldCore, kHeldBright, kGlowFloor});
+    }
+    for (int s = 0; s < kStrands; ++s)
+      addFacingStrip(powerStrips, ribbonStrand(handPosition, *end, s, time, kStrandSegments), eye,
+                     0.09f, 0.05f, glm::vec4(core * kRibbonCore, 1.0f),
+                     glm::vec4(core * kRibbonCore, 0.7f), glm::vec4(kBlueEdge * kRibbonEdge, 1.0f));
+  }
+  if (powerTrail.body.isValid() && powerTrail.points.size() >= 2) {
+    const float fade = 1.0f - std::clamp(powerTrail.seconds / kTrailSeconds, 0.0f, 1.0f);
+    addFacingStrip(powerStrips, powerTrail.points, eye, 0.0f, 0.35f,
+                   glm::vec4(kGoldCore * kTrailBright, 0.0f),
+                   glm::vec4(kGoldCore * kTrailBright, fade), glm::vec4(kBlueEdge * kRibbonEdge, 1.0f));
+  }
+  if (burstSince >= 0.0f) {
+    const float u = std::clamp(burstSince / kBurstShown, 0.0f, 1.0f);
+    addCone(powerStrips, burstFrom, burstAim, std::max(0.3f, t.burstReach * u),
+            glm::radians(0.5f * t.burstWidth), glm::vec4(kPaleBlue * kBurstBright, 1.0f - u),
+            glm::vec4(kBlueEdge, 1.0f), kConeSegments);
+  }
+}
+
+// After the transparent meshes in the lit pass: the glow's meshes at where
+// their nodes are now, and this frame's strips. Nothing outside play.
+void VulkanRenderer::recordPowerEffects(VkCommandBuffer cmd, uint32_t currentImage,
+                                        const VkViewport &viewport, const VkRect2D &scissor) {
+  powerGlowDraws.clear();
+  static const std::vector<EffectVertex> kNone;
+  if (playing)
+    for (const PowerGlow &g : powerGlows) {
+      MeshModel *model = g.node ? modelManager.getModel(g.node->getModelId()) : nullptr;
+      if (!model)
+        continue;
+      for (size_t k = 0; k < model->getMeshCount(); ++k)
+        powerGlowDraws.push_back({model->getMesh(k), g.node->getGlobalTransform(),
+                                  g.node->getNormalMatrix(), g.colour, g.strength, g.floor});
+    }
+  powerEffectsPass.upload(device, currentImage, playing ? powerStrips : kNone);
+  powerEffectsPass.record(cmd, currentImage, descriptorManager.getVPSet(currentImage), viewport,
+                          scissor, powerGlowDraws, static_cast<float>(playSeconds));
+}
+
 void VulkanRenderer::clearPowers() {
   powerController = {};
   powerCandidates.clear();
@@ -161,6 +311,8 @@ void VulkanRenderer::clearPowers() {
   shakenPieces.clear();
   shakenLink = -1;
   powerLines.clear();
+  powerGlows.clear();
+  powerStrips.clear();
   characterPanel.powerState = nullptr;
 }
 
@@ -661,8 +813,9 @@ void VulkanRenderer::shakePowers() {
 }
 
 void VulkanRenderer::drawPowerLines() {
+  buildPowerEffects();
   powerLines.clear();
-  if (!physics || !playerController || !playerController->body())
+  if (!physics || !playerController || !playerController->body() || !characterPanel.powerLines)
     return;
   const PowerTuning &t = powerTuning();
   const float time = static_cast<float>(playSeconds);

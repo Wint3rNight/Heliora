@@ -20,6 +20,7 @@
 #include "CompositePass.h"
 #include "CharacterImport.h"
 #include "DebugLinePass.h"
+#include "PowerEffectsPass.h"
 #include "SkinningPass.h"
 #include "DescriptorManager.h"
 #include "EditHistory.h"
@@ -706,7 +707,22 @@ private:
   int shakenLink = -1; // into physicsLinks
   glm::vec3 handPosition{0.0f}; // the player's right hand this frame
   int handBone = -2;            // into the skeleton; -1 none, -2 not looked for
-  std::vector<PhysicsDebugVertex> powerLines;
+  std::vector<PhysicsDebugVertex> powerLines; // the debug lines, with Debug lines ticked
+  // The powers' look (step 4): what glows this frame, and the light's
+  // strips, drawn by powerEffectsPass. The nodes are gathered at the end of
+  // each play frame's physics, after everything that can remove a node
+  // while playing, and cleared with clearPowers: anything that removes nodes
+  // during play elsewhere must clear them too, or recordPowerEffects reads a
+  // freed node.
+  struct PowerGlow {
+    SceneNode *node = nullptr;
+    glm::vec3 colour{1.0f}; // HDR
+    float strength = 1.0f;
+    float floor = 0.0f; // light over its faces too (GlowDraw::floor)
+  };
+  std::vector<PowerGlow> powerGlows;
+  std::vector<EffectVertex> powerStrips;
+  std::vector<GlowDraw> powerGlowDraws; // powerGlows turned into meshes, at record time
   uint32_t powerDraws = 0; // for the tumble axes, varied each grab and throw
   void clearPowers();
   // Each frame in play, before the steps: what's near and under the
@@ -719,6 +735,10 @@ private:
   void shakePowers();
   // After the characters are posed: the powers as lines, for now.
   void drawPowerLines();
+  void buildPowerEffects();
+  void addPowerGlow(const PowerTarget &target, glm::vec3 colour, float strength, float floor = 0.0f);
+  void recordPowerEffects(VkCommandBuffer cmd, uint32_t currentImage, const VkViewport &viewport,
+                          const VkRect2D &scissor);
   void gatherPowerCandidates(glm::vec3 around, float radius);
   bool followHeld(); // false once the held body is gone for good
   void startTear(int piece);
@@ -736,6 +756,7 @@ private:
   // The played character's (its variant's), or the Character tab's.
   const PowerTuning &powerTuning() const;
   DebugLinePass debugLinePass;
+  PowerEffectsPass powerEffectsPass; // the powers' glow and light (PowerPlay.cpp)
   PhysicsPanel physicsPanel;
   // The character's and its camera's tuning (the Character tab). The player
   // start's outline and clicks use its body sizes too.

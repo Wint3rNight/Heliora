@@ -2070,6 +2070,8 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
     PowerTuning &pw = c.powers;
     ImGui::Text("State: %s", panel.powerState ? panel.powerState : "-");
     ImGui::TextDisabled("Q reveals, right mouse grabs, left mouse throws, E bursts");
+    ImGui::Checkbox("Debug lines", &panel.powerLines);
+    ImGui::SetItemTooltip("Outlines, the hold's box and plain lines over the glow and light");
     ImGui::SeparatorText("Lifting and holding");
     changed |= slider("Heaviest", &pw.liftCap, 10.0f, 20000.0f, "%.0f kg");
     ImGui::SetItemTooltip("Anything heavier only shudders");

@@ -142,6 +142,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Rubble.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Stress.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Powers.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PowerEffects.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -229,6 +230,7 @@ add_executable(heliora_tests
         tests/RubbleTests.cpp
         tests/StressTests.cpp
         tests/PowersTests.cpp
+        tests/PowerEffectsTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
 add_test(NAME heliora_tests COMMAND heliora_tests)

@@ -257,6 +257,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
         pipelineCache.get(), descriptorManager);
     materialProbePass.create(device, MAX_FRAMES_DRAWS, descriptorManager,
                              pipelineCache.get());
+    powerEffectsPass.create(device, renderPassManager.getLitRenderPass(),
+                            descriptorManager.getVPLayout(), pipelineCache.get());
 
     // 10. IBL resources (requires textureManager and descriptorManager)
     initIBL();
@@ -4363,6 +4365,7 @@ void VulkanRenderer::cleanup() {
   instancedDrawables.clear(); // AllocatedBuffer RAII destroys GPU buffers
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
+  powerEffectsPass.cleanup(device.getLogicalDevice());
   skinningPass.cleanup();
   characterFiles.clear(); // their preview buffers
   thumbnails.cleanup(device.getLogicalDevice());
@@ -4687,6 +4690,7 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
     recordTransparentPass(cmd, currentImage, viewport, scissor);
+    recordPowerEffects(cmd, currentImage, viewport, scissor);
     vkCmdEndRenderPass(cmd);
     noteLitFinalLayout(currentImage);
     metrics.endPassTimestamp(cmd, PerformanceMetrics::GpuPass::Lit);

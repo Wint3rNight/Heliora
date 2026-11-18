@@ -28,10 +28,34 @@ struct Bone {
   glm::mat4 inverseBind{1.0f};
 };
 
+// Whether two bone names are the same bone: the same name, or the same
+// after a rig prefix both have ("mixamorig:Hips" and "mixamorig7:Hips";
+// Mixamo numbers the rig per download). A bare name is another rig.
+bool sameBoneName(std::string_view a, std::string_view b);
+
 struct Skeleton {
   std::vector<Bone> bones; // parents before their children
-  int find(std::string_view name) const; // -1 when there's none
+  // The bone with this name (sameBoneName), or -1 when there's none.
+  int find(std::string_view name) const;
 };
+
+// Each bone's rotation in the skeleton's space in the bind pose: its
+// parents' and its own, scale left out.
+std::vector<glm::quat> bindModelRotations(const Skeleton &skeleton);
+
+// Retargeting a clip made on one rig onto another with the same bones but a
+// different rest pose (two Mixamo characters): a key keeps how far the bone
+// turned away from its rest, in the skeleton's space, instead of its raw
+// rotation, which on bones resting differently points them elsewhere.
+// sourceBind and targetBind are the bone's bind local rotations on the two
+// rigs, sourceParent and targetParent its parent's bind rotations in the
+// skeleton's space (bindModelRotations; identity for a root). Works key by
+// key once every bone is retargeted, since parents then turn alike too.
+glm::quat retargetRotation(glm::quat key, glm::quat sourceBind, glm::quat targetBind,
+                           glm::quat sourceParent, glm::quat targetParent);
+// A key's position in its parent's space, onto the target's parent so it
+// lands in the same place in the skeleton's space (the hips).
+glm::vec3 retargetPosition(glm::vec3 key, glm::quat sourceParent, glm::quat targetParent);
 
 // Every bone's local transform at one moment.
 struct Pose {

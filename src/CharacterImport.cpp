@@ -49,8 +49,9 @@ void addNodes(const aiNode *node, int parent, Skeleton &skeleton) {
     addNodes(node->mChildren[i], self, skeleton);
 }
 
+// The node for this bone, by sameBoneName: a clip's rig prefix can differ.
 const aiNode *findNode(const aiNode *node, const std::string &name) {
-  if (name == node->mName.C_Str())
+  if (sameBoneName(name, node->mName.C_Str()))
     return node;
   for (unsigned i = 0; i < node->mNumChildren; ++i)
     if (const aiNode *found = findNode(node->mChildren[i], name))
@@ -68,9 +69,10 @@ int findHips(const Skeleton &skeleton) {
   return -1;
 }
 
-// Appends one skinned mesh: its vertices as they are (skinning takes them
-// from the mesh's space), its triangles, and up to four bones a vertex.
-void addMesh(const aiMesh *mesh, Skeleton &skeleton, CharacterAsset &asset) {
+// Appends one skinned mesh to its material's section: its vertices as they
+// are (skinning takes them from the mesh's space), its triangles, and up to
+// four bones a vertex.
+void addMesh(const aiMesh *mesh, Skeleton &skeleton, CharacterSection &asset) {
   const uint32_t first = static_cast<uint32_t>(asset.mesh.vertices.size());
   for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
     Vertex v{};
@@ -120,21 +122,18 @@ void addMesh(const aiMesh *mesh, Skeleton &skeleton, CharacterAsset &asset) {
   }
 }
 
-// The embedded albedo texture's bytes, when the material points at one.
-void takeAlbedo(const aiScene *scene, CharacterAsset &asset) {
-  for (unsigned m = 0; m < scene->mNumMaterials; ++m) {
-    aiString path;
-    if (scene->mMaterials[m]->GetTexture(aiTextureType_DIFFUSE, 0, &path) !=
-        AI_SUCCESS)
-      continue;
-    const aiTexture *texture = scene->GetEmbeddedTexture(path.C_Str());
-    if (!texture || texture->mHeight != 0)
-      continue; // only compressed files (PNG, JPEG) are embedded this way
-    const auto *bytes = reinterpret_cast<const unsigned char *>(texture->pcData);
-    asset.albedo.assign(bytes, bytes + texture->mWidth);
-    asset.albedoName = path.C_Str();
+// A material's embedded albedo texture's bytes, when it points at one.
+void takeAlbedo(const aiScene *scene, unsigned material, CharacterSection &section) {
+  aiString path;
+  if (material >= scene->mNumMaterials ||
+      scene->mMaterials[material]->GetTexture(aiTextureType_DIFFUSE, 0, &path) != AI_SUCCESS)
     return;
-  }
+  const aiTexture *texture = scene->GetEmbeddedTexture(path.C_Str());
+  if (!texture || texture->mHeight != 0)
+    return; // only compressed files (PNG, JPEG) are embedded this way
+  const auto *bytes = reinterpret_cast<const unsigned char *>(texture->pcData);
+  section.albedo.assign(bytes, bytes + texture->mWidth);
+  section.albedoName = path.C_Str();
 }
 
 // The bind-pose bounds: each vertex moved by its bones' skinning matrices,
@@ -144,18 +143,20 @@ void computeBounds(CharacterAsset &asset) {
       asset.skeleton, modelSpace(asset.skeleton, bindPose(asset.skeleton)));
   glm::vec3 lo(std::numeric_limits<float>::max());
   glm::vec3 hi(std::numeric_limits<float>::lowest());
-  for (size_t i = 0; i < asset.mesh.vertices.size(); ++i) {
-    const glm::vec3 p = skinVertex(asset.mesh.vertices[i], asset.skin[i], skinning).pos;
-    lo = glm::min(lo, p);
-    hi = glm::max(hi, p);
-  }
+  for (const CharacterSection &section : asset.sections)
+    for (size_t i = 0; i < section.mesh.vertices.size(); ++i) {
+      const glm::vec3 p = skinVertex(section.mesh.vertices[i], section.skin[i], skinning).pos;
+      lo = glm::min(lo, p);
+      hi = glm::max(hi, p);
+    }
   asset.boundsMin = lo;
   asset.boundsMax = hi;
 }
 
 // One clip file onto the character's skeleton. Only rotations come from the
-// clip, plus the hips' movement scaled by hip height, so a clip made on
-// another Mixamo character (X Bot) keeps this one's proportions.
+// clip, retargeted from its rig's rest pose to this one's, plus the hips'
+// movement scaled by hip height, so a clip made on another Mixamo character
+// (X Bot) keeps this one's proportions.
 std::optional<CharacterClipData> importClip(const CharacterClip &entry,
                                             const CharacterAsset &asset) {
   const std::string path = resolveCharacterPath(entry.file);
@@ -191,6 +192,15 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
   data.start = entry.start;
   data.end = entry.end;
   data.loop = entry.loop;
+  // The clip file's own rig at rest: Mixamo bakes a clip for the character
+  // it was downloaded with, whose rest pose can differ from this one's by
+  // 30 degrees at the shoulders (Ganfaul's against Remy's), so keys are
+  // retargeted rest to rest instead of copied.
+  Skeleton source;
+  addNodes(scene->mRootNode, -1, source);
+  const std::vector<glm::quat> sourceRest = bindModelRotations(source);
+  const std::vector<glm::quat> targetRest = bindModelRotations(skeleton);
+  const glm::quat identity(1.0f, 0.0f, 0.0f, 0.0f);
   int matched = 0;
   for (unsigned c = 0; c < animation->mNumChannels; ++c) {
     const aiNodeAnim *channel = animation->mChannels[c];
@@ -198,16 +208,28 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
     if (bone < 0)
       continue;
     ++matched;
+    const int from = source.find(channel->mNodeName.C_Str());
+    const int fromParent = from >= 0 ? source.bones[from].parent : -1;
+    const int toParent = skeleton.bones[bone].parent;
+    const glm::quat sourceBind = from >= 0 ? source.bones[from].bind.rotation : identity;
+    const glm::quat targetBind = skeleton.bones[bone].bind.rotation;
+    const glm::quat sourceParent = fromParent >= 0 ? sourceRest[fromParent] : identity;
+    const glm::quat targetParent = toParent >= 0 ? targetRest[toParent] : identity;
     BoneTrack &track = data.clip.tracks[bone];
-    for (unsigned k = 0; k < channel->mNumRotationKeys; ++k)
+    for (unsigned k = 0; k < channel->mNumRotationKeys; ++k) {
+      const glm::quat key = glm::normalize(toGlm(channel->mRotationKeys[k].mValue));
       track.rotations.push_back(
           {static_cast<float>(channel->mRotationKeys[k].mTime / ticks),
-           glm::normalize(toGlm(channel->mRotationKeys[k].mValue))});
+           from >= 0 ? retargetRotation(key, sourceBind, targetBind, sourceParent, targetParent)
+                     : key});
+    }
     if (bone == asset.hips)
       for (unsigned k = 0; k < channel->mNumPositionKeys; ++k)
         track.positions.push_back(
             {static_cast<float>(channel->mPositionKeys[k].mTime / ticks),
-             toGlm(channel->mPositionKeys[k].mValue) * hipsScale});
+             retargetPosition(toGlm(channel->mPositionKeys[k].mValue), sourceParent,
+                              targetParent) *
+                 hipsScale});
   }
   data.rootMotion = removeRootMotion(data.clip, skeleton, asset.hips,
                                      entry.loop ? RootMotionMode::Progression
@@ -259,6 +281,7 @@ std::optional<CharacterAsset> importCharacter(const CharacterDescription &descri
   addNodes(scene->mRootNode, -1, asset.skeleton);
   asset.hips = findHips(asset.skeleton);
   int skipped = 0;
+  std::vector<unsigned> materials; // the material of each section
   for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
     const aiMesh *mesh = scene->mMeshes[m];
     // Lines and points (the file has a 2-vertex helper) and meshes no bone
@@ -268,24 +291,38 @@ std::optional<CharacterAsset> importCharacter(const CharacterDescription &descri
       ++skipped;
       continue;
     }
-    addMesh(mesh, asset.skeleton, asset);
+    // Meshes sharing a material share a section (Remy's eyes and lashes).
+    const auto it = std::find(materials.begin(), materials.end(), mesh->mMaterialIndex);
+    const size_t section = static_cast<size_t>(it - materials.begin());
+    if (it == materials.end()) {
+      materials.push_back(mesh->mMaterialIndex);
+      asset.sections.emplace_back();
+    }
+    addMesh(mesh, asset.skeleton, asset.sections[section]);
   }
-  if (asset.mesh.vertices.empty()) {
+  for (size_t k = 0; k < asset.sections.size(); ++k)
+    takeAlbedo(scene, materials[k], asset.sections[k]);
+  std::erase_if(asset.sections, [](const CharacterSection &s) { return s.mesh.indices.empty(); });
+  if (asset.sections.empty()) {
     error = "no skinned triangle mesh in it";
     return std::nullopt;
   }
-  takeAlbedo(scene, asset);
   computeBounds(asset);
   for (const CharacterClip &entry : description.clips)
     asset.library.clips[static_cast<size_t>(entry.slot)] = importClip(entry, asset);
   const size_t loaded = std::count_if(asset.library.clips.begin(), asset.library.clips.end(),
                                       [](const auto &c) { return c.has_value(); });
+  size_t vertices = 0, triangles = 0, textured = 0;
+  for (const CharacterSection &section : asset.sections) {
+    vertices += section.mesh.vertices.size();
+    triangles += section.mesh.indices.size() / 3;
+    textured += !section.albedo.empty();
+  }
   spdlog::info("Character: {} nodes, hips at {}, {} vertices, {} triangles ({} "
-               "meshes skipped), albedo {}, {:.1f} units tall, {} of {} clips, "
-               "{:.0f} ms",
-               asset.skeleton.bones.size(), asset.hips, asset.mesh.vertices.size(),
-               asset.mesh.indices.size() / 3, skipped,
-               asset.albedo.empty() ? "none" : asset.albedoName,
+               "meshes skipped), {} materials ({} textured), {:.1f} units tall, {} of {} "
+               "clips, {:.0f} ms",
+               asset.skeleton.bones.size(), asset.hips, vertices, triangles, skipped,
+               asset.sections.size(), textured,
                asset.boundsMax.y - asset.boundsMin.y, loaded,
                description.clips.size(),
                std::chrono::duration<double, std::milli>(

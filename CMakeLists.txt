@@ -145,6 +145,8 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Bullets.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Weapon.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponFile.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/HitZones.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/PieceDamage.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EffectGeometry.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Particles.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
@@ -246,6 +248,8 @@ add_executable(heliora_tests
         tests/BulletsTests.cpp
         tests/WeaponFileTests.cpp
         tests/WeaponTests.cpp
+        tests/HitZonesTests.cpp
+        tests/PieceDamageTests.cpp
         tests/EffectGeometryTests.cpp
         tests/ParticlesTests.cpp
         tests/InertializeTests.cpp

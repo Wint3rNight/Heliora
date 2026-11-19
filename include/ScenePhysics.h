@@ -35,6 +35,9 @@ struct PhysicsMaterial {
   float pullStrength = 0.0f;
   float pushStrength = 0.0f;
   float slideStrength = 0.0f;
+  // Damage (PieceDamage.h): J per m^3 of a piece the energy bullets leave in
+  // it must reach to break it (tuned, est.); 0 if damage never breaks it.
+  float damageEnergy = 0.0f;
 };
 // Real strengths scaled down, so undermined structures give way in a game's
 // time and size instead of standing as real concrete would.

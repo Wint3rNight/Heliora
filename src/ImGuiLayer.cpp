@@ -1,6 +1,7 @@
 #include "ImGuiLayer.h"
 #include "Prefab.h"
 
+#include "EditorSelection.h"
 #include "GizmoMath.h"
 #include "Picking.h"
 #include "Scene.h"
@@ -298,7 +299,7 @@ namespace {
 constexpr const char *kPanelNames[] = {"Scene",     "Render",    "Lighting",
                                        "Camera",    "Inspector", "Physics",
                                        "Character", "Controls",  "Performance",
-                                       "Debug",     "Assets"};
+                                       "Debug",     "Assets",    "Outliner"};
 
 // The dockspace's id, the same every run so the layout file finds it.
 ImGuiID dockspaceId() { return ImHashStr("HelioraDockspace"); }
@@ -365,6 +366,11 @@ void ImGuiLayer::buildDefaultLayout(unsigned int dockspace) {
   ImGuiID assets = 0;
   ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.25f, &assets, &centre);
   ImGui::DockBuilderDockWindow("Assets", assets);
+  // The Outliner over the left column's tabs, so the list and the Inspector
+  // on the right show at once.
+  ImGuiID outliner = 0;
+  ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.45f, &outliner, &left);
+  ImGui::DockBuilderDockWindow("Outliner", outliner);
   for (const char *name : {"Scene", "Render", "Lighting", "Camera"})
     ImGui::DockBuilderDockWindow(name, left);
   // The Inspector edits objects, in edit mode; the Character tab tunes the
@@ -471,6 +477,12 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   panel(Panel::Performance, [&] { drawPerformanceTab(ui); });
   panel(Panel::Debug, [&] { drawDebugTab(ui); });
   panel(Panel::Assets, [&] { drawAssetsPanel(ui); });
+  // A layout saved before the Outliner has no place for it: the first time,
+  // it joins the Scene tab's group on the left, beside the Inspector.
+  if (const ImGuiWindow *sceneTab = ImGui::FindWindowByName("Scene");
+      sceneTab && sceneTab->DockId != 0)
+    ImGui::SetNextWindowDockID(sceneTab->DockId, ImGuiCond_FirstUseEver);
+  panel(Panel::Outliner, [&] { drawOutliner(ui); });
   updateAssetDrag(ui);
   focusDefaultTabs = false;
   // Even with the Inspector closed or behind another tab.
@@ -638,8 +650,10 @@ bool optionalFloat(const char *label, std::optional<float> &value,
 void ImGuiLayer::flushInspectorRebuild(DebugUiContext &ui) {
   if (inspectorRebuildPending && !ImGui::IsAnyItemActive()) {
     inspectorRebuildPending = false;
+    const std::vector<SceneEntryRef> refs = std::exchange(inspectorPendingRefs, {});
     if (ui.onEntryChanged)
-      ui.onEntryChanged(inspectorPendingRef);
+      for (const SceneEntryRef &ref : refs)
+        ui.onEntryChanged(ref);
   }
 }
 
@@ -888,6 +902,9 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   } else {
     ImGui::Text("Model %d: %s", ref.index, what.c_str());
   }
+  if (ui.selected && ui.selected->size() > 1)
+    ImGui::TextDisabled("%zu selected: a change here is made on every %s selected.",
+                        ui.selected->size(), isGrid ? "grid" : "object");
   ImGui::PushItemWidth(-110.0f);
   InspectorEdit edit;
   transformFields(edited.transform, edit);
@@ -951,8 +968,11 @@ void ImGuiLayer::drawInspector(DebugUiContext &ui) {
   if (split || deleting) {
     // The entry is going, so a rebuild of it would be wasted.
     inspectorRebuildPending = false;
+    inspectorPendingRefs.clear();
     if (split && ui.onGridSplit)
       ui.onGridSplit(ref);
+    else if (deleting && ui.onDeleteSelection)
+      ui.onDeleteSelection();
     else if (deleting && ui.onEntryDeleted)
       ui.onEntryDeleted(ref);
   }
@@ -1025,7 +1045,9 @@ void ImGuiLayer::drawPlayerStartInspector(DebugUiContext &ui) {
   ImGui::SetItemTooltip("Without one, Play starts the character on the ground "
                         "below the camera.");
   ImGui::PopID();
-  if (deleting && ui.onEntryDeleted)
+  if (deleting && ui.onDeleteSelection)
+    ui.onDeleteSelection();
+  else if (deleting && ui.onEntryDeleted)
     ui.onEntryDeleted(ref);
 }
 
@@ -1102,15 +1124,27 @@ void ImGuiLayer::drawCharacterInspector(DebugUiContext &ui) {
       inspectorProblem = *problem;
     } else {
       inspectorProblem.clear();
+      const SceneCharacterEntry before = scene.characters[ref.index];
       scene.characters[ref.index] = edited;
       if (edited.player)
         setPlayerCharacter(scene, ref.index);
       sceneEditOpen = true;
-      if (moved && ui.onEntryMoved)
-        ui.onEntryMoved(ref);
-      if (changed) {
-        inspectorRebuildPending = true;
-        inspectorPendingRef = ref;
+      std::vector<SceneEntryRef> done = {ref};
+      for (const SceneEntryRef &other : othersLike(ui, ref)) {
+        SceneCharacterEntry copy = scene.characters[other.index];
+        copyChanges(before, edited, copy);
+        if (problemWith(copy))
+          continue;
+        scene.characters[other.index] = copy;
+        done.push_back(other);
+      }
+      if (moved)
+        entriesMoved(ui, done);
+      for (const SceneEntryRef &r : done) {
+        if (changed) {
+          inspectorRebuildPending = true;
+          inspectorPendingRefs.push_back(r);
+        }
       }
     }
   }
@@ -1130,9 +1164,286 @@ void ImGuiLayer::drawCharacterInspector(DebugUiContext &ui) {
     ui.onDuplicate();
   if (deleting) {
     inspectorRebuildPending = false;
-    if (ui.onEntryDeleted)
+    inspectorPendingRefs.clear();
+    if (ui.onDeleteSelection)
+      ui.onDeleteSelection();
+    else if (ui.onEntryDeleted)
       ui.onEntryDeleted(ref);
   }
+}
+
+// The bodies an entry needs in the physics world.
+static int64_t bodiesOf(const SceneModelEntry &e) { return e.body ? 1 : 0; }
+static int64_t bodiesOf(const SceneGridEntry &g) {
+  return g.model.body ? int64_t(g.count.x) * g.count.y * g.count.z : 0;
+}
+
+// The Outliner: everything in the scene, one row each with its main
+// settings, to find, select and edit (Unreal's World Outliner and Property
+// Matrix). A click selects (Ctrl adds or takes away, Shift a range, the
+// scene's own clicks too), a double click flies the editor camera there,
+// and the material, body, pieces and mass can be changed in their cells: on
+// a selected row, the change goes to every selected row.
+void ImGuiLayer::drawOutliner(DebugUiContext &ui) {
+  if (!ui.scene) {
+    ImGui::TextDisabled("No scene.");
+    return;
+  }
+  SceneDescription &scene = *ui.scene;
+  const bool editing = !ui.playing && ui.selected;
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  ImGui::InputTextWithHint("##search", "Search names, kinds, materials", outlinerSearch,
+                           sizeof outlinerSearch);
+  ImGui::Checkbox("Shapes", &outlinerFilter.shapes);
+  ImGui::SameLine();
+  ImGui::Checkbox("Models", &outlinerFilter.models);
+  ImGui::SameLine();
+  ImGui::Checkbox("Grids", &outlinerFilter.grids);
+  ImGui::SameLine();
+  ImGui::Checkbox("Characters", &outlinerFilter.characters);
+  ImGui::SameLine();
+  ImGui::Checkbox("Breakable only", &outlinerFilter.breakableOnly);
+
+  std::vector<OutlinerRow> rows;
+  for (OutlinerRow &row : outlinerRows(scene))
+    if (rowMatches(row, outlinerSearch) && rowPasses(row, outlinerFilter))
+      rows.push_back(std::move(row));
+
+  const std::vector<SceneEntryRef> none;
+  const std::vector<SceneEntryRef> &selected = ui.selected ? *ui.selected : none;
+  auto isSelected = [&](SceneEntryRef ref) {
+    return std::find(selected.begin(), selected.end(), ref) != selected.end();
+  };
+  ImGui::TextDisabled("%zu shown, %zu selected%s", rows.size(), selected.size(),
+                      ui.playing ? " (Stop to select and edit)" : "");
+
+  constexpr ImGuiTableFlags kFlags =
+      ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_Resizable |
+      ImGuiTableFlags_Hideable |
+      ImGuiTableFlags_Reorderable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+      ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit;
+  if (!ImGui::BeginTable("##outliner", 7, kFlags, ImVec2(0.0f, 0.0f)))
+    return;
+  ImGui::TableSetupScrollFreeze(1, 1); // the names and the header stay
+  ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_WidthFixed,
+                          210.0f, static_cast<ImGuiID>(OutlinerColumn::Name));
+  ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 70.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Kind));
+  ImGui::TableSetupColumn("Material", ImGuiTableColumnFlags_None, 80.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Material));
+  ImGui::TableSetupColumn("Body", ImGuiTableColumnFlags_None, 85.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Body));
+  ImGui::TableSetupColumn("Pieces", ImGuiTableColumnFlags_None, 60.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Breaks));
+  ImGui::TableSetupColumn("Mass", ImGuiTableColumnFlags_None, 80.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Mass));
+  ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_None, 150.0f,
+                          static_cast<ImGuiID>(OutlinerColumn::Position));
+  ImGui::TableHeadersRow();
+  // Sorted by the header clicked; in file order until one is.
+  OutlinerColumn by = OutlinerColumn::Order;
+  bool ascending = true;
+  if (const ImGuiTableSortSpecs *specs = ImGui::TableGetSortSpecs(); specs && specs->SpecsCount > 0) {
+    by = static_cast<OutlinerColumn>(specs->Specs[0].ColumnUserID);
+    ascending = specs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
+  }
+  sortRows(rows, by, ascending);
+  std::vector<SceneEntryRef> order;
+  order.reserve(rows.size());
+  for (const OutlinerRow &row : rows)
+    order.push_back(row.ref);
+
+  // A pick made in the scene scrolls the list to it.
+  const std::optional<SceneEntryRef> primary = ui.selection;
+  int scrollTo = -1;
+  if (primary != outlinerShownPrimary) {
+    outlinerShownPrimary = primary;
+    if (primary)
+      for (size_t i = 0; i < order.size(); ++i)
+        if (order[i] == *primary)
+          scrollTo = static_cast<int>(i);
+  }
+
+  // An edit to a cell: on the row's own entry, or on every selected one of a
+  // model or grid if the row is selected. Rebuilt once nothing is held, one
+  // undo step.
+  auto editCell = [&](const OutlinerRow &row, auto &&change) {
+    std::vector<SceneEntryRef> targets;
+    if (isSelected(row.ref)) {
+      for (const SceneEntryRef &r : selected)
+        if (r.kind == SceneEntryRef::Kind::Model || r.kind == SceneEntryRef::Kind::Grid)
+          targets.push_back(r);
+    } else {
+      targets.push_back(row.ref);
+    }
+    // Only as many new bodies as the physics world has room for.
+    int64_t room = bodyRoom(ui);
+    for (const SceneEntryRef &r : targets) {
+      const int64_t held = ui.entryBodies ? int64_t(ui.entryBodies(r)) : 0;
+      if (r.kind == SceneEntryRef::Kind::Model && r.index < static_cast<int>(scene.models.size())) {
+        SceneModelEntry e = scene.models[r.index];
+        change(e);
+        noteOverrides(scene.models[r.index], e);
+        if (problemWith(e) || e == scene.models[r.index] || bodiesOf(e) - held > room)
+          continue;
+        room -= bodiesOf(e) - held;
+        scene.models[r.index] = e;
+      } else if (r.kind == SceneEntryRef::Kind::Grid &&
+                 r.index < static_cast<int>(scene.grids.size())) {
+        SceneGridEntry g = scene.grids[r.index];
+        change(g.model);
+        if (problemWith(g) || g == scene.grids[r.index] || bodiesOf(g) - held > room)
+          continue;
+        room -= bodiesOf(g) - held;
+        scene.grids[r.index] = g;
+      } else {
+        continue;
+      }
+      sceneEditOpen = true;
+      inspectorRebuildPending = true;
+      if (std::find(inspectorPendingRefs.begin(), inspectorPendingRefs.end(), r) ==
+          inspectorPendingRefs.end())
+        inspectorPendingRefs.push_back(r);
+    }
+  };
+  auto modelOf = [&](SceneEntryRef ref) -> const SceneModelEntry * {
+    if (ref.kind == SceneEntryRef::Kind::Model && ref.index < static_cast<int>(scene.models.size()))
+      return &scene.models[ref.index];
+    if (ref.kind == SceneEntryRef::Kind::Grid && ref.index < static_cast<int>(scene.grids.size()))
+      return &scene.grids[ref.index].model;
+    return nullptr;
+  };
+
+  // The editable cells read as text until the mouse is over one.
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGuiListClipper clipper;
+  clipper.Begin(static_cast<int>(rows.size()));
+  if (scrollTo >= 0)
+    clipper.IncludeItemByIndex(scrollTo);
+  while (clipper.Step()) {
+    for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+      const OutlinerRow &row = rows[i];
+      ImGui::PushID(static_cast<int>(row.ref.kind));
+      ImGui::PushID(row.ref.index);
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      if (i == scrollTo)
+        ImGui::SetScrollHereY(0.5f);
+      ImGui::BeginDisabled(!editing);
+      if (ImGui::Selectable(row.name.c_str(), isSelected(row.ref),
+                            ImGuiSelectableFlags_SpanAllColumns |
+                                ImGuiSelectableFlags_AllowOverlap |
+                                ImGuiSelectableFlags_AllowDoubleClick) &&
+          ui.onSelectEntry) {
+        const ImGuiIO &io = ImGui::GetIO();
+        // The double click's first click already selected it.
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+          if (ui.onFrameEntry)
+            ui.onFrameEntry(row.ref);
+        } else {
+          ui.onSelectEntry(row.ref, io.KeyShift ? 2 : (io.KeyCtrl ? 1 : 0), order);
+        }
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("%s\nClick to select, Ctrl to add, Shift for a range, "
+                          "double-click to fly there.",
+                          row.name.c_str());
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(row.kind.c_str());
+
+      const SceneModelEntry *entry = modelOf(row.ref);
+      // Material, body, pieces and mass: editable for objects and grids.
+      ImGui::TableSetColumnIndex(2);
+      if (entry && editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const std::string shown = entry->material.value_or("-");
+        if (ImGui::BeginCombo("##material", shown.c_str(), ImGuiComboFlags_NoArrowButton)) {
+          if (ImGui::Selectable("(none)", !entry->material))
+            editCell(row, [](SceneModelEntry &e) { e.material.reset(); });
+          for (const PhysicsMaterial &m : physicsMaterials())
+            if (ImGui::Selectable(m.name, entry->material == std::string(m.name))) {
+              const std::string name = m.name;
+              editCell(row, [&](SceneModelEntry &e) { e.material = name; });
+            }
+          ImGui::EndCombo();
+        }
+      } else {
+        ImGui::TextUnformatted(row.material.empty() ? "-" : row.material.c_str());
+      }
+      ImGui::TableSetColumnIndex(3);
+      if (entry && editing) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const char *shown = row.body.empty() ? "none" : row.body.c_str();
+        if (ImGui::BeginCombo("##body", shown, ImGuiComboFlags_NoArrowButton)) {
+          if (ImGui::Selectable("none", !entry->body))
+            editCell(row, [](SceneModelEntry &e) { e.body.reset(); });
+          const std::pair<const char *, PhysicsMotion> motions[] = {
+              {"static", PhysicsMotion::Static},
+              {"dynamic", PhysicsMotion::Dynamic},
+              {"kinematic", PhysicsMotion::Kinematic}};
+          for (const auto &[name, motion] : motions)
+            if (ImGui::Selectable(name, entry->body == motion)) {
+              const PhysicsMotion m = motion;
+              editCell(row, [&](SceneModelEntry &e) { e.body = m; });
+            }
+          ImGui::EndCombo();
+        }
+      } else {
+        ImGui::TextUnformatted(row.body.empty() ? "-" : row.body.c_str());
+      }
+      ImGui::TableSetColumnIndex(4);
+      if (entry && editing && row.category != OutlinerKind::Grid &&
+          entry->shape == PrimitiveShape::Box && entry->body) {
+        int pieces = entry->breakPieces.value_or(0);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragInt("##pieces", &pieces, 0.2f, 0, kMaxBreakPieces,
+                           pieces > 0 ? "%d" : "-", kClamp)) {
+          const int n = pieces;
+          editCell(row, [&](SceneModelEntry &e) {
+            if (n > 0)
+              e.breakPieces = n;
+            else
+              e.breakPieces.reset();
+          });
+        }
+        ImGui::SetItemTooltip("Breakable: cut ahead of time into this many pieces; 0 doesn't break");
+      } else if (row.breakPieces > 0) {
+        ImGui::Text("%d", row.breakPieces);
+      } else {
+        ImGui::TextDisabled("-");
+      }
+      ImGui::TableSetColumnIndex(5);
+      if (entry && editing && entry->body) {
+        float mass = row.mass.value_or(0.0f);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("##mass", &mass, std::max(0.01f, mass * 0.01f), 0.0f, 1e7f,
+                             row.mass ? (entry->mass ? "%.1f kg" : "%.1f kg*") : "-", kClamp)) {
+          const float m = mass;
+          editCell(row, [&](SceneModelEntry &e) {
+            if (m > 0.0f)
+              e.mass = m;
+            else
+              e.mass.reset();
+          });
+        }
+        ImGui::SetItemTooltip(entry->mass ? "Its mass, set in the scene; drag to 0 for "
+                                            "its volume times its density"
+                                          : "Its volume times its density (*); drag to set "
+                                            "a mass of its own");
+      } else if (row.mass) {
+        ImGui::Text("%.1f kg", *row.mass);
+      } else {
+        ImGui::TextDisabled("-");
+      }
+      ImGui::TableSetColumnIndex(6);
+      ImGui::Text("%.2f, %.2f, %.2f", row.position.x, row.position.y, row.position.z);
+      ImGui::PopID();
+      ImGui::PopID();
+    }
+  }
+  ImGui::PopStyleColor();
+  ImGui::EndTable();
 }
 
 // Keeps an Inspector edit if the parser would take it (and, for a grid, if
@@ -1142,6 +1453,10 @@ void ImGuiLayer::commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
                                      SceneGridEntry editedGrid, bool moved,
                                      bool changed) {
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
+  // What it was, so the same change can be made on the others selected.
+  const SceneModelEntry before = isGrid ? ui.scene->grids[ref.index].model
+                                        : ui.scene->models[ref.index];
+  const SceneGridEntry beforeGrid = isGrid ? ui.scene->grids[ref.index] : SceneGridEntry{};
   std::optional<std::string> problem;
   if (isGrid) {
     editedGrid.model = edited;
@@ -1171,13 +1486,74 @@ void ImGuiLayer::commitInspectorEdit(DebugUiContext &ui, SceneEntryRef ref,
       ui.scene->grids[ref.index] = editedGrid;
     else
       ui.scene->models[ref.index] = edited;
-    if (moved && ui.onEntryMoved)
-      ui.onEntryMoved(ref);
-    if (changed) {
-      inspectorRebuildPending = true;
-      inspectorPendingRef = ref;
+    std::vector<SceneEntryRef> done = {ref};
+    // The same change on every other selected entry of its kind that can
+    // take it (field by field, so each keeps what wasn't touched), as long
+    // as the physics world has room for the bodies it adds.
+    int64_t room = bodyRoom(ui) - (isGrid ? bodiesOf(editedGrid) : bodiesOf(edited)) +
+                   (ui.entryBodies ? int64_t(ui.entryBodies(ref)) : 0);
+    for (const SceneEntryRef &other : othersLike(ui, ref)) {
+      const int64_t held = ui.entryBodies ? int64_t(ui.entryBodies(other)) : 0;
+      if (isGrid) {
+        SceneGridEntry copy = ui.scene->grids[other.index];
+        copyChanges(beforeGrid, editedGrid, copy);
+        if (problemWith(copy) || bodiesOf(copy) - held > room)
+          continue;
+        room -= bodiesOf(copy) - held;
+        ui.scene->grids[other.index] = copy;
+      } else {
+        SceneModelEntry copy = ui.scene->models[other.index];
+        copyChanges(before, edited, copy);
+        noteOverrides(ui.scene->models[other.index], copy);
+        if (problemWith(copy) || bodiesOf(copy) - held > room)
+          continue;
+        room -= bodiesOf(copy) - held;
+        ui.scene->models[other.index] = copy;
+      }
+      done.push_back(other);
+    }
+    if (moved)
+      entriesMoved(ui, done);
+    for (const SceneEntryRef &r : done) {
+      if (changed) {
+        inspectorRebuildPending = true;
+        if (std::find(inspectorPendingRefs.begin(), inspectorPendingRefs.end(), r) ==
+            inspectorPendingRefs.end())
+          inspectorPendingRefs.push_back(r);
+      }
     }
   }
+}
+
+void ImGuiLayer::entriesMoved(DebugUiContext &ui, const std::vector<SceneEntryRef> &refs) {
+  if (refs.size() > 1 && ui.onEntriesMoved)
+    ui.onEntriesMoved(refs);
+  else if (ui.onEntryMoved)
+    for (const SceneEntryRef &r : refs)
+      ui.onEntryMoved(r);
+}
+
+int64_t ImGuiLayer::bodyRoom(const DebugUiContext &ui) const {
+  return int64_t(ui.bodyLimit) - int64_t(ui.bodiesInWorld);
+}
+
+std::vector<SceneEntryRef> ImGuiLayer::othersLike(const DebugUiContext &ui,
+                                                  SceneEntryRef ref) const {
+  std::vector<SceneEntryRef> others;
+  if (!ui.selected || !ui.scene)
+    return others;
+  const SceneDescription &scene = *ui.scene;
+  for (const SceneEntryRef &r : *ui.selected) {
+    if (r == ref || r.kind != ref.kind || r.index < 0)
+      continue;
+    const size_t count = r.kind == SceneEntryRef::Kind::Grid        ? scene.grids.size()
+                         : r.kind == SceneEntryRef::Kind::Model     ? scene.models.size()
+                         : r.kind == SceneEntryRef::Kind::Character ? scene.characters.size()
+                                                                    : 0;
+    if (r.index < static_cast<int>(count))
+      others.push_back(r);
+  }
+  return others;
 }
 
 // The bar across the top: the File and View menus, then Play/Stop, the
@@ -1290,9 +1666,14 @@ ringOnScreen(glm::vec3 centre, glm::vec3 axis, float radius,
 void ImGuiLayer::endGizmoDrag(DebugUiContext &ui) {
   if (!gizmoDrag.active)
     return;
-  // The scale showed at once; the body's size changes in this rebuild.
-  if (gizmoDrag.scaled && ui.onEntryChanged)
+  // The scale showed at once; the bodies' sizes change in this rebuild.
+  if (gizmoDrag.scaled && ui.onEntryChanged) {
     ui.onEntryChanged(gizmoDrag.ref);
+    if (ui.selected)
+      for (const SceneEntryRef &r : *ui.selected)
+        if (r != gizmoDrag.ref && r.kind != SceneEntryRef::Kind::Player)
+          ui.onEntryChanged(r);
+  }
   gizmoDrag = {};
 }
 
@@ -1570,6 +1951,8 @@ void ImGuiLayer::dragGizmo(DebugUiContext &ui, const GizmoView &view) {
 void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
                                  const NodeTransform &placement,
                                  float layoutRotation) {
+  const NodeTransform was = view.transform();
+  const float wasLayout = view.grid ? view.grid->layoutRotation : 0.0f;
   bool changed = false;
   if (view.player) {
     ScenePlayerStart edited = *view.player;
@@ -1606,9 +1989,91 @@ void ImGuiLayer::commitGizmoEdit(DebugUiContext &ui, const GizmoView &view,
   if (changed) {
     sceneEditOpen = true;
     gizmoDrag.scaled |= gizmoMode == GizmoMode::Scale;
-    if (ui.onEntryMoved)
-      ui.onEntryMoved(gizmoDrag.ref);
+    std::vector<SceneEntryRef> moved = {gizmoDrag.ref};
+    for (const SceneEntryRef &r : moveOthersWithGizmo(ui, was, placement, layoutRotation - wasLayout))
+      moved.push_back(r);
+    entriesMoved(ui, moved);
   }
+}
+
+// The rest of the selection follows the primary: moved by the same amount,
+// and turned and scaled by the same amount about their own pivots (Unity's
+// Pivot mode). A turn about y is a yaw for the player start and characters
+// and a layout turn for grids.
+std::vector<SceneEntryRef> ImGuiLayer::moveOthersWithGizmo(DebugUiContext &ui,
+                                                           const NodeTransform &was,
+                                                           const NodeTransform &now,
+                                                           float layoutTurn) {
+  std::vector<SceneEntryRef> movedOthers;
+  if (!ui.selected || ui.selected->size() < 2 || !ui.scene)
+    return movedOthers;
+  SceneDescription &scene = *ui.scene;
+  const glm::vec3 moved = now.position - was.position;
+  const glm::quat turn =
+      rotationFromDegrees(now.rotationDeg) * glm::inverse(rotationFromDegrees(was.rotationDeg));
+  // About y only: what a yaw or a grid's layout gets.
+  float yaw = layoutTurn;
+  if (gizmoMode == GizmoMode::Rotate && gizmoDrag.axis == 1 && layoutTurn == 0.0f)
+    yaw = std::remainder(now.rotationDeg.y - was.rotationDeg.y, 360.0f);
+  const bool turning = gizmoMode == GizmoMode::Rotate;
+  const float scaled = was.scale > 0.0f ? now.scale / was.scale : 1.0f;
+  auto turned = [&](glm::vec3 degrees) {
+    if (!turning)
+      return degrees;
+    if (layoutTurn != 0.0f || gizmoDrag.axis == 1) {
+      degrees.y = std::remainder(degrees.y + yaw, 360.0f);
+      return degrees;
+    }
+    return degreesFromRotation(turn * rotationFromDegrees(degrees));
+  };
+  for (const SceneEntryRef &r : *ui.selected) {
+    if (r == gizmoDrag.ref || r.index < 0)
+      continue;
+    bool done = false;
+    if (r.kind == SceneEntryRef::Kind::Model && r.index < static_cast<int>(scene.models.size())) {
+      SceneModelEntry e = scene.models[r.index];
+      e.transform.position += moved;
+      e.transform.rotationDeg = turned(e.transform.rotationDeg);
+      e.transform.scale = glm::clamp(e.transform.scale * scaled, 0.01f, 100.0f);
+      if (!problemWith(e)) {
+        scene.models[r.index] = e;
+        done = true;
+      }
+    } else if (r.kind == SceneEntryRef::Kind::Grid &&
+               r.index < static_cast<int>(scene.grids.size())) {
+      SceneGridEntry g = scene.grids[r.index];
+      g.model.transform.position += moved;
+      if (turning)
+        g.layoutRotation = std::remainder(g.layoutRotation + yaw, 360.0f);
+      g.model.transform.scale = glm::clamp(g.model.transform.scale * scaled, 0.01f, 100.0f);
+      if (!problemWith(g)) {
+        scene.grids[r.index] = g;
+        done = true;
+      }
+    } else if (r.kind == SceneEntryRef::Kind::Character &&
+               r.index < static_cast<int>(scene.characters.size())) {
+      SceneCharacterEntry c = scene.characters[r.index];
+      c.position += moved;
+      if (turning)
+        c.yaw = std::remainder(c.yaw + yaw, 360.0f);
+      if (!problemWith(c)) {
+        scene.characters[r.index] = c;
+        done = true;
+      }
+    } else if (r.kind == SceneEntryRef::Kind::Player && scene.player) {
+      ScenePlayerStart p = *scene.player;
+      p.position += moved;
+      if (turning)
+        p.yaw = std::remainder(p.yaw + yaw, 360.0f);
+      if (!problemWith(p)) {
+        *scene.player = p;
+        done = true;
+      }
+    }
+    if (done)
+      movedOthers.push_back(r);
+  }
+  return movedOthers;
 }
 
 // The handles at the object's spot after this frame's edit, the hovered or
@@ -2003,8 +2468,12 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   };
   bool changed = false;
   ImGui::SeparatorText("Moving");
+  changed |= slider("Walk speed", &c.walkSpeed, 0.3f, 10.0f, "%.1f m/s");
+  ImGui::SetItemTooltip("W alone; people walk at about 1.4 m/s");
   changed |= slider("Run speed", &c.runSpeed, 0.5f, 20.0f, "%.1f m/s");
+  ImGui::SetItemTooltip("W with Shift held");
   changed |= slider("Sprint speed", &c.sprintSpeed, 0.5f, 30.0f, "%.1f m/s");
+  ImGui::SetItemTooltip("Let go of Shift and press it again quickly, then hold it");
   changed |= slider("Crouch speed", &c.crouchSpeed, 0.2f, 10.0f, "%.1f m/s");
   changed |= slider("Acceleration", &c.groundAcceleration, 1.0f, 200.0f,
                     "%.0f m/s\u00b2");

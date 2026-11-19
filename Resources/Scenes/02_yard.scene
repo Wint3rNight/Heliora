@@ -16,6 +16,14 @@ speed = 10
 [player]
 position = 0 0 18
 
+# What the player starts with here (and gets again on coming back): the
+# pistol, the AKM on the back, two grenades and two charges.
+[kit]
+pistol = true
+long = akm
+grenades = 2
+charges = 2
+
 # Ground, 160 x 160 m
 [model]
 shape = plane

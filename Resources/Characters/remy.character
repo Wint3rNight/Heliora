@@ -9,6 +9,7 @@ model = Resources/Characters/mixamo/characters/Remy.fbx
 # writes it here). Speeds in m/s, accelerations in m/s^2, angles in radians,
 # times in seconds. Every machine gets these, unlike settings.cfg.
 [tuning]
+walk_speed = 1.4
 run_speed = 4.4
 sprint_speed = 5.6
 crouch_speed = 1.5
@@ -173,6 +174,137 @@ start = 0.1
 slot = dodge_right
 file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx
 start = 0.1
+
+# Holding a rifle (step 1.6): Mixamo's Pro Rifle pack, standing, moving
+# and crouching in every direction, the rifle up at the ready; aiming
+# still, its "idle aiming". The reload is Mixamo's, played on the upper
+# body only (it walks while it reloads). Jumps, falls, landings and
+# dodges are the unarmed ones, the gun staying in the right hand.
+[clip]
+slot = idle
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/idle.fbx
+
+[clip]
+slot = aim_idle
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/idle aiming.fbx
+
+[clip]
+slot = walk_forward
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk forward.fbx
+
+[clip]
+slot = walk_back
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk backward.fbx
+
+[clip]
+slot = walk_left
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk left.fbx
+
+[clip]
+slot = walk_right
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk right.fbx
+
+[clip]
+slot = run_forward
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/run forward.fbx
+
+[clip]
+slot = run_back
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/run backward.fbx
+
+[clip]
+slot = run_left
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/run left.fbx
+
+[clip]
+slot = run_right
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/run right.fbx
+
+[clip]
+slot = sprint
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/sprint forward.fbx
+
+[clip]
+slot = crouch_idle
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/idle crouching.fbx
+
+[clip]
+slot = crouch_forward
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching forward.fbx
+
+[clip]
+slot = crouch_back
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching backward.fbx
+
+[clip]
+slot = crouch_left
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching left.fbx
+
+[clip]
+slot = crouch_right
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching right.fbx
+
+[clip]
+slot = reload
+stance = rifle
+file = Resources/Characters/mixamo/clips/Reload/Reload.fbx
+
+# Holding the pistol: Mixamo's Pistol/Handgun Locomotion pack (its
+# "strafe" moves left, "strafe (2)" right, checked by where the hips go),
+# whose idle already holds the gun up in front, so it's also the aiming
+# idle ("Pistol Aim" lowers the gun to the side after 2 s, so it isn't one).
+# No pistol reload clip yet: the gun reloads without one. Crouching is the
+# unarmed crouch.
+[clip]
+slot = idle
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol idle.fbx
+
+[clip]
+slot = walk_forward
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol walk.fbx
+
+[clip]
+slot = walk_back
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol walk backward.fbx
+
+[clip]
+slot = walk_left
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol strafe.fbx
+
+[clip]
+slot = walk_right
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol strafe (2).fbx
+
+[clip]
+slot = run_forward
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol run.fbx
+
+[clip]
+slot = run_back
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol run backward.fbx
 
 # For the climb (01_climb.scene asks for it), the way 3D rage climbers
 # play: he starts, stops and turns on a coin so feet land exactly where

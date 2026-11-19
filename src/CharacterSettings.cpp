@@ -16,6 +16,7 @@ SettingsFile asSettings(const std::vector<CharacterSetting> &values) {
 std::vector<SettingBinding> characterTuningBindings(CharacterTuning &c, AnimatorTuning &a) {
   // Angles in radians, as the code keeps them; the tab shows degrees.
   return {
+      {kSection, "walk_speed", &c.walkSpeed, 0.3, 10},
       {kSection, "run_speed", &c.runSpeed, 0.5, 20},
       {kSection, "sprint_speed", &c.sprintSpeed, 0.5, 30},
       {kSection, "crouch_speed", &c.crouchSpeed, 0.2, 10},
@@ -53,6 +54,7 @@ std::vector<SettingBinding> characterTuningBindings(CharacterTuning &c, Animator
       {kSection, "anim_landing_after", &a.landAirTime, 0, 2},
       {kSection, "anim_shortest_landing", &a.landMinTime, 0, 1},
       {kSection, "anim_fade_aim", &a.aimFade, 0, 1},
+      {kSection, "anim_fade_stance", &a.stanceFade, 0, 2},
       {kSection, "anim_aim_lean", &a.aimLean, 0, 1.5},
       {kSection, "ik_enabled", &a.footIk.enabled},
       {kSection, "ik_foot_reach", &a.footIk.reach, 0, 1},

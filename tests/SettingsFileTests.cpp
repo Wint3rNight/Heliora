@@ -228,3 +228,9 @@ TEST(save_to_a_missing_folder_throws) {
   }
   CHECK(threw);
 }
+
+TEST(a_files_sections_are_listed_in_file_order) {
+  std::istringstream in("[part frame]\nfile = a\n[socket muzzle]\nposition = 1\n[part bolt]\nfile = b\n");
+  const SettingsFile file = SettingsFile::parse(in, "test");
+  CHECK(file.sectionNames() == (std::vector<std::string>{"part frame", "socket muzzle", "part bolt"}));
+}

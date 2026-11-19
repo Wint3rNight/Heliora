@@ -27,13 +27,26 @@ struct CharacterClipData {
   }
 };
 
-// A clip for each move, or none.
+// A clip for each move, or none: the unarmed ones, and the gun stances'.
 struct AnimationLibrary {
-  std::array<std::optional<CharacterClipData>, static_cast<size_t>(ClipSlot::Count)>
-      clips;
+  using Slots = std::array<std::optional<CharacterClipData>, static_cast<size_t>(ClipSlot::Count)>;
+  Slots clips;
+  std::array<Slots, static_cast<size_t>(Stance::Count) - 1> stanceClips; // pistol, rifle
   const CharacterClipData *clip(ClipSlot slot) const {
     const auto &c = clips[static_cast<size_t>(slot)];
     return c ? &*c : nullptr;
+  }
+  const CharacterClipData *clip(ClipSlot slot, Stance stance) const {
+    if (stance == Stance::Unarmed)
+      return clip(slot);
+    const auto &c = stanceClips[static_cast<size_t>(stance) - 1][static_cast<size_t>(slot)];
+    return c ? &*c : nullptr;
+  }
+  // Where a clip of this slot and stance goes.
+  std::optional<CharacterClipData> &slotFor(ClipSlot slot, Stance stance) {
+    return stance == Stance::Unarmed
+               ? clips[static_cast<size_t>(slot)]
+               : stanceClips[static_cast<size_t>(stance) - 1][static_cast<size_t>(slot)];
   }
 };
 
@@ -49,15 +62,27 @@ struct AnimatorInput {
   bool aiming = false;
   bool dodging = false;
   float verticalSpeed = 0.0f; // m/s, up is positive
-  // The controller's gaits, m/s: the run, sprint and crouch walk play in
+  // The controller's gaits, m/s: the walk, run, sprint and crouch walk play in
   // full at these, faster or slower than their own speed so the feet keep
   // up. 0 leaves a gait at its clip's own speed.
   // The dodge the controller picked (it moves along that clip's path).
   ClipSlot dodgeClip = ClipSlot::Roll;
+  float walkSpeed = 0.0f;
   float runSpeed = 0.0f;
   float sprintSpeed = 0.0f;
   float crouchSpeed = 0.0f;
   float aimPitch = 0.0f; // radians the camera looks up; the spine leans with it while aiming
+  // Holding a gun: its stance's clips play (a change of stance is eased in).
+  Stance stance = Stance::Unarmed;
+  // 0 to 1 through a reload, the stance's reload clip on the upper body;
+  // below 0 for none. reloadStance names the gun's stance when the body
+  // moves in another (a gun carried relaxed, with the unarmed moves).
+  float reload = -1.0f;
+  Stance reloadStance = Stance::Unarmed;
+  // A gun carried relaxed in the right hand (with the unarmed moves): in a
+  // jump, a fall, a landing or a dodge that arm keeps the idle's hang
+  // instead of swinging the gun about.
+  bool gunInRightHand = false;
 };
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
@@ -108,6 +133,9 @@ struct AnimatorTuning {
   float playbackRate = 1.0f;
   // The aim's lean fades in and out over this, seconds.
   float aimFade = 0.12f;
+  // Taking out or putting away a gun eases into its stance's clips over
+  // this, seconds (est.).
+  float stanceFade = 0.3f;
   // Radians the spine leans with the camera at most, up or down (40 degrees).
   float aimLean = 0.7f;
   // Feet on uneven ground, laid on by the game after the animator (it casts
@@ -180,4 +208,8 @@ private:
 
   std::vector<int> spine;  // the spine bones the aim leans
   float leanWeight = 0.0f; // the lean's share, faded in while aiming
+  Stance activeStance = Stance::Unarmed;
+  std::vector<float> upperBody; // a reload's mask: the first spine bone and up
+  std::vector<float> arms;      // both shoulders and down: a gun held over other moves
+  std::vector<float> rightArm;  // the right shoulder and down: a gun carried in that hand
 };

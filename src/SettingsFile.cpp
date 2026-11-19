@@ -238,6 +238,13 @@ std::vector<std::string> SettingsFile::keys(std::string_view section) const {
   return names;
 }
 
+std::vector<std::string> SettingsFile::sectionNames() const {
+  std::vector<std::string> names;
+  for (const Section &s : sections)
+    names.push_back(s.name);
+  return names;
+}
+
 std::string SettingsFile::write() const {
   std::string out =
       "# Heliora settings, shared by every scene. The Save buttons in the\n"

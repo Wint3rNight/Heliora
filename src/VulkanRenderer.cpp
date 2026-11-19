@@ -670,9 +670,9 @@ void VulkanRenderer::applyPrefabAction(SceneEntryRef ref, DebugUiContext::Prefab
     return;
   }
   if (rebuild) {
-    const std::optional<SceneEntryRef> keep = selection;
+    const EditorSelection keep = selected;
     loadScene(currentScene, /*moveCamera=*/false);
-    selection = keep;
+    selected = keep;
   }
   updateEditorLines();
   recordEdit();
@@ -759,7 +759,7 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     // before main() has passed it in.
     flyCameraPosition = currentScene.camera.position;
     flyCameraYaw = currentScene.camera.yaw;
-    selection.reset();
+    selected.clear();
     history.clear();
     history.push(currentScene);
     savedScene = currentScene;
@@ -925,21 +925,29 @@ void VulkanRenderer::removeEntryNodes(SceneEntryRef ref) {
       [&](const SceneNode &node) { return node.entry() == ref; });
 }
 
-void VulkanRenderer::placeEntry(SceneEntryRef ref) {
-  if (ref.kind == SceneEntryRef::Kind::Player) {
-    updateEditorLines(); // it's only lines
-    return;
-  }
+void VulkanRenderer::placeEntry(SceneEntryRef ref) { placeEntries({ref}); }
+
+void VulkanRenderer::placeEntries(const std::vector<SceneEntryRef> &refs) {
+  for (const SceneEntryRef &ref : refs)
+    placeEntryOnly(ref);
+  rootNode.update(glm::mat4(1.0f), playSeconds);
+  updateEditorLines();
+}
+
+void VulkanRenderer::placeEntryOnly(SceneEntryRef ref) {
+  if (ref.kind == SceneEntryRef::Kind::Player)
+    return; // it's only lines
   if (ref.kind == SceneEntryRef::Kind::Character) {
-    placeCharacter(ref.index);
-    rootNode.update(glm::mat4(1.0f), playSeconds);
-    updateEditorLines();
+    if (ref.index >= 0 && ref.index < static_cast<int>(currentScene.characters.size()))
+      placeCharacter(ref.index);
     return;
   }
+  const size_t count = ref.kind == SceneEntryRef::Kind::Grid ? currentScene.grids.size()
+                                                             : currentScene.models.size();
+  if (ref.index < 0 || ref.index >= static_cast<int>(count))
+    return;
   if (ref.kind == SceneEntryRef::Kind::Model && currentScene.models[ref.index].breakPieces) {
     placeBreakable(ref);
-    rootNode.update(glm::mat4(1.0f), playSeconds);
-    updateEditorLines();
     return;
   }
   auto place = [&](SceneNode &node, const SceneModelEntry &entry) {
@@ -961,8 +969,6 @@ void VulkanRenderer::placeEntry(SceneEntryRef ref) {
   for (const auto &node : rootNode.getChildren())
     if (node->entry() == ref && next < copies.size())
       place(*node, copies[next++]);
-  rootNode.update(glm::mat4(1.0f), playSeconds);
-  updateEditorLines();
 }
 
 void VulkanRenderer::shiftEntryRefs(SceneEntryRef::Kind kind, int from,
@@ -976,37 +982,33 @@ void VulkanRenderer::shiftEntryRefs(SceneEntryRef::Kind kind, int from,
   }
 }
 
-void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
+bool VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
   // The player start has nothing to rebuild or split, only to delete.
   if (ref.kind == SceneEntryRef::Kind::Player) {
-    if (op == EntryOp::Delete && currentScene.player) {
-      removeEntry(currentScene, ref);
-      selection.reset();
-      recordEdit();
-    }
-    return;
+    if (op != EntryOp::Delete || !currentScene.player)
+      return false;
+    removeEntry(currentScene, ref);
+    selected.removed(ref);
+    return true;
   }
   // Characters are few: any change rebuilds them all (copies are reused).
   if (ref.kind == SceneEntryRef::Kind::Character) {
     if (ref.index < 0 || ref.index >= static_cast<int>(currentScene.characters.size()) ||
         op == EntryOp::Split)
-      return;
+      return false;
     if (op == EntryOp::Delete) {
       removeEntry(currentScene, ref);
-      selection.reset();
+      selected.removed(ref);
     }
-    buildCharacters();
-    updateEditorLines();
-    if (op == EntryOp::Delete)
-      recordEdit();
-    return;
+    entryOpsChangedCharacters = true;
+    return op == EntryOp::Delete;
   }
   const size_t count = ref.kind == SceneEntryRef::Kind::Grid
                            ? currentScene.grids.size()
                            : currentScene.models.size();
   if (ref.kind == SceneEntryRef::Kind::None || ref.index < 0 ||
       ref.index >= static_cast<int>(count))
-    return;
+    return false;
   switch (op) {
   case EntryOp::Rebuild:
     removeEntryNodes(ref);
@@ -1016,11 +1018,11 @@ void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
     removeEntryNodes(ref);
     removeEntry(currentScene, ref);
     shiftEntryRefs(ref.kind, ref.index + 1, -1);
-    selection.reset();
+    selected.removed(ref);
     break;
   case EntryOp::Split: {
     if (ref.kind != SceneEntryRef::Kind::Grid)
-      return;
+      return false;
     removeEntryNodes(ref);
     const std::vector<SceneEntryRef> copies =
         splitGrid(currentScene, ref.index);
@@ -1030,16 +1032,24 @@ void VulkanRenderer::applyEntryOp(EntryOp op, SceneEntryRef ref) {
                      static_cast<int>(copies.size()));
     for (const SceneEntryRef &copy : copies)
       addEntry(copy);
-    selection.reset();
+    selected.clear();
     break;
   }
   }
-  // Bodies added one by one leave Jolt's broad phase tree unbalanced.
-  physics->optimizeBroadPhase();
+  // Bodies added one by one leave Jolt's broad phase tree unbalanced: once
+  // the batch is done.
+  entryOpsChangedBodies = true;
   // A rebuild only catches the nodes up with an edit that was already
   // recorded; a delete or split is a step of its own.
-  if (op != EntryOp::Rebuild)
-    recordEdit();
+  return op != EntryOp::Rebuild;
+}
+
+void VulkanRenderer::deleteSelection() {
+  if (playing || imguiLayer.editInProgress())
+    return;
+  // Highest index first, so each delete leaves the rest where they are.
+  for (const SceneEntryRef &ref : deletionOrder(selected.all()))
+    pendingEntryOps.push_back({EntryOp::Delete, ref});
 }
 
 // One new object from the spawn list, added like a thrown ball: its model,
@@ -1082,7 +1092,7 @@ void VulkanRenderer::addNewEntry(SceneModelEntry entry) {
   const SceneEntryRef ref = addModel(currentScene, std::move(entry));
   addEntry(ref);
   rootNode.update(glm::mat4(1.0f), playSeconds);
-  selection = ref;
+  selected.select(ref);
   updateEditorLines();
   recordEdit();
   sceneError.clear();
@@ -1397,7 +1407,7 @@ void VulkanRenderer::dropCharacter(const CharacterPlacement &placement) {
   const SceneEntryRef ref = addCharacter(currentScene, characterPlacement(placement));
   buildCharacters();
   rootNode.update(glm::mat4(1.0f), playSeconds);
-  selection = ref;
+  selected.select(ref);
   updateEditorLines();
   recordEdit();
   spdlog::info("Added [character] {}: {}", ref.index, placement.file);
@@ -1439,7 +1449,7 @@ void VulkanRenderer::placePlayerStart() {
     start.variant = currentScene.player->variant;
   }
   currentScene.player = start;
-  selection = SceneEntryRef{SceneEntryRef::Kind::Player, 0};
+  selected.select(SceneEntryRef{SceneEntryRef::Kind::Player, 0});
   updateEditorLines();
   recordEdit();
   spdlog::info("Player start at ({:.2f}, {:.2f}, {:.2f}), facing {:.0f} degrees",
@@ -1464,13 +1474,12 @@ void VulkanRenderer::applyHistoryStep() {
     return;
   }
   // The same index is the same object only if no entry came or went.
-  const bool startGone = selection &&
-                         selection->kind == SceneEntryRef::Kind::Player &&
-                         !scene->player;
+  const bool startGone =
+      selected.contains(SceneEntryRef{SceneEntryRef::Kind::Player, 0}) && !scene->player;
   if (scene->models.size() != currentScene.models.size() ||
       scene->grids.size() != currentScene.grids.size() ||
       scene->characters.size() != currentScene.characters.size() || startGone)
-    selection.reset();
+    selected.clear();
   // The file and name are where the scene is saved, not part of the edits,
   // so undoing past a Save as still saves to the new file.
   SceneDescription restored = *scene;
@@ -1756,7 +1765,7 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
   particleSeconds = playing && !physicsPanel.paused ? frameSeconds : 0.0f;
   if (playerController)
-    playerController->control(playerControls);
+    playerController->control(playerControls, frameSeconds);
   for (int i = 0; i < steps; ++i) {
     // The characters move first, then the bodies, like Jolt's samples.
     if (roster)
@@ -1980,8 +1989,12 @@ void VulkanRenderer::clearCharacters() {
   roster.reset(); // the bodies leave the world, the controller lets go
   playerController.reset();
   std::unordered_set<const SceneNode *> nodes;
-  for (const LiveCharacter &character : characters)
+  for (const LiveCharacter &character : characters) {
     nodes.insert(character.node);
+    for (const std::optional<CarriedGun> &gun : character.guns)
+      if (gun)
+        nodes.insert(gun->parts.begin(), gun->parts.end());
+  }
   if (!nodes.empty())
     rootNode.removeChildren([&](const SceneNode &node) { return nodes.contains(&node); });
   characters.clear();
@@ -2082,6 +2095,7 @@ void VulkanRenderer::buildCharacters() {
         playerController = std::make_unique<PlayerController>(*physics, characterPanel.camera);
         roster->possess(*playerController, characters[i].body);
         playedCharacter = i;
+        armCharacter(characters[i]); // the scene's kit
         break;
       }
   }
@@ -2182,6 +2196,7 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     // for them.
     input.runSpeed = body.tuning().runSpeed;
     input.sprintSpeed = body.tuning().sprintSpeed;
+    input.walkSpeed = body.tuning().walkSpeed;
     input.crouchSpeed = body.tuning().crouchSpeed;
     // Feet on the body's feet, turned to its facing: Mixamo models face +z,
     // the character's yaw 0 faces -z.
@@ -2192,6 +2207,7 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     // The player's spine leans with the camera while aiming.
     if (i == playedCharacter && playerController)
       input.aimPitch = playerController->camera().pitch();
+    gunsBeforeClips(i, input, frameSeconds);
     c.animator->update(input, frameSeconds);
     if (i == playedCharacter) {
       // For the Character tab: the state and the clips in this pose.
@@ -2216,6 +2232,7 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     feetAt.stride = c.animator->strideScale();
     feetAt.strideAxis = c.animator->strideAxis();
     placeFeet(i, feetAt, feetDown, frameSeconds, pose, model);
+    gunsAfterClips(i, placement, frameSeconds, pose, model);
     c.skinning = skinningMatrices(asset->skeleton, model);
     // Show skeleton draws the bones instead of the body.
     const int shown = showSkeleton ? -1 : c.file->copies[c.copy].model;
@@ -2284,8 +2301,9 @@ void VulkanRenderer::loadCharacter() {
   if (!characterAsset) {
     spdlog::warn("Character not loaded, keeping the capsule: {}", error);
   } else {
+    // The Clips section edits the unarmed moves.
     for (const CharacterClip &clip : characterPanel.description.clips)
-      if (characterAsset->clip(clip.slot))
+      if (clip.stance == Stance::Unarmed && characterAsset->clip(clip.slot))
         loadedClipFiles[static_cast<size_t>(clip.slot)] = clip.file;
     // The clips to choose from: every FBX next to the character file.
     characterPanel.clipFiles = findFiles("Resources/Characters", {".fbx"});
@@ -2496,7 +2514,7 @@ bool VulkanRenderer::entryHasBody(SceneEntryRef ref) const {
   return false;
 }
 
-void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
+void VulkanRenderer::selectAt(glm::vec2 windowPixel, bool toggle) {
   if (playing || !physics || !sceneArea.contains(windowPixel))
     return;
   // Unjittered, so the ray matches what's on screen on average. The area's
@@ -2560,19 +2578,102 @@ void VulkanRenderer::selectAt(glm::vec2 windowPixel) {
   }
   if (picked && picked->kind == SceneEntryRef::Kind::None)
     picked.reset(); // a thrown ball, which isn't part of the layout
-  selection = picked;
+  if (toggle) {
+    if (picked)
+      selected.toggle(*picked);
+  } else if (picked) {
+    selected.select(*picked);
+  } else {
+    selected.clear();
+  }
   updateEditorLines();
-  if (!selection)
+  const std::optional<SceneEntryRef> primary = selected.primary();
+  if (!primary)
     spdlog::info("Selection cleared");
-  else if (selection->kind == SceneEntryRef::Kind::Player)
-    spdlog::info("Selected [player]");
-  else if (selection->kind == SceneEntryRef::Kind::Character)
-    spdlog::info("Selected [character] {}", selection->index);
+  else if (primary->kind == SceneEntryRef::Kind::Player)
+    spdlog::info("Selected [player] ({} selected)", selected.size());
+  else if (primary->kind == SceneEntryRef::Kind::Character)
+    spdlog::info("Selected [character] {} ({} selected)", primary->index, selected.size());
   else
-    spdlog::info("Selected {} {}",
-                 selection->kind == SceneEntryRef::Kind::Model ? "[model]"
-                                                               : "[grid]",
-                 selection->index);
+    spdlog::info("Selected {} {} ({} selected)",
+                 primary->kind == SceneEntryRef::Kind::Model ? "[model]" : "[grid]",
+                 primary->index, selected.size());
+}
+
+void VulkanRenderer::selectForCapture(std::string_view entries) {
+  selected.clear();
+  while (!entries.empty()) {
+    const size_t space = entries.find(' ');
+    const std::string_view token = entries.substr(0, space);
+    entries = space == std::string_view::npos ? "" : entries.substr(space + 1);
+    if (token.empty())
+      continue;
+    SceneEntryRef ref;
+    ref.kind = token[0] == 'm'   ? SceneEntryRef::Kind::Model
+               : token[0] == 'g' ? SceneEntryRef::Kind::Grid
+               : token[0] == 'c' ? SceneEntryRef::Kind::Character
+               : token[0] == 'p' ? SceneEntryRef::Kind::Player
+                                 : SceneEntryRef::Kind::None;
+    ref.index = token.size() > 1 ? std::atoi(std::string(token.substr(1)).c_str()) : 0;
+    if (ref.kind != SceneEntryRef::Kind::None)
+      selected.toggle(ref);
+  }
+  updateEditorLines();
+}
+
+void VulkanRenderer::selectEntry(SceneEntryRef ref, int mode,
+                                 const std::vector<SceneEntryRef> &order) {
+  if (playing)
+    return;
+  if (mode == 1)
+    selected.toggle(ref);
+  else if (mode == 2)
+    selected.selectRange(order, ref);
+  else
+    selected.select(ref);
+  updateEditorLines();
+}
+
+// The editor camera backs off along the way it looks until the entry fills
+// about half the view.
+void VulkanRenderer::frameEntry(SceneEntryRef ref) {
+  if (playing || !cameraPresetCallback)
+    return;
+  glm::vec3 lo(std::numeric_limits<float>::max());
+  glm::vec3 hi(std::numeric_limits<float>::lowest());
+  auto take = [&](glm::vec3 p) {
+    lo = glm::min(lo, p);
+    hi = glm::max(hi, p);
+  };
+  if (ref.kind == SceneEntryRef::Kind::Player && currentScene.player) {
+    take(currentScene.player->position);
+    take(currentScene.player->position + glm::vec3(0.0f, characterPanel.character.height, 0.0f));
+  } else if (ref.kind == SceneEntryRef::Kind::Character && ref.index >= 0 &&
+             ref.index < static_cast<int>(currentScene.characters.size())) {
+    const glm::vec3 feet = currentScene.characters[ref.index].position;
+    take(feet);
+    take(feet + glm::vec3(0.0f, characterPanel.character.height, 0.0f));
+  } else {
+    for (const auto &node : rootNode.getChildren()) {
+      if (node->entry() != ref)
+        continue;
+      if (const std::optional<ModelManager::Bounds> bounds =
+              modelManager.localBounds(node->getModelId()))
+        for (const glm::vec3 &corner :
+             boxCorners(bounds->min, bounds->max, node->getGlobalTransform()))
+          take(corner);
+    }
+  }
+  if (lo.x > hi.x)
+    return;
+  const glm::vec3 centre = 0.5f * (lo + hi);
+  const float radius = std::max(0.5f * glm::length(hi - lo), 0.25f);
+  const glm::vec3 forward = -glm::normalize(glm::vec3(sceneUbo.invView[2]));
+  // Two radii away is about half the view at the editor's field of view.
+  const float distance = std::min(radius * 2.5f + 1.0f, 500.0f);
+  const float yaw = glm::degrees(std::atan2(forward.z, forward.x));
+  const float pitch = glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
+  cameraPresetCallback(centre - forward * distance, yaw, pitch, currentScene.camera.speed);
 }
 
 // The player start, always there in edit mode, and the selection's
@@ -2582,7 +2683,7 @@ void VulkanRenderer::updateEditorLines() {
   selectionMass = 0.0f;
   selectionBodies = 0;
   const bool startSelected =
-      selection && selection->kind == SceneEntryRef::Kind::Player;
+      selected.contains(SceneEntryRef{SceneEntryRef::Kind::Player, 0});
   if (currentScene.player) {
     const CharacterTuning &tuning = characterPanel.character;
     appendPlayerStartLines(editorLines, *currentScene.player, tuning.radius,
@@ -2595,34 +2696,45 @@ void VulkanRenderer::updateEditorLines() {
                            {characterDragShown->position, characterDragShown->yaw},
                            tuning.radius, tuning.height, kPlayerStartColor);
   }
-  if (selection && selection->kind == SceneEntryRef::Kind::Character) {
+  for (const SceneEntryRef &ref : selected.all())
+    if (ref.kind != SceneEntryRef::Kind::Player)
+      appendSelectionLines(ref);
+  // The primary's mass and bodies, for the Inspector.
+  if (const std::optional<SceneEntryRef> primary = selected.primary();
+      primary && (primary->kind == SceneEntryRef::Kind::Model ||
+                  primary->kind == SceneEntryRef::Kind::Grid))
+    for (const PhysicsLink &link : physicsLinks)
+      if (link.node && link.node->entry() == *primary) {
+        if (selectionBodies++ == 0)
+          selectionMass = physics->mass(link.body);
+      }
+}
+
+void VulkanRenderer::appendSelectionLines(SceneEntryRef ref) {
+  if (ref.kind == SceneEntryRef::Kind::Character) {
     // The capsule its body is, around it.
     for (const LiveCharacter &c : characters)
-      if (c.entry == *selection) {
+      if (c.entry == ref) {
         const SceneCharacterEntry &entry = currentScene.characters[c.entry.index];
         appendPlayerStartLines(editorLines, {entry.position, entry.yaw}, c.tuning.radius,
                                c.tuning.height, kSelectionColor);
       }
     return;
   }
-  if (!selection || startSelected)
+  const size_t count = ref.kind == SceneEntryRef::Kind::Grid ? currentScene.grids.size()
+                                                             : currentScene.models.size();
+  if (ref.index < 0 || ref.index >= static_cast<int>(count))
     return;
-  for (const PhysicsLink &link : physicsLinks)
-    if (link.node && link.node->entry() == *selection) {
-      if (selectionBodies++ == 0)
-        selectionMass = physics->mass(link.body);
-    }
   // A centimetre out, so the outline doesn't sit in the object's own faces.
   constexpr float kMargin = 0.01f;
   // A breakable: the box it was, and its cuts.
-  if (selection->kind == SceneEntryRef::Kind::Model &&
-      currentScene.models[selection->index].breakPieces) {
-    const SceneModelEntry &entry = currentScene.models[selection->index];
+  if (ref.kind == SceneEntryRef::Kind::Model && currentScene.models[ref.index].breakPieces) {
+    const SceneModelEntry &entry = currentScene.models[ref.index];
     const glm::vec3 half = 0.5f * entry.size * entry.transform.scale + kMargin;
     const glm::mat4 where = glm::translate(glm::mat4(1.0f), entry.transform.position) *
                             glm::mat4_cast(rotationFromDegrees(entry.transform.rotationDeg));
     appendBoxLines(editorLines, boxCorners(-half, half, where), kSelectionColor);
-    appendPieceLines(*selection);
+    appendPieceLines(ref);
     return;
   }
   // One object gets a box turned with it; a grid gets one box around every
@@ -2631,16 +2743,15 @@ void VulkanRenderer::updateEditorLines() {
   glm::vec3 hi(std::numeric_limits<float>::lowest());
   bool any = false;
   for (const auto &node : rootNode.getChildren()) {
-    if (node->entry() != *selection)
+    if (node->entry() != ref)
       continue;
     const std::optional<ModelManager::Bounds> bounds =
         modelManager.localBounds(node->getModelId());
     if (!bounds)
       continue;
     const std::array<glm::vec3, 8> corners =
-        boxCorners(bounds->min - kMargin, bounds->max + kMargin,
-                   node->getGlobalTransform());
-    if (selection->kind == SceneEntryRef::Kind::Model) {
+        boxCorners(bounds->min - kMargin, bounds->max + kMargin, node->getGlobalTransform());
+    if (ref.kind == SceneEntryRef::Kind::Model) {
       appendBoxLines(editorLines, corners, kSelectionColor);
       return;
     }
@@ -2651,8 +2762,7 @@ void VulkanRenderer::updateEditorLines() {
     any = true;
   }
   if (any)
-    appendBoxLines(editorLines, boxCorners(lo, hi, glm::mat4(1.0f)),
-                   kSelectionColor);
+    appendBoxLines(editorLines, boxCorners(lo, hi, glm::mat4(1.0f)), kSelectionColor);
 }
 
 // The copy goes one width of the original's box (around every copy, for a
@@ -2660,9 +2770,27 @@ void VulkanRenderer::updateEditorLines() {
 // beside it. Its nodes and bodies are added like a spawn's; one undo step.
 // Refused when the physics world has no room for its bodies.
 void VulkanRenderer::applyDuplicate() {
-  if (playing || !selection || !physics)
+  if (playing || selected.empty() || !physics)
     return;
-  const SceneEntryRef ref = *selection;
+  std::vector<SceneEntryRef> copies;
+  for (const SceneEntryRef &ref : std::vector<SceneEntryRef>(selected.all()))
+    if (const std::optional<SceneEntryRef> copy = duplicateOne(ref))
+      copies.push_back(*copy);
+  if (copies.empty())
+    return;
+  physics->optimizeBroadPhase();
+  rootNode.update(glm::mat4(1.0f), playSeconds);
+  // The copies are selected now, the last one the primary.
+  selected.clear();
+  for (const SceneEntryRef &copy : copies)
+    selected.toggle(copy);
+  updateEditorLines();
+  recordEdit();
+  sceneError.clear();
+  spdlog::info("Duplicated {} entries", copies.size());
+}
+
+std::optional<SceneEntryRef> VulkanRenderer::duplicateOne(SceneEntryRef ref) {
   const bool isGrid = ref.kind == SceneEntryRef::Kind::Grid;
   if (ref.kind == SceneEntryRef::Kind::Character) {
     // Beside it on the camera's right, a body's width and a bit away.
@@ -2670,18 +2798,12 @@ void VulkanRenderer::applyDuplicate() {
     const glm::vec3 right = glm::normalize(glm::vec3(sceneUbo.invView[0]));
     const std::optional<SceneEntryRef> copy = duplicateEntry(
         currentScene, ref, glm::vec3(right.x, 0.0f, right.z) * (4.0f * tuning.radius));
-    if (!copy)
-      return;
-    buildCharacters();
-    selection = copy;
-    updateEditorLines();
-    recordEdit();
-    sceneError.clear();
-    spdlog::info("Duplicated [character] {} as {}", ref.index, copy->index);
-    return;
+    if (copy)
+      buildCharacters();
+    return copy;
   }
   if (ref.kind != SceneEntryRef::Kind::Model && !isGrid)
-    return;
+    return std::nullopt;
   glm::vec3 lo(std::numeric_limits<float>::max());
   glm::vec3 hi(std::numeric_limits<float>::lowest());
   bool any = false;
@@ -2700,7 +2822,7 @@ void VulkanRenderer::applyDuplicate() {
     any = true;
   }
   if (!any)
-    return;
+    return std::nullopt;
   uint32_t bodies = 0;
   if (entryHasBody(ref)) {
     const glm::ivec3 n = isGrid ? currentScene.grids[ref.index].count
@@ -2712,23 +2834,15 @@ void VulkanRenderer::applyDuplicate() {
                              "bodies",
                              physics->bodyLimit());
     spdlog::warn("{}", sceneError);
-    return;
+    return std::nullopt;
   }
   // The camera's right, out of the inverse view.
   const std::optional<SceneEntryRef> copy =
       duplicateEntry(currentScene, ref,
                      duplicateOffset(lo, hi, glm::vec3(sceneUbo.invView[0])));
-  if (!copy)
-    return;
-  addEntry(*copy);
-  physics->optimizeBroadPhase();
-  rootNode.update(glm::mat4(1.0f), playSeconds);
-  selection = copy;
-  updateEditorLines();
-  recordEdit();
-  sceneError.clear();
-  spdlog::info("Duplicated {} {} as {}", isGrid ? "[grid]" : "[model]",
-               ref.index, copy->index);
+  if (copy)
+    addEntry(*copy);
+  return copy;
 }
 
 void VulkanRenderer::updateScene(float frameSeconds) {
@@ -2881,10 +2995,18 @@ void VulkanRenderer::applyPendingChanges() {
   }
   if (!pendingEntryOps.empty()) {
     vkDeviceWaitIdle(logicalDevice);
+    // Several deletes in one go (the whole selection) are one undo step.
+    bool record = false;
     for (const auto &[op, ref] : std::exchange(pendingEntryOps, {}))
-      applyEntryOp(op, ref);
+      record = applyEntryOp(op, ref) || record;
+    if (std::exchange(entryOpsChangedCharacters, false))
+      buildCharacters();
+    if (std::exchange(entryOpsChangedBodies, false))
+      physics->optimizeBroadPhase();
     rootNode.update(glm::mat4(1.0f), playSeconds);
     updateEditorLines();
+    if (record)
+      recordEdit();
   }
   if (pendingSpawn) {
     vkDeviceWaitIdle(logicalDevice);
@@ -5387,6 +5509,13 @@ void VulkanRenderer::buildUi() {
   ui.controls = &controlBindings;
   ui.bodiesInWorld = physics ? physics->bodyCount() : 0;
   ui.bodyLimit = physics ? physics->bodyLimit() : 0;
+  ui.entryBodies = [this](SceneEntryRef ref) {
+    uint32_t n = 0;
+    for (const PhysicsLink &link : physicsLinks)
+      if (link.node && link.node->entry() == ref)
+        ++n;
+    return n;
+  };
   ui.onSaveSettings = [this](const char *section) { saveSettings(section); };
   ui.onResetSettings = [this](const char *section) { resetSettings(section); };
   ui.settingsStatus = &settingsStatus;
@@ -5394,10 +5523,17 @@ void VulkanRenderer::buildUi() {
   ui.onTogglePlay = [this] { togglePlayMode(); };
   ui.sceneError = &sceneError;
   ui.scene = &currentScene;
-  ui.selection = playing ? std::nullopt : selection;
+  ui.selection = playing ? std::nullopt : selected.primary();
+  ui.selected = playing ? nullptr : &selected.all();
+  ui.onSelectEntry = [this](SceneEntryRef ref, int mode, const std::vector<SceneEntryRef> &order) {
+    selectEntry(ref, mode, order);
+  };
+  ui.onFrameEntry = [this](SceneEntryRef ref) { frameEntry(ref); };
+  ui.onDeleteSelection = [this] { deleteSelection(); };
   ui.selectionMass = selectionMass;
   ui.selectionBodies = selectionBodies;
   ui.onEntryMoved = [this](SceneEntryRef ref) { placeEntry(ref); };
+  ui.onEntriesMoved = [this](const std::vector<SceneEntryRef> &refs) { placeEntries(refs); };
   ui.onEntryChanged = [this](SceneEntryRef ref) {
     pendingEntryOps.push_back({EntryOp::Rebuild, ref});
   };

@@ -17,7 +17,11 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "land",           "land_hard",     "crouch_idle",
                   "crouch_forward", "crouch_back",   "crouch_left",
                   "crouch_right",   "roll",          "dodge_forward",
-                  "dodge_back",     "dodge_left",    "dodge_right"};
+                  "dodge_back",     "dodge_left",    "dodge_right",
+                  "aim_idle",       "reload"};
+
+constexpr std::array<const char *, static_cast<size_t>(Stance::Count)> kStanceNames = {
+    "unarmed", "pistol", "rifle"};
 
 std::string trim(std::string_view s) {
   const size_t first = s.find_first_not_of(" \t\r");
@@ -148,6 +152,11 @@ private:
         fail(lineNumber, "unknown slot '" + value + "'");
       current.slot = *slot;
       slotGiven = true;
+    } else if (key == "stance") {
+      const std::optional<Stance> stance = stanceFromName(value);
+      if (!stance)
+        fail(lineNumber, "unknown stance '" + value + "' (unarmed, pistol or rifle)");
+      current.stance = *stance;
     } else if (key == "file") {
       current.file = value;
     } else if (key == "start") {
@@ -184,9 +193,11 @@ private:
       fail(clipLine, "this [clip] has no 'slot'");
     if (current.file.empty())
       fail(clipLine, "this [clip] has no 'file'");
-    if (result.clip(current.slot))
-      fail(clipLine, std::string("slot '") + clipSlotName(current.slot) +
-                         "' is given twice");
+    if (result.clip(current.slot, current.stance))
+      fail(clipLine, std::string("slot '") + clipSlotName(current.slot) + "' is given twice" +
+                         (current.stance == Stance::Unarmed
+                              ? std::string()
+                              : std::string(" for the ") + stanceName(current.stance)));
     if (current.end != 0.0f && current.end <= current.start)
       fail(clipLine, std::format("'end' ({}) must come after 'start' ({})",
                                  current.end, current.start));
@@ -210,8 +221,21 @@ std::optional<ClipSlot> clipSlotFromName(std::string_view name) {
   return std::nullopt;
 }
 
+const char *stanceName(Stance stance) {
+  const size_t i = static_cast<size_t>(stance);
+  return i < kStanceNames.size() ? kStanceNames[i] : "";
+}
+
+std::optional<Stance> stanceFromName(std::string_view name) {
+  for (size_t i = 0; i < kStanceNames.size(); ++i)
+    if (name == kStanceNames[i])
+      return static_cast<Stance>(i);
+  return std::nullopt;
+}
+
 bool defaultLoop(ClipSlot slot) {
   switch (slot) {
+  case ClipSlot::Reload:
   case ClipSlot::Jump:
   case ClipSlot::Land:
   case ClipSlot::LandHard:
@@ -226,9 +250,9 @@ bool defaultLoop(ClipSlot slot) {
   }
 }
 
-const CharacterClip *CharacterDescription::clip(ClipSlot slot) const {
+const CharacterClip *CharacterDescription::clip(ClipSlot slot, Stance stance) const {
   for (const CharacterClip &c : clips)
-    if (c.slot == slot)
+    if (c.slot == slot && c.stance == stance)
       return &c;
   return nullptr;
 }
@@ -242,7 +266,7 @@ const CharacterVariant *CharacterDescription::variant(std::string_view name) con
 
 void CharacterDescription::setClip(const CharacterClip &clip) {
   for (CharacterClip &c : clips)
-    if (c.slot == clip.slot) {
+    if (c.slot == clip.slot && c.stance == clip.stance) {
       std::string notes = clip.comment.empty() ? c.comment : clip.comment;
       c = clip;
       c.comment = std::move(notes);
@@ -251,8 +275,8 @@ void CharacterDescription::setClip(const CharacterClip &clip) {
   clips.push_back(clip);
 }
 
-void CharacterDescription::removeClip(ClipSlot slot) {
-  std::erase_if(clips, [&](const CharacterClip &c) { return c.slot == slot; });
+void CharacterDescription::removeClip(ClipSlot slot, Stance stance) {
+  std::erase_if(clips, [&](const CharacterClip &c) { return c.slot == slot && c.stance == stance; });
 }
 
 namespace CharacterIO {
@@ -276,8 +300,10 @@ std::string write(const CharacterDescription &character) {
       out += s.key + " = " + s.value + "\n";
   }
   for (const CharacterClip &clip : character.clips) {
-    out += std::format("\n{}[clip]\nslot = {}\nfile = {}\n", clip.comment,
-                       clipSlotName(clip.slot), clip.file);
+    out += std::format("\n{}[clip]\nslot = {}\n", clip.comment, clipSlotName(clip.slot));
+    if (clip.stance != Stance::Unarmed)
+      out += std::format("stance = {}\n", stanceName(clip.stance));
+    out += std::format("file = {}\n", clip.file);
     if (clip.start != 0.0f)
       out += std::format("start = {}\n", clip.start);
     if (clip.end != 0.0f)

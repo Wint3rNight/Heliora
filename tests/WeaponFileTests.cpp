@@ -12,6 +12,7 @@ SettingsFile parsed(const std::string &text) {
 
 const char *kAkmText = R"([gun]
 name = AKM
+model = Resources/Models/Weapons/akm/akm.parts
 [round]
 bullet_mass = 0.0079
 muzzle_speed = 715
@@ -40,6 +41,10 @@ partial = 2.5
 empty = 3.2
 [carry]
 spare_magazines = 4
+[sounds]
+shot = Resources/Sounds/guns/akm_shot_near.ogg
+shot_far = Resources/Sounds/guns/akm_shot_mid.ogg
+loudness = 160
 )";
 
 } // namespace
@@ -47,6 +52,7 @@ spare_magazines = 4
 TEST(a_weapon_file_gives_every_number_it_holds) {
   const WeaponSpec akm = weaponFromSettings(parsed(kAkmText));
   CHECK(akm.name == "AKM");
+  CHECK(akm.model == "Resources/Models/Weapons/akm/akm.parts");
   CHECK_NEAR(akm.bulletMass, 0.0079, 1e-6);
   CHECK_NEAR(akm.muzzleSpeed, 715.0, 1e-4);
   CHECK(akm.drag == DragModel::G7);
@@ -58,6 +64,9 @@ TEST(a_weapon_file_gives_every_number_it_holds) {
   CHECK_NEAR(akm.followSpread.x, 1.63, 1e-6);
   CHECK_NEAR(akm.emptyReload, 3.2, 1e-6);
   CHECK(akm.spareMagazines == 4);
+  CHECK(akm.shotSound == "Resources/Sounds/guns/akm_shot_near.ogg");
+  CHECK(akm.farShotSound == "Resources/Sounds/guns/akm_shot_mid.ogg");
+  CHECK_NEAR(akm.loudness, 160.0, 1e-4);
   const MatterPenetration &wood = akm.penetration[size_t(Matter::Wood)];
   CHECK_NEAR(wood.depth2, 0.25, 1e-6);
   CHECK_NEAR(wood.speed2, 326.0, 1e-4);
@@ -83,6 +92,10 @@ TEST(a_weapon_written_and_read_back_is_the_same) {
   WeaponSpec spec = weaponFromSettings(parsed(kAkmText));
   spec.locksOpen = true;
   spec.hipSpread = 12.0f;
+  spec.model = "Resources/Models/Weapons/x/x.parts";
+  spec.shotSound = "a.ogg";
+  spec.farShotSound = "b.ogg";
+  spec.loudness = 150.0f;
   spec.drag = DragModel::G1;
   SettingsFile file;
   weaponToSettings(spec, file);

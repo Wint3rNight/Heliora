@@ -1,5 +1,6 @@
 #include "PlayerController.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 
@@ -7,8 +8,27 @@ PlayerController::PlayerController(PhysicsWorld &world,
                                    const ThirdPersonCameraTuning &camera)
     : world(world), view(camera) {}
 
-void PlayerController::control(const PlayerControls &controls) {
+Gait GaitKeys::update(bool held, float seconds) {
+  if (held && !wasHeld)
+    sprinting = sinceRelease <= kDoubleTap; // pressed again soon enough
+  if (held) {
+    sinceRelease = 1e9f;
+  } else {
+    sinceRelease = wasHeld ? 0.0f : sinceRelease + seconds;
+    sprinting = false;
+  }
+  wasHeld = held;
+  return held ? (sprinting ? Gait::Sprint : Gait::Run) : Gait::Walk;
+}
+
+void PlayerController::control(const PlayerControls &controls, float seconds) {
   held = controls;
+  const Gait keys = shift.update(controls.run, seconds);
+  gait = controls.sprint ? Gait::Sprint : keys;
+  if (armed && controls.fire)
+    hipFire = kHipFireHold;
+  else
+    hipFire = std::max(0.0f, hipFire - seconds);
   // Screen style in, the camera turns right for +x and looks up for -y.
   view.orbit(controls.mouse.x, controls.mouse.y);
   view.zoom(controls.wheel);
@@ -29,14 +49,20 @@ CharacterInput PlayerController::decide() {
 
   CharacterInput input;
   input.move = move;
-  input.sprint = held.sprint;
+  input.gait = gait;
   input.crouch = held.crouch;
-  input.aim = held.aim;
+  input.aim = held.aim || (armed && hipFire > 0.0f);
   input.aimYaw = yaw;
   input.jump = jumpWaiting;
   input.dodge = dodgeWaiting;
   jumpWaiting = dodgeWaiting = false; // this step took them
   return input;
+}
+
+void PlayerController::setArmed(bool isArmed) {
+  armed = isArmed;
+  if (!armed)
+    hipFire = 0.0f;
 }
 
 void PlayerController::follow(float alpha, float frameSeconds) {
@@ -94,7 +120,14 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     else if (key == "s") controls.back = true;
     else if (key == "a") controls.left = true;
     else if (key == "d") controls.right = true;
-    else if (key == "shift") controls.sprint = true;
+    else if (key == "shift") controls.run = true;
+    else if (key == "sprint") controls.sprint = true;
+    else if (key == "1") controls.pistol = true;
+    else if (key == "2") controls.longGun = true;
+    else if (key == "h") controls.holster = true;
+    else if (key == "r") controls.reload = true;
+    else if (key == "b") controls.fireMode = true;
+    else if (key == "e") controls.use = true;
     else if (key == "ctrl") controls.crouch = true;
     else if (key == "rmb") controls.aim = true;
     else if (key == "space") controls.jump = true;

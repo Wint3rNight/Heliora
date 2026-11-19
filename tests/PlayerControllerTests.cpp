@@ -28,7 +28,7 @@ struct Played {
 
 // One frame with exactly one physics step, the way the game runs at 60 fps.
 void frame(Played &p, const PlayerControls &controls, int steps = 1) {
-  p.player.control(controls);
+  p.player.control(controls, kStep);
   for (int i = 0; i < steps; ++i) {
     p.roster.step(kStep);
     p.world.step(kStep);
@@ -51,18 +51,25 @@ PlayerControls pressing(bool PlayerControls::*key) {
   return controls;
 }
 
+// The same with Shift held: running.
+PlayerControls running(bool PlayerControls::*key) {
+  PlayerControls controls = pressing(key);
+  controls.run = true;
+  return controls;
+}
+
 // Pixels of mouse movement that turn the camera by this many radians, at
 // the default sensitivity.
 float pixelsFor(float radians) { return radians / 0.0025f; }
 
 } // namespace
 
-TEST(w_walks_where_the_camera_looks) {
+TEST(w_moves_where_the_camera_looks) {
   Played p;
   PlayerControls turn;
   turn.mouse.x = pixelsFor(0.5f * kPi); // turn right, to look down +x
   frame(p, turn);
-  frames(p, pressing(&PlayerControls::forward), 60);
+  frames(p, running(&PlayerControls::forward), 60);
   CHECK(p.character().position().x > 2.0f);
   CHECK(std::fabs(p.character().position().z) < 0.1f);
 }
@@ -70,18 +77,18 @@ TEST(w_walks_where_the_camera_looks) {
 TEST(a_and_d_strafe_across_the_camera) {
   Played p; // the camera looks down -z
   // Long enough to turn, build up speed and plant to go back.
-  frames(p, pressing(&PlayerControls::right), 60);
+  frames(p, running(&PlayerControls::right), 60);
   CHECK(p.character().position().x > 1.0f);
-  frames(p, pressing(&PlayerControls::left), 120);
+  frames(p, running(&PlayerControls::left), 120);
   CHECK(p.character().position().x < -1.0f);
-  frames(p, pressing(&PlayerControls::back), 90);
+  frames(p, running(&PlayerControls::back), 90);
   CHECK(p.character().position().z > 1.0f);
 }
 
 TEST(diagonal_is_no_faster) {
   Played p;
   PlayerControls diagonal;
-  diagonal.forward = diagonal.right = true;
+  diagonal.forward = diagonal.right = diagonal.run = true;
   frames(p, diagonal, 240); // up to full speed
   const glm::vec3 v = p.character().velocity();
   CHECK_NEAR(std::sqrt(v.x * v.x + v.z * v.z), 5.0, 0.05);
@@ -107,11 +114,16 @@ TEST(one_press_is_one_jump) {
   CHECK(p.character().position().y < 0.05f);
 }
 
-TEST(shift_sprints_and_ctrl_crouches) {
+TEST(w_walks_shift_runs_a_quick_second_press_sprints_and_ctrl_crouches) {
   Played p;
-  PlayerControls sprint = pressing(&PlayerControls::forward);
-  sprint.sprint = true;
-  frames(p, sprint, 300); // the sprint builds for a while
+  frames(p, pressing(&PlayerControls::forward), 120);
+  CHECK_NEAR(-p.character().velocity().z, 1.4, 0.05);
+  frames(p, running(&PlayerControls::forward), 180);
+  CHECK_NEAR(-p.character().velocity().z, 5.0, 0.05);
+  // Let go of Shift for a moment and press it again: a sprint, for as long
+  // as it's held.
+  frames(p, pressing(&PlayerControls::forward), 6);
+  frames(p, running(&PlayerControls::forward), 300); // the sprint builds for a while
   CHECK_NEAR(-p.character().velocity().z, 8.0, 0.05);
   PlayerControls crouch = pressing(&PlayerControls::forward);
   crouch.crouch = true;
@@ -193,7 +205,7 @@ TEST(with_no_body_the_controls_move_only_the_camera) {
   PlayerControls look;
   look.forward = true;
   look.mouse.x = 40.0f;
-  player.control(look);
+  player.control(look, kStep);
   player.follow(1.0f, kStep); // nothing to follow: no crash
   CHECK(player.body() == nullptr);
   CHECK(player.decide().move == glm::vec3(0.0f));
@@ -201,7 +213,8 @@ TEST(with_no_body_the_controls_move_only_the_camera) {
 
 TEST(capture_scripts_hold_keys_or_press_them_on_a_frame) {
   PlayerControls c = scriptedControls("w shift", 5);
-  CHECK(c.forward && c.sprint && !c.back && !c.jump);
+  CHECK(c.forward && c.run && !c.sprint && !c.back && !c.jump);
+  CHECK(scriptedControls("w sprint", 5).sprint); // no double tap to script
   CHECK(!scriptedControls("space@120", 119).jump);
   CHECK(scriptedControls("space@120", 120).jump);
   CHECK(!scriptedControls("space@120", 121).jump);
@@ -222,4 +235,56 @@ TEST(capture_scripts_hold_keys_or_press_them_on_a_frame) {
   CHECK_NEAR(c.mouse.x, -8.0, 1e-6);
   c = scriptedControls("z w@x", 1); // unknown keys and bad frames are skipped
   CHECK(!c.forward && !c.back && !c.left && !c.right && !c.jump);
+}
+
+TEST(shift_runs_and_a_press_soon_after_letting_go_sprints) {
+  GaitKeys keys;
+  CHECK(keys.update(false, kStep) == Gait::Walk);
+  for (int i = 0; i < 30; ++i)
+    CHECK(keys.update(true, kStep) == Gait::Run);
+  // Let go for 0.2 s, then press again: a sprint until it's let go.
+  for (int i = 0; i < 12; ++i)
+    CHECK(keys.update(false, kStep) == Gait::Walk);
+  for (int i = 0; i < 30; ++i)
+    CHECK(keys.update(true, kStep) == Gait::Sprint);
+  CHECK(keys.update(false, kStep) == Gait::Walk);
+  // Let go for longer than the double tap: a run again.
+  for (int i = 0; i < 30; ++i)
+    keys.update(false, kStep);
+  CHECK(keys.update(true, kStep) == Gait::Run);
+  // A slow frame doesn't make a tap out of a long gap.
+  keys.update(false, kStep);
+  keys.update(false, 0.5f);
+  CHECK(keys.update(true, kStep) == Gait::Run);
+}
+
+TEST(firing_from_the_hip_turns_him_to_the_camera_while_armed_and_a_second_after) {
+  Played p;
+  // Unarmed, the trigger does nothing to where he faces.
+  frame(p, pressing(&PlayerControls::fire));
+  CHECK(!p.player.decide().aim);
+  p.player.setArmed(true);
+  frame(p, pressing(&PlayerControls::fire));
+  CHECK(p.player.decide().aim);
+  CHECK(p.player.hipFiring());
+  // Let go: still facing the camera for about a second, then not.
+  frames(p, PlayerControls{}, 54);
+  CHECK(p.player.decide().aim);
+  frames(p, PlayerControls{}, 12);
+  CHECK(!p.player.decide().aim);
+  CHECK(!p.player.hipFiring());
+  // Aiming with the right mouse isn't hip fire.
+  frame(p, pressing(&PlayerControls::aim));
+  CHECK(p.player.decide().aim);
+  CHECK(!p.player.hipFiring());
+}
+
+TEST(capture_scripts_press_the_gun_keys) {
+  const PlayerControls c = scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 3);
+  CHECK(c.pistol && !c.longGun);
+  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 4).longGun);
+  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 5).holster);
+  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 6).reload);
+  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 7).fireMode);
+  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 8).use);
 }

@@ -39,8 +39,17 @@ enum class ClipSlot : uint8_t {
   DodgeBack,
   DodgeLeft,
   DodgeRight,
+  AimIdle, // standing still while aiming, in a gun stance ("idle aiming")
+  Reload,  // on the upper body, over whatever the legs are doing
   Count
 };
+
+// Which clips a character moves with: its own, or holding a pistol or a
+// rifle (step 1.6). A gun stance plays its own clip for a move, else the
+// unarmed one.
+enum class Stance : uint8_t { Unarmed, Pistol, Rifle, Count };
+const char *stanceName(Stance stance);
+std::optional<Stance> stanceFromName(std::string_view name);
 
 // The name a file uses, like "run_forward", and back.
 const char *clipSlotName(ClipSlot slot);
@@ -51,6 +60,7 @@ bool defaultLoop(ClipSlot slot);
 
 struct CharacterClip {
   ClipSlot slot = ClipSlot::Idle;
+  Stance stance = Stance::Unarmed;
   std::string file;
   float start = 0.0f; // seconds into the file to start at (past a wind-up)
   // Seconds into the file to stop at, after start; 0 is the file's end. A
@@ -85,13 +95,13 @@ struct CharacterDescription {
   std::vector<CharacterSetting> tuning; // [tuning], in file order
   std::vector<CharacterVariant> variants;
   const CharacterVariant *variant(std::string_view name) const;
-  std::vector<CharacterClip> clips; // one per slot at most
-  // The clip for a slot, or nothing.
-  const CharacterClip *clip(ClipSlot slot) const;
-  // Gives clip's slot this clip: in the old one's place, keeping its notes
-  // if the new one has none, or at the end.
+  std::vector<CharacterClip> clips; // one per slot and stance at most
+  // The clip for a slot in a stance, or nothing.
+  const CharacterClip *clip(ClipSlot slot, Stance stance = Stance::Unarmed) const;
+  // Gives clip's slot (in its stance) this clip: in the old one's place,
+  // keeping its notes if the new one has none, or at the end.
   void setClip(const CharacterClip &clip);
-  void removeClip(ClipSlot slot);
+  void removeClip(ClipSlot slot, Stance stance = Stance::Unarmed);
   bool operator==(const CharacterDescription &) const = default;
 };
 

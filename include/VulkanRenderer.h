@@ -16,6 +16,13 @@
 #include <vector>
 
 #include "AudioDevice.h"
+#include "AimIk.h"
+#include "EditorSelection.h"
+#include "Loadout.h"
+#include "Weapon.h"
+#include "WeaponFile.h"
+#include "WeaponHold.h"
+#include "WeaponParts.h"
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "CompositePass.h"
@@ -160,6 +167,12 @@ public:
   // The player's keys, rebound in the Controls tab.
   const ControlBindings &controls() const { return controlBindings; }
   const ThirdPersonCamera &playerCamera() const { return playerController->camera(); }
+  // Where the played character's body is (its feet), for captures that
+  // look at it from another side.
+  glm::vec3 playerFeet() const {
+    return playerController && playerController->body() ? playerController->body()->position()
+                                                         : glm::vec3(0.0f);
+  }
   // Ctrl+Z and Ctrl+Shift+Z: one finished edit back or forward, rebuilt the
   // way Stop rebuilds, at the top of the next draw(). Edit mode only, and
   // not in the middle of a drag.
@@ -170,13 +183,21 @@ public:
   // not in the middle of a drag; made at the top of the next draw(), like a
   // spawn.
   void duplicateSelection() {
-    if (!playing && selection && !imguiLayer.editInProgress())
+    if (!playing && !selected.empty() && !imguiLayer.editInProgress())
       duplicateRequested = true;
   }
+  // The Delete key: everything selected, one undo step.
+  void deleteSelection();
+  // HELIORA_CAPTURE_SELECT, for checking several selected in a capture:
+  // space-separated entries, m3 a model, g0 a grid, c1 a character, p the
+  // player start, the last one the primary.
+  void selectForCapture(std::string_view entries);
   // Left click in edit mode: selects what's under the pixel (window
   // coordinates), or nothing. A click on any copy in a grid selects the grid.
-  // A click outside the scene's area does nothing.
-  void selectAt(glm::vec2 windowPixel);
+  // A click outside the scene's area does nothing. With toggle (Ctrl), what's
+  // under it is added to the selection or taken out, and a click on nothing
+  // leaves the selection alone.
+  void selectAt(glm::vec2 windowPixel, bool toggle = false);
   // Whether a window pixel is on the scene, not on a panel around it.
   bool sceneContains(glm::vec2 windowPixel) const {
     return sceneArea.contains(windowPixel);
@@ -293,6 +314,54 @@ private:
   // A character drawn in the scene: a [character], or with none ticked the
   // player at the player start. Edit mode: standing in its idle pose. Play
   // mode: a body in the roster, animated.
+  // A gun as the game has it (src/Guns.cpp): its .weapon file, its parts'
+  // .parts file and a model for each part.
+  struct WeaponAsset {
+    std::string name; // "akm": Resources/Weapons/akm.weapon
+    WeaponSpec spec;
+    WeaponParts parts;
+    std::vector<int> partModels; // one per part; -1 if it couldn't load
+  };
+  std::map<std::string, std::unique_ptr<WeaponAsset>> weaponAssets;
+  // The gun's asset, read the first time it's asked for; null if it can't be.
+  const WeaponAsset *weaponAsset(const std::string &name);
+  // A gun a character carries: its parts as nodes, how its hand holds it
+  // (from its stance's aiming pose), and where it rides when put away (a
+  // holster on the hip, across the back), in that bone's frame.
+  struct CarriedGun {
+    const WeaponAsset *asset = nullptr;
+    Stance stance = Stance::Rifle;
+    std::vector<SceneNode *> parts; // owned by rootNode
+    WeaponHold hold;
+    int stowBone = -1;
+    glm::mat4 stowInBone{1.0f};
+    // Carried relaxed, not aiming: the rifle at low ready in the chest's
+    // (Spine2's) frame, the pistol at the side in the right hand's.
+    glm::mat4 carry{1.0f};
+    bool carryInHand = false;
+    // The left hand's turn on a two-handed gun, in the gun's frame, as the
+    // aiming clip holds it.
+    glm::quat offHandTurn{1.0f, 0.0f, 0.0f, 0.0f};
+    // The fingers wrapped round it, as the aiming clip has them: each finger
+    // bone's own turn, for the right hand and the left.
+    std::vector<std::pair<int, glm::quat>> rightGrip, leftGrip;
+    // What the gun is doing: its magazines, chamber and reload (Weapon.h).
+    std::shared_ptr<Weapon> weapon;
+    int magazinePart = -1; // the part that comes out in a reload, or -1
+  };
+  // The bones the guns move: the arms (for the reach, the aim and the off
+  // hand) and the trigger finger.
+  struct GunBones {
+    int rightArm = -1, rightForeArm = -1, rightHand = -1, rightIndex = -1;
+    int leftArm = -1, leftForeArm = -1, leftHand = -1, leftKnuckle = -1;
+    int hips = -1, spine2 = -1, head = -1;
+    glm::vec3 headFace{0.0f, 0.0f, 1.0f}; // the way the face looks, in the head's frame
+    bool valid() const {
+      return rightArm >= 0 && rightForeArm >= 0 && rightHand >= 0 && leftArm >= 0 &&
+             leftForeArm >= 0 && leftHand >= 0 && hips >= 0 && spine2 >= 0;
+    }
+  };
+
   struct LiveCharacter {
     SceneEntryRef entry; // Kind::None for the player start's
     CharacterFileData *file = nullptr;
@@ -311,6 +380,18 @@ private:
     // This frame's skinning matrices, worked out while posing and uploaded
     // in draw() once the frame slot's fence says it's free.
     std::vector<glm::mat4> skinning;
+    // Guns (step 1.6, src/Guns.cpp): what it carries and has in its hands,
+    // each carried gun (the pistol, then the long gun), how it aims and the
+    // arm bones the IK moves.
+    Loadout loadout;
+    std::array<std::optional<CarriedGun>, 2> guns;
+    AimRig aimRig;
+    GunBones gunBones;
+    float aimWeight = 0.0f; // the aim IK's share, eased in
+    // The gun's stance clips playing (aiming, or crouched with its crouch
+    // clips), so the gun goes into the clip's hands: eased in over this.
+    bool stanceHolds = false;
+    float holdWeight = 0.0f;
   };
   std::vector<LiveCharacter> characters;
   // What a surface sounds like when stepped on or hit (step 1.5c), from its
@@ -362,6 +443,14 @@ private:
   void poseCharacters(float alpha, float frameSeconds);
   // Puts a character's feet on the ground under them: two rays, then the
   // foot IK on its pose (step 1.5b).
+  // Guns (src/Guns.cpp): the scene's kit to the played character at Play,
+  // the keys and stance before its clips, and after them (and the feet) the
+  // reach for a gun being drawn, the aim, the off hand and the parts placed.
+  void armCharacter(LiveCharacter &c);
+  void gunsBeforeClips(int index, AnimatorInput &input, float seconds);
+  void gunsAfterClips(int index, const glm::mat4 &placement, float seconds, Pose &pose,
+                      std::vector<glm::mat4> &model);
+  glm::vec3 aimPoint(const LiveCharacter &c) const;
   void placeFeet(int index, const FootPlacement &placement, bool on, float seconds, Pose &pose,
                  std::vector<glm::mat4> &model);
   std::pair<CharacterTuning, AnimatorTuning> tuningFor(const CharacterFileData &data,
@@ -389,7 +478,7 @@ private:
   // What's selected in edit mode. Its outline and the player start's are
   // the editor's lines for DebugLinePass, worked out when the selection or
   // the layout changes, not every frame.
-  std::optional<SceneEntryRef> selection;
+  EditorSelection selected;
   std::vector<PhysicsDebugVertex> editorLines;
   std::vector<PhysicsDebugVertex> debugLineScratch; // wireframes + outline
   float selectionMass = 0.0f; // kg, of one copy for a grid; 0 if no body
@@ -397,6 +486,13 @@ private:
   // a drag of its Count runs ahead of until the rebuild.
   uint32_t selectionBodies = 0;
   void updateEditorLines();
+  // One selected entry's outline (a breakable's cuts too).
+  void appendSelectionLines(SceneEntryRef ref);
+  // The Outliner: a row clicked (alone, with Ctrl, or with Shift over the
+  // rows as listed), and a row double-clicked, which flies the editor
+  // camera to it.
+  void selectEntry(SceneEntryRef ref, int mode, const std::vector<SceneEntryRef> &order);
+  void frameEntry(SceneEntryRef ref);
   bool entryHasBody(SceneEntryRef ref) const;
 
   // Building and changing single entries of currentScene, so an edit never
@@ -414,7 +510,16 @@ private:
   // nothing in flight can be using them and a new mesh can be uploaded.
   enum class EntryOp { Rebuild, Delete, Split };
   std::vector<std::pair<EntryOp, SceneEntryRef>> pendingEntryOps;
-  void applyEntryOp(EntryOp op, SceneEntryRef ref);
+  // True if it was a step to record (a delete or split; a rebuild only
+  // catches up with an edit already recorded). What it leaves to do once
+  // for the whole batch goes in the two flags.
+  bool applyEntryOp(EntryOp op, SceneEntryRef ref);
+  bool entryOpsChangedBodies = false;     // the broad phase to rebalance
+  bool entryOpsChangedCharacters = false; // the characters to rebuild
+  // Several entries moved at once (the gizmo or the Inspector with several
+  // selected): each placed, then the scene and the lines updated once.
+  void placeEntries(const std::vector<SceneEntryRef> &refs);
+  void placeEntryOnly(SceneEntryRef ref);
   // A copy of currentScene after every finished edit, for undo. Loading
   // another scene starts a new history; Stop and undo keep it.
   EditHistory history;
@@ -504,6 +609,9 @@ private:
   void placePlayerStart();
   bool duplicateRequested = false; // Ctrl+D, same timing
   void applyDuplicate();
+  // A copy of one entry beside it, or nothing (no room, or nothing to copy);
+  // not recorded, so several make one undo step.
+  std::optional<SceneEntryRef> duplicateOne(SceneEntryRef ref);
   // A removed body leaves an empty slot, so the others keep their index.
   struct PhysicsLink {
     SceneNode *node = nullptr;

@@ -2,6 +2,9 @@
 # on it; the rest of the sources are in next.md's research notes.
 [gun]
 name = Walther P38
+# Poly Haven's CC0 service pistol through tools/weapon_convert
+# (convert_guns.sh), scaled to the P38's 215 mm
+model = Resources/Models/Weapons/p38/p38.parts
 
 [round]
 # 9x19, 124 grain (8.0 g) full metal jacket, as the Pist.Patr.08
@@ -56,3 +59,10 @@ empty = 2.5            # estimate, the slide let go too
 mass = 1.03            # kg loaded (research)
 length = 0.215         # m
 spare_magazines = 1    # the holster's pocket
+
+[sounds]
+# The Free Firearm Sound Library's Bersa (.380 ACP, a 9 mm, on Walther's PPK
+# pattern; CC0, Resources/Sounds/CREDITS.md): near and mid distance
+shot = Resources/Sounds/guns/p38_shot_near.ogg
+shot_far = Resources/Sounds/guns/p38_shot_mid.ogg
+loudness = 155         # dB SPL at the shooter, pistols (Murphy et al. 2018)

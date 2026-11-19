@@ -117,9 +117,10 @@ void CharacterMovement::update(const CharacterInput &input, float dt) {
   if (glm::length(move) > 1.0f)
     move = glm::normalize(move);
   const bool moving = glm::length(move) > kDeadZone;
-  const float speed = crouched       ? tune.crouchSpeed
-                      : input.sprint ? tune.sprintSpeed
-                                     : tune.runSpeed;
+  const float speed = crouched                    ? tune.crouchSpeed
+                      : input.gait == Gait::Sprint ? tune.sprintSpeed
+                      : input.gait == Gait::Run    ? tune.runSpeed
+                                                   : tune.walkSpeed;
   const glm::vec3 wanted = move * speed;
 
   // Dodge: the roll along the stick (forward without input), or while

@@ -22,12 +22,18 @@ constexpr std::array<ActionInfo, static_cast<size_t>(Action::Count)> kActions = 
     {"back", "Back"},
     {"left", "Left"},
     {"right", "Right"},
-    {"sprint", "Sprint"},
+    {"run", "Run (again quickly: sprint)"},
     {"crouch", "Crouch"},
     {"aim", "Aim"},
     {"jump", "Jump"},
     {"dodge", "Dodge"},
     {"fire", "Fire"},
+    {"pistol", "Pistol"},
+    {"long_gun", "Long gun"},
+    {"holster", "Put the gun away"},
+    {"reload", "Reload"},
+    {"fire_mode", "Fire mode"},
+    {"use", "Use"},
 }};
 
 // Keys with names of their own; letters, digits, F keys and keypad digits
@@ -152,7 +158,13 @@ ControlBindings::ControlBindings() {
   (*this)[Action::Back] = key(GLFW_KEY_S);
   (*this)[Action::Left] = key(GLFW_KEY_A);
   (*this)[Action::Right] = key(GLFW_KEY_D);
-  (*this)[Action::Sprint] = key(GLFW_KEY_LEFT_SHIFT);
+  (*this)[Action::Run] = key(GLFW_KEY_LEFT_SHIFT);
+  (*this)[Action::Pistol] = key(GLFW_KEY_1);
+  (*this)[Action::LongGun] = key(GLFW_KEY_2);
+  (*this)[Action::Holster] = key(GLFW_KEY_H);
+  (*this)[Action::Reload] = key(GLFW_KEY_R);
+  (*this)[Action::FireMode] = key(GLFW_KEY_B);
+  (*this)[Action::Use] = key(GLFW_KEY_E);
   (*this)[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
   (*this)[Action::Aim] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_RIGHT};
   (*this)[Action::Jump] = key(GLFW_KEY_SPACE);

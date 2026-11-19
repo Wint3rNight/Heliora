@@ -27,7 +27,7 @@ TEST(the_default_keys_are_the_old_ones) {
   CHECK(bindingName(c[Action::Back]) == "S");
   CHECK(bindingName(c[Action::Left]) == "A");
   CHECK(bindingName(c[Action::Right]) == "D");
-  CHECK(bindingName(c[Action::Sprint]) == "Left Shift");
+  CHECK(bindingName(c[Action::Run]) == "Left Shift");
   CHECK(bindingName(c[Action::Crouch]) == "Left Ctrl");
   CHECK(bindingName(c[Action::Aim]) == "Right mouse");
   CHECK(bindingName(c[Action::Jump]) == "Space");
@@ -116,4 +116,15 @@ TEST(a_press_is_new_however_often_its_frame_asks) {
   CHECK(edges.justPressed(1, true));  // let go and pressed again
   CHECK(edges.justPressed(1, false)); // a tap GLFW hands back once: the frame's answer stands
   CHECK(edges.justPressed(2, true));  // each code on its own
+}
+
+TEST(the_gun_keys_are_one_two_h_r_b_and_e) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Pistol]) == "1");
+  CHECK(bindingName(c[Action::LongGun]) == "2");
+  CHECK(bindingName(c[Action::Holster]) == "H");
+  CHECK(bindingName(c[Action::Reload]) == "R");
+  CHECK(bindingName(c[Action::FireMode]) == "B");
+  CHECK(bindingName(c[Action::Use]) == "E");
+  CHECK(std::string(actionName(Action::Holster)) == "holster");
 }

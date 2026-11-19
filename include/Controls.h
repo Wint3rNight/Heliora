@@ -16,12 +16,20 @@ enum class Action : uint8_t {
   Back,
   Left,
   Right,
-  Sprint,
+  Run,
   Crouch,
   Aim,
   Jump,
   Dodge,
   Fire, // held, like the aim
+  // The guns (step 1.6), each pressed: the pistol, the long gun, put it
+  // away, reload, the fire mode, and use (a weapons crate).
+  Pistol,
+  LongGun,
+  Holster,
+  Reload,
+  FireMode,
+  Use,
   Count
 };
 

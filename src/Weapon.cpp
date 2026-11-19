@@ -60,7 +60,7 @@ glm::vec2 Weapon::gaussian(glm::vec2 sigma) {
   return {x * sigma.x, y * sigma.y};
 }
 
-void Weapon::update(float dt, bool trigger, Stance stance, WeaponEvents &events) {
+void Weapon::update(float dt, bool trigger, FiringStance stance, WeaponEvents &events) {
   if (!(dt > 0.0f))
     return;
   if (trigger && !wasHeld)
@@ -82,11 +82,11 @@ void Weapon::update(float dt, bool trigger, Stance stance, WeaponEvents &events)
     }
   } else if (trigger) {
     const float cycle = 60.0f / std::max(gun.rate, 1.0f);
-    const float factor = stance == Stance::Standing ? gun.standing
-                         : stance == Stance::Supported ? 1.0f
+    const float factor = stance == FiringStance::Standing ? gun.standing
+                         : stance == FiringStance::Supported ? 1.0f
                                                        : gun.moving;
     const glm::vec2 spread =
-        stance == Stance::Hip ? glm::vec2(gun.hipSpread) : gun.firstSpread * factor;
+        stance == FiringStance::Hip ? glm::vec2(gun.hipSpread) : gun.firstSpread * factor;
     float at = std::max(ready, 0.0f);
     while (at < dt) {
       if (fireMode == FireMode::Semi && pullUsed)

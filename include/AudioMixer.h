@@ -76,8 +76,10 @@ struct AudioListener {
 struct AudioMixerTuning {
   float windowHeight = 60.0f;  // dB under the window's top that still play (est.)
   float windowRelease = 10.0f; // dB a second the top falls back after a loud sound (est.)
-  float windowFloor = 65.0f;   // dB: the top never goes lower, so quiet scenes stay quiet (est.;
-                               // footsteps a few metres away play about 20 dB under full scale)
+  float windowFloor = 50.0f;   // dB: the top never goes lower, so quiet scenes stay quiet (est.;
+                               // at 65 the player's footsteps, about 53 dB at the camera, played
+                               // near -26 dBFS and had to be turned up a lot; at 50 they set the
+                               // top themselves, about -12 dBFS)
   float headroom = -6.0f;      // dB below full scale the window's top plays at
   float volume = 1.0f;         // the player's master volume
   float ringFrom = 170.0f;     // dB at the listener that rings the ears (est.)

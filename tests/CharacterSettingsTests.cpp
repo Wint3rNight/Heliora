@@ -10,7 +10,7 @@ CharacterDescription parseText(const std::string &text) {
   return CharacterIO::parse(in, "test.character");
 }
 
-const char *kFile = "model = a.fbx\n[tuning]\nrun_speed = 6\nturn_grip = 20\n"
+const char *kFile = "model = a.fbx\n[tuning]\nrun_speed = 6\nwalk_speed = 1.2\nturn_grip = 20\n"
                     "anim_fall_speed = 9\n[variant arcade]\nair_speed_limit = false\n"
                     "turn_grip = 30\n";
 
@@ -22,6 +22,7 @@ TEST(a_character_files_tuning_is_applied) {
   AnimatorTuning animation;
   applyCharacterTuning(c, "", movement, animation);
   CHECK_NEAR(movement.runSpeed, 6.0, 1e-6);
+  CHECK_NEAR(movement.walkSpeed, 1.2, 1e-6);
   CHECK_NEAR(movement.turnGrip, 20.0, 1e-6);
   CHECK_NEAR(animation.fallSpeed, 9.0, 1e-6);
   CHECK(movement.airSpeedLimit);                       // not in the file: the default

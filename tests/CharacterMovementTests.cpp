@@ -114,7 +114,7 @@ TEST(sprint_builds_on_from_the_run) {
   CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
   CharacterInput input = moving(yawForward(0.0f));
   hold(world, character, input, 180);
-  input.sprint = true;
+  input.gait = Gait::Sprint;
   hold(world, character, input, 30);
   const float building = flatSpeed(character.velocity());
   CHECK(building > 5.5f && building < 7.0f);
@@ -122,7 +122,7 @@ TEST(sprint_builds_on_from_the_run) {
   CHECK_NEAR(flatSpeed(character.velocity()), 8.0, 0.1);
   // Letting go of sprint slows it back to the run at groundBraking: 1 m/s
   // slower after 0.1 s, the run by 0.3 s.
-  input.sprint = false;
+  input.gait = Gait::Run;
   hold(world, character, input, 6);
   CHECK_NEAR(flatSpeed(character.velocity()), 6.93, 0.1);
   hold(world, character, input, 24);
@@ -267,7 +267,7 @@ TEST(a_running_jump_keeps_its_speed_but_gains_none) {
   hold(world, character, jump, 1);
   const float takeoff = flatSpeed(character.velocity()); // the step it left on
   CharacterInput sprintJump = run;
-  sprintJump.sprint = true; // asking for more in the air
+  sprintJump.gait = Gait::Sprint; // asking for more in the air
   float fastest = 0.0f, slowest = 100.0f;
   for (int i = 0; i < 50; ++i) {
     hold(world, character, sprintJump, 1);
@@ -789,4 +789,15 @@ TEST(it_knows_whether_its_last_step_aimed) {
   CHECK(character.aiming());
   hold(world, character, CharacterInput{}, 1);
   CHECK(!character.aiming());
+}
+
+TEST(walking_goes_at_a_walking_pace) {
+  // 1.4 m/s: the comfortable pace of men in their twenties (Bohannon 1997).
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
+  CharacterInput input = moving(yawForward(0.0f));
+  input.gait = Gait::Walk;
+  hold(world, character, input, 120);
+  CHECK_NEAR(flatSpeed(character.velocity()), 1.4, 0.02);
 }

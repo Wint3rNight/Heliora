@@ -14,7 +14,7 @@ enum class FireMode { Auto, Semi };
 
 // How it's held, for the spread: NSD's numbers are prone with a rest;
 // standing and moving multiply them (NSD p.162); from the hip is its own.
-enum class Stance { Supported, Standing, Moving, Hip };
+enum class FiringStance { Supported, Standing, Moving, Hip };
 
 struct Shot {
   float time = 0.0f;        // s into the frame it went off
@@ -54,7 +54,7 @@ public:
   void switchMode(); // auto and semi in turn, if it has auto
 
   // A frame of dt with the trigger held or not.
-  void update(float dt, bool trigger, Stance stance, WeaponEvents &events);
+  void update(float dt, bool trigger, FiringStance stance, WeaponEvents &events);
 
   // Starts a reload, false if there's nothing to load or no need. A partial
   // magazine goes back in the pouch, the fullest comes out; an empty gun

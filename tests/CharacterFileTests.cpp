@@ -187,3 +187,45 @@ TEST(broken_tuning_and_variants_say_what_and_where) {
   CHECK(contains(errorFor("model = a.fbx\n[tuning]\nx = 1\n[tuning]\ny = 2\n"), "twice"));
   CHECK(contains(errorFor("model = a.fbx\n[tuning]\njust words\n"), "line 3"));
 }
+
+TEST(a_clip_can_belong_to_a_gun_stance) {
+  const CharacterDescription c = parseText(
+      "model = m.fbx\n[clip]\nslot = idle\nfile = idle.fbx\n"
+      "[clip]\nslot = idle\nstance = rifle\nfile = rifle idle.fbx\n"
+      "[clip]\nslot = aim_idle\nstance = rifle\nfile = rifle aiming.fbx\n"
+      "[clip]\nslot = reload\nstance = rifle\nfile = reload.fbx\n");
+  CHECK(c.clip(ClipSlot::Idle) && c.clip(ClipSlot::Idle)->file == "idle.fbx");
+  const CharacterClip *rifle = c.clip(ClipSlot::Idle, Stance::Rifle);
+  CHECK(rifle && rifle->file == "rifle idle.fbx");
+  CHECK(!c.clip(ClipSlot::Idle, Stance::Pistol));
+  CHECK(c.clip(ClipSlot::AimIdle, Stance::Rifle) != nullptr);
+  const CharacterClip *reload = c.clip(ClipSlot::Reload, Stance::Rifle);
+  CHECK(reload && !reload->loop); // a reload happens once
+  // Written and read back the same.
+  CHECK(parseText(CharacterIO::write(c)) == c);
+}
+
+TEST(a_slot_twice_in_one_stance_or_an_unknown_stance_is_an_error) {
+  CHECK(contains(errorFor("model = m.fbx\n[clip]\nslot = idle\nstance = pistol\nfile = a.fbx\n"
+                          "[clip]\nslot = idle\nstance = pistol\nfile = b.fbx\n"),
+                 "twice"));
+  CHECK(contains(errorFor("model = m.fbx\n[clip]\nslot = idle\nstance = bow\nfile = a.fbx\n"),
+                 "stance"));
+  CHECK(std::string(stanceName(Stance::Pistol)) == "pistol");
+  CHECK(stanceFromName("rifle") == Stance::Rifle);
+  CHECK(!stanceFromName("bow"));
+}
+
+TEST(setting_a_stances_clip_leaves_the_unarmed_one_alone) {
+  CharacterDescription c = parseText("model = m.fbx\n[clip]\nslot = idle\nfile = idle.fbx\n");
+  CharacterClip pistolIdle;
+  pistolIdle.slot = ClipSlot::Idle;
+  pistolIdle.stance = Stance::Pistol;
+  pistolIdle.file = "pistol idle.fbx";
+  c.setClip(pistolIdle);
+  CHECK(c.clips.size() == 2);
+  CHECK(c.clip(ClipSlot::Idle)->file == "idle.fbx");
+  c.removeClip(ClipSlot::Idle, Stance::Pistol);
+  CHECK(c.clips.size() == 1);
+  CHECK(c.clip(ClipSlot::Idle) != nullptr);
+}

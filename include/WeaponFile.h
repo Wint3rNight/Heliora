@@ -20,6 +20,9 @@ struct MatterPenetration {
 
 struct WeaponSpec {
   std::string name;
+  // Its model: a .parts file from tools/weapon_convert (the parts and their
+  // pivots, and the sockets), or empty for none yet.
+  std::string model;
   // The round.
   float bulletMass = 0.0079f; // kg
   float muzzleSpeed = 715.0f; // m/s
@@ -50,6 +53,10 @@ struct WeaponSpec {
   float mass = 3.6f;          // kg loaded
   float length = 0.88f;       // m
   int spareMagazines = 4;     // carried besides the one in the gun
+  // Sounds: a shot recorded near and from further off (the game crossfades
+  // them by distance), and how loud a shot is a metre away, dB SPL.
+  std::string shotSound, farShotSound;
+  float loudness = 160.0f;
   bool operator==(const WeaponSpec &) const = default;
 };
 

@@ -51,6 +51,7 @@ std::vector<SettingBinding> bindings(WeaponSpec &s) {
       {"carry", "mass", &s.mass, 0, 1000},
       {"carry", "length", &s.length, 0, 100},
       {"carry", "spare_magazines", &s.spareMagazines, 0, 1000},
+      {"sounds", "loudness", &s.loudness, 0, 250},
   };
   const PenetrationKeys &k = penetrationKeys();
   for (size_t m = 0; m < k.keys.size(); ++m) {
@@ -71,6 +72,8 @@ WeaponSpec weaponFromSettings(const SettingsFile &file) {
   WeaponSpec spec;
   if (const std::optional<std::string> name = file.text("gun", "name"))
     spec.name = *name;
+  if (const std::optional<std::string> model = file.text("gun", "model"))
+    spec.model = *model;
   if (const std::optional<std::string> drag = file.text("round", "drag")) {
     if (*drag == "G1")
       spec.drag = DragModel::G1;
@@ -80,12 +83,19 @@ WeaponSpec weaponFromSettings(const SettingsFile &file) {
       spdlog::warn("Weapon {}: no drag model '{}' (G1 or G7), keeping {}", spec.name, *drag,
                    dragName(spec.drag));
   }
-  // The numbers; the drag model was text, so it isn't reported as unknown.
+  if (const std::optional<std::string> shot = file.text("sounds", "shot"))
+    spec.shotSound = *shot;
+  if (const std::optional<std::string> far = file.text("sounds", "shot_far"))
+    spec.farShotSound = *far;
+  // The numbers; the drag model and the sounds were text, so they aren't
+  // reported as unknown.
   SettingsFile numbers = file;
   numbers.remove("round", "drag");
+  numbers.remove("sounds", "shot");
+  numbers.remove("sounds", "shot_far");
   const std::vector<SettingBinding> b = bindings(spec);
   for (const char *section : {"round", "penetration", "action", "spread", "recoil", "reload",
-                              "carry"})
+                              "carry", "sounds"})
     readSettings(numbers, b, section);
   return spec;
 }
@@ -93,10 +103,16 @@ WeaponSpec weaponFromSettings(const SettingsFile &file) {
 void weaponToSettings(const WeaponSpec &spec, SettingsFile &file) {
   WeaponSpec copy = spec;
   file.setString("gun", "name", spec.name);
+  if (!spec.model.empty())
+    file.setString("gun", "model", spec.model);
+  if (!spec.shotSound.empty())
+    file.setString("sounds", "shot", spec.shotSound);
+  if (!spec.farShotSound.empty())
+    file.setString("sounds", "shot_far", spec.farShotSound);
   file.setString("round", "drag", dragName(spec.drag));
   const std::vector<SettingBinding> b = bindings(copy);
   for (const char *section : {"round", "penetration", "action", "spread", "recoil", "reload",
-                              "carry"})
+                              "carry", "sounds"})
     writeSettings(file, b, section);
 }
 

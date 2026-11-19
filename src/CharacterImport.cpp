@@ -309,7 +309,7 @@ std::optional<CharacterAsset> importCharacter(const CharacterDescription &descri
   }
   computeBounds(asset);
   for (const CharacterClip &entry : description.clips)
-    asset.library.clips[static_cast<size_t>(entry.slot)] = importClip(entry, asset);
+    asset.library.slotFor(entry.slot, entry.stance) = importClip(entry, asset);
   const size_t loaded = std::count_if(asset.library.clips.begin(), asset.library.clips.end(),
                                       [](const auto &c) { return c.has_value(); });
   size_t vertices = 0, triangles = 0, textured = 0;

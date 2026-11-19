@@ -37,7 +37,7 @@ WeaponSpec p38Spec() {
 }
 
 // Holds the trigger (or not) for this long; the shots, and whether it clicked.
-WeaponEvents hold(Weapon &w, bool trigger, float seconds, Stance stance = Stance::Supported,
+WeaponEvents hold(Weapon &w, bool trigger, float seconds, FiringStance stance = FiringStance::Supported,
                   float dt = kDt) {
   WeaponEvents all;
   for (int i = 0; i < int(std::lround(seconds / dt)); ++i) {
@@ -68,7 +68,7 @@ TEST(automatic_fire_keeps_its_rate_whatever_the_frame_rate) {
   for (float dt : {1.0f / 60.0f, 1.0f / 37.0f, 0.25f}) {
     Weapon w(akmSpec());
     w.load(2);
-    const WeaponEvents e = hold(w, true, 0.95f, Stance::Supported, dt);
+    const WeaponEvents e = hold(w, true, 0.95f, FiringStance::Supported, dt);
     CHECK(e.shots.size() == 10);
   }
 }
@@ -78,7 +78,7 @@ TEST(each_shot_says_when_in_its_frame_it_went) {
   Weapon w(akmSpec());
   w.load(1);
   WeaponEvents e;
-  w.update(0.25f, true, Stance::Supported, e);
+  w.update(0.25f, true, FiringStance::Supported, e);
   CHECK(e.shots.size() == 3);
   if (e.shots.size() == 3) {
     CHECK_NEAR(e.shots[0].time, 0.0, 1e-5);
@@ -224,12 +224,12 @@ TEST(single_shots_spread_as_the_manual_says_by_stance) {
   // prone supported sigma, times 1.34 standing and 1.52 moving; from the
   // hip, 15 mrad (est.).
   struct Case {
-    Stance stance;
+    FiringStance stance;
     glm::vec2 expected;
-  } cases[] = {{Stance::Supported, {0.44f, 0.59f}},
-               {Stance::Standing, {0.44f * 1.34f, 0.59f * 1.34f}},
-               {Stance::Moving, {0.44f * 1.52f, 0.59f * 1.52f}},
-               {Stance::Hip, {15.0f, 15.0f}}};
+  } cases[] = {{FiringStance::Supported, {0.44f, 0.59f}},
+               {FiringStance::Standing, {0.44f * 1.34f, 0.59f * 1.34f}},
+               {FiringStance::Moving, {0.44f * 1.52f, 0.59f * 1.52f}},
+               {FiringStance::Hip, {15.0f, 15.0f}}};
   for (const Case &c : cases) {
     WeaponSpec spec = akmSpec();
     spec.magazine = 1000000;

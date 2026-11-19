@@ -18,6 +18,7 @@
 #include "CharacterAnimator.h"
 #include "CharacterMovement.h"
 #include "Controls.h"
+#include "Outliner.h"
 #include "PerformanceMetrics.h"
 #include "Picking.h"
 #include "PhysicsWorld.h"
@@ -193,6 +194,9 @@ struct DebugUiContext {
   // The live physics world's bodies and limit, for the grid count check.
   uint32_t bodiesInWorld = 0;
   uint32_t bodyLimit = 0;
+  // Bodies the world holds for an entry now (a grid's copies), for edits
+  // that change how many it needs.
+  std::function<uint32_t(SceneEntryRef)> entryBodies;
 
   // The Save settings and Reset to defaults buttons, for one section of the
   // settings file: "render", "physics" or "character".
@@ -209,10 +213,20 @@ struct DebugUiContext {
   // only passes in edit mode. Moving takes effect at once; other changes,
   // Delete and Split ask the renderer to rebuild that entry.
   SceneDescription *scene = nullptr;
-  std::optional<SceneEntryRef> selection;
+  std::optional<SceneEntryRef> selection; // the primary, the one shown
+  // Everything selected (the primary last); null while playing. An edit to
+  // the primary is made on every selected entry of its kind.
+  const std::vector<SceneEntryRef> *selected = nullptr;
+  // The Outliner: a row clicked (mode 0 alone, 1 with Ctrl, 2 with Shift
+  // over the rows in the order shown), a row double-clicked, and Delete.
+  std::function<void(SceneEntryRef, int, const std::vector<SceneEntryRef> &)> onSelectEntry;
+  std::function<void(SceneEntryRef)> onFrameEntry;
+  std::function<void()> onDeleteSelection;
   float selectionMass = 0.0f; // kg, one copy for a grid; 0 without a body
   uint32_t selectionBodies = 0; // bodies the world holds for it right now
   std::function<void(SceneEntryRef)> onEntryMoved;
+  // Several moved at once: placed together, the scene updated once.
+  std::function<void(const std::vector<SceneEntryRef> &)> onEntriesMoved;
   std::function<void(SceneEntryRef)> onEntryChanged;
   std::function<void(SceneEntryRef)> onEntryDeleted;
   std::function<void(SceneEntryRef)> onGridSplit;
@@ -349,6 +363,7 @@ private:
     Performance,
     Debug,
     Assets,
+    Outliner,
     Count
   };
   static constexpr int kPanelCount = static_cast<int>(Panel::Count);
@@ -358,6 +373,9 @@ private:
   void buildDefaultLayout(unsigned int dockspace);
   void registerPanelSettings();
   void drawInspector(DebugUiContext &ui);
+  void drawOutliner(DebugUiContext &ui);
+  // The other selected entries of ref's kind, for an edit to ref.
+  std::vector<SceneEntryRef> othersLike(const DebugUiContext &ui, SceneEntryRef ref) const;
   void drawPlayerStartInspector(DebugUiContext &ui);
   void drawCharacterInspector(DebugUiContext &ui);
   void flushInspectorRebuild(DebugUiContext &ui);
@@ -367,6 +385,14 @@ private:
   void drawGizmo(DebugUiContext &ui);
   void drawCrosshair(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
+  // The others moved, for placing them with the primary.
+  std::vector<SceneEntryRef> moveOthersWithGizmo(DebugUiContext &ui, const NodeTransform &was,
+                                                 const NodeTransform &now, float layoutTurn);
+  // Places entries that moved: together if there are several.
+  void entriesMoved(DebugUiContext &ui, const std::vector<SceneEntryRef> &refs);
+  // How many more bodies the physics world can take this frame (an edit
+  // that adds more is refused), and what an entry's bodies are.
+  int64_t bodyRoom(const DebugUiContext &ui) const;
   void finishSceneEdit(DebugUiContext &ui);
   void drawPrompt(DebugUiContext &ui);
   void drawSceneTab(DebugUiContext &ui);
@@ -419,9 +445,14 @@ private:
   // A change that rebuilds the entry waits until no field is held, so a
   // drag rebuilds once, when it ends.
   bool inspectorRebuildPending = false;
-  SceneEntryRef inspectorPendingRef;
+  std::vector<SceneEntryRef> inspectorPendingRefs;
   SceneEntryRef inspectorShownRef;
   std::string inspectorProblem; // why the last edit was refused
+  // The Outliner: its search text and filters, and the primary it last
+  // showed, so a pick in the scene scrolls the list to it.
+  char outlinerSearch[128] = {};
+  OutlinerFilter outlinerFilter;
+  std::optional<SceneEntryRef> outlinerShownPrimary;
   // The scene was edited and the edit isn't finished yet (something is
   // still held), so the undo step waits.
   bool sceneEditOpen = false;

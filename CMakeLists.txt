@@ -147,6 +147,13 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/HitZones.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PieceDamage.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Outliner.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/EditorSelection.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AssetConvert.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponParts.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponHold.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AimIk.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Loadout.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EffectGeometry.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Particles.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
@@ -205,6 +212,21 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer imgui_lib)
 
+# tools/weapon_convert (step 1.6): gun models into gun space and parts, run
+# by hand when a gun is added, so it isn't built with everything else:
+# cmake --build build --target weapon_convert
+add_executable(weapon_convert EXCLUDE_FROM_ALL tools/weapon_convert/main.cpp)
+target_include_directories(weapon_convert PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(weapon_convert PRIVATE heliora_core)
+if(TARGET assimp::assimp)
+        target_link_libraries(weapon_convert PRIVATE assimp::assimp)
+else()
+        target_include_directories(weapon_convert PRIVATE ${ASSIMP_INCLUDE_DIRS})
+        target_link_libraries(weapon_convert PRIVATE ${ASSIMP_LIBRARIES})
+endif()
+set_source_files_properties(tools/weapon_convert/main.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+
 # Tests: no GPU needed. Run with `ctest --test-dir build --output-on-failure`.
 enable_testing()
 add_executable(heliora_tests
@@ -250,6 +272,13 @@ add_executable(heliora_tests
         tests/WeaponTests.cpp
         tests/HitZonesTests.cpp
         tests/PieceDamageTests.cpp
+        tests/OutlinerTests.cpp
+        tests/EditorSelectionTests.cpp
+        tests/AssetConvertTests.cpp
+        tests/WeaponPartsTests.cpp
+        tests/WeaponHoldTests.cpp
+        tests/AimIkTests.cpp
+        tests/LoadoutTests.cpp
         tests/EffectGeometryTests.cpp
         tests/ParticlesTests.cpp
         tests/InertializeTests.cpp

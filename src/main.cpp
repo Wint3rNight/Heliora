@@ -166,10 +166,13 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
   // value goes to the object it was typed for.
   const bool leftPressed =
       inputManager.wasMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT);
+  // Ctrl+click adds what's under the cursor to the selection, or takes it out.
   if (leftPressed && !typing && !fly.cameraMode && !fly.rightMouseFlying &&
       !asking && !vulkanRenderer.isPlaying() &&
       !vulkanRenderer.imguiWantsMouse() && !vulkanRenderer.gizmoHasMouse()) {
-    vulkanRenderer.selectAt(inputManager.getMousePosition());
+    const bool toggle = inputManager.isKeyPressed(GLFW_KEY_LEFT_CONTROL) ||
+                        inputManager.isKeyPressed(GLFW_KEY_RIGHT_CONTROL);
+    vulkanRenderer.selectAt(inputManager.getMousePosition(), toggle);
   }
 
   // Ctrl+Z undoes and Ctrl+Shift+Z redoes, in edit mode (the renderer
@@ -194,6 +197,10 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
   // Ctrl+D duplicates the selection, in edit mode (the renderer checks).
   if (dPressed && shortcuts)
     vulkanRenderer.duplicateSelection();
+  // Delete deletes everything selected, in edit mode, one undo step.
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_DELETE) && !typing && !asking &&
+      !fly.cameraMode && !vulkanRenderer.isPlaying())
+    vulkanRenderer.deleteSelection();
   // Ctrl+S saves the scene and Ctrl+Shift+S saves it under a new name,
   // in either mode: what's saved is the layout.
   if (sPressed && shortcuts) {
@@ -252,6 +259,9 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   // as new after Tab.
   const bool jump = pressed(Action::Jump);
   const bool dodge = pressed(Action::Dodge);
+  const bool pistol = pressed(Action::Pistol), longGun = pressed(Action::LongGun),
+             holster = pressed(Action::Holster), reload = pressed(Action::Reload),
+             fireMode = pressed(Action::FireMode), use = pressed(Action::Use);
   PlayerControls controls;
   if (!fly.cameraMode || typing || asking)
     return controls;
@@ -259,12 +269,18 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.back = held(Action::Back);
   controls.left = held(Action::Left);
   controls.right = held(Action::Right);
-  controls.sprint = held(Action::Sprint);
+  controls.run = held(Action::Run);
   controls.crouch = held(Action::Crouch);
   controls.aim = held(Action::Aim);
   controls.jump = jump;
   controls.dodge = dodge;
   controls.fire = held(Action::Fire);
+  controls.pistol = pistol;
+  controls.longGun = longGun;
+  controls.holster = holster;
+  controls.reload = reload;
+  controls.fireMode = fireMode;
+  controls.use = use;
   // InputManager's y counts up; the controls' counts down, like the screen.
   const glm::vec2 mouse = inputManager.getMouseDelta();
   controls.mouse = glm::vec2(mouse.x, -mouse.y);
@@ -316,6 +332,12 @@ int main(int argc, char **argv) {
   const char *captureFramesText = std::getenv("HELIORA_CAPTURE_FRAMES");
   const int captureFrames =
       captureFramesText ? std::max(1, std::atoi(captureFramesText)) : 300;
+  // HELIORA_CAPTURE_SELECT selects entries a few frames in (once the scene
+  // is up), to check several selected: "m3 m5 g0" (VulkanRenderer::
+  // selectForCapture).
+  const char *captureSelect = std::getenv("HELIORA_CAPTURE_SELECT");
+  const char *viewYawText = std::getenv("HELIORA_CAPTURE_VIEW_YAW");
+  const float captureViewYaw = capturePath && viewYawText ? std::strtof(viewYawText, nullptr) : 0.0f;
   if (capturePath) {
     if (!std::getenv("HELIORA_CAPTURE_PLAY"))
       vulkanRenderer.togglePlayMode();
@@ -379,12 +401,28 @@ int main(int argc, char **argv) {
     // changed it.
     if (vulkanRenderer.hasPlayer()) {
       const ThirdPersonCamera &view = vulkanRenderer.playerCamera();
-      vulkanRenderer.updateCameraView(view.view(), view.position());
+      glm::mat4 seen = view.view();
+      glm::vec3 eye = view.position();
+      // HELIORA_CAPTURE_VIEW_YAW turns only what's drawn this many degrees
+      // about the character (the controls keep the real camera), to see an
+      // aiming pose from the side in a capture.
+      if (captureViewYaw != 0.0f) {
+        const glm::vec3 pivot = vulkanRenderer.playerFeet() + glm::vec3(0.0f, 1.2f, 0.0f);
+        const glm::mat4 around = glm::translate(glm::mat4(1.0f), pivot) *
+                                 glm::rotate(glm::mat4(1.0f), glm::radians(captureViewYaw),
+                                             glm::vec3(0.0f, 1.0f, 0.0f)) *
+                                 glm::translate(glm::mat4(1.0f), -pivot);
+        seen = seen * glm::inverse(around);
+        eye = glm::vec3(around * glm::vec4(eye, 1.0f));
+      }
+      vulkanRenderer.updateCameraView(seen, eye);
       vulkanRenderer.setImGuiCameraInfo(view.position(), camera.MovementSpeed);
     } else {
       vulkanRenderer.updateCameraView(camera.GetViewMatrix(), camera.Position);
       vulkanRenderer.setImGuiCameraInfo(camera.Position, camera.MovementSpeed);
     }
+    if (capturePath && captureSelect && frameNumber == 5)
+      vulkanRenderer.selectForCapture(captureSelect);
     if (capturePath && ++frameNumber == captureFrames)
       vulkanRenderer.requestCapture(capturePath);
     vulkanRenderer.draw();

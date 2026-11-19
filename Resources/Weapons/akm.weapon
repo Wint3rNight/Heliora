@@ -3,6 +3,9 @@
 # the research notes with links are in next.md's sources.
 [gun]
 name = AKM
+# Stein Games' CC0 AK47 through tools/weapon_convert (convert_guns.sh),
+# scaled to the AKM's 880 mm
+model = Resources/Models/Weapons/akm/akm.parts
 
 [round]
 # 7.62x39 steel-core ball (57-N-231)
@@ -61,3 +64,10 @@ empty = 3.2            # estimate, the bolt pulled too
 mass = 3.6             # kg loaded, NSD p.3
 length = 0.88          # m, NSD p.3
 spare_magazines = 4    # to check: one in the gun and four in the pouch
+
+[sounds]
+# The Free Firearm Sound Library's AK-47 (CC0, Resources/Sounds/CREDITS.md):
+# a single shot near and from mid distance, cut to the first shot
+shot = Resources/Sounds/guns/akm_shot_near.ogg
+shot_far = Resources/Sounds/guns/akm_shot_mid.ogg
+loudness = 160         # dB SPL at the shooter, rifles (Murphy et al. 2018)

@@ -23,7 +23,10 @@ struct CharacterTuning {
   float crouchHeight = 1.1f;
   float mass = 70.0f; // kg
 
-  float runSpeed = 5.0f; // m/s
+  // m/s. Walking is the comfortable pace of men in their twenties,
+  // 1.39 m/s (Bohannon 1997, Age and Ageing 26:15).
+  float walkSpeed = 1.4f;
+  float runSpeed = 5.0f;
   float sprintSpeed = 8.0f;
   float crouchSpeed = 2.0f;
   // On the ground it keeps a heading and a speed. The push, m/s^2 from
@@ -71,11 +74,15 @@ struct CharacterTuning {
 // height. The Character tab and a hand-edited settings file go through it.
 CharacterTuning consistent(CharacterTuning tuning);
 
+// How fast it means to go: the player walks with W, runs with Shift, and
+// sprints with a second quick press of Shift.
+enum class Gait { Walk, Run, Sprint };
+
 // What its controller asks for in one physics step.
 struct CharacterInput {
   // World space and flat, length 0 to 1: WASD turned by the camera's yaw.
   glm::vec3 move{0.0f};
-  bool sprint = false;
+  Gait gait = Gait::Run;
   bool crouch = false;
   bool aim = false;     // faces aimYaw instead of where it moves
   float aimYaw = 0.0f;  // the camera's yaw

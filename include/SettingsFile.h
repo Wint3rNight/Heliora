@@ -50,6 +50,8 @@ public:
 
   // The keys in a section, in file order.
   std::vector<std::string> keys(std::string_view section) const;
+  // The sections' names, in file order ("part frame" for [part frame]).
+  std::vector<std::string> sectionNames() const;
 
   std::string write() const;
   // Writes through a temporary file and a rename, like scene saves, so a

@@ -682,3 +682,275 @@ TEST(the_stride_stretches_no_further_than_its_limit) {
   CHECK_NEAR(a.strideScale(), 1.3, 1e-4);
   CHECK_NEAR(a.clipTime(ClipSlot::Sprint), 0.2 * 14.0 / (7.0 * 1.3), 0.01);
 }
+
+TEST(the_controllers_walk_speed_plays_only_the_walk) {
+  // The walk clip covers 1.5 m/s; walking at the controller's 1.2 it's all
+  // walk, played 1.2 / 1.5 as fast.
+  const Skeleton s = rig();
+  const AnimationLibrary l = fullLibrary();
+  AnimatorInput walk = moving(1.2f);
+  walk.walkSpeed = 1.2f;
+  walk.runSpeed = 4.0f;
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, walk, 0.5f);
+  CHECK_NEAR(a.clipWeight(ClipSlot::WalkForward), 1.0, 1e-3);
+  CHECK_NEAR(a.clipTime(ClipSlot::WalkForward), 0.5 * 1.2 / 1.5, 0.01);
+}
+
+namespace {
+
+void putIn(AnimationLibrary &library, Stance stance, ClipSlot slot, CharacterClipData data) {
+  library.stanceClips[static_cast<size_t>(stance) - 1][static_cast<size_t>(slot)] = std::move(data);
+}
+
+AnimatorInput inStance(Stance stance, float speed = 0.0f) {
+  AnimatorInput in = moving(speed);
+  in.stance = stance;
+  return in;
+}
+
+} // namespace
+
+TEST(a_gun_stance_plays_its_own_clips) {
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Idle, marker(30, 2.0f, 0.0f, true));
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, inStance(Stance::Rifle), 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 30.0, 0.5);
+  runFor(a, inStance(Stance::Unarmed), 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5);
+}
+
+TEST(a_stance_missing_a_move_keeps_to_its_own_moves_then_the_unarmed_ones) {
+  // The rifle has an idle and a walk: walking backwards it walks forward
+  // with the rifle (the arms keep holding it); a jump is the unarmed jump,
+  // not the rifle's idle.
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Idle, marker(30, 2.0f, 0.0f, true));
+  putIn(l, Stance::Rifle, ClipSlot::WalkForward, marker(50, 1.0f, 1.5f, true));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput back = inStance(Stance::Rifle, 1.5f);
+  back.aiming = true;
+  back.direction = glm::vec2(0.0f, -1.0f);
+  runFor(a, back, 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 50.0, 0.5);
+  AnimatorInput up = inTheAir(3.0f);
+  up.stance = Stance::Rifle;
+  CharacterAnimator b(s, l, 1.0f);
+  runFor(b, inStance(Stance::Rifle), 0.5f);
+  runFor(b, up, 0.5f);
+  CHECK(b.state() == AnimState::Jump);
+  CHECK_NEAR(hipsDegrees(b), 140.0, 0.5);
+}
+
+TEST(changing_stance_eases_from_the_old_pose) {
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Pistol, ClipSlot::Idle, marker(40, 2.0f, 0.0f, true));
+  AnimatorTuning tuning;
+  tuning.stanceFade = 0.3f;
+  CharacterAnimator a(s, l, 1.0f, tuning);
+  runFor(a, inStance(Stance::Unarmed), 1.0f);
+  a.update(inStance(Stance::Pistol), kDt);
+  CHECK(hipsDegrees(a) < 5.0f); // still nearly the old pose
+  runFor(a, inStance(Stance::Pistol), 0.3f);
+  CHECK_NEAR(hipsDegrees(a), 40.0, 0.5);
+}
+
+TEST(aiming_still_in_a_stance_plays_its_aim_idle) {
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Idle, marker(30, 2.0f, 0.0f, true));
+  putIn(l, Stance::Rifle, ClipSlot::AimIdle, marker(35, 2.0f, 0.0f, true));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput aim = inStance(Stance::Rifle);
+  aim.aiming = true;
+  runFor(a, aim, 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 35.0, 0.5);
+  // Without one, the plain idle.
+  AnimationLibrary plain = fullLibrary();
+  putIn(plain, Stance::Rifle, ClipSlot::Idle, marker(30, 2.0f, 0.0f, true));
+  CharacterAnimator b(s, plain, 1.0f);
+  runFor(b, aim, 1.0f);
+  CHECK_NEAR(hipsDegrees(b), 30.0, 0.5);
+}
+
+namespace {
+
+// The test rig with a spine above the hips and a right shoulder on it, for
+// what plays on the upper body and the arms.
+Skeleton rigWithSpine() {
+  Skeleton s = rig();
+  Bone spine;
+  spine.name = "mixamorig:Spine";
+  spine.parent = 1;
+  spine.bind.translation = glm::vec3(0.0f, 0.1f, 0.0f);
+  s.bones.push_back(spine);
+  Bone shoulder;
+  shoulder.name = "mixamorig:RightShoulder";
+  shoulder.parent = 2;
+  shoulder.bind.translation = glm::vec3(-0.1f, 0.3f, 0.0f);
+  s.bones.push_back(shoulder);
+  return s;
+}
+
+// Turns the spine and the shoulder by their own angles about x, the hips
+// not at all: a gun stance's pose.
+CharacterClipData armMarker(float spineDegrees, float shoulderDegrees) {
+  CharacterClipData d;
+  d.loop = true;
+  d.clip.duration = 2.0f;
+  d.clip.tracks.resize(4);
+  const glm::vec3 x(1, 0, 0);
+  const glm::quat spine = glm::angleAxis(glm::radians(spineDegrees), x);
+  const glm::quat shoulder = glm::angleAxis(glm::radians(shoulderDegrees), x);
+  d.clip.tracks[2].rotations = {{0.0f, spine}, {2.0f, spine}};
+  d.clip.tracks[3].rotations = {{0.0f, shoulder}, {2.0f, shoulder}};
+  return d;
+}
+
+float shoulderDegrees(const CharacterAnimator &a) {
+  const glm::quat q = a.pose().local[3].rotation;
+  return glm::degrees(2.0f * std::acos(std::min(1.0f, std::abs(q.w))));
+}
+
+// Turns the spine by its own angle about x, the hips not at all.
+CharacterClipData spineMarker(float degrees, float duration) {
+  CharacterClipData d;
+  d.loop = false;
+  d.clip.duration = duration;
+  d.clip.tracks.resize(3);
+  const glm::quat turn = glm::angleAxis(glm::radians(degrees), glm::vec3(1, 0, 0));
+  d.clip.tracks[2].rotations = {{0.0f, turn}, {duration, turn}};
+  return d;
+}
+
+float spineDegrees(const CharacterAnimator &a) {
+  const glm::quat q = a.pose().local[2].rotation;
+  return glm::degrees(2.0f * std::acos(std::min(1.0f, std::abs(q.w))));
+}
+
+} // namespace
+
+TEST(a_reload_plays_on_the_upper_body_and_eases_in_and_out) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Idle, marker(30, 2.0f, 0.0f, true));
+  putIn(l, Stance::Rifle, ClipSlot::Reload, spineMarker(45, 2.0f));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = inStance(Stance::Rifle);
+  runFor(a, in, 1.0f);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+  in.reload = 0.5f; // half way through
+  a.update(in, kDt);
+  CHECK_NEAR(spineDegrees(a), 45.0, 0.5);
+  CHECK_NEAR(hipsDegrees(a), 30.0, 0.5); // the legs and hips keep the idle
+  in.reload = 0.02f; // just starting: easing in
+  a.update(in, kDt);
+  CHECK(spineDegrees(a) > 1.0f && spineDegrees(a) < 44.0f);
+  in.reload = -1.0f; // done
+  a.update(in, kDt);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+}
+
+TEST(crouching_in_a_stance_without_crouch_clips_uses_the_unarmed_crouch) {
+  // The pistol pack has no crouch: crouched with the pistol, the legs are
+  // the unarmed crouch's, not the pistol's standing idle.
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Pistol, ClipSlot::Idle, marker(40, 2.0f, 0.0f, true));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput crouched = inStance(Stance::Pistol);
+  crouched.crouched = true;
+  runFor(a, crouched, 1.0f);
+  CHECK(a.state() == AnimState::Crouch);
+  CHECK_NEAR(hipsDegrees(a), 170.0, 0.5);
+  // Walking crouched too.
+  crouched.speed = 1.0f;
+  runFor(a, crouched, 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 175.0, 0.5);
+}
+
+TEST(crouching_with_a_gun_but_no_gun_crouch_takes_only_the_arms_from_the_gun) {
+  // The legs, hips and spine the unarmed crouch's, the arms the pistol's
+  // (its idle), so the gun stays up without the standing spine hunching
+  // over crouched hips.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Pistol, ClipSlot::Idle, armMarker(30, 45));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput crouched = inStance(Stance::Pistol);
+  crouched.crouched = true;
+  runFor(a, crouched, 1.0f);
+  CHECK_NEAR(hipsDegrees(a), 170.0, 0.5);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+  CHECK_NEAR(shoulderDegrees(a), 45.0, 0.5);
+  // A stance with its own crouch plays it whole.
+  AnimationLibrary own = l;
+  putIn(own, Stance::Pistol, ClipSlot::CrouchIdle, marker(60, 1.0f, 0.0f, true));
+  CharacterAnimator b(s, own, 1.0f);
+  runFor(b, crouched, 1.0f);
+  CHECK_NEAR(hipsDegrees(b), 60.0, 0.5);
+  CHECK_NEAR(shoulderDegrees(b), 0.0, 0.5);
+}
+
+TEST(in_the_air_with_a_gun_the_arms_keep_holding_it) {
+  // No rifle jump: the unarmed jump, the rifle's arms (its aim idle while
+  // aiming) over it.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Idle, armMarker(10, 20));
+  putIn(l, Stance::Rifle, ClipSlot::AimIdle, armMarker(15, 50));
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, inStance(Stance::Rifle), 0.5f);
+  AnimatorInput up = inTheAir(3.0f);
+  up.stance = Stance::Rifle;
+  up.aiming = true;
+  runFor(a, up, 0.5f);
+  CHECK(a.state() == AnimState::Jump);
+  CHECK_NEAR(hipsDegrees(a), 140.0, 0.5);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+  CHECK_NEAR(shoulderDegrees(a), 50.0, 0.5);
+}
+
+TEST(a_reload_plays_its_guns_clip_while_the_body_moves_unarmed) {
+  // Carrying the rifle relaxed (the unarmed moves), a reload still plays
+  // the rifle's reload on the upper body.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::Rifle, ClipSlot::Reload, spineMarker(45, 2.0f));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = moving(0.0f);
+  runFor(a, in, 0.5f);
+  in.reload = 0.5f;
+  in.reloadStance = Stance::Rifle;
+  a.update(in, kDt);
+  CHECK_NEAR(spineDegrees(a), 45.0, 0.5);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5); // the unarmed idle's hips
+}
+
+TEST(carrying_a_pistol_relaxed_a_jump_keeps_the_gun_arm_hanging) {
+  // The unarmed jump flings the arms; with a gun in the right hand that arm
+  // keeps the unarmed idle's hang, the rest jumps as it would.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  l.slotFor(ClipSlot::Idle, Stance::Unarmed) = armMarker(0, 10);
+  l.slotFor(ClipSlot::Jump, Stance::Unarmed) = armMarker(20, 80);
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput standing = moving(0.0f);
+  standing.gunInRightHand = true;
+  runFor(a, standing, 0.5f);
+  AnimatorInput up = inTheAir(3.0f);
+  up.gunInRightHand = true;
+  runFor(a, up, 0.5f);
+  CHECK(a.state() == AnimState::Jump);
+  CHECK_NEAR(spineDegrees(a), 20.0, 0.5);
+  CHECK_NEAR(shoulderDegrees(a), 10.0, 0.5);
+  // Empty-handed, the arm goes with the jump.
+  CharacterAnimator b(s, l, 1.0f);
+  runFor(b, moving(0.0f), 0.5f);
+  runFor(b, inTheAir(3.0f), 0.5f);
+  CHECK_NEAR(shoulderDegrees(b), 80.0, 0.5);
+}

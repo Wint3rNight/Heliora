@@ -58,6 +58,41 @@ ClipSlot fallback(ClipSlot slot) {
   }
 }
 
+// Standing and moving: what a gun stance falls back on within itself, so
+// the arms keep holding the gun.
+bool isLocomotion(ClipSlot slot) {
+  switch (slot) {
+  case ClipSlot::Idle:
+  case ClipSlot::AimIdle:
+  case ClipSlot::WalkForward:
+  case ClipSlot::WalkBack:
+  case ClipSlot::WalkLeft:
+  case ClipSlot::WalkRight:
+  case ClipSlot::RunForward:
+  case ClipSlot::RunBack:
+  case ClipSlot::RunLeft:
+  case ClipSlot::RunRight:
+  case ClipSlot::Sprint:
+  case ClipSlot::CrouchIdle:
+  case ClipSlot::CrouchForward:
+  case ClipSlot::CrouchBack:
+  case ClipSlot::CrouchLeft:
+  case ClipSlot::CrouchRight:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isCrouch(ClipSlot slot) {
+  return slot == ClipSlot::CrouchIdle || slot == ClipSlot::CrouchForward ||
+         slot == ClipSlot::CrouchBack || slot == ClipSlot::CrouchLeft ||
+         slot == ClipSlot::CrouchRight;
+}
+
+// A reload eases in over its first tenth and out over its last (est.).
+constexpr float kReloadEase = 0.1f;
+
 // A pose built up from weighted clips.
 struct Mix {
   Pose pose;
@@ -126,6 +161,19 @@ CharacterAnimator::CharacterAnimator(const Skeleton &skeleton,
   for (const char *name : {"Spine", "Spine1", "Spine2"})
     if (const int bone = boneNamed(skeleton, name); bone >= 0)
       spine.push_back(bone);
+  if (!spine.empty())
+    upperBody = upperBodyMask(skeleton, spine.front());
+  for (const char *name : {"RightShoulder", "LeftShoulder"})
+    if (const int bone = boneNamed(skeleton, name); bone >= 0) {
+      const std::vector<float> side = upperBodyMask(skeleton, bone);
+      if (rightArm.empty() && std::string_view(name) == "RightShoulder")
+        rightArm = side;
+      if (arms.empty())
+        arms = side;
+      else
+        for (size_t i = 0; i < arms.size(); ++i)
+          arms[i] = std::max(arms[i], side[i]);
+    }
 }
 
 float CharacterAnimator::clipWeight(ClipSlot slot) const {
@@ -137,8 +185,32 @@ float CharacterAnimator::clipTime(ClipSlot slot) const {
 }
 
 void CharacterAnimator::update(const AnimatorInput &input, float dt) {
-  // The clip a move plays: its own, or the nearest one there is.
+  // Taking out or putting away a gun: its stance's clips, eased in.
+  if (input.stance != activeStance) {
+    activeStance = input.stance;
+    blendPending = true;
+    fadeTime = tune.stanceFade;
+  }
+  // The clip a move plays: the stance's own (for standing and moving, its
+  // nearest own move), else the unarmed one, or the nearest there is.
   auto resolve = [&](ClipSlot slot) -> std::pair<ClipSlot, const CharacterClipData *> {
+    if (activeStance != Stance::Unarmed) {
+      ClipSlot own = slot;
+      for (int guard = 0; guard < 6; ++guard) {
+        if (const CharacterClipData *clip = library.clip(own, activeStance))
+          return {own, clip};
+        if (!isLocomotion(slot) || own == ClipSlot::Idle)
+          break;
+        const ClipSlot next = own == ClipSlot::AimIdle ? ClipSlot::Idle : fallback(own);
+        // Crouched, only its own crouch moves: standing ones would stand
+        // the legs up, so the unarmed crouch it is.
+        if (isCrouch(slot) && !isCrouch(next))
+          break;
+        own = next;
+      }
+    }
+    if (slot == ClipSlot::AimIdle)
+      slot = ClipSlot::Idle; // unarmed, aiming still is the idle
     for (int guard = 0; guard < 6; ++guard) {
       if (const CharacterClipData *clip = library.clip(slot))
         return {slot, clip};
@@ -305,7 +377,7 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     } else {
       addLevel({ClipSlot::WalkForward, ClipSlot::WalkBack, ClipSlot::WalkLeft,
                 ClipSlot::WalkRight},
-               0.0f, false);
+               input.walkSpeed, false);
       addLevel({ClipSlot::RunForward, ClipSlot::RunBack, ClipSlot::RunLeft,
                 ClipSlot::RunRight},
                input.runSpeed, true);
@@ -360,7 +432,10 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       rate = std::clamp(rate, 0.25f, 3.0f);
       phase = std::fmod(phase + dt * rate * tune.playbackRate / blendedLength, 1.0f);
     }
-    sample(crouch ? ClipSlot::CrouchIdle : ClipSlot::Idle, idleTime, rows[0]);
+    const ClipSlot still = crouch ? ClipSlot::CrouchIdle
+                           : input.aiming && activeStance != Stance::Unarmed ? ClipSlot::AimIdle
+                                                                             : ClipSlot::Idle;
+    sample(still, idleTime, rows[0]);
     for (const Moving &m : moving)
       if (const auto [used, clip] = resolve(m.slot); clip)
         sample(m.slot, phase * clip->clip.duration, m.weight);
@@ -384,7 +459,43 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
                             : stateTime;
     sample(oneShot, time, 1.0f);
   }
-  const Pose statePose = mix.total > 0.0f ? mix.pose : bindPose(skeleton);
+  Pose statePose = mix.total > 0.0f ? mix.pose : bindPose(skeleton);
+  // With a gun but in a move its stance has no clip for (a crouch, a jump,
+  // a fall, a landing, a dodge): the unarmed move, with the stance's arms
+  // (its aim idle while aiming, else its idle) over it, so the gun is held
+  // without the stance's standing spine going over the move's.
+  bool fellBack = false;
+  if (activeStance != Stance::Unarmed && !arms.empty()) {
+    switch (active) {
+    case AnimState::Crouch: fellBack = !library.clip(ClipSlot::CrouchIdle, activeStance); break;
+    case AnimState::Jump: fellBack = !library.clip(ClipSlot::Jump, activeStance); break;
+    case AnimState::Fall: fellBack = !library.clip(ClipSlot::Fall, activeStance); break;
+    case AnimState::Land:
+    case AnimState::Dodge: fellBack = !library.clip(oneShot, activeStance); break;
+    case AnimState::Locomotion: break;
+    }
+  }
+  if (fellBack) {
+    const CharacterClipData *held =
+        input.aiming ? library.clip(ClipSlot::AimIdle, activeStance) : nullptr;
+    if (!held)
+      held = library.clip(ClipSlot::Idle, activeStance);
+    if (held) {
+      Pose holding = bindPose(skeleton);
+      sampleClip(held->clip, skeleton, idleTime, held->loop, holding);
+      blendPosesMasked(statePose, holding, 1.0f, arms, statePose);
+    }
+  }
+  // A gun carried relaxed in the right hand: off the ground or dodging,
+  // that arm keeps the unarmed idle's hang.
+  if (input.gunInRightHand && activeStance == Stance::Unarmed && !rightArm.empty() &&
+      active != AnimState::Locomotion && active != AnimState::Crouch) {
+    if (const CharacterClipData *idle = library.clip(ClipSlot::Idle)) {
+      Pose hanging = bindPose(skeleton);
+      sampleClip(idle->clip, skeleton, idleTime, idle->loop, hanging);
+      blendPosesMasked(statePose, hanging, 1.0f, rightArm, statePose);
+    }
+  }
 
   // --- Inertialization (Bollo, GDC 2018): the new state plays in full and
   // the difference to what was showing, and how fast it moved, eases away.
@@ -399,6 +510,21 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
   blendTime += dt;
   base = statePose;
   blend.apply(blendTime, base);
+  // A reload on the upper body, over whatever the legs do, eased in and out.
+  if (input.reload >= 0.0f && !upperBody.empty())
+    if (const CharacterClipData *clip = library.clip(
+            ClipSlot::Reload,
+            input.reloadStance != Stance::Unarmed ? input.reloadStance : activeStance)) {
+      const float progress = std::clamp(input.reload, 0.0f, 1.0f);
+      const float weight =
+          std::clamp(std::min(progress, 1.0f - progress) / kReloadEase, 0.0f, 1.0f);
+      if (weight > 0.0f) {
+        Pose reload = bindPose(skeleton);
+        const float span = std::max(clip->endTime() - clip->start, 0.0f);
+        sampleClip(clip->clip, skeleton, clip->start + span * progress, false, reload);
+        blendPosesMasked(base, reload, weight, upperBody, base);
+      }
+    }
   beforeLastBase = lastBase;
   lastBase = base;
   lastDt = dt;
@@ -409,7 +535,9 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
 
 void CharacterAnimator::layerAim(const AnimatorInput &input, float dt) {
   const float step = tune.aimFade > 0.0f ? dt / tune.aimFade : 1.0f;
-  leanWeight = std::clamp(leanWeight + (input.aiming ? step : -step), 0.0f, 1.0f);
+  // Holding a gun, the game aims the gun itself (AimIk.h) instead of leaning.
+  const bool leaning = input.aiming && activeStance == Stance::Unarmed;
+  leanWeight = std::clamp(leanWeight + (leaning ? step : -step), 0.0f, 1.0f);
 
   // The spine leans with the camera while aiming. The model faces +z, so
   // looking up turns its chest back about x.

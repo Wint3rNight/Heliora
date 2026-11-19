@@ -1043,3 +1043,27 @@ TEST(a_prefab_can_be_breakable) {
   CHECK(isModelDataKey("break_seed"));
   CHECK(isModelDataKey("break_strength"));
 }
+
+TEST(a_scenes_kit_says_what_the_player_starts_with) {
+  const SceneDescription s = parseText("[kit]\npistol = true\nlong = akm\ngrenades = 2\ncharges = 2\n");
+  CHECK(s.kit.has_value());
+  if (!s.kit)
+    return;
+  CHECK(s.kit->pistol);
+  CHECK(s.kit->longGun == "akm");
+  CHECK(s.kit->grenades == 2);
+  CHECK(s.kit->charges == 2);
+  // Written and read back the same.
+  std::istringstream in(SceneIO::write(s));
+  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
+  // No [kit]: nothing.
+  CHECK(!parseText("name = x\n").kit);
+}
+
+TEST(a_kit_with_a_bad_value_names_its_line) {
+  CHECK(!errorOf("[kit]\npistol = maybe\n").empty());
+  CHECK(!errorOf("[kit]\ngrenades = -1\n").empty());
+  CHECK(!errorOf("[kit]\nlong = a gun\n").empty());
+  CHECK(!errorOf("[kit]\nknife = true\n").empty());
+  CHECK(!errorOf("[kit]\n[kit]\n").empty());
+}

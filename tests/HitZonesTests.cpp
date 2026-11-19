@@ -3,6 +3,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -167,4 +168,40 @@ TEST(a_wound_takes_health_by_energy_and_where_it_lands) {
   CHECK(h.dead());
   CHECK(!h.wound(10.0f)); // dead already: not again
   CHECK_NEAR(h.points, 0.0, 1e-6);
+}
+
+TEST(points_inside_the_margin_are_pushed_clear_of_the_body) {
+  // A belly upright at the origin, 14 cm round; a knuckle 15 cm in front
+  // needs 4 more to clear by 5.
+  const std::vector<HitCapsule> belly{{HitZone::Belly, {0, 0.9f, 0}, {0, 1.2f, 0}, 0.14f}};
+  const glm::vec3 push = clearOfBody(belly, {{0.0f, 1.0f, 0.15f}, {0.05f, 1.0f, 0.3f}}, 0.05f);
+  CHECK_NEAR(push.x, 0.0, 1e-3);
+  CHECK_NEAR(push.z, 0.04, 2e-3);
+  // Already clear: nothing.
+  CHECK_NEAR(glm::length(clearOfBody(belly, {{0.0f, 1.0f, 0.3f}}, 0.05f)), 0.0, 1e-6);
+  CHECK_NEAR(glm::length(clearOfBody({}, {{0.0f, 1.0f, 0.0f}}, 0.05f)), 0.0, 1e-6);
+}
+
+TEST(pushing_clear_of_two_parts_leaves_every_point_clear) {
+  const std::vector<HitCapsule> body{{HitZone::Belly, {0, 0.9f, 0}, {0, 1.2f, 0}, 0.14f},
+                                     {HitZone::Leg, {0.1f, 0.5f, 0}, {0.1f, 0.9f, 0}, 0.09f}};
+  const std::vector<glm::vec3> points{{0.02f, 1.0f, 0.12f}, {0.12f, 0.7f, 0.08f}};
+  const glm::vec3 push = clearOfBody(body, points, 0.03f);
+  for (const glm::vec3 &p : points)
+    for (const HitCapsule &c : body) {
+      const glm::vec3 q = p + push, ab = c.b - c.a;
+      const float t = std::clamp(glm::dot(q - c.a, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+      CHECK(glm::distance(q, c.a + t * ab) - c.radius > 0.029f);
+    }
+}
+
+TEST(pushing_clear_along_a_direction_moves_only_that_way) {
+  // A knuckle beside the belly, pushed only ahead (+z): it goes forward
+  // until it clears, not out to the side.
+  const std::vector<HitCapsule> belly{{HitZone::Belly, {0, 0.9f, 0}, {0, 1.2f, 0}, 0.14f}};
+  const glm::vec3 push = clearOfBody(belly, {{0.1f, 1.0f, 0.05f}}, 0.05f, {0.0f, 0.0f, 1.0f});
+  CHECK_NEAR(push.x, 0.0, 1e-6);
+  CHECK_NEAR(push.y, 0.0, 1e-6);
+  // Clear at 19 cm from the axis: z = sqrt(0.19^2 - 0.1^2).
+  CHECK_NEAR(0.05f + push.z, std::sqrt(0.19f * 0.19f - 0.01f), 2e-3);
 }

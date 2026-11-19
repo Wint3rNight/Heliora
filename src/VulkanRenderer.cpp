@@ -1797,6 +1797,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       std::chrono::duration<double, std::milli>(posed - beforePose).count();
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Animation, animationMs);
   if (playing)
+    stepShots(physicsPanel.paused ? 0.0f : frameSeconds);
+  if (playing)
     updateSound(physicsPanel.paused ? 0.0f : frameSeconds);
 
   using Ms = std::chrono::duration<double, std::milli>;
@@ -1986,6 +1988,8 @@ std::string VulkanRenderer::playedVariant() const {
 }
 
 void VulkanRenderer::clearCharacters() {
+  bullets.clear();
+  flashes.clear();
   roster.reset(); // the bodies leave the world, the controller lets go
   playerController.reset();
   std::unordered_set<const SceneNode *> nodes;
@@ -2086,6 +2090,10 @@ void VulkanRenderer::buildCharacters() {
     }
     characters.push_back(std::move(c));
   }
+  // Every character's body parts, for bullets.
+  for (LiveCharacter &c : characters)
+    if (c.copy >= 0 && c.file && c.file->asset)
+      c.hitCapsules = findHitCapsules(c.file->asset->skeleton);
   // The player possesses the ticked one, or the one at the start.
   if (playing && roster) {
     const SceneEntryRef played =
@@ -2233,6 +2241,8 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     feetAt.strideAxis = c.animator->strideAxis();
     placeFeet(i, feetAt, feetDown, frameSeconds, pose, model);
     gunsAfterClips(i, placement, frameSeconds, pose, model);
+    if (!c.hitCapsules.empty())
+      c.capsules = placeHitCapsules(c.hitCapsules, model, placement);
     c.skinning = skinningMatrices(asset->skeleton, model);
     // Show skeleton draws the bones instead of the body.
     const int shown = showSkeleton ? -1 : c.file->copies[c.copy].model;
@@ -5546,6 +5556,21 @@ void VulkanRenderer::buildUi() {
   ui.viewProj = taaBaseProjection * sceneUbo.view;
   ui.sceneArea = sceneArea;
   ui.crosshair = playing && hasPlayer() && playerControls.aim;
+  ui.ammo = false;
+  if (playing && playedCharacter >= 0 && playedCharacter < static_cast<int>(characters.size())) {
+    const LiveCharacter &c = characters[playedCharacter];
+    const Holdable held = c.loadout.inHand();
+    const std::optional<CarriedGun> &g = c.guns[held == Holdable::Long ? 1 : 0];
+    if (held != Holdable::None && g && g->weapon) {
+      ui.ammo = true;
+      ui.ammoInGun = g->weapon->roundsInGun();
+      ui.ammoPouch = g->weapon->rounds() - g->weapon->roundsInGun();
+      ui.fireMode = !g->weapon->spec().automatic          ? ""
+                    : g->weapon->mode() == FireMode::Auto ? "AUTO"
+                                                          : "SEMI";
+      ui.reloading = g->weapon->reloading();
+    }
+  }
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;
   ui.objectEntry = [this](const std::string &file) -> std::optional<SceneModelEntry> {

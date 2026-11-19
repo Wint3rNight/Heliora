@@ -240,6 +240,13 @@ struct DebugUiContext {
   SceneViewport sceneArea;
   // Playing and aiming: the crosshair in the scene area's middle.
   bool crosshair = false;
+  // A gun in his hands: the rounds in it (the chamber's and the
+  // magazine's), the rounds in his pouch, its mode, a reload under way.
+  bool ammo = false;
+  int ammoInGun = 0;
+  int ammoPouch = 0;
+  const char *fireMode = ""; // "AUTO", "SEMI", or "" for a gun with one
+  bool reloading = false;
 
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
   // nothing is held any more, so it's one undo step.
@@ -384,6 +391,7 @@ private:
                            bool moved, bool changed);
   void drawGizmo(DebugUiContext &ui);
   void drawCrosshair(const DebugUiContext &ui) const;
+  void drawAmmo(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
   // The others moved, for placing them with the primary.
   std::vector<SceneEntryRef> moveOthersWithGizmo(DebugUiContext &ui, const NodeTransform &was,

@@ -48,14 +48,48 @@ constexpr float kReloadEase = 0.1f;
 constexpr float kMagazineOut = 0.3f, kMagazineIn = 0.65f;
 
 // Carried relaxed. The rifle at the Army's low ready (FM 3-22.9: the butt in
-// the shoulder pocket, the muzzle down about 45 degrees), and about 20
-// degrees across the body (est.); the pistol in the hanging hand, its
-// muzzle down and this much ahead (est.).
+// the shoulder pocket, the muzzle down about 45 degrees), a little across
+// the body (est.); the pistol hanging in the right hand standing, its
+// muzzle down and this much ahead (est.), and crouched at a two-handed low
+// ready, the arms lowered from the aim this far (est.).
 constexpr float kLowReadyDown = glm::radians(45.0f);
-constexpr float kLowReadyAcross = glm::radians(20.0f);
+constexpr float kLowReadyAcross = glm::radians(30.0f);
 constexpr float kPistolAhead = 0.35f;
-// Aiming, the head turns to look at the aim point, at most this far (est.).
+constexpr float kPistolLowReady = glm::radians(45.0f);
+// Carried relaxed, the hands stay at least this far outside the body's
+// capsules (HitZones.h), so they don't sink into the belly (est.: the
+// capsules run a little inside the shirt).
+constexpr float kBodyMargin = 0.05f; // m
+
+// Aiming. The chest squares to the target: the rifle with its support
+// shoulder this far forward (modern Army doctrine, TC 3-22.9, stands
+// squared; the angle is est.), the pistol square (the isosceles stance).
+// The spine leans with the aim this share of its pitch, the arms doing the
+// rest (est.). The rifle's butt goes into the shoulder pocket, in front of
+// and inside the shoulder joint (in the chest's frame: +x its left, +y up,
+// +z ahead; est.), and the neck brings the eye down to the sight line (gun
+// space height; est.). The pistol is held out with its sights at the eye,
+// its trigger this far under the eye's line (est.). The head turns to look
+// at the aim point.
+constexpr float kRifleBlade = glm::radians(10.0f);
+// The stance clips stand side-on at the hips too (36 to 57 degrees off the
+// aim, measured), which leaves the squared chest twisted over them; the
+// hips turn to this far off the aim (est.: a slight blade, the support
+// foot forward) and the spine squares the rest.
+constexpr float kHipsBlade = glm::radians(25.0f);
+constexpr float kMaxHipsTurn = glm::radians(45.0f);
+constexpr float kMaxSquare = glm::radians(60.0f);
+constexpr float kBendShare = 0.5f;
+constexpr float kMaxBend = glm::radians(35.0f);
+constexpr glm::vec3 kPocket(0.04f, -0.03f, 0.06f);
+constexpr float kRifleSightLine = 0.08f;
+constexpr float kNeckTurn = glm::radians(25.0f);
+constexpr float kPistolSightDrop = 0.06f;
 constexpr float kHeadTurn = glm::radians(30.0f);
+// Firing: faster than this he fires on the move (est.); the view shows the
+// recoil this many times what the bullets get (est.).
+constexpr float kMovingFire = 0.5f; // m/s
+constexpr float kViewKick = 3.0f;
 
 // Between two rigid frames: the place along a line, the turn the short way.
 glm::mat4 between(const glm::mat4 &a, const glm::mat4 &b, float t) {
@@ -196,8 +230,12 @@ const VulkanRenderer::WeaponAsset *VulkanRenderer::weaponAsset(const std::string
                  asset->spec.model);
     return nullptr; // not kept: the next Play looks again
   }
-  spdlog::info("Gun {}: {} parts, {} sockets", asset->spec.name, asset->parts.parts.size(),
-               asset->parts.sockets.size());
+  asset->round = roundOf(asset->spec);
+  asset->zero = zeroAngle(asset->round.projectile, asset->spec.muzzleSpeed, asset->spec.zeroRange,
+                          Air{}, glm::vec3(0.0f, -9.81f, 0.0f));
+  spdlog::info("Gun {}: {} parts, {} sockets, zeroed at {:.0f} m ({:.2f} mrad up)", asset->spec.name,
+               asset->parts.parts.size(), asset->parts.sockets.size(), asset->spec.zeroRange,
+               asset->zero * 1000.0f);
   return (weaponAssets[name] = std::move(asset)).get();
 }
 
@@ -221,12 +259,17 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
   b.leftKnuckle = boneNamed(skeleton, "LeftHandMiddle1");
   b.hips = boneNamed(skeleton, "Hips");
   b.spine2 = boneNamed(skeleton, "Spine2");
+  b.leftLeg = boneNamed(skeleton, "LeftUpLeg");
+  b.rightLeg = boneNamed(skeleton, "RightUpLeg");
+  b.neck = boneNamed(skeleton, "Neck");
   b.head = boneNamed(skeleton, "Head");
+  b.rightEye = boneNamed(skeleton, "RightEye");
   if (!b.valid()) {
     spdlog::warn("The character's skeleton has no Mixamo arms and spine: no guns");
     return;
   }
   c.aimRig = findAimRig(skeleton);
+  c.hitCapsules = findHitCapsules(skeleton);
 
   // Calibrated in metres with the character at the origin facing +z (its
   // model's way), its left +x.
@@ -240,6 +283,17 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
   if (const CharacterClipData *idle = asset->library.clip(ClipSlot::Idle))
     sampleClip(idle->clip, skeleton, idle->start, idle->loop, rest);
   const std::vector<glm::mat4> hanging = modelSpace(skeleton, rest);
+  // His chest standing at rest, square (the frame the relaxed carries are
+  // worked out in), and where his right eye is in a pose.
+  const glm::vec3 up(0.0f, 1.0f, 0.0f);
+  auto restAt = [&](int bone) { return pointOf(toMetres * hanging[bone]); };
+  const glm::vec3 restAhead = chestFacing(restAt(b.leftArm), restAt(b.rightArm), up);
+  const glm::mat3 restChest(glm::cross(up, restAhead), up, restAhead);
+  auto eyeIn = [&](const std::vector<glm::mat4> &m) {
+    if (b.rightEye >= 0)
+      return pointOf(toMetres * m[b.rightEye]);
+    return pointOf(toMetres * m[b.head]) + glm::vec3(-0.03f, 0.08f, 0.08f); // est.
+  };
   for (int slot = 0; slot < 2; ++slot) {
     const bool pistol = slot == 0;
     if (pistol ? !kit.pistol : kit.longGun.empty())
@@ -282,28 +336,56 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
                  glm::distance(off.palm, trigger),
                  clip ? "its stance's aiming pose" : "the bind pose");
 
-    // Carried relaxed. A rifle: the aiming hold turned about its butt, the
-    // muzzle dipped and brought across, kept where it is to the chest. A
-    // pistol: in the hanging hand of the unarmed idle.
+    const glm::mat4 aimedHold = hand * gun.hold.gripInHand;
+    gun.leftInGun = glm::inverse(aimedHold) * rigidFrame(toMetres * held[b.leftHand]);
+    // The hands' joints, in the gun's frame, to keep clear of the body.
+    const std::optional<WeaponSocket> muzzle = weapon->parts.socket("muzzle");
+    gun.clearPoints.clear();
+    for (const auto *grip : {&gun.rightGrip, &gun.leftGrip})
+      for (const auto &[bone, turn] : *grip)
+        gun.clearPoints.push_back(pointOf(glm::inverse(aimedHold) * toMetres * held[bone]));
+
+    // Carried relaxed, worked out on his square chest at rest, and kept in a
+    // level frame facing his way at his shoulder (so a run's or a crouch's
+    // forward lean doesn't tip the gun). A rifle at low ready: aimed
+    // straight ahead with its butt in the shoulder pocket, then turned about
+    // the butt, muzzle down and a little across. A pistol: in the hanging
+    // hand with the aiming grip, the wrist turned so the muzzle points down
+    // and a little ahead; crouched, held out as when aiming and lowered from
+    // the shoulders.
+    gun.butt = glm::vec3(0.0f, 0.0f, (muzzle ? muzzle->position.z : 0.5f) - weapon->parts.length);
+    const glm::mat4 restLevel = frame(restChest[0], up, restAhead, restAt(b.rightArm));
     if (gun.hold.twoHanded) {
-      const std::optional<WeaponSocket> muzzle = weapon->parts.socket("muzzle");
-      const glm::vec3 butt(0.0f, 0.0f, (muzzle ? muzzle->position.z : 0.5f) - weapon->parts.length);
+      const glm::vec3 pocket = restAt(b.rightArm) + restChest * kPocket;
       const glm::mat4 lowered =
-          hand * gun.hold.gripInHand * glm::translate(glm::mat4(1.0f), butt) *
+          aimedGun(restAhead, up, gun.butt, pocket) * glm::translate(glm::mat4(1.0f), gun.butt) *
           glm::rotate(glm::mat4(1.0f), kLowReadyAcross, glm::vec3(0, 1, 0)) *
           glm::rotate(glm::mat4(1.0f), kLowReadyDown, glm::vec3(1, 0, 0)) *
-          glm::translate(glm::mat4(1.0f), -butt);
-      gun.carry = glm::inverse(rigidFrame(toMetres * held[b.spine2])) * lowered;
-      gun.carryInHand = false;
+          glm::translate(glm::mat4(1.0f), -gun.butt);
+      gun.lowReady = glm::inverse(restLevel) * lowered;
     } else {
-      auto restAt = [&](int bone) { return pointOf(toMetres * hanging[bone]); };
-      const glm::vec3 down = glm::normalize(restAt(b.rightHand) - restAt(b.rightForeArm));
-      const glm::vec3 restTrigger = b.rightIndex >= 0 ? restAt(b.rightIndex) : restAt(b.rightHand);
-      gun.carry = holdFrom(rigidFrame(toMetres * hanging[b.rightHand]), restTrigger,
-                           glm::normalize(down + kPistolAhead * glm::vec3(0.0f, 0.0f, 1.0f)),
-                           std::nullopt, glm::vec3(0.0f, 0.0f, 1.0f))
-                      .gripInHand;
-      gun.carryInHand = true;
+      gun.atSide = true;
+      // Held out as when aiming: its trigger this far along the eye's line.
+      gun.eyeReach = std::max(0.3f, glm::dot(pointOf(aimedHold) - eyeIn(held), glm::vec3(0, 0, 1)));
+      const glm::vec3 eye = eyeIn(hanging);
+      const glm::vec3 shoulders = 0.5f * (restAt(b.leftArm) + restAt(b.rightArm));
+      const glm::mat4 outAhead =
+          aimedGun(restAhead, up, glm::vec3(0.0f), eye + restAhead * gun.eyeReach - up * kPistolSightDrop);
+      const glm::mat4 lowered = glm::translate(glm::mat4(1.0f), shoulders) *
+                                glm::rotate(glm::mat4(1.0f), kPistolLowReady, restChest[0]) *
+                                glm::translate(glm::mat4(1.0f), -shoulders) * outAhead;
+      gun.lowReady = glm::inverse(restLevel) * lowered;
+      // At the side: the gun's barrel down and a little ahead, its top
+      // ahead (the thumb's side), and the hand turned to hold it so.
+      const glm::vec3 barrel = glm::normalize(-up + kPistolAhead * restAhead);
+      const glm::vec3 top = glm::normalize(restAhead - glm::dot(restAhead, barrel) * barrel);
+      const glm::quat gunTurn = glm::quat_cast(glm::mat3(glm::cross(top, barrel), top, barrel));
+      const glm::quat handTurn = gunTurn * glm::inverse(rotationOf(gun.hold.gripInHand));
+      const glm::quat restHand = rotationOf(rigidFrame(toMetres * hanging[b.rightHand]));
+      gun.sideHand = glm::inverse(rotationOf(rigidFrame(toMetres * hanging[b.rightForeArm]))) * handTurn;
+      spdlog::info("Pistol at the side: the wrist turns {:.0f} degrees from the idle's hang, "
+                   "held out {:.2f} m from the eye when aiming",
+                   glm::degrees(glm::angle(glm::inverse(restHand) * handTurn)), gun.eyeReach);
     }
 
     // Put away: the pistol in a holster on the right hip, muzzle down, its
@@ -362,25 +444,46 @@ void VulkanRenderer::gunsBeforeClips(int index, AnimatorInput &input, float seco
   std::optional<CarriedGun> &slot = c.guns[held == Holdable::Long ? 1 : 0];
   CarriedGun *gun = held != Holdable::None && slot ? &*slot : nullptr;
   // Carried relaxed, he moves with his own clips; aiming or firing from the
-  // hip, with the gun's. Crouched too: his own squat would bury a rifle or
-  // drag a pistol on the ground. The rifle's crouch holds it at the ready;
-  // the pistol has none, so its arms go over his squat, pointing it at the
-  // ground ahead.
+  // hip, with the gun's (for the legs and body: the arms are placed on the
+  // gun by IK after the clips). Crouched too: his own crouch is a deep
+  // stoop that would bury a rifle, the gun's is a kneel (the gun still
+  // relaxed unless he aims).
   const bool raised = gun && c.loadout.ready() && c.body >= 0 && roster &&
                       roster->body(c.body).aiming();
-  const bool crouchedReady = gun && c.loadout.ready() && input.crouched;
-  c.stanceHolds = raised || crouchedReady;
-  input.stance = c.stanceHolds ? gun->stance : Stance::Unarmed;
-  input.gunInRightHand = gun && gun->carryInHand && c.loadout.drawn() >= 0.5f;
+  c.gunCrouched = gun && c.loadout.ready() && input.crouched;
+  input.stance = raised || c.gunCrouched ? gun->stance : Stance::Unarmed;
+  input.gunInRightHand = gun && gun->atSide && c.loadout.drawn() >= 0.5f;
   // Reloading: R with a gun ready; putting it away or swapping stops it.
   for (std::optional<CarriedGun> &g : c.guns)
     if (g && g->weapon && (&*g != gun || held != before || !c.loadout.ready()))
       g->weapon->cancelReload();
   if (gun && gun->weapon && c.loadout.ready()) {
-    if (index == playedCharacter && playerControls.reload)
+    const bool player = index == playedCharacter;
+    if (player && playerControls.reload)
       gun->weapon->reload();
+    if (player && playerControls.fireMode)
+      gun->weapon->switchMode();
+    // The trigger: the left mouse. From the hip without the right; moving
+    // or standing (NSD's spreads for each) otherwise.
+    const bool moving =
+        c.body >= 0 && roster && glm::length(glm::vec2(roster->body(c.body).velocity().x,
+                                                       roster->body(c.body).velocity().z)) > kMovingFire;
+    const FiringStance firing = player && !playerControls.aim ? FiringStance::Hip
+                                : moving                       ? FiringStance::Moving
+                                                               : FiringStance::Standing;
     WeaponEvents events;
-    gun->weapon->update(seconds, false, FiringStance::Standing, events);
+    gun->weapon->update(seconds, player && playerControls.fire, firing, events);
+    gun->shots.insert(gun->shots.end(), events.shots.begin(), events.shots.end());
+    // The recoil on the view: the gun's kick, shown bigger than the
+    // bullets feel it (the gun only moves once they've left), and coming
+    // back with it. The aim point leaves it out.
+    const glm::vec2 recoil = gun->weapon->recoil();
+    if (player && playerController) {
+      const glm::vec2 change = (recoil - gun->lastRecoil) * (1e-3f * kViewKick);
+      playerController->kickView(-change.x, change.y);
+      c.viewKick += glm::vec2(-change.x, change.y);
+    }
+    gun->lastRecoil = recoil;
     input.reload = reloadProgress(*gun->weapon);
     input.reloadStance = gun->stance;
   }
@@ -395,7 +498,8 @@ glm::vec3 VulkanRenderer::aimPoint(const LiveCharacter &c) const {
   if (!playerController || !physics)
     return glm::vec3(0.0f);
   const ThirdPersonCamera &view = playerController->camera();
-  const glm::vec3 from = view.position(), dir = glm::normalize(view.forward());
+  const glm::vec3 from = view.position();
+  const glm::vec3 dir = glm::normalize(cameraForward(view.yaw() - c.viewKick.x, view.pitch() - c.viewKick.y));
   const glm::vec3 body = c.body >= 0 && roster ? roster->body(c.body).position() : from;
   const float start = std::max(0.0f, glm::dot(body - from, dir));
   if (const std::optional<PhysicsRayHit> hit =
@@ -433,48 +537,96 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
     return rigidFrame(world(b.rightHand)) * g.hold.gripInHand;
   };
 
-  auto relaxed = [&](const CarriedGun &g) {
-    return rigidFrame(world(g.carryInHand ? b.rightHand : b.spine2)) * g.carry;
-  };
-
-  // Aiming, or firing from the hip, with a gun ready: eased in.
+  // Aiming, or firing from the hip, with a gun ready: eased in. Crouched
+  // with one, the same.
   const bool aiming = gun && c.loadout.ready() && index == playedCharacter && c.body >= 0 &&
                       roster && roster->body(c.body).aiming();
   const float step = seconds / kAimIn;
   c.aimWeight = std::clamp(c.aimWeight + (aiming ? step : -step), 0.0f, 1.0f);
   const float raise = smooth(c.aimWeight);
-  c.holdWeight = std::clamp(c.holdWeight + (gun && c.stanceHolds ? step : -step), 0.0f, 1.0f);
+  c.crouchWeight = std::clamp(c.crouchWeight + (gun && c.gunCrouched ? step : -step), 0.0f, 1.0f);
+  const float crouch = smooth(c.crouchWeight);
+  const float drawnIn = smooth((drawn - 0.5f) / 0.5f); // from the put-away gun into the hands
 
   // A hand to `handAt` (a rigid frame in the world), placed and turned
   // weight of the way there.
+  const glm::vec3 up(0.0f, 1.0f, 0.0f);
   const glm::quat toModelTurn = glm::inverse(rotationOf(rigidFrame(placement)));
   auto holdWith = [&](int arm, int foreArm, int hand, const glm::mat4 &handAt, float weight) {
     reach(skeleton, pose, model, arm, foreArm, hand, inModel(pointOf(handAt)), weight);
     turnTo(skeleton, pose, model, hand, toModelTurn * rotationOf(handAt), weight);
   };
+  auto at = [&](int bone) { return pointOf(world(bone)); };
 
-  // Aiming: the spine brings the barrel onto the aim point, and the head
-  // turns to look there.
-  if (gun && c.aimWeight > 0.0f) {
-    const glm::vec3 target = inModel(aimPoint(c));
-    const std::optional<WeaponSocket> muzzle = gun->asset->parts.socket("muzzle");
-    const glm::mat4 muzzleInGun = muzzle ? socketMatrix(*muzzle) : glm::mat4(1.0f);
-    const glm::mat3 turnToModel = glm::mat3(toModel);
-    BarrelFinder barrel = [&](const std::vector<glm::mat4> &m) {
-      const glm::mat4 gunAt = rigidFrame(placement * m[b.rightHand]) * gun->hold.gripInHand;
-      const glm::mat4 tip = gunAt * muzzleInGun;
-      return Barrel{inModel(pointOf(tip)),
-                    glm::normalize(turnToModel * glm::vec3(gunAt[2]))};
-    };
-    aimAt(skeleton, c.aimRig, pose, barrel, target, raise);
-    if (b.head >= 0)
-      turnToward(skeleton, pose, b.head, b.headFace, target, raise, kHeadTurn);
+  // Aiming: the chest squares to the target and leans with the aim, then
+  // the gun is placed from the body: the rifle's butt in the shoulder
+  // pocket, the pistol out along the eye's line, both laid along the line
+  // to the aim point. The rifleman's neck brings his eye down to the
+  // sights; the head turns to look at the aim point.
+  glm::mat4 aimedAt(1.0f);
+  if (gun && raise > 0.0f) {
+    const glm::vec3 target = aimPoint(c);
+    const glm::vec3 chest = 0.5f * (at(b.leftArm) + at(b.rightArm));
+    const glm::vec3 toTarget = glm::normalize(target - chest);
+    const glm::vec3 aimInModel = glm::mat3(toModel) * toTarget;
+    if (b.leftLeg >= 0 && b.rightLeg >= 0) {
+      const AimRig hips{{b.hips}, {1.0f}};
+      squareChest(skeleton, hips, pose, b.leftLeg, b.rightLeg, aimInModel, kHipsBlade, raise,
+                  kMaxHipsTurn);
+    }
+    squareChest(skeleton, c.aimRig, pose, b.leftArm, b.rightArm, aimInModel,
+                gun->atSide ? 0.0f : kRifleBlade, raise, kMaxSquare);
+    const float pitch = std::asin(std::clamp(glm::dot(toTarget, up), -1.0f, 1.0f));
+    bendChest(skeleton, c.aimRig, pose, b.leftArm, b.rightArm,
+              raise * std::clamp(kBendShare * pitch, -kMaxBend, kMaxBend));
     model = modelSpace(skeleton, pose);
+    if (gun->atSide) {
+      if (b.head >= 0) {
+        turnToward(skeleton, pose, b.head, b.headFace, inModel(target), raise, kHeadTurn);
+        model = modelSpace(skeleton, pose);
+      }
+      const glm::vec3 eye = b.rightEye >= 0 ? at(b.rightEye) : at(b.head);
+      const glm::vec3 line = glm::normalize(target - eye);
+      aimedAt = aimedGun(line, up, glm::vec3(0.0f), eye + line * gun->eyeReach - up * kPistolSightDrop);
+    } else {
+      const glm::vec3 ahead = chestFacing(at(b.leftArm), at(b.rightArm), up);
+      const glm::vec3 pocket =
+          at(b.rightArm) + glm::mat3(glm::cross(up, ahead), up, ahead) * kPocket;
+      aimedAt = aimedGun(glm::normalize(target - pocket), up, gun->butt, pocket);
+      // The cheek on the stock: the neck tips the head so the eye comes to
+      // the sight line.
+      if (b.neck >= 0 && b.rightEye >= 0) {
+        const glm::vec3 sightFrom = glm::vec3(aimedAt * glm::vec4(0.0f, kRifleSightLine, 0.0f, 1.0f));
+        const glm::vec3 sightDir = glm::vec3(aimedAt[2]);
+        const glm::vec3 eye = at(b.rightEye);
+        const glm::vec3 onSight = sightFrom + glm::dot(eye - sightFrom, sightDir) * sightDir;
+        const glm::vec3 neckToEye = inModel(eye) - pointOf(model[b.neck]);
+        const glm::vec3 axis = glm::inverse(rotationOf(rigidFrame(model[b.neck]))) * glm::normalize(neckToEye);
+        turnToward(skeleton, pose, b.neck, axis, inModel(onSight), raise, kNeckTurn);
+        model = modelSpace(skeleton, pose);
+      }
+      if (b.head >= 0) {
+        turnToward(skeleton, pose, b.head, b.headFace, inModel(target), raise, kHeadTurn);
+        model = modelSpace(skeleton, pose);
+      }
+      // Then the rifle meets the eye: its sight line through the eye to the
+      // aim point, slid along that line until its butt is as near the
+      // shoulder pocket as it gets.
+      if (b.rightEye >= 0) {
+        const glm::vec3 eye = at(b.rightEye);
+        const glm::vec3 line = glm::normalize(target - eye);
+        const glm::mat4 turn = aimedGun(line, up, glm::vec3(0.0f), glm::vec3(0.0f));
+        const glm::vec3 sight(0.0f, kRifleSightLine, 0.0f);
+        const glm::vec3 buttFromSight = glm::mat3(turn) * (gun->butt - sight);
+        const float along = glm::dot(pocket - (eye + buttFromSight), line);
+        aimedAt = aimedGun(line, up, sight, eye + along * line);
+      }
+    }
   }
 
   // A reload's clip moves the hands: the left one lets go of the gun (eased
-  // over the clip's first and last tenth), and the gun comes up into the
-  // clip's right hand. Without a reload clip for its stance (the pistol's),
+  // over the clip's first and last tenth), and the gun goes into the clip's
+  // right hand. Without a reload clip for its stance (the pistol's),
   // nothing moves, so the hand stays on and the magazine stays in.
   auto reloadShown = [&](const CarriedGun &g) {
     return g.weapon && asset->library.clip(ClipSlot::Reload, g.stance)
@@ -485,65 +637,91 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   const float reloadWeight =
       reloading < 0.0f
           ? 0.0f
-          : std::clamp(std::min(reloading, 1.0f - reloading) / kReloadEase, 0.0f, 1.0f);
+          : smooth(std::clamp(std::min(reloading, 1.0f - reloading) / kReloadEase, 0.0f, 1.0f));
 
-  // In the hands: carried relaxed, or in the clip's hands while the gun's
-  // stance clips play (aiming, crouched) or a reload's does.
-  const float up = std::max({raise, smooth(c.holdWeight), smooth(reloadWeight)});
-  // Drawing or putting away. Over the first half the right hand goes to the
-  // put-away gun's grip and takes it; over the second the gun comes from
-  // there into the hands. A pistol's hand brings it back the way the clip
-  // holds the hand; a rifle comes up to where it's held, and its right hand
-  // holds it by IK until the clip's hand does (raised all the way the two
-  // are the same).
+  // Carried relaxed: the pistol standing in the hanging hand, the hand
+  // turned so its muzzle points down; otherwise at low ready on the chest,
+  // kept clear of the body.
+  const float sideWeight = gun && gun->atSide ? 1.0f - std::max(raise, crouch) : 0.0f;
+  if (gun && gun->atSide && drawn >= 0.5f && sideWeight > 0.0f)
+    turnTo(skeleton, pose, model, b.rightHand,
+           rotationOf(rigidFrame(model[b.rightForeArm])) * gun->sideHand, sideWeight);
+  // The trunk only (chest and belly): pushed off the thighs, a gun held low
+  // while kneeling would be shoved up to the chin.
+  std::vector<HitCapsule> trunk;
+  auto lowReadyAt = [&](const CarriedGun &g) {
+    const glm::vec3 ahead = glm::normalize(glm::vec3(placement[2]) - glm::dot(glm::vec3(placement[2]), up) * up);
+    glm::mat4 low = frame(glm::cross(up, ahead), up, ahead, at(b.rightArm)) * g.lowReady;
+    if (trunk.empty())
+      for (const HitCapsule &part : placeHitCapsules(c.hitCapsules, model, placement))
+        if (part.zone == HitZone::Chest || part.zone == HitZone::Belly)
+          trunk.push_back(part);
+    std::vector<glm::vec3> points;
+    for (const glm::vec3 &p : g.clearPoints)
+      points.push_back(glm::vec3(low * glm::vec4(p, 1.0f)));
+    // Straight ahead, never sideways off the body.
+    low[3] += glm::vec4(clearOfBody(trunk, points, kBodyMargin, ahead), 0.0f);
+    return low;
+  };
+
+  // Where the gun in the hands is: relaxed, raised to the aim by the aim's
+  // weight, in the reload clip's hand while that plays; over a draw's
+  // second half on its way from where it was put away, over the first half
+  // still there while the right hand goes to take it.
   glm::mat4 heldAt(1.0f);
   if (gun) {
-    const glm::mat4 hand = rigidFrame(world(b.rightHand));
-    const glm::mat4 handsAt = between(relaxed(*gun), inHand(*gun), up);
-    const glm::mat4 grabAt = stowed(*gun) * glm::inverse(gun->hold.gripInHand);
-    const float back = smooth((drawn - 0.5f) / 0.5f); // 0 at the put-away gun, 1 in the hands
+    glm::mat4 relaxed = gun->atSide ? inHand(*gun) : lowReadyAt(*gun);
+    if (gun->atSide && crouch > 0.0f)
+      relaxed = between(relaxed, lowReadyAt(*gun), crouch);
+    heldAt = raise > 0.0f ? between(relaxed, aimedAt, raise) : relaxed;
+    if (reloadWeight > 0.0f)
+      heldAt = between(heldAt, inHand(*gun), reloadWeight);
     if (drawn < 0.5f) {
-      holdWith(b.rightArm, b.rightForeArm, b.rightHand, grabAt, smooth(drawn / 0.5f));
-      heldAt = stowed(*gun);
-    } else if (drawn < 1.0f && gun->carryInHand) {
-      const glm::mat4 handAt = between(grabAt, hand, back);
-      holdWith(b.rightArm, b.rightForeArm, b.rightHand, handAt, 1.0f);
-      heldAt = handAt * between(gun->hold.gripInHand, glm::inverse(hand) * handsAt, back);
-    } else {
-      heldAt = drawn < 1.0f ? between(stowed(*gun), handsAt, back) : handsAt;
-    }
-    if (!gun->carryInHand && drawn >= 0.5f && up < 1.0f)
       holdWith(b.rightArm, b.rightForeArm, b.rightHand,
-               heldAt * glm::inverse(gun->hold.gripInHand), 1.0f);
+               stowed(*gun) * glm::inverse(gun->hold.gripInHand), smooth(drawn / 0.5f));
+      heldAt = stowed(*gun);
+    } else {
+      if (drawn < 1.0f)
+        heldAt = between(stowed(*gun), heldAt, drawnIn);
+      // The right hand holds it there (at the side, the hand already is).
+      if (sideWeight < 1.0f || drawn < 1.0f || reloadWeight > 0.0f)
+        holdWith(b.rightArm, b.rightForeArm, b.rightHand,
+                 heldAt * glm::inverse(gun->hold.gripInHand), 1.0f);
+    }
   }
 
-  // Two hands on a rifle: the left one on its handguard.
-  if (gun && gun->hold.twoHanded && drawn >= 0.5f) {
-    const float weight = smooth((drawn - 0.5f) / 0.5f) * (1.0f - reloadWeight);
-    const glm::vec3 grip = glm::vec3(heldAt * glm::vec4(gun->hold.offHand, 1.0f));
-    reach(skeleton, pose, model, b.leftArm, b.leftForeArm, b.leftHand, inModel(grip), weight);
-    turnTo(skeleton, pose, model, b.leftHand, toModelTurn * rotationOf(heldAt) * gun->offHandTurn,
-           weight);
+  // The left hand: on a rifle's handguard always (let go while a reload's
+  // clip moves it); on a pistol, wrapped round the right hand when it's
+  // held out or low.
+  float leftWeight = 0.0f;
+  if (gun && drawn >= 0.5f) {
+    if (gun->hold.twoHanded) {
+      leftWeight = drawnIn * (1.0f - reloadWeight);
+      const glm::vec3 grip = glm::vec3(heldAt * glm::vec4(gun->hold.offHand, 1.0f));
+      reach(skeleton, pose, model, b.leftArm, b.leftForeArm, b.leftHand, inModel(grip), leftWeight);
+      turnTo(skeleton, pose, model, b.leftHand, toModelTurn * rotationOf(heldAt) * gun->offHandTurn,
+             leftWeight);
+    } else {
+      leftWeight = drawnIn * std::max(raise, crouch);
+      holdWith(b.leftArm, b.leftForeArm, b.leftHand, heldAt * gun->leftInGun, leftWeight);
+    }
   }
 
-  // The fingers round the gun, where the clip doesn't already have them
-  // there: all the way once it's in the hand (the right hand's from the
-  // grab on), less as it's raised into the aiming clip's own.
+  // The fingers round the gun as the aiming clip has them (the right hand's
+  // from the grab on), except where a reload's clip moves them.
   if (gun) {
-    const float inHandWeight = drawn < 0.5f ? smooth(drawn / 0.5f) : 1.0f;
-    wrapFingers(pose, gun->rightGrip, inHandWeight * (1.0f - up));
-    if (gun->hold.twoHanded && drawn >= 0.5f)
-      wrapFingers(pose, gun->leftGrip,
-                  smooth((drawn - 0.5f) / 0.5f) * (1.0f - reloadWeight) * (1.0f - up));
+    wrapFingers(pose, gun->rightGrip, (drawn < 0.5f ? smooth(drawn / 0.5f) : 1.0f) * (1.0f - reloadWeight));
+    wrapFingers(pose, gun->leftGrip, leftWeight);
     model = modelSpace(skeleton, pose);
   }
 
   // Every carried gun's parts: the one in the hands where it's held, the
   // other where it rides.
-  for (const std::optional<CarriedGun> &g : c.guns) {
+  for (std::optional<CarriedGun> &g : c.guns) {
     if (!g)
       continue;
     const glm::mat4 at = &*g == gun ? heldAt : stowed(*g);
+    g->at = at;
     const glm::quat turn = rotationOf(at);
     // The magazine is out (in the pouch) for the middle of a reload.
     const float progress = reloadShown(*g);
@@ -556,4 +734,13 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
       g->parts[k]->setPose(glm::vec3(at * glm::vec4(g->asset->parts.parts[k].pivot, 1.0f)), turn);
     }
   }
+  // The shots this frame's trigger let off leave the muzzle where the gun
+  // is now.
+  for (std::optional<CarriedGun> &g : c.guns)
+    if (g && !g->shots.empty()) {
+      if (&*g == gun && drawn >= 1.0f)
+        fireShots(index, *g);
+      else
+        g->shots.clear();
+    }
 }

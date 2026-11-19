@@ -3,6 +3,8 @@
 #include "VulkanRenderer.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -338,6 +340,28 @@ int main(int argc, char **argv) {
   const char *captureSelect = std::getenv("HELIORA_CAPTURE_SELECT");
   const char *viewYawText = std::getenv("HELIORA_CAPTURE_VIEW_YAW");
   const float captureViewYaw = capturePath && viewYawText ? std::strtof(viewYawText, nullptr) : 0.0f;
+  // HELIORA_CAPTURE_VIEW_ZOOM brings the drawn view this much of the way in
+  // (0.5 halves the distance to the character), for a close look.
+  const char *viewZoomText = std::getenv("HELIORA_CAPTURE_VIEW_ZOOM");
+  const float captureViewZoom =
+      capturePath && viewZoomText ? std::clamp(std::strtof(viewZoomText, nullptr), 0.05f, 1.0f) : 1.0f;
+  // HELIORA_CAPTURE_SERIES="8 20" saves 8 pictures 20 frames apart from
+  // HELIORA_CAPTURE_FRAMES on (out_0.png, out_1.png, ...), to see a move
+  // over time.
+  int seriesCount = 1, seriesStep = 1;
+  if (const char *series = std::getenv("HELIORA_CAPTURE_SERIES"); capturePath && series)
+    if (std::sscanf(series, "%d %d", &seriesCount, &seriesStep) != 2 || seriesCount < 1 ||
+        seriesStep < 1)
+      seriesCount = seriesStep = 1;
+  int seriesAsked = 0, seriesSaved = 0;
+  auto seriesPath = [&](int k) {
+    if (seriesCount == 1)
+      return std::string(capturePath);
+    const std::string path = capturePath;
+    const size_t dot = path.rfind('.');
+    return path.substr(0, dot) + "_" + std::to_string(k) +
+           (dot == std::string::npos ? "" : path.substr(dot));
+  };
   if (capturePath) {
     if (!std::getenv("HELIORA_CAPTURE_PLAY"))
       vulkanRenderer.togglePlayMode();
@@ -406,12 +430,14 @@ int main(int argc, char **argv) {
       // HELIORA_CAPTURE_VIEW_YAW turns only what's drawn this many degrees
       // about the character (the controls keep the real camera), to see an
       // aiming pose from the side in a capture.
-      if (captureViewYaw != 0.0f) {
+      if (captureViewYaw != 0.0f || captureViewZoom != 1.0f) {
         const glm::vec3 pivot = vulkanRenderer.playerFeet() + glm::vec3(0.0f, 1.2f, 0.0f);
-        const glm::mat4 around = glm::translate(glm::mat4(1.0f), pivot) *
-                                 glm::rotate(glm::mat4(1.0f), glm::radians(captureViewYaw),
-                                             glm::vec3(0.0f, 1.0f, 0.0f)) *
-                                 glm::translate(glm::mat4(1.0f), -pivot);
+        glm::mat4 around = glm::translate(glm::mat4(1.0f), pivot) *
+                           glm::rotate(glm::mat4(1.0f), glm::radians(captureViewYaw),
+                                       glm::vec3(0.0f, 1.0f, 0.0f)) *
+                           glm::translate(glm::mat4(1.0f), -pivot);
+        const glm::vec3 turned = glm::vec3(around * glm::vec4(eye, 1.0f));
+        around = glm::translate(glm::mat4(1.0f), (pivot - turned) * (1.0f - captureViewZoom)) * around;
         seen = seen * glm::inverse(around);
         eye = glm::vec3(around * glm::vec4(eye, 1.0f));
       }
@@ -423,11 +449,14 @@ int main(int argc, char **argv) {
     }
     if (capturePath && captureSelect && frameNumber == 5)
       vulkanRenderer.selectForCapture(captureSelect);
-    if (capturePath && ++frameNumber == captureFrames)
-      vulkanRenderer.requestCapture(capturePath);
+    if (capturePath)
+      ++frameNumber;
+    if (capturePath && frameNumber >= captureFrames && seriesAsked < seriesCount &&
+        (frameNumber - captureFrames) % seriesStep == 0)
+      vulkanRenderer.requestCapture(seriesPath(seriesAsked++));
     vulkanRenderer.draw();
     camera.MovementSpeed = vulkanRenderer.getCameraSpeed();
-    if (capturePath && vulkanRenderer.finishCapture())
+    if (capturePath && vulkanRenderer.finishCapture() && ++seriesSaved == seriesCount)
       break;
   }
 

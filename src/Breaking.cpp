@@ -379,13 +379,15 @@ LinkLimits VulkanRenderer::linkLimits(int link) const {
     limits.friction = std::min(a.limits.friction, b.limits.friction);
   }
   limits.contact = breakLinkContact[link] != 0;
-  return limits;
+  // Bullets' damage weakens it: the more battered of its two pieces.
+  return weakened(limits, linkStrengthLeft(breakPieces[breakLinks[link].a].damage,
+                                           breakPieces[breakLinks[link].b].damage));
 }
 
 LinkLimits VulkanRenderer::groundLimits(int piece) const {
   LinkLimits limits = breakables[breakPieces[piece].object].limits;
   limits.contact = true;
-  return limits;
+  return weakened(limits, breakPieces[piece].damage.strengthLeft());
 }
 
 // On Play: the links inside each object from its cut (each Play's seed
@@ -1469,4 +1471,20 @@ void VulkanRenderer::appendPieceLines(SceneEntryRef ref) {
              kCutColor});
       }
   }
+}
+
+void VulkanRenderer::queueBulletSplit(int p, glm::vec3 point, glm::vec3 push) {
+  const BreakPiece &piece = breakPieces[p];
+  const Breakable &object = breakables[piece.object];
+  if (!piece.alive || object.pattern == FracturePattern::None ||
+      pieceSize(*piece.shape) < 2.0f * kSmallestPiece || runtimePieces >= kRuntimePieceBudget)
+    return;
+  for (const PendingSplit &queued : pendingSplits)
+    if (queued.piece == p)
+      return;
+  // splitPiece cuts 4 sqrt(impulse / what it holds) pieces: about six.
+  const float holds = std::max(kMinSplitImpulse, splitImpulse(piece.shape->volume, object.strength));
+  const PhysicsPose world = pieceWorld(piece);
+  const glm::quat toLocal = glm::conjugate(world.rotation);
+  pendingSplits.push_back({p, toLocal * (point - world.position), toLocal * push, 2.25f * holds});
 }

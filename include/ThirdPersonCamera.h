@@ -54,6 +54,9 @@ public:
   // Mouse movement in pixels, screen style: +x right, +y down. Moving right
   // turns right, moving up looks up.
   void orbit(float mouseDx, float mouseDy);
+  // A gun's kick: turns the view by these radians (yaw positive to the
+  // left, pitch positive up), held to the pitch limits like the mouse.
+  void kick(float yaw, float pitch);
   // Wheel notches; positive comes closer.
   void zoom(float notches);
   // Jumps straight to its place behind the feet, no easing (spawning).

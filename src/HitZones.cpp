@@ -176,3 +176,49 @@ bool Health::wound(float amount) {
   points = std::max(0.0f, points - amount);
   return dead();
 }
+
+glm::vec3 clearOfBody(const std::vector<HitCapsule> &body, const std::vector<glm::vec3> &points,
+                      float margin, glm::vec3 along) {
+  constexpr int kPasses = 12;
+  const bool oneWay = glm::length(along) > 1e-6f;
+  glm::vec3 push(0.0f);
+  for (int pass = 0; pass < kPasses; ++pass) {
+    float deepest = 0.0f;
+    glm::vec3 out(0.0f);
+    for (const HitCapsule &c : body) {
+      const glm::vec3 ab = c.b - c.a;
+      const float length2 = glm::dot(ab, ab);
+      for (const glm::vec3 &point : points) {
+        const glm::vec3 p = point + push;
+        const float t = length2 > 1e-12f ? std::clamp(glm::dot(p - c.a, ab) / length2, 0.0f, 1.0f) : 0.0f;
+        const glm::vec3 away = p - (c.a + t * ab);
+        const float distance = glm::length(away);
+        const float depth = margin + c.radius - distance;
+        if (depth > deepest && distance > 1e-6f) {
+          deepest = depth;
+          out = away / distance;
+        }
+      }
+    }
+    if (deepest <= 0.0f)
+      break;
+    if (!oneWay) {
+      push += out * deepest;
+      continue;
+    }
+    // One way only: each point goes along it to where it leaves the capsule
+    // grown by the margin; the furthest of those moves them all.
+    const glm::vec3 dir = glm::normalize(along);
+    float furthest = 0.0f;
+    for (const HitCapsule &c : body)
+      for (const glm::vec3 &point : points)
+        if (const std::optional<RaySpan> span =
+                rayCapsule(point + push, dir, 10.0f, c.a, c.b, c.radius + margin);
+            span && span->entry <= 0.0f)
+          furthest = std::max(furthest, span->exit);
+    if (furthest <= 0.0f)
+      break;
+    push += dir * (furthest + 1e-4f);
+  }
+  return push;
+}

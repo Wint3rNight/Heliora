@@ -158,3 +158,9 @@ void Weapon::finishReload() {
   }
   locked = false;
 }
+
+glm::vec3 shotDirection(const glm::mat3 &gun, float zero, glm::vec2 deviation) {
+  const float right = std::tan(deviation.x * 1e-3f);
+  const float up = std::tan(zero + deviation.y * 1e-3f);
+  return glm::normalize(gun[2] - right * gun[0] + up * gun[1]);
+}

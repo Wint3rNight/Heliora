@@ -195,3 +195,15 @@ TEST(camera_tuning_is_kept_consistent) {
   CHECK(fixed.distance >= fixed.minDistance && fixed.distance <= fixed.maxDistance);
   CHECK(fixed.minPitch <= 0.0f && fixed.maxPitch >= 0.0f);
 }
+
+TEST(a_kick_turns_the_view_and_keeps_to_the_pitch_limits) {
+  // A gun's recoil kicks the view up and aside; it can't push past looking
+  // straight up any more than the mouse can.
+  ThirdPersonCamera camera;
+  const float yaw = camera.yaw(), pitch = camera.pitch();
+  camera.kick(-0.01f, 0.02f);
+  CHECK_NEAR(camera.yaw(), yaw - 0.01f, 1e-6);
+  CHECK_NEAR(camera.pitch(), pitch + 0.02f, 1e-6);
+  camera.kick(0.0f, 10.0f);
+  CHECK_NEAR(camera.pitch(), camera.tuning().maxPitch, 1e-6);
+}

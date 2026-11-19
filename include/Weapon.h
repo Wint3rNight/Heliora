@@ -34,6 +34,12 @@ struct WeaponEvents {
 // of 3 to 5 at the gun's rate (NSD's short bursts) spread as followSpread.
 glm::vec2 recoilKick(const WeaponSpec &spec);
 
+// Which way a shot leaves a gun whose frame (in the world) is `gun` (+z its
+// barrel, +y its top, +x its left): along the barrel, tilted up by the
+// zero angle (radians) so it crosses the sight line at the zeroing range,
+// and off by the shot's deviation (mrad, x to the right, y up). Unit.
+glm::vec3 shotDirection(const glm::mat3 &gun, float zero, glm::vec2 deviation);
+
 class Weapon {
 public:
   explicit Weapon(const WeaponSpec &spec, uint32_t seed = 1);

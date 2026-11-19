@@ -12,12 +12,14 @@
 #include <optional>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "AudioDevice.h"
 #include "AimIk.h"
 #include "EditorSelection.h"
+#include "HitZones.h"
 #include "Loadout.h"
 #include "Weapon.h"
 #include "WeaponFile.h"
@@ -42,6 +44,8 @@
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
 #include "BreakGraph.h"
+#include "Bullets.h"
+#include "PieceDamage.h"
 #include "Rubble.h"
 #include "Stress.h"
 #include "CharacterRoster.h"
@@ -321,6 +325,10 @@ private:
     WeaponSpec spec;
     WeaponParts parts;
     std::vector<int> partModels; // one per part; -1 if it couldn't load
+    // Its round as its bullets fly (roundOf), and the barrel's tilt up so
+    // they cross the sight line at its zeroing range.
+    Round round;
+    float zero = 0.0f;
   };
   std::map<std::string, std::unique_ptr<WeaponAsset>> weaponAssets;
   // The gun's asset, read the first time it's asked for; null if it can't be.
@@ -335,18 +343,36 @@ private:
     WeaponHold hold;
     int stowBone = -1;
     glm::mat4 stowInBone{1.0f};
-    // Carried relaxed, not aiming: the rifle at low ready in the chest's
-    // (Spine2's) frame, the pistol at the side in the right hand's.
-    glm::mat4 carry{1.0f};
-    bool carryInHand = false;
-    // The left hand's turn on a two-handed gun, in the gun's frame, as the
-    // aiming clip holds it.
+    // Carried relaxed, not aiming: at low ready (the rifle always, the
+    // pistol crouched), in a level frame at the right shoulder facing his
+    // way. The pistol standing
+    // hangs at his side in the right hand, the hand turned this way to its
+    // forearm so the muzzle points down.
+    glm::mat4 lowReady{1.0f};
+    bool atSide = false;
+    glm::quat sideHand{1.0f, 0.0f, 0.0f, 0.0f};
+    // Aiming: a rifle's butt (gun space) goes into the shoulder pocket; a
+    // pistol is held out along the line from the eye, its trigger this far.
+    glm::vec3 butt{0.0f};
+    float eyeReach = 0.5f;
+    // The left hand on the gun, as the aiming clip holds it: on a rifle the
+    // grip's off-hand place with this turn, on a pistol this whole frame.
     glm::quat offHandTurn{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::mat4 leftInGun{1.0f};
+    // Points of the hands holding it (gun space), kept
+    // clear of the body when it's carried relaxed.
+    std::vector<glm::vec3> clearPoints;
     // The fingers wrapped round it, as the aiming clip has them: each finger
     // bone's own turn, for the right hand and the left.
     std::vector<std::pair<int, glm::quat>> rightGrip, leftGrip;
     // What the gun is doing: its magazines, chamber and reload (Weapon.h).
     std::shared_ptr<Weapon> weapon;
+    // Where it is this frame (rigid, the world's frame), and the shots its
+    // trigger let off this frame: they leave from its muzzle once the pose
+    // has put it there. Its recoil last frame (mrad), for the view's kick.
+    glm::mat4 at{1.0f};
+    std::vector<Shot> shots;
+    glm::vec2 lastRecoil{0.0f};
     int magazinePart = -1; // the part that comes out in a reload, or -1
   };
   // The bones the guns move: the arms (for the reach, the aim and the off
@@ -354,7 +380,8 @@ private:
   struct GunBones {
     int rightArm = -1, rightForeArm = -1, rightHand = -1, rightIndex = -1;
     int leftArm = -1, leftForeArm = -1, leftHand = -1, leftKnuckle = -1;
-    int hips = -1, spine2 = -1, head = -1;
+    int hips = -1, spine2 = -1, neck = -1, head = -1, rightEye = -1;
+    int leftLeg = -1, rightLeg = -1; // the thighs, to square the hips
     glm::vec3 headFace{0.0f, 0.0f, 1.0f}; // the way the face looks, in the head's frame
     bool valid() const {
       return rightArm >= 0 && rightForeArm >= 0 && rightHand >= 0 && leftArm >= 0 &&
@@ -388,10 +415,16 @@ private:
     AimRig aimRig;
     GunBones gunBones;
     float aimWeight = 0.0f; // the aim IK's share, eased in
-    // The gun's stance clips playing (aiming, or crouched with its crouch
-    // clips), so the gun goes into the clip's hands: eased in over this.
-    bool stanceHolds = false;
-    float holdWeight = 0.0f;
+    std::vector<HitCapsuleDef> hitCapsules; // his body parts, for bullets and a carried gun's hands
+    std::vector<HitCapsule> capsules;       // where they are this frame
+    Health health;
+    // Radians (yaw to the left, pitch up) his gun's recoil has the camera
+    // kicked by: shown, but not where the gun aims.
+    glm::vec2 viewKick{0.0f};
+    // Crouched with a gun ready (the gun's crouch clips play, the gun held
+    // relaxed), and that eased in.
+    bool gunCrouched = false;
+    float crouchWeight = 0.0f;
   };
   std::vector<LiveCharacter> characters;
   // What a surface sounds like when stepped on or hit (step 1.5c), from its
@@ -658,6 +691,9 @@ private:
     glm::quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
     bool anchor = false; // rests on something that never breaks
     bool alive = true;   // false once cut again or turned to rubble
+    // What bullets have left in it (step 1.6): it weakens its links, and
+    // past its toughness they break.
+    PieceDamage damage;
   };
   struct BreakBody {
     PhysicsBodyId id; // invalid once replaced; indices stay
@@ -720,6 +756,28 @@ private:
     bool broken = false;
   };
   std::vector<GroundLink> groundLinks;
+  // Firing (step 1.6, part 7; src/Firing.cpp). Bullets in flight; this
+  // frame's muzzle flashes; a hit body's id to its userData, this frame;
+  // characters hit carry this flag, their index and the capsule.
+  std::vector<Bullet> bullets;
+  struct MuzzleFlash {
+    glm::vec3 at{0.0f};
+    glm::vec3 along{0.0f, 0.0f, 1.0f};
+    float size = 0.1f; // m long
+    bool outer = false;
+  };
+  std::vector<MuzzleFlash> flashes;
+  std::unordered_map<uint64_t, uint64_t> bulletBodies;
+  static constexpr uint64_t kCharacterHitFlag = 1ull << 60;
+  uint32_t fireDice = 0x9e3779b9u;
+  // The shots a gun let off this frame, from its muzzle: bullets, a flash,
+  // the sound.
+  void fireShots(int index, CarriedGun &gun);
+  // Every bullet on through the frame, what it hits, the tracers and
+  // flashes drawn.
+  void stepShots(float seconds);
+  std::optional<BulletContact> bulletContact(glm::vec3 from, glm::vec3 to, int owner);
+  void bulletHits(const std::vector<BulletImpact> &impacts);
   std::vector<std::vector<int>> pieceGroundLinks; // by piece
   // The solve over the pieces that stay put, redone when the structure
   // changes and spread over frames; each piece's last shift and turn start
@@ -789,6 +847,10 @@ private:
   };
   void regroupBreakables(const std::vector<BreakHit> &hits);
   void splitPiece(const PendingSplit &split);
+  // A piece bullets broke, queued to be cut where they hit into about six
+  // pieces (smaller near the hit), as a hard hit would cut it; nothing if
+  // its material doesn't split, it's already small or the budget's spent.
+  void queueBulletSplit(int piece, glm::vec3 point, glm::vec3 push);
   void settleRubble();
   // Each frame in play: the weight on what stays put, and the links it
   // breaks (step 1.3d).

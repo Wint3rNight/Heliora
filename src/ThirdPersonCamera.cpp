@@ -35,6 +35,11 @@ void ThirdPersonCamera::orbit(float mouseDx, float mouseDy) {
                           tune.minPitch, tune.maxPitch);
 }
 
+void ThirdPersonCamera::kick(float yaw, float pitch) {
+  yawAngle = std::remainder(yawAngle + yaw, 2.0f * kPi);
+  pitchAngle = std::clamp(pitchAngle + pitch, tune.minPitch, tune.maxPitch);
+}
+
 void ThirdPersonCamera::zoom(float notches) {
   zoomDistance = std::clamp(zoomDistance - notches * tune.zoomStep,
                             tune.minDistance, tune.maxDistance);

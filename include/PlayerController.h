@@ -80,6 +80,8 @@ public:
   void setCameraTuning(const ThirdPersonCameraTuning &camera);
 
   const ThirdPersonCamera &camera() const { return view; }
+  // A gun's recoil on the view (ThirdPersonCamera::kick).
+  void kickView(float yaw, float pitch) { view.kick(yaw, pitch); }
 
 protected:
   // Behind the new body, looking the way it faces.

@@ -1,6 +1,8 @@
 #include "Weapon.h"
 #include "TestRunner.h"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <cmath>
 #include <vector>
 
@@ -275,4 +277,19 @@ TEST(recoil_spreads_bursts_as_the_manual_measured) {
   CHECK_NEAR(sigma(firstUp), 0.59, 0.03 * 0.59);
   CHECK_NEAR(sigma(followSide), 1.63, 0.03 * 1.63);
   CHECK_NEAR(sigma(followUp), 1.19, 0.03 * 1.19);
+}
+
+TEST(a_shot_leaves_along_the_barrel_tilted_by_the_zero_and_its_deviation) {
+  // The gun's frame: +z its barrel, +y its top, +x its left. 10 mrad to the
+  // right and 2 up, on a zero of 3 mrad up.
+  const glm::mat3 gun(1.0f);
+  const glm::vec3 straight = shotDirection(gun, 0.0f, {0.0f, 0.0f});
+  CHECK_NEAR(straight.z, 1.0, 1e-6);
+  const glm::vec3 d = shotDirection(gun, 0.003f, {10.0f, 2.0f});
+  CHECK_NEAR(glm::length(d), 1.0, 1e-5);
+  CHECK_NEAR(std::atan2(-d.x, d.z), 0.010, 1e-4); // to the right
+  CHECK_NEAR(std::atan2(d.y, d.z), 0.005, 1e-4);  // zero plus 2 mrad up
+  // Turned with the gun.
+  const glm::mat3 turned = glm::mat3(glm::rotate(glm::mat4(1.0f), 1.0f, glm::vec3(0, 1, 0)));
+  CHECK_NEAR(glm::dot(shotDirection(turned, 0.0f, {0.0f, 0.0f}), turned[2]), 1.0, 1e-6);
 }

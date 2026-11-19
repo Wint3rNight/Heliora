@@ -67,6 +67,14 @@ struct CharacterHit {
 std::optional<CharacterHit> firstHit(const std::vector<HitCapsule> &capsules, glm::vec3 from,
                                      glm::vec3 to);
 
+// How far to move a set of points (the hands on a gun) so each is at least
+// margin m outside every capsule: pushed out the way the deepest one
+// points, a few times over; or, given `along` (unit), only that way (a gun
+// carried in front goes forward, not sideways off the body). Zero if
+// they're all clear.
+glm::vec3 clearOfBody(const std::vector<HitCapsule> &body, const std::vector<glm::vec3> &points,
+                      float margin, glm::vec3 along = glm::vec3(0.0f));
+
 // Health points a wound takes: the energy the bullet left in him (J) over 10,
 // times its zone's weight (est.: head 10, chest 1.5, belly 1, leg 0.5,
 // arm 0.4), so anything through the head kills.

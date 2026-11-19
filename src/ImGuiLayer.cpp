@@ -490,6 +490,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
 
   drawGizmo(ui);
   drawCrosshair(ui);
+  drawAmmo(ui);
   finishSceneEdit(ui);
   drawPrompt(ui);
 }
@@ -507,6 +508,28 @@ void ImGuiLayer::drawCrosshair(const DebugUiContext &ui) const {
   draw->AddCircle(middle, 9.0f, light, 32, 1.2f);
   draw->AddCircleFilled(middle, 2.6f, dark, 12);
   draw->AddCircleFilled(middle, 1.6f, light, 12);
+}
+
+// The rounds left, at the scene's bottom right: in the gun, then in the
+// pouch, the mode under them, light with a dark shadow like the crosshair.
+void ImGuiLayer::drawAmmo(const DebugUiContext &ui) const {
+  if (!ui.ammo || ui.sceneArea.size.x <= 0.0f)
+    return;
+  ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  ImFont *font = ImGui::GetFont();
+  const float big = ImGui::GetFontSize() * 2.0f, small = ImGui::GetFontSize();
+  const std::string rounds = std::to_string(ui.ammoInGun) + "  |  " + std::to_string(ui.ammoPouch);
+  const std::string under = ui.reloading ? "RELOADING" : ui.fireMode;
+  const ImVec2 corner(ui.sceneArea.origin.x + ui.sceneArea.size.x - 24.0f,
+                      ui.sceneArea.origin.y + ui.sceneArea.size.y - 24.0f);
+  auto text = [&](const std::string &s, float size, float lift) {
+    const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, s.c_str());
+    const ImVec2 at(corner.x - extent.x, corner.y - lift - extent.y);
+    draw->AddText(font, size, ImVec2(at.x + 1.5f, at.y + 1.5f), IM_COL32(0, 0, 0, 170), s.c_str());
+    draw->AddText(font, size, at, IM_COL32(235, 245, 255, 230), s.c_str());
+  };
+  text(under, small, 0.0f);
+  text(rounds, big, small + 4.0f);
 }
 
 // The renderer's question as a modal window in the middle of the screen,

@@ -269,8 +269,34 @@ file = Resources/Characters/mixamo/clips/Reload/Reload.fbx
 # "strafe" moves left, "strafe (2)" right, checked by where the hips go),
 # whose idle already holds the gun up in front, so it's also the aiming
 # idle ("Pistol Aim" lowers the gun to the side after 2 s, so it isn't one).
-# No pistol reload clip yet: the gun reloads without one. Crouching is the
-# unarmed crouch.
+# No pistol reload clip yet: the gun reloads without one. Crouching: the
+# pack's kneeling idle, and the rifle pack's crouch walks for the legs (the
+# pack has none; the arms are placed on the pistol by IK either way).
+[clip]
+slot = crouch_idle
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol kneeling idle.fbx
+
+[clip]
+slot = crouch_forward
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching forward.fbx
+
+[clip]
+slot = crouch_back
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching backward.fbx
+
+[clip]
+slot = crouch_left
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching left.fbx
+
+[clip]
+slot = crouch_right
+stance = pistol
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching right.fbx
+
 [clip]
 slot = idle
 stance = pistol

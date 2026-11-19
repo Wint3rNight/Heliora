@@ -17,8 +17,7 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "land",           "land_hard",     "crouch_idle",
                   "crouch_forward", "crouch_back",   "crouch_left",
                   "crouch_right",   "roll",          "dodge_forward",
-                  "dodge_back",     "dodge_left",    "dodge_right",
-                  "power_lift", "power_hold", "power_throw", "power_burst"};
+                  "dodge_back",     "dodge_left",    "dodge_right"};
 
 std::string trim(std::string_view s) {
   const size_t first = s.find_first_not_of(" \t\r");
@@ -221,9 +220,6 @@ bool defaultLoop(ClipSlot slot) {
   case ClipSlot::DodgeBack:
   case ClipSlot::DodgeLeft:
   case ClipSlot::DodgeRight:
-  case ClipSlot::PowerLift:
-  case ClipSlot::PowerThrow:
-  case ClipSlot::PowerBurst:
     return false;
   default:
     return true;

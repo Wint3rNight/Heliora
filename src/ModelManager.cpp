@@ -103,16 +103,13 @@ int ModelManager::createModel(const std::string &key, MeshData mesh,
                               bool withLods, bool worldGrid,
                               const VulkanDevice &device,
                               TextureManager &textureManager,
-                              DescriptorManager &descriptorManager,
-                              const Material *givenMaterial) {
+                              DescriptorManager &descriptorManager) {
   if (int id = findModel(key); id >= 0)
     return id;
   // Empty names give the default material: white albedo (the shape's vertex
   // colour tints it), flat normal, roughness 1, metallic 0.
-  Material material = givenMaterial ? *givenMaterial
-                                    : textureManager.loadMaterial(
-                                          "", "", "", "", "", device,
-                                          descriptorManager);
+  Material material = textureManager.loadMaterial("", "", "", "", "", device,
+                                                  descriptorManager);
   material.worldGrid = worldGrid;
   Mesh newMesh(device.getAllocator(), device.getLogicalDevice(),
                device.getGraphicsQueue(), device.getGraphicsCommandPool(),
@@ -124,6 +121,25 @@ int ModelManager::createModel(const std::string &key, MeshData mesh,
   meshes.push_back(std::move(newMesh));
   models.emplace_back(std::move(meshes));
 
+  const int id = static_cast<int>(models.size()) - 1;
+  modelMap[key] = id;
+  return id;
+}
+
+int ModelManager::createModel(const std::string &key, std::vector<MeshData> meshes,
+                              const std::vector<Material> &materials,
+                              const VulkanDevice &device) {
+  if (int id = findModel(key); id >= 0)
+    return id;
+  if (meshes.empty() || meshes.size() != materials.size())
+    throw std::runtime_error("A model needs one material for each of its meshes");
+  std::vector<Mesh> built;
+  built.reserve(meshes.size());
+  for (size_t i = 0; i < meshes.size(); ++i)
+    built.emplace_back(device.getAllocator(), device.getLogicalDevice(),
+                       device.getGraphicsQueue(), device.getGraphicsCommandPool(),
+                       &meshes[i].vertices, &meshes[i].indices, materials[i]);
+  models.emplace_back(std::move(built));
   const int id = static_cast<int>(models.size()) - 1;
   modelMap[key] = id;
   return id;

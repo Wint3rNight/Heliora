@@ -15,12 +15,14 @@
 #include <unordered_set>
 #include <vector>
 
+#include "AudioDevice.h"
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "CompositePass.h"
 #include "CharacterImport.h"
 #include "DebugLinePass.h"
-#include "PowerEffectsPass.h"
+#include "ParticlePass.h"
+#include "EffectsPass.h"
 #include "SkinningPass.h"
 #include "DescriptorManager.h"
 #include "EditHistory.h"
@@ -37,7 +39,6 @@
 #include "Stress.h"
 #include "CharacterRoster.h"
 #include "PlayerController.h"
-#include "Powers.h"
 #include "Prefab.h"
 #include "RenderResources.h"
 #include "RenderPassManager.h"
@@ -230,7 +231,7 @@ private:
   glm::vec3 flyCameraPosition{0.0f};
   float flyCameraYaw = -90.0f; // degrees, Camera's convention
   static SceneModelEntry playerCapsuleEntry(float radius, float height);
-  // The player's look and moves, from Resources/Characters/ganfaul.character,
+  // The player's look and moves, from Resources/Characters/remy.character,
   // read once at startup. Without its files there's none, and the capsule
   // stays.
   std::optional<CharacterAsset> characterAsset;
@@ -247,7 +248,7 @@ private:
   SkinningPass skinningPass;
 
   // A character file in use: read once, shared by every character made
-  // from it. The default one (Ganfaul's) is the Character tab's: its
+  // from it. The default one (Remy's) is the Character tab's: its
   // description and asset are the tab's own, edited live; the others keep
   // theirs here.
   struct CharacterFileData {
@@ -256,20 +257,26 @@ private:
     const CharacterAsset *asset = nullptr; // none: drawn as a capsule
     CharacterDescription ownDescription;
     std::optional<CharacterAsset> ownAsset;
-    int skinMesh = -1;
-    // Copies of its mesh to draw at once: a model with its own vertex
-    // buffer, and the skinning copy that bends into it. Made as more are
-    // needed and kept, so rebuilding the scene reuses them.
+    // Each section's mesh in the skinning pass (one per material); empty
+    // until prepared.
+    std::vector<int> skinMeshes;
+    // Copies of it to draw at once: a model with a mesh per section, each
+    // with its own vertex buffer, and the skinning copies that bend into
+    // them. Made as more are needed and kept, so rebuilding the scene reuses
+    // them.
     struct Copy {
       int model = -1;
-      int skin = -1;
+      std::vector<int> skins; // one per section
     };
     std::vector<Copy> copies;
     // The copy its pictures pose (clip stills, the live clip, its own
-    // tile), skinned into a buffer of its own that only the thumbnail
-    // renderer draws.
-    int previewSkin = -1;
-    AllocatedBuffer previewVertices;
+    // tile), skinned into buffers of its own that only the thumbnail
+    // renderer draws, one per section.
+    std::vector<int> previewSkins;
+    std::vector<AllocatedBuffer> previewVertices;
+    // Its pictures can be drawn: the preview buffers and a first copy to
+    // draw them like (without the copy a tile would be cached blank).
+    bool previewable() const { return !previewSkins.empty() && !copies.empty(); }
   };
   std::vector<std::unique_ptr<CharacterFileData>> characterFiles; // [0] the default
   std::vector<std::string> characterFileNames; // Resources/Characters/*.character
@@ -297,11 +304,54 @@ private:
     int copy = -1; // into file->copies; -1 is the capsule
     int body = -1; // in the roster, while playing
     std::unique_ptr<CharacterAnimator> animator; // while playing, with a mesh
+    // Feet on the ground (step 1.5b): its leg bones, and what the IK keeps
+    // between frames.
+    FootIkRig footRig;
+    FootIkState footIk;
     // This frame's skinning matrices, worked out while posing and uploaded
     // in draw() once the frame slot's fence says it's free.
     std::vector<glm::mat4> skinning;
   };
   std::vector<LiveCharacter> characters;
+  // What a surface sounds like when stepped on or hit (step 1.5c), from its
+  // material.
+  enum class SoundSurface : uint8_t { Stone, Wood, Metal, Rubber, Ice, Rubble, Count };
+  static SoundSurface surfaceOf(const std::optional<std::string> &material);
+  // Feet that came down this frame, where and on what (the ground body's
+  // userData): the footsteps' sounds come from these (step 1.5c).
+  struct Footstep {
+    glm::vec3 point{0.0f};
+    uint64_t ground = 0;
+    int character = -1;
+    float speed = 0.0f; // m/s the character moved at
+  };
+  std::vector<Footstep> footsteps;
+
+  // Sound (step 1.5c, src/Sound.cpp): the device, opened at the first Play
+  // (a WAV file instead in capture runs with HELIORA_CAPTURE_AUDIO, silent
+  // in other captures), the clips, and what in the game makes a sound.
+  std::unique_ptr<AudioDevice> audio;
+  SoundPanel soundPanel;
+  // A few recordings of each, one picked at random each time.
+  struct SoundSet {
+    std::vector<const SoundClip *> clips;
+  };
+  static constexpr size_t kSurfaces = static_cast<size_t>(SoundSurface::Count);
+  std::array<SoundSet, kSurfaces> footstepSounds;
+  std::array<SoundSet, kSurfaces> knockSounds; // light hits
+  std::array<SoundSet, kSurfaces> breakSounds; // heavy hits and breaking
+  uint32_t soundDice = 0x9e3779b9u;
+  glm::vec3 lastListener{0.0f};
+  bool listenerPlaced = false;
+  AudioMixerTuning sentTuning{}; // the last tuning sent, so it's sent only when it changes
+  void startSound();
+  void stopSound();
+  // Each frame in play: the listener on the camera, then the footsteps.
+  void updateSound(float seconds);
+  // Hits on breakables, before handleImpacts judges them: the loudest few.
+  void soundImpacts(const std::vector<PhysicsImpact> &impacts);
+  SoundSurface surfaceUnder(uint64_t userData) const;
+  int playSound(const SoundSet &set, glm::vec3 where, float loudness);
   int playedCharacter = -1; // the one the player possesses, into characters
   // Every character from the scene, in edit or play mode: the old ones'
   // nodes and bodies go first. The GPU must be idle (a copy may be new).
@@ -310,6 +360,10 @@ private:
   // Edit mode: a character's node at its entry's place, after an edit.
   void placeCharacter(int index);
   void poseCharacters(float alpha, float frameSeconds);
+  // Puts a character's feet on the ground under them: two rays, then the
+  // foot IK on its pose (step 1.5b).
+  void placeFeet(int index, const FootPlacement &placement, bool on, float seconds, Pose &pose,
+                 std::vector<glm::mat4> &model);
   std::pair<CharacterTuning, AnimatorTuning> tuningFor(const CharacterFileData &data,
                                                        const std::string &variant) const;
   // The variant the player's character plays: the ticked one's, or the
@@ -454,6 +508,7 @@ private:
   struct PhysicsLink {
     SceneNode *node = nullptr;
     PhysicsBodyId body;
+    SoundSurface surface = SoundSurface::Stone;
   };
   std::vector<PhysicsLink> physicsLinks;
 
@@ -481,6 +536,7 @@ private:
     // the breakables it touches.
     LinkLimits limits;
     bool glued = false;
+    SoundSurface surface = SoundSurface::Stone;
   };
   struct BreakPiece {
     int object = 0; // into breakables
@@ -650,113 +706,15 @@ private:
   int breakableOf(uint64_t userData) const; // into breakables, or -1
   int pieceAt(const BreakBody &body, glm::vec3 point) const; // the piece a point is on, or -1
 
-  // The powers (step 1.4a, Powers.h; src/PowerPlay.cpp): with the aim held
-  // the player grabs what the crosshair is on, holds it out along the aim,
-  // throws it, tears pieces out of what they're part of, and bursts.
-  // Something the power can take: a whole moving body (a scene object's or
-  // a breakable chunk's), or one piece of a breakable, torn out first.
-  struct PowerTarget {
-    int id = -1; // the controller's: index * 4, plus 0 a piece, 1 a chunk's body, 2 a scene body
-    GrabKind kind = GrabKind::Lift;
-    PhysicsBodyId body;
-    int piece = -1; // the piece; for a chunk's body, one it carries
-    glm::vec3 centre{0.0f};
-    float radius = 0.0f;
-  };
-  PowerController powerController;
-  std::vector<PowerTarget> powerCandidates; // near the player, this frame
-  std::optional<PowerTarget> powerTarget;    // under the crosshair and in sight
-  PowerTarget powerGrabbed;                  // what was grabbed, while it's held
-  // The moving body held out (lifting, holding, a throw not yet gone), a
-  // piece it carries so it's found again when a regroup replaces it, where
-  // its lift began and how long ago, its tumble, the wheel's distance, and
-  // how long it's been stuck away from the hold point.
-  PhysicsBodyId heldBody;
-  int heldPiece = -1;
-  std::vector<int> heldPieces; // the held chunk's, for another to follow if heldPiece is cut
-  glm::vec3 heldFrom{0.0f};
-  float heldSeconds = 0.0f;
-  glm::vec3 heldAxis{0.0f, 1.0f, 0.0f};
-  float heldDistance = 0.0f;
-  float heldAway = 0.0f;
-  glm::vec3 holdTarget{0.0f}; // this frame's hold point
-  // A tear under way: the piece's links and ground links, when each gives
-  // way, and how far along it is.
-  struct PowerTear {
-    std::vector<int> links, grounds;
-    std::vector<float> linkTimes, groundTimes;
-    float seconds = 0.0f;
-    float total = 0.0f;
-    bool done = false; // every link it had is broken, and it's still not free to lift
-  } powerTear;
-
-  // The last throw's path, for its trail.
-  struct PowerTrail {
-    PhysicsBodyId body;
-    std::vector<glm::vec3> points;
-    float seconds = 0.0f;
-  } powerTrail;
-  float revealSince = -1.0f; // s since Q, or -1
-  glm::vec3 revealFrom{0.0f};
-  float burstSince = -1.0f; // s since the blast, or -1
-  glm::vec3 burstFrom{0.0f}, burstAim{0.0f, 0.0f, -1.0f};
-  std::vector<PhysicsImpact> powerImpacts; // the burst's hits, for handleImpacts
-  // Nodes shaken last frame (a tear, a strain): put back where their
-  // bodies are before this frame's shake.
-  std::vector<int> shakenPieces;
-  int shakenLink = -1; // into physicsLinks
-  glm::vec3 handPosition{0.0f}; // the player's right hand this frame
-  int handBone = -2;            // into the skeleton; -1 none, -2 not looked for
-  std::vector<PhysicsDebugVertex> powerLines; // the debug lines, with Debug lines ticked
-  // The powers' look (step 4): what glows this frame, and the light's
-  // strips, drawn by powerEffectsPass. The nodes are gathered at the end of
-  // each play frame's physics, after everything that can remove a node
-  // while playing, and cleared with clearPowers: anything that removes nodes
-  // during play elsewhere must clear them too, or recordPowerEffects reads a
-  // freed node.
-  struct PowerGlow {
-    SceneNode *node = nullptr;
-    glm::vec3 colour{1.0f}; // HDR
-    float strength = 1.0f;
-    float floor = 0.0f; // light over its faces too (GlowDraw::floor)
-  };
-  std::vector<PowerGlow> powerGlows;
-  std::vector<EffectVertex> powerStrips;
-  std::vector<GlowDraw> powerGlowDraws; // powerGlows turned into meshes, at record time
-  uint32_t powerDraws = 0; // for the tumble axes, varied each grab and throw
-  void clearPowers();
-  // Each frame in play, before the steps: what's near and under the
-  // crosshair, the controller, and what it says to do.
-  void updatePowers(float seconds);
-  // Each physics step: the held body pulled toward the hold point.
-  void holdPowers(float stepSeconds);
-  // After the poses: the piece being torn out, or what's strained against,
-  // shaken where it's drawn.
-  void shakePowers();
-  // After the characters are posed: the powers as lines, for now.
-  void drawPowerLines();
-  void buildPowerEffects();
-  void addPowerGlow(const PowerTarget &target, glm::vec3 colour, float strength, float floor = 0.0f);
-  void recordPowerEffects(VkCommandBuffer cmd, uint32_t currentImage, const VkViewport &viewport,
-                          const VkRect2D &scissor);
-  void gatherPowerCandidates(glm::vec3 around, float radius);
-  bool followHeld(); // false once the held body is gone for good
-  void startTear(int piece);
-  bool advanceTear(float seconds); // true once the piece is loose and light enough
-  void throwHeld();
-  void burstPower();
-  glm::vec3 bodyCentre(PhysicsBodyId body) const; // its bounding box's middle
-  glm::vec3 heldCentre() const;
-  // Where the power's light goes: what's held, or the piece torn at or
-  // strained against; nothing without a light out.
-  std::optional<glm::vec3> powerReach() const;
-  float pieceMass(int piece) const;
-  glm::vec3 pieceCentre(int piece) const;
-  glm::vec3 randomAxis();
-  // The played character's (its variant's), or the Character tab's.
-  const PowerTuning &powerTuning() const;
+  // This frame's light effects and new particles, from whatever makes them
+  // (guns from step 1.6), drawn in the lit pass and emptied after.
+  std::vector<EffectVertex> effectStrips;
+  std::vector<ParticleSpawn> particleSpawns;
+  float particleSeconds = 0.0f; // this frame's step for them; 0 while paused or editing
+  void clearEffects(); // the strips and every particle gone (Play, Stop, a new scene)
   DebugLinePass debugLinePass;
-  PowerEffectsPass powerEffectsPass; // the powers' glow and light (PowerPlay.cpp)
+  EffectsPass effectsPass;   // light effects: tracers, muzzle flashes
+  ParticlePass particlePass; // sparks, smoke, dust
   PhysicsPanel physicsPanel;
   // The character's and its camera's tuning (the Character tab). The player
   // start's outline and clicks use its body sizes too.

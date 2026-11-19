@@ -1,0 +1,63 @@
+#version 450
+
+// The particles (step 1.4a): one thread a slot of the ring. A slot the frame's
+// new particles land in takes one; any other living one moves on: drag, its
+// share of gravity, and a curl field that swirls it without bunching
+// particles up (the curl of anything spreads nothing out or in).
+
+layout(local_size_x = 256) in;
+
+// One particle, as ParticleSpawn lays it out (64 bytes).
+struct Particle {
+  vec4 positionAge; // xyz position, w seconds lived
+  vec4 velocityLife; // xyz m/s, w seconds it lasts
+  vec4 colourSize;  // rgb HDR, w m across
+  vec4 motion;      // x drag, y swirl, z its share of gravity
+};
+
+layout(std430, set = 0, binding = 0) buffer Ring { Particle ring[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Spawns { Particle spawns[]; };
+
+layout(push_constant) uniform Sim {
+  float dt;
+  float time;
+  uint spawnCount;
+  uint head;      // the ring's slot the first new one goes in
+  vec4 gravity;
+  uint capacity;
+} pc;
+
+// The curl of a field of sine waves: (b cos(b z + t), c cos(c x + t), a cos(a y + t))
+// up to sign, at two scales.
+vec3 curl(vec3 p, float t) {
+  const vec3 f1 = vec3(1.3, 1.7, 1.1);
+  const vec3 f2 = vec3(3.1, 2.3, 2.9);
+  vec3 c1 = vec3(f1.y * cos(f1.y * p.z + t), f1.z * cos(f1.z * p.x + 1.3 * t),
+                 f1.x * cos(f1.x * p.y + 0.7 * t));
+  vec3 c2 = vec3(f2.y * cos(f2.y * p.z - 1.7 * t), f2.z * cos(f2.z * p.x + 2.1 * t),
+                 f2.x * cos(f2.x * p.y - 1.1 * t));
+  return c1 * 0.6 + c2 * 0.25;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= pc.capacity)
+    return;
+  uint slot = (i + pc.capacity - pc.head) % pc.capacity;
+  if (slot < pc.spawnCount) {
+    ring[i] = spawns[slot];
+    ring[i].positionAge.w = 0.0;
+    return;
+  }
+  Particle p = ring[i];
+  if (p.positionAge.w >= p.velocityLife.w)
+    return; // dead, or never lived
+  vec3 v = p.velocityLife.xyz;
+  v += curl(p.positionAge.xyz, pc.time) * p.motion.y * pc.dt;
+  v += pc.gravity.xyz * p.motion.z * pc.dt;
+  v *= exp(-p.motion.x * pc.dt);
+  p.positionAge.xyz += v * pc.dt;
+  p.positionAge.w += pc.dt;
+  p.velocityLife.xyz = v;
+  ring[i] = p;
+}

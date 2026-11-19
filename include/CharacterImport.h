@@ -16,15 +16,21 @@
 // types of heliora_core. The game's side, since heliora_core doesn't use
 // Assimp.
 
-struct CharacterAsset {
-  Skeleton skeleton; // every node of the model file, parents first
-  int hips = -1;     // the bone root motion comes from
-  MeshData mesh;     // the skinned meshes merged, in their own space
+// One material's part of the body (Remy: body, hair, top, bottoms, shoes,
+// eyes): its skinned meshes merged, in their own space, and its texture.
+struct CharacterSection {
+  MeshData mesh;
   std::vector<VertexSkin> skin; // one per mesh vertex
   // The albedo texture embedded in the model file (PNG or JPEG bytes), or
   // empty with none.
   std::vector<unsigned char> albedo;
   std::string albedoName;
+};
+
+struct CharacterAsset {
+  Skeleton skeleton; // every node of the model file, parents first
+  int hips = -1;     // the bone root motion comes from
+  std::vector<CharacterSection> sections; // one per material, none empty
   // Around the mesh in the bind pose, in the skeleton's space.
   glm::vec3 boundsMin{0.0f};
   glm::vec3 boundsMax{0.0f};

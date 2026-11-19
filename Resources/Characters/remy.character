@@ -1,0 +1,191 @@
+# Remy, the player character, and the clip for each move.
+# Every file here comes from Mixamo (mixamo.com, a free Adobe account) and
+# lives in Resources/Characters/mixamo/, which git ignores: Mixamo's licence
+# allows using them in the game but not sharing the raw files. Without
+# them the game keeps the capsule.
+model = Resources/Characters/mixamo/characters/Remy.fbx
+
+# How he moves and animates, edited in the Character tab (Save character
+# writes it here). Speeds in m/s, accelerations in m/s^2, angles in radians,
+# times in seconds. Every machine gets these, unlike settings.cfg.
+[tuning]
+run_speed = 4.4
+sprint_speed = 5.6
+crouch_speed = 1.5
+ground_acceleration = 10
+ground_braking = 10
+turn_grip = 16
+turn_rate = 12.566371
+aim_acceleration = 30
+air_acceleration = 8
+air_speed_limit = true
+jump_height = 1.2
+coyote_time = 0.1
+jump_buffer = 0.1
+dodge_scale = 1
+dodge_distance = 5
+dodge_time = 0.25
+dodge_cooldown = 0.6
+max_slope = 0.785398
+step_up = 0.3
+stick_down = 0.5
+push_strength = 100
+radius = 0.3
+height = 1.8
+crouch_height = 1.1
+mass = 70
+anim_playback_rate = 1
+anim_fade_moving = 0.2
+anim_fade_crouch = 0.25
+anim_fade_jump = 0.08
+anim_fade_fall = 0.25
+anim_fade_land = 0.08
+anim_fade_dodge = 0.06
+anim_fall_speed = 7.5
+anim_air_pose_delay = 0.2
+anim_landing_after = 0.35
+anim_shortest_landing = 0.12
+anim_fade_aim = 0.12
+anim_aim_lean = 0.7
+ik_enabled = true
+ik_foot_reach = 0.45
+ik_foot_tilt = 0.5236
+ik_half_life = 0.1
+
+# Standing still, walking and running ahead: the plain Male locomotion pack.
+# The sprint is Mixamo's unarmed one.
+[clip]
+slot = idle
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/idle.fbx
+
+[clip]
+slot = walk_forward
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/walking.fbx
+
+[clip]
+slot = run_forward
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/standard run.fbx
+
+[clip]
+slot = sprint
+file = Resources/Characters/mixamo/clips/Unarmed/Sprint.fbx
+
+# The other directions, used while aiming: the pack's strafes, and walking
+# backwards for both back slots. The animator plays a clip at the rate that
+# matches the speed, so the walk back runs faster for running back; it
+# stands in until a real run back (Mixamo "Running Backward") is here.
+[clip]
+slot = walk_back
+file = Resources/Characters/mixamo/clips/Unarmed/Walking Backwards.fbx
+
+[clip]
+slot = walk_left
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/left strafe walking.fbx
+
+[clip]
+slot = walk_right
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/right strafe walking.fbx
+
+[clip]
+slot = run_back
+file = Resources/Characters/mixamo/clips/Unarmed/Walking Backwards.fbx
+
+[clip]
+slot = run_left
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/left strafe.fbx
+
+[clip]
+slot = run_right
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/right strafe.fbx
+
+# In the air: the plain jump, from the moment its feet leave the ground
+# (0.75 s, past the crouch) to just before they come down (1.27 s). The
+# rest of the same file is the landing. The falling loop and the hard
+# landing are only for real falls.
+[clip]
+slot = jump
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/jump.fbx
+start = 0.75
+end = 1.27
+
+[clip]
+slot = land
+file = Resources/Characters/mixamo/packs/Male Locomotion Pack/jump.fbx
+start = 1.27
+
+[clip]
+slot = fall
+file = Resources/Characters/mixamo/clips/Falling Idle.fbx
+
+[clip]
+slot = land_hard
+file = Resources/Characters/mixamo/clips/Falling To Landing.fbx
+start = 0.25
+
+# Crouching: the stealth clips. Sneak Walk is the forward one because its
+# hips stay as low as the sideways sneaks' (about 70% of standing height);
+# Sneaking Forward is closer to a stoop.
+[clip]
+slot = crouch_idle
+file = Resources/Characters/mixamo/clips/Unarmed/Crouching Idle.fbx
+
+[clip]
+slot = crouch_forward
+file = Resources/Characters/mixamo/clips/Stealth/Sneak Walk.fbx
+
+[clip]
+slot = crouch_back
+file = Resources/Characters/mixamo/clips/Crouch Walk Back.fbx
+
+[clip]
+slot = crouch_left
+file = Resources/Characters/mixamo/clips/Stealth/Crouched Sneaking Left.fbx
+
+[clip]
+slot = crouch_right
+file = Resources/Characters/mixamo/clips/Stealth/Crouched Sneaking Right.fbx
+
+# Dodging: the roll when not aiming, a step in the pressed direction while
+# aiming. The dodge moves the way the clip does, from its start to its end:
+# the roll from where it dives (it runs for 0.45 s first), the steps past
+# their little wind-up, the back step until it stops moving.
+[clip]
+slot = roll
+file = Resources/Characters/mixamo/clips/Sprinting Forward Roll.fbx
+start = 0.45
+
+[clip]
+slot = dodge_forward
+file = Resources/Characters/mixamo/clips/Standing Dodge Forward.fbx
+start = 0.2
+
+[clip]
+slot = dodge_back
+file = Resources/Characters/mixamo/clips/Standing Dodge Backward.fbx
+start = 0.15
+end = 1.1
+
+[clip]
+slot = dodge_left
+file = Resources/Characters/mixamo/clips/Standing Dodge Left.fbx
+start = 0.1
+
+[clip]
+slot = dodge_right
+file = Resources/Characters/mixamo/clips/Standing Dodge Right.fbx
+start = 0.1
+
+# For the climb (01_climb.scene asks for it), the way 3D rage climbers
+# play: he starts, stops and turns on a coin so feet land exactly where
+# they're aimed; the air steers him all the way to running speed, even from
+# a standing jump; the jump goes a bit higher; and a ledge only forgives a
+# late press for a moment.
+[variant rage]
+ground_acceleration = 30
+ground_braking = 40
+turn_grip = 60
+sprint_speed = 7
+air_acceleration = 10
+air_speed_limit = false
+jump_height = 1.4
+coyote_time = 0.06

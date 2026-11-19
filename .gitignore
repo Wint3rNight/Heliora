@@ -85,3 +85,16 @@ Resources/Characters/mixamo/
 
 # The Assets panel's cached thumbnails, drawn on first use.
 Resources/.thumbnails/
+.review-diffs
+.remember
+
+# MoCap Online packs (free from mocaponline.itch.io): their licence forbids
+# sharing the raw files, like Mixamo's.
+Resources/Characters/mocaponline/
+
+# Downloaded models (CC0 and CC BY 4.0, listed with their sources in
+# Resources/Models/CREDITS.md): about 700 MB, too big for git.
+Resources/Models/Weapons/
+Resources/Models/Vehicles/
+Resources/Models/Props/
+Resources/Models/Buildings/

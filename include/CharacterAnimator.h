@@ -3,6 +3,8 @@
 #include "AnimationClip.h"
 #include "CharacterMovement.h"
 #include "CharacterFile.h"
+#include "FootIk.h"
+#include "Inertialize.h"
 #include "PoseBlend.h"
 #include "Skeleton.h"
 
@@ -35,11 +37,6 @@ struct AnimationLibrary {
   }
 };
 
-// What the powers' layer plays on the upper body: the lift running into the
-// hold while something is held out (lifted, torn at or strained against), a
-// throw, a burst.
-enum class PowerAnim : uint8_t { None, Hold, Throw, Burst };
-
 // What the controller is doing this frame.
 struct AnimatorInput {
   float speed = 0.0f; // m/s along the ground
@@ -60,13 +57,7 @@ struct AnimatorInput {
   float runSpeed = 0.0f;
   float sprintSpeed = 0.0f;
   float crouchSpeed = 0.0f;
-  // The powers (the player's character only).
-  PowerAnim power = PowerAnim::None;
   float aimPitch = 0.0f; // radians the camera looks up; the spine leans with it while aiming
-  // The right arm reaches toward reachTarget while something is held out
-  // (power is Hold) and a power's light goes to it; a throw lets it go.
-  bool reaching = false;
-  glm::vec3 reachTarget{0.0f}; // in the skeleton's space
 };
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
@@ -86,7 +77,8 @@ inline ClipSlot dodgeClip(DodgeKind kind) {
 }
 
 struct AnimatorTuning {
-  // Cross-fade times into each state, seconds.
+  // Blend times into each state, seconds: how long the pose that was
+  // showing takes to ease into the new one (inertialization).
   float locomotionFade = 0.2f;
   float crouchFade = 0.25f;
   float jumpFade = 0.08f;
@@ -107,11 +99,13 @@ struct AnimatorTuning {
   // The moving clips play this much faster than the speed calls for (1 has
   // the feet keep up with the ground).
   float playbackRate = 1.0f;
-  // The powers' upper-body layer, the arm's reach and the aim's lean fade
-  // in and out over this, seconds.
-  float powerFade = 0.12f;
+  // The aim's lean fades in and out over this, seconds.
+  float aimFade = 0.12f;
   // Radians the spine leans with the camera at most, up or down (40 degrees).
   float aimLean = 0.7f;
+  // Feet on uneven ground, laid on by the game after the animator (it casts
+  // the rays).
+  FootIkTuning footIk;
   bool operator==(const AnimatorTuning &) const = default;
 };
 
@@ -126,7 +120,8 @@ public:
 
   const Pose &pose() const { return current; }
   AnimState state() const { return active; }
-  // A clip's share of this frame's pose, 0 to 1, fades included.
+  // A clip's share of the state's pose, 0 to 1. A new state's clips play in
+  // full from its first frame; the blend eases the difference away on top.
   float clipWeight(ClipSlot slot) const;
   // How far into a clip it is, seconds (the walk, run and sprint stay in
   // step, so their times are the same fraction of their lengths).
@@ -134,10 +129,8 @@ public:
   void setTuning(const AnimatorTuning &t) { tune = t; }
 
 private:
-  // The powers on top of the state's pose: the upper body's clip, the lean
-  // with the aim, the right arm's reach.
-  void layerPowers(const AnimatorInput &input, float dt);
-  void startPower(ClipSlot slot);
+  // On top of the state's pose: the spine's lean with the aim.
+  void layerAim(const AnimatorInput &input, float dt);
 
   const Skeleton &skeleton;
   const AnimationLibrary &library;
@@ -155,26 +148,21 @@ private:
   float phase = 0.0f;     // 0 to 1, shared by the moving loops
   ClipSlot oneShot = ClipSlot::Jump; // the clip a Jump, Land or Dodge plays
 
-  Pose current;           // the state's pose with the powers on top
-  Pose base;              // the state's pose alone, cross-fade included
-  Pose fadeFrom;          // base when the state last changed
-  float fadeTime = 0.0f;  // how long that change's cross-fade takes
+  Pose current;           // the state's pose with the aim's lean on top
+  Pose base;              // the state's pose alone, its blend included
+  // The last change's inertialization: the offsets from the pose that was
+  // showing, eased away over fadeTime.
+  PoseInertialization blend;
+  float fadeTime = 0.0f;   // how long that change's blend takes
+  float blendTime = 0.0f;  // seconds since it started
+  bool blendPending = false; // a change this frame, its blend to start
+  Pose lastBase;           // base one frame ago
+  Pose beforeLastBase;     // and two
+  float lastDt = 0.0f;     // seconds between those two
+  int framesShown = 0;     // up to 2: how many of those there are
   std::array<float, static_cast<size_t>(ClipSlot::Count)> weights{};
   std::array<float, static_cast<size_t>(ClipSlot::Count)> times{};
 
-  // The powers' layer.
-  std::vector<float> upperBody; // 1 from the first spine bone up, empty without one
-  std::vector<int> spine;       // the spine bones the aim leans
-  int arm = -1, foreArm = -1, hand = -1; // the right arm, for the reach
-  PowerAnim powerWas = PowerAnim::None;
-  ClipSlot powerSlot = ClipSlot::Count;     // the layer's clip, Count for none yet
-  ClipSlot powerFromSlot = ClipSlot::Count; // the one before, fading out
-  float powerTime = 0.0f;   // seconds into the layer's clip
-  float powerSwitch = 0.0f; // seconds since the layer's clip changed
-  float powerWeight = 0.0f; // the layer's share of the upper body
-  bool powerMissing = false; // the power asked for has no clip: the layer fades out
-  Pose powerPose;           // the layer's pose last frame
-  Pose powerFrom;           // and when its clip changed
-  float leanWeight = 0.0f, reachWeight = 0.0f;
-  glm::vec3 reachTarget{0.0f}; // held while the arm lets go
+  std::vector<int> spine;  // the spine bones the aim leans
+  float leanWeight = 0.0f; // the lean's share, faded in while aiming
 };

@@ -21,9 +21,7 @@ enum class Action : uint8_t {
   Aim,
   Jump,
   Dodge,
-  Reveal, // the powers: show what can be picked up
-  Cast,   // the powers: throw what's held
-  Burst,  // the powers: a blast from the hand
+  Fire, // held, like the aim
   Count
 };
 

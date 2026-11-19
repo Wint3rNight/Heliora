@@ -1,5 +1,4 @@
 #include "PhysicsWorld.h"
-#include "Powers.h"
 #include "TestRunner.h"
 
 #include <glm/gtc/quaternion.hpp>
@@ -772,25 +771,6 @@ TEST(a_body_against_a_wall_is_swept_along_it_but_not_into_it) {
     const std::optional<PhysicsSweepHit> hit = world.sweepBody(box, glm::vec3(0.5f, 0.0f, -1.0f));
     CHECK(hit && hit->fraction < 0.01f);
     CHECK(hit && hit->normal.z > 0.99f);
-  }
-}
-
-TEST(a_held_box_against_a_wall_slides_along_it) {
-  for (const float z : {-2.25f, -2.26f}) {
-    PhysicsWorld world;
-    addWall(world);
-    const glm::vec3 at(0.0f, 2.0f, z);
-    const PhysicsBodyId box = addBox(world, at);
-    const glm::vec3 to = slideHoldPoint(at, at + glm::vec3(1.0f, 0.0f, -1.0f),
-                                        [&](glm::vec3 start, glm::vec3 move) -> std::optional<HoldContact> {
-                                          const std::optional<PhysicsSweepHit> hit =
-                                              world.sweepBody(box, move, start - at);
-                                          if (!hit)
-                                            return std::nullopt;
-                                          return HoldContact{hit->fraction, hit->normal};
-                                        });
-    CHECK(std::fabs(to.x - 1.0f) < 0.02f); // across it
-    CHECK(std::fabs(to.z - z) < 0.02f);    // not into it
   }
 }
 

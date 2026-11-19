@@ -39,11 +39,6 @@ enum class ClipSlot : uint8_t {
   DodgeBack,
   DodgeLeft,
   DodgeRight,
-  // The powers, on the upper body: the lift runs into the hold.
-  PowerLift,
-  PowerHold,
-  PowerThrow,
-  PowerBurst,
   Count
 };
 

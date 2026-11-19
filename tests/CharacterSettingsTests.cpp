@@ -62,35 +62,32 @@ TEST(tuning_stored_in_a_character_reads_back) {
   CHECK(c.variant("arcade") && c.variant("arcade")->values.size() == 2);
 }
 
-TEST(the_powers_tuning_is_saved_with_the_character) {
-  CharacterDescription c = parseText("model = a.fbx\n[tuning]\npower_lift_cap = 1800\n"
-                                     "[variant mighty]\npower_lift_cap = 6000\n");
+TEST(the_aim_animation_timing_is_saved_with_the_character) {
+  CharacterDescription c = parseText("model = a.fbx\n[tuning]\nanim_fade_aim = 0.3\n");
   CharacterTuning movement;
   AnimatorTuning animation;
   applyCharacterTuning(c, "", movement, animation);
-  CHECK_NEAR(movement.powers.liftCap, 1800.0, 1e-3);
-  CHECK_NEAR(movement.powers.throwSpeed, PowerTuning{}.throwSpeed, 1e-6); // not in the file
-  CharacterTuning mighty;
-  applyCharacterTuning(c, "mighty", mighty, animation);
-  CHECK_NEAR(mighty.powers.liftCap, 6000.0, 1e-3);
-  movement.powers.burstReach = 11.0f;
-  movement.powers.pickDwell = 0.3f;
-  storeCharacterTuning(c, movement, animation);
-  CharacterTuning back;
-  applyCharacterTuning(c, "", back, animation);
-  CHECK(back.powers == movement.powers);
-}
-
-TEST(the_powers_animation_timing_is_saved_with_the_character) {
-  CharacterDescription c = parseText("model = a.fbx\n[tuning]\nanim_fade_power = 0.3\n");
-  CharacterTuning movement;
-  AnimatorTuning animation;
-  applyCharacterTuning(c, "", movement, animation);
-  CHECK_NEAR(animation.powerFade, 0.3, 1e-4);
+  CHECK_NEAR(animation.aimFade, 0.3, 1e-4);
   animation.aimLean = 0.5f;
   storeCharacterTuning(c, movement, animation);
   AnimatorTuning back;
   applyCharacterTuning(c, "", movement, back);
   CHECK_NEAR(back.aimLean, 0.5, 1e-4);
   CHECK(back == animation);
+}
+
+TEST(the_foot_ik_tuning_is_saved_with_the_character) {
+  CharacterDescription c =
+      parseText("model = a.fbx\n[tuning]\nik_enabled = false\nik_foot_reach = 0.3\n");
+  CharacterTuning movement;
+  AnimatorTuning animation;
+  applyCharacterTuning(c, "", movement, animation);
+  CHECK(!animation.footIk.enabled);
+  CHECK_NEAR(animation.footIk.reach, 0.3, 1e-4);
+  animation.footIk.tilt = 0.4f;
+  animation.footIk.halfLife = 0.2f;
+  storeCharacterTuning(c, movement, animation);
+  AnimatorTuning back;
+  applyCharacterTuning(c, "", movement, back);
+  CHECK(back.footIk == animation.footIk);
 }

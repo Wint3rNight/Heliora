@@ -29,6 +29,17 @@
 
 // The Physics panel. The panel sets the requests, the renderer acts on them
 // and fills in the counts every frame.
+// The Sound section of the Render tab (step 1.5c): the player's volume and
+// mute, saved in settings.cfg, and what the mixer reports while playing.
+struct SoundPanel {
+  float volume = 1.0f;
+  bool mute = false;
+  float windowTop = 0.0f; // dB: the loudest sound heard lately
+  int voices = 0;
+  float ringing = 0.0f;   // seconds the ears still ring
+  bool open = false;      // a sound device or file is running
+};
+
 struct PhysicsPanel {
   bool paused = false;
   bool stepRequested = false;  // one step while paused
@@ -67,8 +78,6 @@ struct CharacterPanel {
   };
   const char *animState = nullptr;
   std::vector<PlayingClip> playing;
-  const char *powerState = nullptr; // the powers' state while playing
-  bool powerLines = false; // the powers' debug lines over their look
   // The .character file: the tuning above (movement, animation timing,
   // body) and the Clips section's choices, saved together by Save
   // character. The files to pick clips from, and what the tab asked for.
@@ -180,6 +189,7 @@ struct DebugUiContext {
   PhysicsPanel *physics = nullptr; // no panel when null
   CharacterPanel *character = nullptr; // likewise
   ControlBindings *controls = nullptr;  // likewise
+  SoundPanel *sound = nullptr;          // likewise
   // The live physics world's bodies and limit, for the grid count check.
   uint32_t bodiesInWorld = 0;
   uint32_t bodyLimit = 0;

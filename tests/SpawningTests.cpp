@@ -152,7 +152,7 @@ TEST(clip_files_are_found_by_their_extension) {
   fs::create_directories(root / "packs" / "Male");
   fs::create_directories(root / "zips");
   for (const char *file : {"packs/Male/walking.fbx", "packs/Male/idle.fbx",
-                           "Ganfaul.character", "zips/pack.zip", "rock.gltf"})
+                           "Remy.character", "zips/pack.zip", "rock.gltf"})
     std::ofstream(root / file) << "x";
   const std::vector<std::string> found = findFiles(root.string(), {".fbx"});
   CHECK(found.size() == 2);

@@ -252,9 +252,6 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   // as new after Tab.
   const bool jump = pressed(Action::Jump);
   const bool dodge = pressed(Action::Dodge);
-  const bool reveal = pressed(Action::Reveal);
-  const bool cast = pressed(Action::Cast);
-  const bool burst = pressed(Action::Burst);
   PlayerControls controls;
   if (!fly.cameraMode || typing || asking)
     return controls;
@@ -267,9 +264,7 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.aim = held(Action::Aim);
   controls.jump = jump;
   controls.dodge = dodge;
-  controls.reveal = reveal;
-  controls.cast = cast;
-  controls.burst = burst;
+  controls.fire = held(Action::Fire);
   // InputManager's y counts up; the controls' counts down, like the screen.
   const glm::vec2 mouse = inputManager.getMouseDelta();
   controls.mouse = glm::vec2(mouse.x, -mouse.y);

@@ -878,13 +878,13 @@ TEST(character_sections_read_and_write_back) {
   const SceneDescription scene =
       parseText("[model]\nshape = box\n"
                 "# The guard by the door\n"
-                "[character]\nfile = Resources/Characters/ganfaul.character\n"
+                "[character]\nfile = Resources/Characters/remy.character\n"
                 "position = 1 0 -2\nyaw = 90\nvariant = arcade\n"
-                "[character]\nfile = Resources/Characters/ganfaul.character\n"
+                "[character]\nfile = Resources/Characters/remy.character\n"
                 "player = true\n");
   CHECK(scene.characters.size() == 2);
   const SceneCharacterEntry &guard = scene.characters[0];
-  CHECK(guard.file == "Resources/Characters/ganfaul.character");
+  CHECK(guard.file == "Resources/Characters/remy.character");
   CHECK(guard.position == glm::vec3(1.0f, 0.0f, -2.0f));
   CHECK_NEAR(guard.yaw, 90.0, 1e-6);
   CHECK(guard.variant == "arcade");

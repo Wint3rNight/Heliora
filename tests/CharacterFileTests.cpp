@@ -26,9 +26,9 @@ bool contains(const std::string &text, const std::string &part) {
   return text.find(part) != std::string::npos;
 }
 
-const std::string kGanfaul =
-    "# Ganfaul, from Mixamo\n"
-    "model = Resources/Characters/mixamo/Ganfaul M Aure.fbx\n"
+const std::string kRemy =
+    "# Remy, from Mixamo\n"
+    "model = Resources/Characters/mixamo/characters/Remy.fbx\n"
     "\n"
     "[clip]\n"
     "slot = idle\n"
@@ -43,8 +43,8 @@ const std::string kGanfaul =
 } // namespace
 
 TEST(character_file_names_the_model_and_its_clips) {
-  const CharacterDescription c = parseText(kGanfaul);
-  CHECK(c.model == "Resources/Characters/mixamo/Ganfaul M Aure.fbx");
+  const CharacterDescription c = parseText(kRemy);
+  CHECK(c.model == "Resources/Characters/mixamo/characters/Remy.fbx");
   CHECK(c.clips.size() == 2);
   if (c.clips.size() != 2)
     return;
@@ -59,7 +59,7 @@ TEST(character_file_names_the_model_and_its_clips) {
 }
 
 TEST(moves_that_repeat_loop_unless_told_otherwise) {
-  const CharacterDescription c = parseText(kGanfaul);
+  const CharacterDescription c = parseText(kRemy);
   CHECK(c.clips.size() == 2);
   if (c.clips.size() != 2)
     return;
@@ -71,18 +71,13 @@ TEST(moves_that_repeat_loop_unless_told_otherwise) {
   CHECK(!defaultLoop(ClipSlot::LandHard));
   CHECK(!defaultLoop(ClipSlot::Roll));
   CHECK(!defaultLoop(ClipSlot::DodgeLeft));
-  CHECK(!defaultLoop(ClipSlot::PowerLift)); // the powers happen once, but the hold
-  CHECK(defaultLoop(ClipSlot::PowerHold));
-  CHECK(!defaultLoop(ClipSlot::PowerThrow));
-  CHECK(!defaultLoop(ClipSlot::PowerBurst));
-  CHECK(clipSlotFromName("power_throw") == ClipSlot::PowerThrow);
   const CharacterDescription told = parseText(
       "model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\nloop = false\n");
   CHECK(told.clips.size() == 1 && !told.clips[0].loop);
 }
 
 TEST(character_file_survives_a_save_and_load) {
-  const CharacterDescription c = parseText(kGanfaul);
+  const CharacterDescription c = parseText(kRemy);
   std::istringstream again(CharacterIO::write(c));
   CHECK(CharacterIO::parse(again, "again.character") == c);
 }
@@ -96,7 +91,7 @@ TEST(every_slot_has_a_name_that_reads_back) {
 }
 
 TEST(broken_character_files_say_what_and_where) {
-  CHECK(errorFor(kGanfaul).empty());
+  CHECK(errorFor(kRemy).empty());
   const std::string unknownSlot =
       errorFor("model = a.fbx\n[clip]\nslot = backflip\nfile = b.fbx\n");
   CHECK(contains(unknownSlot, "line 3"));

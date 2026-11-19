@@ -211,9 +211,9 @@ TEST(capture_scripts_hold_keys_or_press_them_on_a_frame) {
   CHECK(!scriptedControls("w@10-20", 21).forward);
   c = scriptedControls("rmb d ctrl alt@3 s a", 3);
   CHECK(c.aim && c.right && c.crouch && c.dodge && c.back && c.left);
-  c = scriptedControls("q lmb@4 e@4", 4); // the powers' reveal, cast and burst
-  CHECK(c.reveal && c.cast && c.burst && !c.aim);
-  CHECK(!scriptedControls("lmb@4", 5).cast);
+  c = scriptedControls("lmb@4", 4); // fire, held like the aim
+  CHECK(c.fire && !c.aim);
+  CHECK(!scriptedControls("lmb@4", 5).fire);
   c = scriptedControls("mu@2-3 mr@3", 3); // the mouse: 8 px a frame up, down, left, right
   CHECK_NEAR(c.mouse.y, -8.0, 1e-6);
   CHECK_NEAR(c.mouse.x, 8.0, 1e-6);

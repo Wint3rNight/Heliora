@@ -584,7 +584,7 @@ std::optional<std::string> problemWith(const ScenePlayerStart &start) {
 std::optional<std::string> problemWith(const SceneCharacterEntry &character) {
   if (character.file.empty())
     return "'file' needs a character file, like "
-           "Resources/Characters/ganfaul.character";
+           "Resources/Characters/remy.character";
   if (!allFinite(character.position) || !std::isfinite(character.yaw))
     return "'position' and 'yaw' must be ordinary numbers";
   return std::nullopt;

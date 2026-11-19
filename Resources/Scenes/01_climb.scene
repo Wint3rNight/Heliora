@@ -1,5 +1,5 @@
 # The climb: a heap of junk to climb, about 53 m up to the gold platform,
-# built for the character's "rage" variant (ganfaul.character). Five zones,
+# built for the character's "rage" variant (remy.character). Five zones,
 # two or three ways through each, crossing back and forth over each other,
 # so a fall lands on whatever is below, or all the way down. Every jump on
 # the routes was run in the physics with the rage tuning. F5 twice starts

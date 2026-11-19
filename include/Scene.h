@@ -208,7 +208,7 @@ struct ScenePlayerStart {
 // the file's tuning it plays with. The one marked player is who the player
 // plays as, one per scene at most; the rest stand still until there's AI.
 struct SceneCharacterEntry {
-  std::string file; // Resources/Characters/ganfaul.character
+  std::string file; // Resources/Characters/remy.character
   glm::vec3 position = glm::vec3(0.0f);
   float yaw = 0.0f;
   std::string variant; // empty: the file's base tuning

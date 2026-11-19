@@ -482,7 +482,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   drawPrompt(ui);
 }
 
-// A dot in a thin ring in the middle of the scene, where the powers aim:
+// A dot in a thin ring in the middle of the scene, where the aim points:
 // light with a dark edge, so it shows on the sky and on stone.
 void ImGuiLayer::drawCrosshair(const DebugUiContext &ui) const {
   if (!ui.crosshair || ui.sceneArea.size.x <= 0.0f)
@@ -1817,6 +1817,22 @@ void ImGuiLayer::drawRenderTab(DebugUiContext &ui) {
   }
   ImGui::SameLine();
   ImGui::Text("actual: %s", presentModeName(ui.activePresentMode));
+  if (ui.sound) {
+    SoundPanel &sound = *ui.sound;
+    ImGui::SeparatorText("Sound");
+    drawSettingsButtons(ui, "sound");
+    ImGui::SliderFloat("Volume", &sound.volume, 0.0f, 1.0f, "%.2f");
+    ImGui::Checkbox("Mute", &sound.mute);
+    if (sound.open) {
+      ImGui::TextDisabled("Loudest lately %.0f dB, %d sounds", sound.windowTop, sound.voices);
+      ImGui::SetItemTooltip("Sounds more than 60 dB under the loudest one heard lately are "
+                            "silent for a moment, the way ears adapt (HDR audio)");
+      if (sound.ringing > 0.0f)
+        ImGui::TextDisabled("Ears ringing for %.1f s", sound.ringing);
+    } else {
+      ImGui::TextDisabled("Sound starts with Play");
+    }
+  }
 }
 
 void ImGuiLayer::drawLightingTab(DebugUiContext &ui) {
@@ -2043,12 +2059,14 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Playback rate", &an.playbackRate, 0.25f, 3.0f, "%.2fx");
   ImGui::SetItemTooltip("How fast walking, running and sprinting play; at 1 "
                         "the feet keep up with the ground");
-  changed |= slider("Fade into moving", &an.locomotionFade, 0.0f, 1.0f, "%.2f s");
-  changed |= slider("Fade into crouch", &an.crouchFade, 0.0f, 1.0f, "%.2f s");
-  changed |= slider("Fade into jump", &an.jumpFade, 0.0f, 1.0f, "%.2f s");
-  changed |= slider("Fade into fall", &an.fallFade, 0.0f, 1.0f, "%.2f s");
-  changed |= slider("Fade into landing", &an.landFade, 0.0f, 1.0f, "%.2f s");
-  changed |= slider("Fade into dodge", &an.dodgeFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Blend into moving", &an.locomotionFade, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("Each change of state eases from the pose that was showing "
+                        "into the new one over its blend time (inertialization)");
+  changed |= slider("Blend into crouch", &an.crouchFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Blend into jump", &an.jumpFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Blend into fall", &an.fallFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Blend into landing", &an.landFade, 0.0f, 1.0f, "%.2f s");
+  changed |= slider("Blend into dodge", &an.dodgeFade, 0.0f, 1.0f, "%.2f s");
   changed |= slider("Fall speed", &an.fallSpeed, 1.0f, 30.0f, "%.1f m/s");
   ImGui::SetItemTooltip("Falling faster than this is a real fall: the falling "
                         "loop, then the hard landing");
@@ -2059,77 +2077,22 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   ImGui::SetItemTooltip("Less time in the air than this skips the landing");
   changed |= slider("Shortest landing", &an.landMinTime, 0.0f, 1.0f, "%.2f s");
   ImGui::SetItemTooltip("Moving cuts a landing short, but not before this");
-  changed |= slider("Fade the powers", &an.powerFade, 0.0f, 1.0f, "%.2f s");
-  ImGui::SetItemTooltip("The powers' clips on the upper body, the arm's reach and "
-                        "the lean with the aim come and go over this");
+  changed |= slider("Fade the lean", &an.aimFade, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("The lean with the aim comes and goes over this");
   changed |= angle("Lean with the aim", &an.aimLean, 0.0f, 85.0f, "%.0f\u00b0");
   ImGui::SetItemTooltip("While aiming the spine leans with the camera, up or down, "
                         "at most this much");
-  // The powers' tuning (step 1.4a), saved with the character.
-  if (ImGui::CollapsingHeader("Powers")) {
-    PowerTuning &pw = c.powers;
-    ImGui::Text("State: %s", panel.powerState ? panel.powerState : "-");
-    ImGui::TextDisabled("Q reveals, right mouse grabs, left mouse throws, E bursts");
-    ImGui::Checkbox("Debug lines", &panel.powerLines);
-    ImGui::SetItemTooltip("Outlines, the hold's box and plain lines over the glow and light");
-    ImGui::SeparatorText("Lifting and holding");
-    changed |= slider("Heaviest", &pw.liftCap, 10.0f, 20000.0f, "%.0f kg");
-    ImGui::SetItemTooltip("Anything heavier only shudders");
-    changed |= slider("Hold distance", &pw.holdDistance, 0.5f, 20.0f, "%.1f m");
-    ImGui::SetItemTooltip("Past the character, along the aim; the wheel moves it");
-    changed |= slider("Nearest", &pw.holdNearest, 0.5f, 20.0f, "%.1f m");
-    changed |= slider("Farthest", &pw.holdFarthest, 0.5f, 40.0f, "%.1f m");
-    changed |= slider("Raised", &pw.holdRaise, -2.0f, 5.0f, "%.2f m");
-    changed |= slider("Lift time", &pw.liftSeconds, 0.0f, 3.0f, "%.2f s");
-    ImGui::SetItemTooltip("From where it was to the hold point");
-    changed |= slider("Lag", &pw.holdLag, 0.02f, 2.0f, "%.2f s");
-    ImGui::SetItemTooltip("It closes its distance to the hold point in about this");
-    changed |= slider("Fastest", &pw.holdSpeed, 0.5f, 100.0f, "%.1f m/s");
-    changed |= slider("Response", &pw.holdResponse, 1.0f, 200.0f, "%.0f /s");
-    ImGui::SetItemTooltip("How quickly its velocity turns to what it wants");
-    changed |= slider("Slower from", &pw.holdHeavy, 1.0f, 20000.0f, "%.0f kg");
-    ImGui::SetItemTooltip("Heavier is slower, by the square root of how much heavier");
-    changed |= slider("Tumble", &pw.tumble, 0.0f, 10.0f, "%.2f rad/s");
-    changed |= slider("Lost after", &pw.lostSeconds, 0.05f, 10.0f, "%.2f s");
-    ImGui::SetItemTooltip("Stuck this long further than Lost distance from the hold point: dropped");
-    changed |= slider("Lost distance", &pw.lostDistance, 0.5f, 50.0f, "%.1f m");
-    ImGui::SeparatorText("Throwing");
-    changed |= slider("Throw speed", &pw.throwSpeed, 1.0f, 200.0f, "%.1f m/s");
-    changed |= slider("Throw slower from", &pw.throwHeavy, 1.0f, 20000.0f, "%.0f kg");
-    changed |= slider("Throw reach", &pw.throwReach, 1.0f, 500.0f, "%.0f m");
-    ImGui::SetItemTooltip("How far out it aims when the crosshair is on nothing");
-    changed |= slider("Throw delay", &pw.throwDelay, 0.0f, 2.0f, "%.2f s");
-    changed |= slider("Throw recover", &pw.throwRecover, 0.0f, 3.0f, "%.2f s");
-    changed |= slider("Throw tumble", &pw.throwTumble, 0.0f, 20.0f, "%.1f rad/s");
-    changed |= slider("Regrab after", &pw.regrabSeconds, 0.0f, 10.0f, "%.1f s");
-    ImGui::SetItemTooltip("After a throw or a burst, before resting the crosshair on something grabs it (a press always does)");
-    ImGui::SeparatorText("Tearing");
-    changed |= slider("Tear pace", &pw.tearPace, 0.0f, 2.0f, "%.3f");
-    ImGui::SetItemTooltip("Seconds per square root of its links' strength (N s)");
-    changed |= slider("Shortest tear", &pw.tearShortest, 0.0f, 10.0f, "%.2f s");
-    changed |= slider("Longest tear", &pw.tearLongest, 0.0f, 30.0f, "%.2f s");
-    changed |= slider("Shake", &pw.tearShake, 0.0f, 0.5f, "%.3f m");
-    ImGui::SeparatorText("Burst");
-    changed |= slider("Width", &pw.burstWidth, 1.0f, 180.0f, "%.0f\u00b0");
-    changed |= slider("Reach", &pw.burstReach, 0.5f, 50.0f, "%.1f m");
-    changed |= slider("Speed", &pw.burstSpeed, 0.0f, 200.0f, "%.1f m/s");
-    ImGui::SetItemTooltip("Given to what's at the hand, less further out");
-    changed |= slider("Burst slower from", &pw.burstHeavy, 1.0f, 20000.0f, "%.0f kg");
-    changed |= slider("Upward", &pw.burstLift, 0.0f, 3.0f, "%.2f");
-    changed |= slider("Hit", &pw.burstImpulse, 0.0f, 100000.0f, "%.0f N s");
-    ImGui::SetItemTooltip("On what breaks, at the hand");
-    changed |= slider("Burst delay", &pw.burstDelay, 0.0f, 2.0f, "%.2f s");
-    changed |= slider("Burst recover", &pw.burstRecover, 0.0f, 3.0f, "%.2f s");
-    changed |= slider("Cooldown", &pw.burstCooldown, 0.0f, 30.0f, "%.2f s");
-    ImGui::SeparatorText("Picking and revealing");
-    changed |= slider("Pick angle", &pw.pickAngle, 0.1f, 45.0f, "%.1f\u00b0");
-    changed |= slider("Pick reach", &pw.pickReach, 1.0f, 200.0f, "%.0f m");
-    changed |= slider("Pick dwell", &pw.pickDwell, 0.0f, 2.0f, "%.2f s");
-    ImGui::SetItemTooltip("Right mouse held, the crosshair resting on something this long grabs it");
-    changed |= slider("Pulse speed", &pw.revealSpeed, 1.0f, 500.0f, "%.0f m/s");
-    changed |= slider("Pulse reach", &pw.revealReach, 1.0f, 500.0f, "%.0f m");
-    changed |= slider("Glow time", &pw.revealSeconds, 0.1f, 60.0f, "%.1f s");
-  }
+  ImGui::SeparatorText("Feet on the ground");
+  changed |= ImGui::Checkbox("Foot IK", &an.footIk.enabled);
+  ImGui::SetItemTooltip("Feet follow steps, slopes and rubble: the hips drop to the "
+                        "lower foot and the legs bend to reach");
+  changed |= slider("Foot reach", &an.footIk.reach, 0.0f, 1.0f, "%.2f m");
+  ImGui::SetItemTooltip("How far a foot follows the ground down below the capsule's bottom");
+  changed |= angle("Foot tilt", &an.footIk.tilt, 0.0f, 70.0f, "%.0f\u00b0");
+  ImGui::SetItemTooltip("A planted foot turns to the slope at most this much");
+  changed |= slider("Settle half-life", &an.footIk.halfLife, 0.0f, 1.0f, "%.2f s");
+  ImGui::SetItemTooltip("How fast the feet and hips follow a change of ground: half way "
+                        "in this time");
   ImGui::SeparatorText("Camera");
   // The camera is the player's preference: settings.cfg, not the character.
   drawSettingsButtons(ui, "camera");

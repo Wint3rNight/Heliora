@@ -20,16 +20,14 @@ struct PlayerControls {
   bool aim = false;
   bool jump = false;      // went down this frame
   bool dodge = false;     // went down this frame
-  bool reveal = false;    // went down this frame (the powers)
-  bool cast = false;      // went down this frame (the powers)
-  bool burst = false;     // went down this frame (the powers)
+  bool fire = false;      // held
   glm::vec2 mouse{0.0f};  // pixels, screen style: +x right, +y down
   float wheel = 0.0f;     // notches, positive away from you
 };
 
 // HELIORA_CAPTURE_KEYS, for checking the character in captures, where
 // nothing presses keys: what's pressed on a frame. Space-separated keys
-// (w a s d shift ctrl alt rmb space q e lmb; mu md ml mr move the mouse 8 px
+// (w a s d shift ctrl alt rmb space lmb; mu md ml mr move the mouse 8 px
 // up, down, left, right each frame), each held all the time, or only on one
 // frame ("space@120"), or over a range of frames ("w@60-200"). Anything
 // else is skipped.

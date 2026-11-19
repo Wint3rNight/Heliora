@@ -141,8 +141,12 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Frustum.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Rubble.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Stress.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Powers.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/PowerEffects.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Ballistics.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/EffectGeometry.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Particles.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/FootIk.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioMixer.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -169,6 +173,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+# miniaudio (step 1.5c), one header plus stb_vorbis, built in AudioDevice.cpp
+# only; it opens the system's sound libraries at run time, hence dl.
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniaudio)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_DL_LIBS})
+set_source_files_properties(src/AudioDevice.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 # Linking
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -229,8 +239,12 @@ add_executable(heliora_tests
         tests/ThumbnailsTests.cpp
         tests/RubbleTests.cpp
         tests/StressTests.cpp
-        tests/PowersTests.cpp
-        tests/PowerEffectsTests.cpp
+        tests/BallisticsTests.cpp
+        tests/EffectGeometryTests.cpp
+        tests/ParticlesTests.cpp
+        tests/InertializeTests.cpp
+        tests/FootIkTests.cpp
+        tests/AudioMixerTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
 add_test(NAME heliora_tests COMMAND heliora_tests)

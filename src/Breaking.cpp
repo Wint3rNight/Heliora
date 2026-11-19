@@ -117,7 +117,7 @@ int VulkanRenderer::breakableOf(uint64_t userData) const {
 }
 
 void VulkanRenderer::clearBreakables() {
-  clearPowers(); // what they hold or tear points into what goes here
+  clearEffects(); // Play, Stop and a new scene all come through here
   if (physics) {
     for (const BreakBody &body : breakBodies)
       if (body.id.isValid())
@@ -224,6 +224,7 @@ void VulkanRenderer::rebuildBreakables() {
     object.limits = {base.pullStrength * scale, base.pushStrength * scale,
                      base.slideStrength * scale, false, desc.friction};
     object.glued = entry.glued;
+    object.surface = surfaceOf(entry.material);
     const int objectIndex = static_cast<int>(breakables.size());
     breakables.push_back(object);
     std::vector<int> pieces;
@@ -486,9 +487,8 @@ void VulkanRenderer::prepareBreakGraph() {
 
 void VulkanRenderer::handleImpacts() {
   std::vector<PhysicsImpact> impacts = physics->takeImpacts();
-  // The burst's hits come the same way (PowerPlay.cpp).
-  impacts.insert(impacts.end(), powerImpacts.begin(), powerImpacts.end());
-  powerImpacts.clear();
+  if (playing)
+    soundImpacts(impacts);
   if (!breakGraphReady)
     return;
   std::vector<BreakHit> hits;
@@ -883,8 +883,7 @@ void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
 void VulkanRenderer::settleRubble() {
   for (int b = 0; b < static_cast<int>(breakBodies.size()); ++b) {
     BreakBody &body = breakBodies[b];
-    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1 ||
-        body.id.value == heldBody.value) // held still in the air isn't settled
+    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1)
       continue;
     const int index = body.pieces.front();
     BreakPiece &piece = breakPieces[index];
@@ -1393,8 +1392,7 @@ void VulkanRenderer::gatherLiveLoads() {
     int holding = 0;
     for (const PhysicsRest &rest : rests)
       holding += rest.normal.y >= kSupportFacing;
-    // What the power holds weighs nothing on what it touches.
-    if (mass <= 0.0f || holding == 0 || id == heldBody.value)
+    if (mass <= 0.0f || holding == 0)
       continue;
     for (const PhysicsRest &rest : rests)
       if (rest.normal.y >= kSupportFacing)

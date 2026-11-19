@@ -34,14 +34,11 @@ TEST(the_default_keys_are_the_old_ones) {
   CHECK(bindingName(c[Action::Dodge]) == "Left Alt");
 }
 
-TEST(the_powers_reveal_on_q_cast_on_the_left_mouse_and_burst_on_e) {
+TEST(fire_is_on_the_left_mouse) {
   const ControlBindings c;
-  CHECK(bindingName(c[Action::Reveal]) == "Q");
-  CHECK(bindingName(c[Action::Cast]) == "Left mouse");
-  CHECK(bindingName(c[Action::Burst]) == "E");
-  CHECK(std::string(actionName(Action::Reveal)) == "reveal");
-  CHECK(std::string(actionName(Action::Cast)) == "cast");
-  CHECK(std::string(actionName(Action::Burst)) == "burst");
+  CHECK(bindingName(c[Action::Fire]) == "Left mouse");
+  CHECK(std::string(actionName(Action::Fire)) == "fire");
+  CHECK(std::string(actionLabel(Action::Fire)) == "Fire");
 }
 
 TEST(every_action_has_its_own_name) {

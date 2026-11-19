@@ -142,6 +142,9 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Rubble.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Stress.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Ballistics.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Bullets.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Weapon.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EffectGeometry.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Particles.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
@@ -240,6 +243,9 @@ add_executable(heliora_tests
         tests/RubbleTests.cpp
         tests/StressTests.cpp
         tests/BallisticsTests.cpp
+        tests/BulletsTests.cpp
+        tests/WeaponFileTests.cpp
+        tests/WeaponTests.cpp
         tests/EffectGeometryTests.cpp
         tests/ParticlesTests.cpp
         tests/InertializeTests.cpp
@@ -247,6 +253,8 @@ add_executable(heliora_tests
         tests/AudioMixerTests.cpp
 )
 target_link_libraries(heliora_tests PRIVATE heliora_core)
+# Tests that check the shipped data files read them from the source tree.
+target_compile_definitions(heliora_tests PRIVATE HELIORA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME heliora_tests COMMAND heliora_tests)
 
 message(STATUS "Vulkan SDK: ${Vulkan_INCLUDE_DIRS}")

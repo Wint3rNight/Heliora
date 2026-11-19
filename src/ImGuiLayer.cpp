@@ -2093,6 +2093,10 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
   changed |= slider("Settle half-life", &an.footIk.halfLife, 0.0f, 1.0f, "%.2f s");
   ImGui::SetItemTooltip("How fast the feet and hips follow a change of ground: half way "
                         "in this time");
+  changed |= ImGui::Checkbox("Stride warping", &an.footIk.strideWarp);
+  ImGui::SetItemTooltip("Runs take steps as often as people do at that speed (measured), "
+                        "and the stride stretches to cover the ground. Off, the run and "
+                        "sprint clips play faster or slower instead. Needs foot IK");
   ImGui::SeparatorText("Camera");
   // The camera is the player's preference: settings.cfg, not the character.
   drawSettingsButtons(ui, "camera");

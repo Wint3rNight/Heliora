@@ -1,4 +1,5 @@
 #include "FootIk.h"
+#include "PoseBlend.h"
 #include "TestRunner.h"
 
 #include <glm/gtc/quaternion.hpp>
@@ -252,4 +253,91 @@ TEST(the_first_foot_down_after_a_landing_is_a_footstep) {
   Pose pose = bindPose(s);
   solveFootIk(s, rig, p, flat, true, kDt, FootIkTuning{}, state, pose);
   CHECK(state.stepped[0]);
+}
+
+namespace {
+
+// Running: the hips 10 cm lower and the knees bent, the left foot planted
+// ahead of them by reach (m) and the right behind, both on the floor.
+Pose stride(const Skeleton &s, float reach) {
+  Pose pose = bindPose(s);
+  const glm::quat armature = s.bones[kArmature].bind.rotation;
+  pose.local[kHips].translation += glm::inverse(armature) * glm::vec3(0.0f, -0.1f, 0.0f);
+  twoBoneIk(s, pose, kLUp, kLLeg, kLFoot, glm::vec3(0.1f, 0.05f, reach), glm::vec3(0, 0, 1));
+  twoBoneIk(s, pose, kRUp, kRLeg, kRFoot, glm::vec3(-0.1f, 0.05f, -reach), glm::vec3(0, 0, 1));
+  return pose;
+}
+
+Pose solveStride(const Skeleton &s, const FootIkRig &rig, const FootPlacement &p, float reach) {
+  FootIkState state;
+  Pose pose = stride(s, reach);
+  solveFootIk(s, rig, p, {ground(0.0f), ground(0.0f)}, true, kDt, FootIkTuning{}, state, pose);
+  return pose;
+}
+
+} // namespace
+
+TEST(a_longer_stride_puts_the_feet_further_from_the_hips) {
+  // Stride warping: each foot's distance ahead of or behind the hips along
+  // the way it moves grows by the stride's scale, on the same ground.
+  const Skeleton s = legRig();
+  const FootIkRig rig = findFootIkRig(s);
+  FootPlacement p;
+  p.stride = 1.2f;
+  const Pose pose = solveStride(s, rig, p, 0.2f);
+  const glm::vec3 left = boneWorld(s, pose, p, kLFoot), right = boneWorld(s, pose, p, kRFoot);
+  CHECK_NEAR(left.z, 0.24, 2e-3);
+  CHECK_NEAR(right.z, -0.24, 2e-3);
+  CHECK_NEAR(left.y, 0.05, 2e-3);
+  CHECK_NEAR(left.x, 0.1, 2e-3);
+  // Shorter, and along a turned axis: only the part along it scales.
+  p.stride = 0.5f;
+  p.strideAxis = glm::normalize(glm::vec3(1.0f, 0.0f, 1.0f));
+  const Pose shorter = solveStride(s, rig, p, 0.2f);
+  const glm::vec3 moved = boneWorld(s, shorter, p, kLFoot) - glm::vec3(0.1f, 0.05f, 0.2f);
+  const float along = glm::dot(glm::vec3(0.1f, 0.0f, 0.2f), p.strideAxis);
+  CHECK(glm::distance(moved, -0.5f * along * p.strideAxis) < 3e-3f);
+}
+
+TEST(the_rays_follow_the_longer_stride) {
+  const Skeleton s = legRig();
+  const FootIkRig rig = findFootIkRig(s);
+  FootPlacement p;
+  p.stride = 1.2f;
+  const auto rays = footRays(rig, modelSpace(s, stride(s, 0.2f)), p, FootIkTuning{});
+  CHECK_NEAR(rays[0].from.z, 0.24, 2e-3);
+  CHECK_NEAR(rays[1].to.z, -0.24, 2e-3);
+}
+
+TEST(a_planted_foot_out_of_reach_brings_the_hips_down) {
+  // 54 cm ahead of a hip joint 75 cm over the ankle is past the 0.9 m leg:
+  // the hips come down about 3 cm until each planted foot reaches its spot.
+  const Skeleton s = legRig();
+  const FootIkRig rig = findFootIkRig(s);
+  FootPlacement p;
+  p.stride = 1.8f;
+  const Pose pose = solveStride(s, rig, p, 0.3f);
+  CHECK(glm::distance(boneWorld(s, pose, p, kLFoot), glm::vec3(0.1f, 0.05f, 0.54f)) < 3e-3f);
+  CHECK(glm::distance(boneWorld(s, pose, p, kRFoot), glm::vec3(-0.1f, 0.05f, -0.54f)) < 3e-3f);
+  CHECK_NEAR(boneWorld(s, pose, p, kHips).y, 0.85 - 0.029, 3e-3);
+}
+
+TEST(a_change_of_stride_eases_in_over_the_half_life) {
+  // From 1 to 1.4 at once: half way (1.2) after the half-life.
+  const Skeleton s = legRig();
+  const FootIkRig rig = findFootIkRig(s);
+  FootIkState state;
+  FootPlacement p;
+  const std::array<GroundHit, 2> flat = {ground(0.0f), ground(0.0f)};
+  Pose pose;
+  for (int i = 0; i < 30; ++i) {
+    pose = stride(s, 0.2f);
+    solveFootIk(s, rig, p, flat, true, kDt, FootIkTuning{}, state, pose);
+  }
+  p.stride = 1.4f;
+  for (int i = 0; i < 6; ++i) {
+    pose = stride(s, 0.2f);
+    solveFootIk(s, rig, p, flat, true, kDt, FootIkTuning{}, state, pose);
+  }
+  CHECK_NEAR(boneWorld(s, pose, p, kLFoot).z, 0.24, 3e-3);
 }

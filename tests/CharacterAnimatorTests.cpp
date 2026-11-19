@@ -85,6 +85,14 @@ AnimatorInput inTheAir(float verticalSpeed) {
   return in;
 }
 
+// Moving clips played at the speed alone, as without foot IK: no stride
+// warping, so no running cadence either.
+AnimatorTuning speedMatched() {
+  AnimatorTuning t;
+  t.footIk.strideWarp = false;
+  return t;
+}
+
 float fraction(float time, float duration) {
   const float f = std::fmod(time / duration, 1.0f);
   return f < 0.0f ? f + 1.0f : f;
@@ -134,7 +142,7 @@ TEST(faster_than_the_sprint_clip_plays_it_faster) {
   // Twice the sprint clip's speed: it plays at twice its rate.
   const Skeleton s = rig();
   const AnimationLibrary l = fullLibrary();
-  CharacterAnimator a(s, l, 1.0f);
+  CharacterAnimator a(s, l, 1.0f, speedMatched());
   runFor(a, moving(14.0f), 0.2f);
   CHECK_NEAR(a.clipWeight(ClipSlot::Sprint), 1.0, 1e-3);
   CHECK_NEAR(a.clipTime(ClipSlot::Sprint), 0.4, 0.02);
@@ -149,7 +157,7 @@ TEST(the_controllers_run_speed_plays_only_the_run) {
   AnimatorInput run = moving(5.0f);
   run.runSpeed = 5.0f;
   run.sprintSpeed = 8.0f;
-  CharacterAnimator a(s, l, 1.0f);
+  CharacterAnimator a(s, l, 1.0f, speedMatched());
   runFor(a, run, 0.3f);
   CHECK_NEAR(a.clipWeight(ClipSlot::RunForward), 1.0, 1e-3);
   CHECK_NEAR(a.clipWeight(ClipSlot::Sprint), 0.0, 1e-3);
@@ -157,14 +165,14 @@ TEST(the_controllers_run_speed_plays_only_the_run) {
 
   AnimatorInput sprint = run;
   sprint.speed = 8.0f;
-  CharacterAnimator b(s, l, 1.0f);
+  CharacterAnimator b(s, l, 1.0f, speedMatched());
   runFor(b, sprint, 0.3f);
   CHECK_NEAR(b.clipWeight(ClipSlot::Sprint), 1.0, 1e-3);
   CHECK_NEAR(b.clipTime(ClipSlot::Sprint), 0.3 * 8.0 / 7.0, 0.01);
 
   AnimatorInput between = run;
   between.speed = 6.5f;
-  CharacterAnimator c(s, l, 1.0f);
+  CharacterAnimator c(s, l, 1.0f, speedMatched());
   runFor(c, between, 0.3f);
   CHECK_NEAR(c.clipWeight(ClipSlot::RunForward), 0.5, 1e-3);
   CHECK_NEAR(c.clipWeight(ClipSlot::Sprint), 0.5, 1e-3);
@@ -591,4 +599,86 @@ TEST(aiming_through_a_change_of_state_keeps_the_lean_steady) {
   aim.crouched = true; // a new state, its cross-fade starting
   a.update(aim, kDt);
   CHECK_NEAR(chestLean(s, a), 0.5, 0.01);
+}
+
+TEST(running_cadence_follows_the_measured_table) {
+  // Mercer et al. 2002, Table 1: strides a second against m/s, treadmill.
+  CHECK_NEAR(runningCadence(3.2f), 1.33, 1e-4);
+  CHECK_NEAR(runningCadence(4.5f), 1.45, 1e-4);
+  CHECK_NEAR(runningCadence(5.7f), 1.63, 1e-4);
+  CHECK_NEAR(runningCadence(6.4f), 1.73, 1e-4);
+  CHECK_NEAR(runningCadence(5.4f), 1.575, 1e-4); // half way from 5.1 to 5.7
+  // A slow jog keeps the slowest cadence (the stride shortens); past the
+  // table it carries on rising, up to an elite sprinter's.
+  CHECK_NEAR(runningCadence(2.0f), 1.33, 1e-4);
+  CHECK(runningCadence(7.5f) > 1.73f);
+  CHECK_NEAR(runningCadence(30.0f), 2.5, 1e-4);
+}
+
+TEST(a_run_plays_at_the_cadence_people_run_at_and_the_stride_makes_up_the_rest) {
+  // A sprint clip that covers 6 m/s in a 0.5 s stride, run at 5.7 m/s:
+  // 1.63 strides a second (the table), not the 1.9 its own speed would
+  // give, and each stride 5.7 / (6 x 1.63 x 0.5) longer.
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  put(l, ClipSlot::Sprint, marker(60, 0.5f, 6.0f, true));
+  AnimatorInput sprint = moving(5.7f);
+  sprint.runSpeed = 4.0f;
+  sprint.sprintSpeed = 5.7f;
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, sprint, 0.3f);
+  CHECK_NEAR(a.clipWeight(ClipSlot::Sprint), 1.0, 1e-3);
+  CHECK_NEAR(a.clipTime(ClipSlot::Sprint), 0.3 * 1.63 * 0.5, 0.005);
+  CHECK_NEAR(a.strideScale(), 5.7 / (6.0 * 1.63 * 0.5), 2e-3);
+  CHECK(glm::distance(a.strideAxis(), glm::vec3(0.0f, 0.0f, 1.0f)) < 1e-5f);
+}
+
+TEST(without_stride_warping_a_run_plays_at_its_speed) {
+  // Off, or with foot IK off: the clip keeps up with the ground by its rate.
+  const Skeleton s = rig();
+  AnimationLibrary l = fullLibrary();
+  put(l, ClipSlot::Sprint, marker(60, 0.5f, 6.0f, true));
+  AnimatorInput sprint = moving(5.7f);
+  sprint.runSpeed = 4.0f;
+  sprint.sprintSpeed = 5.7f;
+  AnimatorTuning noIk;
+  noIk.footIk.enabled = false;
+  for (const AnimatorTuning &t : {speedMatched(), noIk}) {
+    CharacterAnimator a(s, l, 1.0f, t);
+    runFor(a, sprint, 0.3f);
+    CHECK_NEAR(a.clipTime(ClipSlot::Sprint), 0.3 * 5.7 / 6.0, 0.005);
+    CHECK_NEAR(a.strideScale(), 1.0, 1e-5);
+  }
+}
+
+TEST(walking_crouching_and_running_sideways_keep_their_own_stride) {
+  const Skeleton s = rig();
+  const AnimationLibrary l = fullLibrary();
+  CharacterAnimator walk(s, l, 1.0f);
+  runFor(walk, moving(1.5f), 0.3f);
+  CHECK_NEAR(walk.strideScale(), 1.0, 1e-5);
+  AnimatorInput crouched = moving(1.0f);
+  crouched.crouched = true;
+  CharacterAnimator crouch(s, l, 1.0f);
+  runFor(crouch, crouched, 0.5f);
+  CHECK_NEAR(crouch.strideScale(), 1.0, 1e-5);
+  // Aiming, running to the right: no cadence data for that.
+  AnimatorInput strafe = moving(4.0f);
+  strafe.aiming = true;
+  strafe.direction = glm::vec2(1.0f, 0.0f);
+  CharacterAnimator side(s, l, 1.0f);
+  runFor(side, strafe, 0.3f);
+  CHECK_NEAR(side.strideScale(), 1.0, 1e-5);
+  CHECK(glm::distance(side.strideAxis(), glm::vec3(-1.0f, 0.0f, 0.0f)) < 1e-5f);
+}
+
+TEST(the_stride_stretches_no_further_than_its_limit) {
+  // 14 m/s on a 7 m/s sprint: 2.5 strides a second would need each 1.6
+  // times as long; it stops at 1.3 and the clip plays faster for the rest.
+  const Skeleton s = rig();
+  const AnimationLibrary l = fullLibrary();
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, moving(14.0f), 0.2f);
+  CHECK_NEAR(a.strideScale(), 1.3, 1e-4);
+  CHECK_NEAR(a.clipTime(ClipSlot::Sprint), 0.2 * 14.0 / (7.0 * 1.3), 0.01);
 }

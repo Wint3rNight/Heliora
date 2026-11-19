@@ -58,6 +58,7 @@ std::vector<SettingBinding> characterTuningBindings(CharacterTuning &c, Animator
       {kSection, "ik_foot_reach", &a.footIk.reach, 0, 1},
       {kSection, "ik_foot_tilt", &a.footIk.tilt, 0, 1.2},
       {kSection, "ik_half_life", &a.footIk.halfLife, 0, 1},
+      {kSection, "ik_stride_warp", &a.footIk.strideWarp},
   };
 }
 

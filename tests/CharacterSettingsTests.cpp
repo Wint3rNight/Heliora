@@ -78,11 +78,13 @@ TEST(the_aim_animation_timing_is_saved_with_the_character) {
 
 TEST(the_foot_ik_tuning_is_saved_with_the_character) {
   CharacterDescription c =
-      parseText("model = a.fbx\n[tuning]\nik_enabled = false\nik_foot_reach = 0.3\n");
+      parseText("model = a.fbx\n[tuning]\nik_enabled = false\nik_foot_reach = 0.3\n"
+                "ik_stride_warp = false\n");
   CharacterTuning movement;
   AnimatorTuning animation;
   applyCharacterTuning(c, "", movement, animation);
   CHECK(!animation.footIk.enabled);
+  CHECK(!animation.footIk.strideWarp);
   CHECK_NEAR(animation.footIk.reach, 0.3, 1e-4);
   animation.footIk.tilt = 0.4f;
   animation.footIk.halfLife = 0.2f;

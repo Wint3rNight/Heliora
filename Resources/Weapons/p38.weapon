@@ -1,0 +1,58 @@
+# The Walther P38 (step 1.6). DA Pam 30-7-4 is the US Army's 1954 pamphlet
+# on it; the rest of the sources are in next.md's research notes.
+[gun]
+name = Walther P38
+
+[round]
+# 9x19, 124 grain (8.0 g) full metal jacket, as the Pist.Patr.08
+bullet_mass = 0.008    # kg
+muzzle_speed = 340     # m/s, DA Pam 30-7-4
+drag = G1
+coefficient = 0.145    # Hornady's 124 gr FMJ round nose
+zero_range = 25        # estimate: a pistol's sights are set close
+tracer_every = 0
+
+[penetration]
+# m into each material at a speed in m/s; no authoritative depths for 9 mm
+wood_depth = 0.1       # estimate
+wood_speed = 340
+stone_depth = 0.01     # estimate: stops in brick and concrete (research)
+stone_speed = 340
+dirt_depth = 0.08      # estimate
+dirt_speed = 340
+metal_depth = 0.004    # estimate: gets through the FBI protocol's two 20-gauge sheets (1.8 mm) with plenty left
+metal_speed = 340
+ice_depth = 0.05       # estimate
+ice_speed = 340
+rubber_depth = 0.1     # estimate
+rubber_speed = 340
+flesh_depth = 0.6      # estimate, until step 1.9
+flesh_speed = 340
+
+[action]
+magazine = 8           # DA Pam 30-7-4
+rate = 900             # estimate: the slide cycles in about 70 ms; it fires once a pull
+automatic = false
+locks_open = true      # the slide stays back after the last round
+
+[spread]
+first_up = 1.5         # estimate
+first_side = 1.5       # estimate
+follow_up = 3.0        # estimate
+follow_side = 3.0      # estimate
+standing = 1.34        # as the AKM's, NSD p.162
+moving = 1.52
+hip = 15               # estimate
+
+[recoil]
+impulse = 2.9          # estimate: the bullet's 2.7 N s and a guess at the powder's
+return = 0.15          # estimate
+
+[reload]
+partial = 2.0          # estimate
+empty = 2.5            # estimate, the slide let go too
+
+[carry]
+mass = 1.03            # kg loaded (research)
+length = 0.215         # m
+spare_magazines = 1    # the holster's pocket

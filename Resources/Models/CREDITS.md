@@ -12,6 +12,8 @@ pages. Everything here is free to use in a game. CC0 needs no credit; CC BY
 | `bolt_action_rifle_7_62` | Scoped bolt-action rifle, separate bolt and scope, and a 7.62x54 bullet; 4k | https://polyhaven.com/a/bolt_action_rifle_7_62 | CC0 |
 | `ammo_box` | Military ammo can; 2k | https://polyhaven.com/a/ammo_box | CC0 |
 | `stein_classic/` | Free Classic Weapons Pack by Stein Games: AK47, 1911, MP5, M14, M700, Mac10, Tec9, lever action; skinned FBX with bones for the magazine, slide or bolt and trigger; 2k, Unreal-style packed maps | https://stein-indie.itch.io/classic-weapons-pack | CC0 (`license.txt`) |
+| `rpg7/javadbayat/` | RPG-7 with a rocket, two meshes; six PBR texture sets (wood, metals, plastic, the rocket), but the FBX has one material, so which faces use which set is lost | "RPG 7 ( Free Model )" by javadbayat, https://sketchfab.com/3d-models/rpg-7-free-model-99c0af8a1803490a86edc48cd3bfc700 | CC BY 4.0: credit the author in the game's credits |
+| `rpg7/theparazit/` | RPG-7 with rockets (two texture sets, 4k), skinned, plus first-person arm animations on Unreal's mannequin arms (show, hide, idle, shoot, reload, walk); no full-body clips | "RPG-7 Animations" by TheParaziT, https://sketchfab.com/3d-models/rpg-7-animations-f2bef085e0164a34a4b090c73dcdc3f5 | CC BY 4.0: credit the author in the game's credits |
 
 ## Vehicles (`Vehicles/`)
 

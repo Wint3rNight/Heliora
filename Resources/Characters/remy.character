@@ -51,6 +51,7 @@ ik_enabled = true
 ik_foot_reach = 0.45
 ik_foot_tilt = 0.5236
 ik_half_life = 0.1
+ik_stride_warp = true
 
 # Standing still, walking and running ahead: the plain Male locomotion pack.
 # The sprint is Mixamo's unarmed one.
@@ -70,10 +71,8 @@ file = Resources/Characters/mixamo/packs/Male Locomotion Pack/standard run.fbx
 slot = sprint
 file = Resources/Characters/mixamo/clips/Unarmed/Sprint.fbx
 
-# The other directions, used while aiming: the pack's strafes, and walking
-# backwards for both back slots. The animator plays a clip at the rate that
-# matches the speed, so the walk back runs faster for running back; it
-# stands in until a real run back (Mixamo "Running Backward") is here.
+# The other directions, used while aiming: the pack's strafes, and Mixamo's
+# walking and running backwards.
 [clip]
 slot = walk_back
 file = Resources/Characters/mixamo/clips/Unarmed/Walking Backwards.fbx
@@ -88,7 +87,7 @@ file = Resources/Characters/mixamo/packs/Male Locomotion Pack/right strafe walki
 
 [clip]
 slot = run_back
-file = Resources/Characters/mixamo/clips/Unarmed/Walking Backwards.fbx
+file = Resources/Characters/mixamo/clips/Unarmed/Running Backward.fbx
 
 [clip]
 slot = run_left

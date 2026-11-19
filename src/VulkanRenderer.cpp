@@ -2212,7 +2212,10 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     const bool feetDown = input.grounded && !input.dodging &&
                           (state == AnimState::Locomotion || state == AnimState::Crouch ||
                            state == AnimState::Land);
-    placeFeet(i, FootPlacement{feet, facing, c.scale}, feetDown, frameSeconds, pose, model);
+    FootPlacement feetAt{feet, facing, c.scale};
+    feetAt.stride = c.animator->strideScale();
+    feetAt.strideAxis = c.animator->strideAxis();
+    placeFeet(i, feetAt, feetDown, frameSeconds, pose, model);
     c.skinning = skinningMatrices(asset->skeleton, model);
     // Show skeleton draws the bones instead of the body.
     const int shown = showSkeleton ? -1 : c.file->copies[c.copy].model;

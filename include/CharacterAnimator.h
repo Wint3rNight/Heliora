@@ -62,6 +62,13 @@ struct AnimatorInput {
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
 
+// Strides a second (two steps each) people run at, by speed in m/s:
+// Mercer, Vance, Hreljac & Hamill 2002 (Eur J Appl Physiol 87, Table 1),
+// eight men on a treadmill from 3.2 to 6.4 m/s, joined in straight lines.
+// Slower holds the slowest (the stride shortens instead); faster carries on
+// the last line's rise, up to 2.5 (about an elite sprinter's, est.).
+float runningCadence(float speed);
+
 // The state's name, for the editor: "Locomotion", "Crouch" and so on.
 const char *animStateName(AnimState state);
 
@@ -126,6 +133,12 @@ public:
   // How far into a clip it is, seconds (the walk, run and sprint stay in
   // step, so their times are the same fraction of their lengths).
   float clipTime(ClipSlot slot) const;
+  // Running, the clips play at runningCadence and each stride is this many
+  // times as long as the clip's, along strideAxis (the skeleton's space),
+  // so the feet still keep up with the ground; foot IK does the stretching.
+  // 1 when walking, crouching, in the air, or with stride warping off.
+  float strideScale() const { return stride; }
+  glm::vec3 strideAxis() const { return axis; }
   void setTuning(const AnimatorTuning &t) { tune = t; }
 
 private:
@@ -146,6 +159,8 @@ private:
   float takeoffSpeed = 0.0f; // m/s up when it left the ground
   float idleTime = 0.0f;  // idle and crouch idle run on their own
   float phase = 0.0f;     // 0 to 1, shared by the moving loops
+  float stride = 1.0f;    // see strideScale
+  glm::vec3 axis{0.0f, 0.0f, 1.0f};
   ClipSlot oneShot = ClipSlot::Jump; // the clip a Jump, Land or Dodge plays
 
   Pose current;           // the state's pose with the aim's lean on top

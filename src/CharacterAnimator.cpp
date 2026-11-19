@@ -79,7 +79,29 @@ struct Moving {
   float weight;
 };
 
+// Each running stride at most this much longer or shorter than the clip's
+// (est.): past it the clip plays faster or slower instead.
+constexpr float kShortestStride = 0.7f;
+constexpr float kLongestStride = 1.3f;
+
 } // namespace
+
+float runningCadence(float speed) {
+  struct Point {
+    float speed, strides;
+  };
+  static constexpr Point kTable[] = {{3.2f, 1.33f}, {3.8f, 1.37f}, {4.5f, 1.45f},
+                                     {5.1f, 1.52f}, {5.7f, 1.63f}, {6.4f, 1.73f}};
+  constexpr int n = sizeof(kTable) / sizeof(kTable[0]);
+  if (!(speed > kTable[0].speed))
+    return kTable[0].strides;
+  int i = 0;
+  while (i + 2 < n && speed > kTable[i + 1].speed)
+    ++i;
+  const Point a = kTable[i], b = kTable[i + 1];
+  const float along = (speed - a.speed) / (b.speed - a.speed);
+  return std::min(a.strides + (b.strides - a.strides) * along, 2.5f);
+}
 
 const char *animStateName(AnimState state) {
   switch (state) {
@@ -225,6 +247,12 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
 
   // --- The state's pose.
   weights.fill(0.0f);
+  stride = 1.0f;
+  // Where it moves, in the skeleton's space: it faces +z with its right
+  // along -x (glTF's and Mixamo's way round).
+  axis = input.aiming && glm::length(input.direction) > 1e-4f
+             ? glm::normalize(glm::vec3(-input.direction.x, 0.0f, input.direction.y))
+             : glm::vec3(0.0f, 0.0f, 1.0f);
   Mix mix;
   auto sample = [&](ClipSlot slot, float time, float weight) {
     if (weight <= 0.0f)
@@ -251,11 +279,12 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       std::array<ClipSlot, 4> slots; // forward, back, left, right
       float speed = 0.0f;     // where its row sits
       float clipSpeed = 0.0f; // what its clips cover at their own rate
+      bool running = false;   // played at a runner's cadence
     };
     const std::array<float, 4> dirWeights = {dir.forward, dir.back, dir.left,
                                              dir.right};
     std::vector<Level> levels;
-    auto addLevel = [&](std::array<ClipSlot, 4> slots, float gaitSpeed) {
+    auto addLevel = [&](std::array<ClipSlot, 4> slots, float gaitSpeed, bool running) {
       float own = 0.0f;
       for (int k = 0; k < 4; ++k)
         if (dirWeights[k] > 0.0f)
@@ -267,23 +296,23 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       // Only levels faster than the one below make a usable row.
       const float below = levels.empty() ? 0.0f : levels.back().speed;
       if (speed > below + 1e-4f)
-        levels.push_back({slots, speed, own});
+        levels.push_back({slots, speed, own, running});
     };
     if (crouch) {
       addLevel({ClipSlot::CrouchForward, ClipSlot::CrouchBack, ClipSlot::CrouchLeft,
                 ClipSlot::CrouchRight},
-               input.crouchSpeed);
+               input.crouchSpeed, false);
     } else {
       addLevel({ClipSlot::WalkForward, ClipSlot::WalkBack, ClipSlot::WalkLeft,
                 ClipSlot::WalkRight},
-               0.0f);
+               0.0f, false);
       addLevel({ClipSlot::RunForward, ClipSlot::RunBack, ClipSlot::RunLeft,
                 ClipSlot::RunRight},
-               input.runSpeed);
+               input.runSpeed, true);
       if (!input.aiming)
         addLevel({ClipSlot::Sprint, ClipSlot::Sprint, ClipSlot::Sprint,
                   ClipSlot::Sprint},
-                 input.sprintSpeed);
+                 input.sprintSpeed, true);
     }
     std::vector<float> speeds = {0.0f};
     for (const Level &level : levels)
@@ -295,10 +324,13 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     // clips cover, so the feet keep up whatever speed a row sits at.
     std::vector<Moving> moving;
     float blendedLength = 0.0f, movingWeight = 0.0f, naturalSpeed = 0.0f;
+    float runningShare = 0.0f; // of the moving rows, running ahead
     for (size_t r = 0; r < levels.size(); ++r) {
       if (rows[r + 1] <= 0.0f)
         continue;
       naturalSpeed += rows[r + 1] * levels[r].clipSpeed;
+      if (levels[r].running)
+        runningShare += rows[r + 1] * dir.forward;
       for (int k = 0; k < 4; ++k) {
         const float w = rows[r + 1] * dirWeights[k];
         if (w <= 0.0f)
@@ -312,9 +344,20 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     }
     if (movingWeight > 0.0f && blendedLength > 0.0f) {
       blendedLength /= movingWeight;
-      const float rate = naturalSpeed > 1e-4f
-                             ? std::clamp(input.speed / naturalSpeed, 0.25f, 3.0f)
-                             : 1.0f;
+      float rate = naturalSpeed > 1e-4f ? input.speed / naturalSpeed : 1.0f;
+      // Running ahead, a stride a loop at the cadence people really run at
+      // that speed, the stride stretched or shortened to cover the rest:
+      // Mixamo's sprint takes a full sprint's quick steps at a jog's speed.
+      if (tune.footIk.enabled && tune.footIk.strideWarp && naturalSpeed > 1e-4f &&
+          runningShare > 0.0f) {
+        const float share = runningShare / movingWeight;
+        const float cadenceRate = runningCadence(input.speed) * blendedLength;
+        const float wanted = rate + (cadenceRate - rate) * share;
+        stride = std::clamp(input.speed / (naturalSpeed * wanted), kShortestStride,
+                            kLongestStride);
+        rate = input.speed / (naturalSpeed * stride);
+      }
+      rate = std::clamp(rate, 0.25f, 3.0f);
       phase = std::fmod(phase + dt * rate * tune.playbackRate / blendedLength, 1.0f);
     }
     sample(crouch ? ClipSlot::CrouchIdle : ClipSlot::Idle, idleTime, rows[0]);

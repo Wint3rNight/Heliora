@@ -2,10 +2,11 @@
 
 // What a character carries and has in its hands (step 1.6): a pistol in a
 // holster on the right hip and one long gun on its back (the user: "One
-// long gun"), drawn with 1 and 2 and put away with H. Drawing takes time,
+// long gun"), drawn with 1 and 2 and put away with H, and a rocket
+// launcher on the back too (step 1.7), with 3. Drawing takes time,
 // and swapping puts the first gun away before the next comes out.
 
-enum class Holdable { None, Pistol, Long };
+enum class Holdable { None, Pistol, Long, Launcher };
 
 // Seconds to draw and to put away (est.: a pistol from the holster to the
 // first aimed shot takes 1.5 to 1.8 s, of which getting it into the hand is
@@ -15,6 +16,9 @@ struct LoadoutTiming {
   float pistolHolster = 0.7f;
   float longDraw = 1.2f;
   float longHolster = 1.3f;
+  // A rocket launcher off the back, heavier and longer still (est.).
+  float launcherDraw = 1.5f;
+  float launcherHolster = 1.5f;
 };
 
 class Loadout {
@@ -22,7 +26,7 @@ public:
   explicit Loadout(LoadoutTiming timing = {});
   // What it carries; anything in its hands that it no longer carries goes
   // at once.
-  void give(bool pistol, bool longGun);
+  void give(bool pistol, bool longGun, bool launcher = false);
   bool has(Holdable which) const;
   // 1, 2 or H: the gun wanted in the hands (None to put it away). One it
   // doesn't carry is ignored.
@@ -41,7 +45,7 @@ private:
   float holsterTime(Holdable which) const;
 
   LoadoutTiming timing;
-  bool pistol = false, longGun = false;
+  bool pistol = false, longGun = false, launcher = false;
   Holdable current = Holdable::None; // in the hands
   Holdable wanted = Holdable::None;
   float amount = 0.0f;

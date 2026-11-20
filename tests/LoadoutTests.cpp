@@ -102,3 +102,32 @@ TEST(taking_the_guns_away_empties_the_hands_at_once) {
   CHECK(l.inHand() == Holdable::None);
   CHECK_NEAR(l.drawn(), 0.0, 1e-6);
 }
+
+TEST(a_launcher_is_a_third_thing_to_carry_drawn_off_the_back) {
+  LoadoutTiming t = timing();
+  t.launcherDraw = 1.5f;
+  t.launcherHolster = 1.5f;
+  Loadout l(t);
+  l.give(true, true);
+  l.select(Holdable::Launcher);
+  CHECK(l.inHand() == Holdable::None); // not carried, so ignored
+  l.give(true, true, true);
+  CHECK(l.has(Holdable::Launcher));
+  l.select(Holdable::Launcher);
+  runFor(l, 0.75f);
+  CHECK(l.inHand() == Holdable::Launcher);
+  CHECK_NEAR(l.drawn(), 0.5, 0.02);
+  runFor(l, 0.76f);
+  CHECK(l.ready());
+  // Swapping to the rifle puts it away first.
+  l.select(Holdable::Long);
+  runFor(l, 1.0f);
+  CHECK(l.inHand() == Holdable::Launcher);
+  runFor(l, 0.6f);
+  CHECK(l.inHand() == Holdable::Long);
+  // Taken away while drawn: gone at once.
+  l.select(Holdable::Launcher);
+  runFor(l, 5.0f);
+  l.give(true, true, false);
+  CHECK(l.inHand() == Holdable::None);
+}

@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Bullets.h"
+#include "Rocket.h"
 #include "SettingsFile.h"
 
 #include <array>
+#include <optional>
 #include <string>
 
 // What a gun is (step 1.6), from its .weapon file (Resources/Weapons/), in
@@ -32,7 +34,7 @@ struct WeaponSpec {
   int tracerEvery = 0;        // every nth round lights up; 0 none
   std::array<MatterPenetration, static_cast<size_t>(Matter::Count)> penetration{};
   // The action.
-  int magazine = 30;          // rounds in a full magazine
+  int magazine = 30;          // rounds in a full magazine; 0 loaded by hand, a round at a time
   float rate = 600.0f;        // rounds a minute the action cycles at
   bool automatic = true;      // has an automatic setting
   bool locksOpen = false;     // the slide or bolt stays back after the last round
@@ -59,11 +61,14 @@ struct WeaponSpec {
   // Carrying.
   float mass = 3.6f;          // kg loaded
   float length = 0.88f;       // m
-  int spareMagazines = 4;     // carried besides the one in the gun
+  int spareMagazines = 4;     // carried besides the one in the gun (rounds, loaded by hand)
   // Sounds: a shot recorded near and from further off (the game crossfades
   // them by distance), and how loud a shot is a metre away, dB SPL.
   std::string shotSound, farShotSound;
   float loudness = 160.0f;
+  // A launcher fires this rocket instead of bullets: its [rocket] and
+  // [warhead] sections.
+  std::optional<RocketSpec> rocket;
   bool operator==(const WeaponSpec &) const = default;
 };
 

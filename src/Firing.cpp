@@ -118,18 +118,23 @@ void VulkanRenderer::fireShots(int index, CarriedGun &gun) {
   const glm::mat3 frame(gun.aimedFrom);
   const bool rifle = !gun.atSide;
   for (const Shot &shot : gun.shots) {
-    Bullet bullet;
-    bullet.round = &asset.round;
-    bullet.owner = index;
-    bullet.tracer = shot.tracer;
-    bullet.flight.position = from;
-    bullet.flight.velocity = shotDirection(frame, asset.zero, shot.deviation) * asset.spec.muzzleSpeed;
-    bullets.push_back(bullet);
     fireDice ^= fireDice << 13;
     fireDice ^= fireDice >> 17;
     fireDice ^= fireDice << 5;
-    flashes.push_back({from, glm::vec3(frame[2]), rifle ? kRifleFlash : kPistolFlash, (fireDice & 1u) != 0});
-    ejectCasing(gun);
+    if (asset.spec.rocket) {
+      // A launcher: a rocket, not a bullet (src/Rockets.cpp), and nothing ejected.
+      launchRocket(index, gun, shot);
+    } else {
+      Bullet bullet;
+      bullet.round = &asset.round;
+      bullet.owner = index;
+      bullet.tracer = shot.tracer;
+      bullet.flight.position = from;
+      bullet.flight.velocity = shotDirection(frame, asset.zero, shot.deviation) * asset.spec.muzzleSpeed;
+      bullets.push_back(bullet);
+      flashes.push_back({from, glm::vec3(frame[2]), rifle ? kRifleFlash : kPistolFlash, (fireDice & 1u) != 0});
+      ejectCasing(gun);
+    }
     gun.sinceShot = 0.0f;
     // The kick you see: back, up (a little more or less each shot) and
     // aside either way.
@@ -270,32 +275,9 @@ void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
       const uint64_t b = userData & ~kBreakBodyFlag;
       if (b < breakBodies.size() && breakBodies[b].id.value == id.value) {
         if (const int p = pieceAt(breakBodies[b], impact.point);
-            p >= 0 && breakPieces[p].alive && !brokenNow.contains(p)) {
-          BreakPiece &piece = breakPieces[p];
-          if (!(piece.damage.toughness > 0.0f)) {
-            const SceneModelEntry &entry = currentScene.models[breakables[piece.object].entry.index];
-            const std::optional<PhysicsMaterial> material =
-                findMaterial(entry.material.value_or("stone"));
-            piece.damage.toughness =
-                pieceToughness(piece.shape->volume, material ? material->damageEnergy : 0.0f);
-          }
-          if (piece.damage.toughness > 0.0f) {
-            stressDirty = true; // its links are weaker now
-            if (piece.damage.add(impact.energy())) {
-              spdlog::info("Bullets broke a piece ({:.3f} m^3) after {:.0f} J", piece.shape->volume,
-                           piece.damage.energy);
-              for (int link : pieceLinks[p])
-                breakLinks[link].broken = true;
-              for (int link : pieceGroundLinks[p])
-                groundLinks[link].broken = true;
-              piece.anchor = false; // shot loose: nothing holds it in place now
-              brokenNow.insert(p);
-              queueBulletSplit(p, impact.point, impact.direction);
-              broke.push_back({impact.point, impact.direction, impact.impulse(), PhysicsBodyId{},
-                               glm::vec3(0.0f)});
-            }
-          }
-        }
+            p >= 0 && breakPieces[p].alive && !brokenNow.contains(p) &&
+            damagePiece(p, impact.energy(), impact.point, impact.direction, impact.impulse(), broke))
+          brokenNow.insert(p);
       }
     }
     if (audio && sounded < kHitSoundsPerFrame) {
@@ -306,6 +288,32 @@ void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
   }
   if (!broke.empty())
     regroupBreakables(broke);
+}
+
+bool VulkanRenderer::damagePiece(int p, float energy, glm::vec3 point, glm::vec3 dir, float impulse,
+                                  std::vector<BreakHit> &broke) {
+  BreakPiece &piece = breakPieces[p];
+  if (!(piece.damage.toughness > 0.0f)) {
+    const SceneModelEntry &entry = currentScene.models[breakables[piece.object].entry.index];
+    const std::optional<PhysicsMaterial> material = findMaterial(entry.material.value_or("stone"));
+    piece.damage.toughness = pieceToughness(piece.shape->volume, material ? material->damageEnergy : 0.0f);
+  }
+  if (!(piece.damage.toughness > 0.0f))
+    return false; // damage never breaks it
+  if (energy < 0.0f) // all it has left
+    energy = std::max(piece.damage.toughness - piece.damage.energy, 0.0f) + 1e-3f;
+  stressDirty = true; // its links are weaker now
+  if (!piece.damage.add(energy))
+    return false;
+  spdlog::info("A piece ({:.3f} m^3) broke after {:.0f} J", piece.shape->volume, piece.damage.energy);
+  for (int link : pieceLinks[p])
+    breakLinks[link].broken = true;
+  for (int link : pieceGroundLinks[p])
+    groundLinks[link].broken = true;
+  piece.anchor = false; // broken loose: nothing holds it in place now
+  queueBulletSplit(p, point, dir);
+  broke.push_back({point, dir, impulse, PhysicsBodyId{}, glm::vec3(0.0f)});
+  return true;
 }
 
 void VulkanRenderer::stepShots(float seconds) {

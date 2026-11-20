@@ -58,6 +58,21 @@ Image packOrm(const Image &packed, PackedOrder order) {
   return out;
 }
 
+Image ormFromMaps(const Image &roughness, const Image &metal) {
+  Image out{roughness.width, roughness.height, 3, {}};
+  if (metal.width != roughness.width || metal.height != roughness.height || roughness.channels < 1 ||
+      metal.channels < 1)
+    return out;
+  const size_t count = static_cast<size_t>(roughness.width) * roughness.height;
+  out.pixels.resize(count * 3);
+  for (size_t i = 0; i < count; ++i) {
+    out.pixels[i * 3 + 0] = 255; // no occlusion map
+    out.pixels[i * 3 + 1] = roughness.pixels[i * roughness.channels];
+    out.pixels[i * 3 + 2] = metal.pixels[i * metal.channels];
+  }
+  return out;
+}
+
 void flipGreen(Image &normal) {
   if (normal.channels < 2)
     return;

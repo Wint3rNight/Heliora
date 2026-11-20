@@ -30,8 +30,10 @@ Weapon::Weapon(const WeaponSpec &spec, uint32_t seed)
 void Weapon::load(int magazines) {
   const int n = std::max(magazines, 0);
   chamber = n > 0;
-  magazine = n > 0 ? gun.magazine : -1;
-  spares.assign(static_cast<size_t>(std::max(n - 1, 0)), gun.magazine);
+  // Loaded by hand (no magazine): one round in, each spare one round.
+  const bool byHand = gun.magazine <= 0;
+  magazine = n > 0 && !byHand ? gun.magazine : -1;
+  spares.assign(static_cast<size_t>(std::max(n - 1, 0)), byHand ? 1 : gun.magazine);
   locked = false;
   reloadTime = 0.0f;
   fired = 0;
@@ -125,7 +127,7 @@ void Weapon::update(float dt, bool trigger, FiringStance stance, WeaponEvents &e
 bool Weapon::reload() {
   if (reloadTime > 0.0f)
     return false;
-  if (chamber && magazine >= gun.magazine)
+  if (chamber && (gun.magazine <= 0 || magazine >= gun.magazine))
     return false;
   const auto fullest = std::max_element(spares.begin(), spares.end());
   if (fullest == spares.end() || *fullest <= 0)
@@ -147,6 +149,14 @@ void Weapon::finishReload() {
   const auto fullest = std::max_element(spares.begin(), spares.end());
   if (fullest == spares.end())
     return;
+  if (gun.magazine <= 0) {
+    // By hand: a round from the pack into the empty tube or chamber.
+    if (--*fullest <= 0)
+      spares.erase(fullest);
+    chamber = true;
+    locked = false;
+    return;
+  }
   const int out = magazine;
   magazine = *fullest;
   spares.erase(fullest);

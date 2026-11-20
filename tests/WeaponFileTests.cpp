@@ -103,6 +103,45 @@ TEST(a_weapon_written_and_read_back_is_the_same) {
   CHECK(back == spec);
 }
 
+TEST(a_launchers_file_gives_its_rocket_and_warhead) {
+  const WeaponSpec rpg = weaponFromSettings(parsed(R"([gun]
+name = RPG-7
+[action]
+magazine = 0
+[rocket]
+mass = 2.5
+diameter = 0.07
+launch_speed = 120
+motor_from = 12
+motor_to = 450
+top_speed = 300
+self_destruct = 5
+reach = 950
+[warhead]
+steel = 0.3
+tnt = 0.5
+)"));
+  CHECK(rpg.magazine == 0);
+  CHECK(rpg.rocket.has_value());
+  // (Numbers unlike the defaults, so reading nothing can't pass.)
+  CHECK_NEAR(rpg.rocket->mass, 2.5, 1e-6);
+  CHECK_NEAR(rpg.rocket->diameter, 0.07, 1e-6);
+  CHECK_NEAR(rpg.rocket->launchSpeed, 120.0, 1e-4);
+  CHECK_NEAR(rpg.rocket->motorFrom, 12.0, 1e-4);
+  CHECK_NEAR(rpg.rocket->motorTo, 450.0, 1e-4);
+  CHECK_NEAR(rpg.rocket->topSpeed, 300.0, 1e-4);
+  CHECK_NEAR(rpg.rocket->selfDestruct, 5.0, 1e-6);
+  CHECK_NEAR(rpg.rocket->reach, 950.0, 1e-4);
+  CHECK_NEAR(rpg.rocket->jetSteel, 0.3, 1e-6);
+  CHECK_NEAR(rpg.rocket->warheadTnt, 0.5, 1e-6);
+  // A gun without a [rocket] fires bullets.
+  CHECK(!weaponFromSettings(parsed(kAkmText)).rocket);
+  // Written and read back, the same.
+  SettingsFile file;
+  weaponToSettings(rpg, file);
+  CHECK(weaponFromSettings(parsed(file.write())) == rpg);
+}
+
 TEST(a_value_missing_or_unknown_keeps_the_default) {
   const WeaponSpec spec = weaponFromSettings(parsed("[gun]\nname = X\n[round]\ndrag = G9\n"));
   CHECK(spec.name == "X");
@@ -128,6 +167,12 @@ TEST(the_shipped_weapons_read_as_their_sources_say) {
   CHECK(p38.name == "Walther P38");
   CHECK(p38.magazine == 8);
   CHECK(!p38.automatic && p38.locksOpen);
+  const WeaponSpec rpg = weaponFromSettings(SettingsFile::load(folder + "rpg7.weapon"));
+  CHECK(rpg.name == "RPG-7");
+  CHECK(rpg.magazine == 0 && !rpg.automatic);
+  CHECK(rpg.rocket && rpg.rocket->launchSpeed == 115.0f && rpg.rocket->topSpeed == 295.0f);
+  CHECK(rpg.rocket && rpg.rocket->reach == 920.0f && rpg.rocket->jetSteel == 0.26f);
+  CHECK(!akm.rocket && !p38.rocket);
   CHECK(p38.drag == DragModel::G1);
   CHECK_NEAR(p38.muzzleSpeed, 340.0, 1e-3);
   for (const Resistance &r : roundOf(p38).resistance)

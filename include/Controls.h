@@ -37,6 +37,8 @@ enum class Action : uint8_t {
   // front, and fire the detonator.
   Charge,
   Detonate,
+  // The rocket launcher (step 1.7), pressed: drawn off the back.
+  Launcher,
   Count
 };
 

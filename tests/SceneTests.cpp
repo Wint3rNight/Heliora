@@ -1073,6 +1073,24 @@ TEST(a_kit_names_its_weapons_crates) {
   CHECK(!errorOf("[kit]\ncrate = 1 2\n").empty());
 }
 
+TEST(a_kit_can_carry_a_launcher) {
+  const SceneDescription s = parseText("[kit]\nlong = akm\nlauncher = rpg7\n");
+  CHECK(s.kit && s.kit->launcher == "rpg7");
+  std::istringstream in(SceneIO::write(s));
+  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
+  CHECK(!errorOf("[kit]\nlauncher = an rpg\n").empty());
+}
+
+TEST(a_scene_has_a_wind) {
+  // m/s, the way it blows; still air without one.
+  const SceneDescription s = parseText("name = x\nwind = 3 0 -1\n");
+  CHECK(s.wind == glm::vec3(3.0f, 0.0f, -1.0f));
+  std::istringstream in(SceneIO::write(s));
+  CHECK(SceneIO::parse(in, "again.scene").wind == s.wind);
+  CHECK(parseText("name = x\n").wind == glm::vec3(0.0f));
+  CHECK(!errorOf("wind = 3 0\n").empty());
+}
+
 TEST(a_kit_with_a_bad_value_names_its_line) {
   CHECK(!errorOf("[kit]\npistol = maybe\n").empty());
   CHECK(!errorOf("[kit]\ngrenades = -1\n").empty());

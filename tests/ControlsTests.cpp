@@ -140,3 +140,9 @@ TEST(a_charge_is_placed_with_four_and_fired_with_five) {
   CHECK(bindingName(c[Action::Charge]) == "4");
   CHECK(bindingName(c[Action::Detonate]) == "5");
 }
+
+TEST(the_launcher_is_on_three) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Launcher]) == "3");
+  CHECK(std::string(actionName(Action::Launcher)) == "launcher");
+}

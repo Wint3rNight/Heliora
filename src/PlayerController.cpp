@@ -124,6 +124,7 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     else if (key == "sprint") controls.sprint = true;
     else if (key == "1") controls.pistol = true;
     else if (key == "2") controls.longGun = true;
+    else if (key == "3") controls.launcher = true;
     else if (key == "h") controls.holster = true;
     else if (key == "r") controls.reload = true;
     else if (key == "b") controls.fireMode = true;

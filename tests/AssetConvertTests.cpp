@@ -37,6 +37,18 @@ TEST(a_packed_map_is_put_in_gltfs_order) {
   CHECK(packOrm(same, PackedOrder::AoRoughnessMetal).pixels == (std::vector<uint8_t>{1, 2, 3}));
 }
 
+TEST(separate_roughness_and_metal_maps_make_one_orm_without_occlusion) {
+  // Substance's export: roughness and metal as grey maps of their own (one
+  // channel, or the first of several). No AO map: AO is white.
+  const Image rough{2, 1, 1, {40, 50}};
+  const Image metal{2, 1, 3, {200, 0, 0, 7, 0, 0}};
+  const Image orm = ormFromMaps(rough, metal);
+  CHECK(orm.width == 2 && orm.height == 1 && orm.channels == 3);
+  CHECK(orm.pixels == (std::vector<uint8_t>{255, 40, 200, 255, 50, 7}));
+  // Maps of different sizes don't go together.
+  CHECK(ormFromMaps(rough, Image{1, 1, 1, {0}}).pixels.empty());
+}
+
 TEST(a_normal_maps_green_is_flipped_for_the_other_convention) {
   Image n{2, 1, 3, {128, 0, 255, 10, 255, 200}};
   flipGreen(n);

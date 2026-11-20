@@ -262,6 +262,7 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   const bool jump = pressed(Action::Jump);
   const bool dodge = pressed(Action::Dodge);
   const bool pistol = pressed(Action::Pistol), longGun = pressed(Action::LongGun),
+             launcher = pressed(Action::Launcher),
              holster = pressed(Action::Holster), reload = pressed(Action::Reload),
              fireMode = pressed(Action::FireMode), use = pressed(Action::Use),
              charge = pressed(Action::Charge), detonate = pressed(Action::Detonate);
@@ -281,6 +282,7 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.grenade = held(Action::Grenade);
   controls.pistol = pistol;
   controls.longGun = longGun;
+  controls.launcher = launcher;
   controls.holster = holster;
   controls.reload = reload;
   controls.fireMode = fireMode;

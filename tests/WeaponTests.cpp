@@ -344,3 +344,40 @@ TEST(kicks_add_up_and_the_spring_is_the_same_at_any_frame_rate) {
   }
   CHECK(highestTwo > highestOne + 0.01f);
 }
+
+TEST(a_launcher_is_loaded_by_hand_one_round_at_a_time) {
+  // magazine = 0: no magazine, each spare is one round (the RPG-7: one
+  // rocket in the tube, the rest in the pack).
+  WeaponSpec rpg = p38Spec();
+  rpg.name = "RPG-7";
+  rpg.magazine = 0;
+  rpg.locksOpen = false;
+  rpg.reload = 6.0f;
+  rpg.emptyReload = 6.0f;
+  Weapon w(rpg);
+  w.load(3);
+  CHECK(w.chambered());
+  CHECK(w.roundsInGun() == 1);
+  CHECK(w.rounds() == 3);
+  CHECK(!w.reload()); // one's already in
+  WeaponEvents e = hold(w, true, 0.5f);
+  CHECK(e.shots.size() == 1);
+  CHECK(!w.chambered());
+  CHECK(w.rounds() == 2);
+  hold(w, false, 0.1f);
+  CHECK(hold(w, true, 0.5f).dry); // nothing left in the tube
+  CHECK(w.reload());
+  CHECK_NEAR(w.reloadLeft(), 6.0, 1e-6);
+  e = hold(w, false, 6.1f);
+  CHECK(e.reloaded);
+  CHECK(w.chambered());
+  CHECK(w.rounds() == 2);
+  CHECK(w.pouch().size() == 1);
+  hold(w, true, 0.1f);
+  hold(w, false, 0.1f);
+  CHECK(w.reload());
+  hold(w, false, 6.1f);
+  hold(w, true, 0.1f);
+  CHECK(w.rounds() == 0);
+  CHECK(!w.reload()); // none left
+}

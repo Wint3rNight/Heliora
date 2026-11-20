@@ -825,12 +825,24 @@ void openSection(SceneParser &p, const std::string &line, int lineNumber) {
   }
 }
 
+// Three numbers, nothing else (a place, a velocity).
+glm::vec3 threeNumbers(const std::string &key, const std::string &value, int lineNumber) {
+  std::istringstream in(value);
+  float x = 0.0f, y = 0.0f, z = 0.0f;
+  std::string rest;
+  if (!(in >> x >> y >> z) || (in >> rest))
+    parseError(lineNumber, "'" + key + "' is three numbers, x y z");
+  return {x, y, z};
+}
+
 void globalKey(SceneDescription &scene, const std::string &key,
                const std::string &value, int lineNumber) {
   if (key == "name")
     scene.name = value;
   else if (key == "environment")
     scene.environmentHdr = value;
+  else if (key == "wind")
+    scene.wind = threeNumbers(key, value, lineNumber);
   else
     parseError(lineNumber, "unknown global key '" + key + "'");
 }
@@ -884,12 +896,12 @@ void kitKey(SceneKit &kit, const std::string &key, const std::string &value, int
     if (value != "true" && value != "false")
       parseError(lineNumber, "'pistol' is true or false");
     kit.pistol = value == "true";
-  } else if (key == "long") {
+  } else if (key == "long" || key == "launcher") {
     // A gun's name, like "akm": letters, digits, - and _.
     if (value.empty() || value.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-_") !=
                              std::string::npos)
-      parseError(lineNumber, "'long' is a gun's name, like akm or rpg");
-    kit.longGun = value == "none" ? "" : value;
+      parseError(lineNumber, "'" + key + "' is a gun's name, like akm or rpg7");
+    (key == "long" ? kit.longGun : kit.launcher) = value == "none" ? "" : value;
   } else if (key == "grenades") {
     kit.grenades = count();
   } else if (key == "charges") {
@@ -1184,6 +1196,8 @@ std::string write(const SceneDescription &scene) {
   writeKey(out, "name", scene.name);
   if (!scene.environmentHdr.empty())
     writeKey(out, "environment", scene.environmentHdr);
+  if (scene.wind != glm::vec3(0.0f))
+    writeKey(out, "wind", formatVec3(scene.wind));
 
   const SceneCameraPose &camera = scene.camera;
   const SceneCameraPose d;
@@ -1238,6 +1252,8 @@ std::string write(const SceneDescription &scene) {
       writeKey(out, "pistol", "true");
     if (!scene.kit->longGun.empty())
       writeKey(out, "long", scene.kit->longGun);
+    if (!scene.kit->launcher.empty())
+      writeKey(out, "launcher", scene.kit->launcher);
     if (scene.kit->grenades != 0)
       writeKey(out, "grenades", std::to_string(scene.kit->grenades));
     if (scene.kit->charges != 0)

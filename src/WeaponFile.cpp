@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace {
@@ -33,7 +34,7 @@ std::vector<SettingBinding> bindings(WeaponSpec &s) {
       {"round", "coefficient", &s.coefficient, 0.001, 5},
       {"round", "zero_range", &s.zeroRange, 0, 3000},
       {"round", "tracer_every", &s.tracerEvery, 0, 1000},
-      {"action", "magazine", &s.magazine, 1, 1000000},
+      {"action", "magazine", &s.magazine, 0, 1000000},
       {"action", "rate", &s.rate, 1, 10000},
       {"action", "automatic", &s.automatic},
       {"action", "locks_open", &s.locksOpen},
@@ -66,6 +67,22 @@ std::vector<SettingBinding> bindings(WeaponSpec &s) {
     b.push_back({"penetration", k.keys[m][3], &p.speed2, 0, 3000});
   }
   return b;
+}
+
+// A launcher's rocket and warhead.
+std::vector<SettingBinding> rocketBindings(RocketSpec &r) {
+  return {
+      {"rocket", "mass", &r.mass, 0.01, 1000},
+      {"rocket", "diameter", &r.diameter, 0.001, 10},
+      {"rocket", "launch_speed", &r.launchSpeed, 1, 3000},
+      {"rocket", "motor_from", &r.motorFrom, 0, 10000},
+      {"rocket", "motor_to", &r.motorTo, 0, 100000},
+      {"rocket", "top_speed", &r.topSpeed, 1, 3000},
+      {"rocket", "self_destruct", &r.selfDestruct, 0.1, 1000},
+      {"rocket", "reach", &r.reach, 1, 100000},
+      {"warhead", "steel", &r.jetSteel, 0, 10},
+      {"warhead", "tnt", &r.warheadTnt, 0, 1000},
+  };
 }
 
 const char *dragName(DragModel model) { return model == DragModel::G1 ? "G1" : "G7"; }
@@ -101,6 +118,13 @@ WeaponSpec weaponFromSettings(const SettingsFile &file) {
   for (const char *section : {"round", "penetration", "action", "spread", "recoil", "reload",
                               "carry", "sounds"})
     readSettings(numbers, b, section);
+  const std::vector<std::string> sections = file.sectionNames();
+  if (std::find(sections.begin(), sections.end(), "rocket") != sections.end()) {
+    spec.rocket = RocketSpec{};
+    const std::vector<SettingBinding> r = rocketBindings(*spec.rocket);
+    readSettings(file, r, "rocket");
+    readSettings(file, r, "warhead");
+  }
   return spec;
 }
 
@@ -118,6 +142,11 @@ void weaponToSettings(const WeaponSpec &spec, SettingsFile &file) {
   for (const char *section : {"round", "penetration", "action", "spread", "recoil", "reload",
                               "carry", "sounds"})
     writeSettings(file, b, section);
+  if (copy.rocket) {
+    const std::vector<SettingBinding> r = rocketBindings(*copy.rocket);
+    writeSettings(file, r, "rocket");
+    writeSettings(file, r, "warhead");
+  }
 }
 
 Round roundOf(const WeaponSpec &spec) {

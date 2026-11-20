@@ -32,6 +32,10 @@ struct Image {
 enum class PackedOrder { RoughnessMetalAo, AoRoughnessMetal };
 // glTF's order, three channels.
 Image packOrm(const Image &packed, PackedOrder order);
+// Roughness and metal as grey maps of their own (Substance's export; the
+// first channel of each) into glTF's order, with no occlusion (white).
+// Empty pixels if their sizes differ.
+Image ormFromMaps(const Image &roughness, const Image &metal);
 // DirectX-style normal maps (Unreal's) point green the other way from
 // OpenGL's (glTF's).
 void flipGreen(Image &normal);

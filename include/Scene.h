@@ -224,6 +224,7 @@ struct SceneCharacterEntry {
 struct SceneKit {
   bool pistol = false;
   std::string longGun;
+  std::string launcher; // a rocket launcher on the back too, or none
   int grenades = 0;
   int charges = 0;
   // Weapons crates: within reach of one, E gives the kit's ammunition again.
@@ -236,6 +237,7 @@ struct SceneDescription {
   std::string name;           // display name (defaults to file stem)
   std::string filePath;       // where this description was parsed from
   std::string environmentHdr; // HDRI path; empty = keep the current sky/IBL
+  glm::vec3 wind{0.0f};       // m/s, the way the air moves (rockets turn into it); still by default
   SceneCameraPose camera;
   SceneSun sun;
   SceneFog fog;

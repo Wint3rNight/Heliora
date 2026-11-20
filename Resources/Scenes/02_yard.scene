@@ -17,10 +17,11 @@ speed = 10
 position = 0 0 18
 
 # What the player starts with here (and gets again on coming back): the
-# pistol, the AKM on the back, two grenades and two charges.
+# pistol, the AKM and an RPG-7 on the back, two grenades and two charges.
 [kit]
 pistol = true
 long = akm
+launcher = rpg7
 grenades = 2
 charges = 2
 crate = 2.5 0 16.5

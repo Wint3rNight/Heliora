@@ -1837,8 +1837,10 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   const double animationMs =
       std::chrono::duration<double, std::milli>(posed - beforePose).count();
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Animation, animationMs);
-  if (playing)
+  if (playing) {
     updateGrenades(physicsPanel.paused ? 0.0f : frameSeconds);
+    updateRockets(physicsPanel.paused ? 0.0f : frameSeconds);
+  }
   if (playing)
     stepShots(physicsPanel.paused ? 0.0f : frameSeconds);
   if (playing)
@@ -2034,6 +2036,7 @@ void VulkanRenderer::clearCharacters() {
   bullets.clear();
   flashes.clear();
   clearGrenades();
+  clearRockets();
   sceneUbo.flashColour = glm::vec4(0.0f);
   clearCasings();
   roster.reset(); // the bodies leave the world, the controller lets go
@@ -5616,8 +5619,8 @@ void VulkanRenderer::buildUi() {
     if (c.atCrate)
       ui.playPrompt = "E  Refill ammunition";
     const Holdable held = c.loadout.inHand();
-    const std::optional<CarriedGun> &g = c.guns[held == Holdable::Long ? 1 : 0];
-    if (held != Holdable::None && g && g->weapon) {
+    if (const int slot = gunSlot(held); slot >= 0 && c.guns[slot] && c.guns[slot]->weapon) {
+      const std::optional<CarriedGun> &g = c.guns[slot];
       ui.ammo = true;
       ui.ammoInGun = g->weapon->roundsInGun();
       ui.ammoPouch = g->weapon->rounds() - g->weapon->roundsInGun();

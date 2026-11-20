@@ -160,6 +160,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FootIk.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioMixer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Blast.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Rocket.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -285,6 +286,7 @@ add_executable(heliora_tests
         tests/WeaponFileTests.cpp
         tests/WeaponTests.cpp
         tests/BlastTests.cpp
+        tests/RocketTests.cpp
         tests/HitZonesTests.cpp
         tests/PieceDamageTests.cpp
         tests/OutlinerTests.cpp

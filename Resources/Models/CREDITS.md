@@ -16,6 +16,7 @@ pages. Everything here is free to use in a game. CC0 needs no credit; CC BY
 | `p38/` | The game's P38: `service_pistol` variant A through `tools/weapon_convert/convert_guns.sh` (215 mm, frame, slide, hammer, trigger and magazine) | made here from Poly Haven's | CC0 |
 | `rpg7/javadbayat/` | RPG-7 with a rocket, two meshes; six PBR texture sets (wood, metals, plastic, the rocket), but the FBX has one material, so which faces use which set is lost | "RPG 7 ( Free Model )" by javadbayat, https://sketchfab.com/3d-models/rpg-7-free-model-99c0af8a1803490a86edc48cd3bfc700 | CC BY 4.0: credit the author in the game's credits |
 | `rpg7/theparazit/` | RPG-7 with rockets (two texture sets, 4k), skinned, plus first-person arm animations on Unreal's mannequin arms (show, hide, idle, shoot, reload, walk); no full-body clips | "RPG-7 Animations" by TheParaziT, https://sketchfab.com/3d-models/rpg-7-animations-f2bef085e0164a34a4b090c73dcdc3f5 | CC BY 4.0: credit the author in the game's credits |
+| `rpg7/` (its files, not the folders) | The game's RPG-7: `rpg7/theparazit` through `tools/weapon_convert/convert_guns.sh` (950 mm, the launcher and its rocket as two parts with their own texture sets, sockets measured on the parts; the arms left out) | made here from TheParaziT's | CC BY 4.0: credit "RPG-7 Animations" by TheParaziT in the game's credits |
 
 ## Vehicles (`Vehicles/`)
 

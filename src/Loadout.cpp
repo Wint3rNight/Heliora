@@ -4,9 +4,10 @@
 
 Loadout::Loadout(LoadoutTiming timing) : timing(timing) {}
 
-void Loadout::give(bool hasPistol, bool hasLong) {
+void Loadout::give(bool hasPistol, bool hasLong, bool hasLauncher) {
   pistol = hasPistol;
   longGun = hasLong;
+  launcher = hasLauncher;
   if (!has(current)) {
     current = Holdable::None;
     amount = 0.0f;
@@ -20,6 +21,7 @@ bool Loadout::has(Holdable which) const {
   case Holdable::None: return true;
   case Holdable::Pistol: return pistol;
   case Holdable::Long: return longGun;
+  case Holdable::Launcher: return launcher;
   }
   return false;
 }
@@ -30,11 +32,15 @@ void Loadout::select(Holdable which) {
 }
 
 float Loadout::drawTime(Holdable which) const {
-  return which == Holdable::Pistol ? timing.pistolDraw : timing.longDraw;
+  return which == Holdable::Pistol     ? timing.pistolDraw
+         : which == Holdable::Launcher ? timing.launcherDraw
+                                       : timing.longDraw;
 }
 
 float Loadout::holsterTime(Holdable which) const {
-  return which == Holdable::Pistol ? timing.pistolHolster : timing.longHolster;
+  return which == Holdable::Pistol     ? timing.pistolHolster
+         : which == Holdable::Launcher ? timing.launcherHolster
+                                       : timing.longHolster;
 }
 
 void Loadout::update(float dt) {

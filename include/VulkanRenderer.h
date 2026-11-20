@@ -330,6 +330,9 @@ private:
     // they cross the sight line at its zeroing range.
     Round round;
     float zero = 0.0f;
+    // A launcher's rocket: the thrust and drag fitted to its documented
+    // flight (Rocket.h).
+    RocketFit rocketFit;
   };
   std::map<std::string, std::unique_ptr<WeaponAsset>> weaponAssets;
   // The gun's asset, read the first time it's asked for; null if it can't be.
@@ -356,6 +359,20 @@ private:
     // pistol is held out along the line from the eye, its trigger this far.
     glm::vec3 butt{0.0f};
     float eyeReach = 0.5f;
+    // Where the eye lines up on it (gun space; only x and y count, along
+    // the barrel it's the line), and where its butt goes against his
+    // shoulder (the right arm's joint, in his chest's frame: x left, y up,
+    // z ahead). A rifle's sight line over the bore and the shoulder's
+    // pocket; a launcher's sights on top of the tube, its tube on top of
+    // the shoulder.
+    glm::vec3 sight{0.0f};
+    glm::vec3 pocket{0.0f};
+    // A rocket launcher: fired only raised, no carry clips (the tube is
+    // held on the shoulder by IK), the left hand on its rear grip as the
+    // right holds the front one (mirrored, in leftInGun), loaded by hand.
+    bool launcher = false;
+    int rocketPart = -1; // the loaded rocket, shown while there's one in the tube
+    glm::mat4 loadingHold{1.0f}; // being loaded, in the level frame at the right shoulder (as lowReady)
     // The left hand on the gun, as the aiming clip holds it: on a rifle the
     // grip's off-hand place with this turn, on a pistol this whole frame.
     glm::quat offHandTurn{1.0f, 0.0f, 0.0f, 0.0f};
@@ -416,10 +433,10 @@ private:
     // in draw() once the frame slot's fence says it's free.
     std::vector<glm::mat4> skinning;
     // Guns (step 1.6, src/Guns.cpp): what it carries and has in its hands,
-    // each carried gun (the pistol, then the long gun), how it aims and the
-    // arm bones the IK moves.
+    // each carried gun (the pistol, the long gun, the launcher), how it
+    // aims and the arm bones the IK moves.
     Loadout loadout;
-    std::array<std::optional<CarriedGun>, 2> guns;
+    std::array<std::optional<CarriedGun>, 3> guns; // by gunSlot
     AimRig aimRig;
     GunBones gunBones;
     float aimWeight = 0.0f; // the aim IK's share, eased in
@@ -838,6 +855,29 @@ private:
   // clip_survey --trace: the hand highest at 0.66 s, coming forward after),
   // played to 1.6 s.
   static constexpr float kThrowRelease = 0.8f, kThrowEnd = 1.6f;
+  // Which of a character's guns a Holdable is: the pistol 0, the long gun
+  // 1, the launcher 2 (None: -1).
+  static int gunSlot(Holdable held) {
+    return held == Holdable::Pistol ? 0 : held == Holdable::Long ? 1 : held == Holdable::Launcher ? 2 : -1;
+  }
+  // Rockets in flight (step 1.7, src/Rockets.cpp): each its flight (Rocket.h),
+  // its model, who fired it, and the spacing of its smoke trail.
+  struct LiveRocket {
+    SceneNode *node = nullptr;
+    RocketFlight flight;
+    const WeaponAsset *asset = nullptr;
+    int owner = -1;
+    float trail = 0.0f; // m flown since the last puff
+    float flameCarry = 0.0f; // the part of a flame owed from the frames before
+  };
+  std::vector<LiveRocket> rockets;
+  void launchRocket(int index, CarriedGun &gun, const Shot &shot);
+  void updateRockets(float seconds);
+  // A warhead's hit: its jet along dir through what's in front, then its
+  // blast.
+  void rocketHit(glm::vec3 at, glm::vec3 dir, const WeaponAsset &asset, int owner);
+  void heatJet(glm::vec3 at, glm::vec3 dir, float steel, int owner);
+  void clearRockets();
   std::vector<int> freeCasingLinks; // physicsLinks slots casings gave back
   std::array<int, 2> casingModels{-1, -1};
   void ejectCasing(const CarriedGun &gun);
@@ -928,6 +968,11 @@ private:
     glm::vec3 otherVelocity{0.0f};
   };
   void regroupBreakables(const std::vector<BreakHit> &hits);
+  // A breakable piece given this much damage (J; below 0 for all it has
+  // left), broken loose if that's past its toughness (every link to it
+  // broken, split where it was hit); true if it broke.
+  bool damagePiece(int piece, float energy, glm::vec3 point, glm::vec3 dir, float impulse,
+                   std::vector<BreakHit> &broke);
   void splitPiece(const PendingSplit &split);
   // A piece bullets broke, queued to be cut where they hit into about six
   // pieces (smaller near the hit), as a hard hit would cut it; nothing if

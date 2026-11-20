@@ -6,6 +6,8 @@
 //
 //   weapon_convert <model> <out folder> <name> [options]
 //     --length M            scale so it's M metres long along the barrel
+//     --length-of P         measure that length on part P alone (a rocket
+//                           sticking out of its launcher left out)
 //     --forward AXIS        the barrel's way in the model (+z)
 //     --up AXIS             the model's up (+y)
 //     --origin NODE         the node at gun space's origin (the trigger)
@@ -19,8 +21,18 @@
 //     --socket S=NODE       a socket at a node
 //     --socket-at S=x,y,z   a socket at a point, in the model's units, facing
 //                           the barrel's way (for models without socket nodes)
+//     --socket-gun S=x,y,z  the same at a point in gun space (metres), for
+//                           places found by measuring the converted parts
 //     --albedo F --normal F [--flip-green] --packed F --packed-order rma|orm
+//     --roughness F --metal F  grey maps of their own instead of --packed
+//     --for P               the texture options after it are part P's own
+//                           (a model with more than one texture set);
+//                           before any --for they're every other part's
 //     --max-texture N       halve textures until at most N pixels across
+//
+//   weapon_convert <model> --list
+//     each mesh: its node, material, vertex count, and the bones carrying
+//     its vertices (how many each), to choose the parts from
 //
 // Gun space: the origin at --origin, +z along the barrel, +y up, +x to the
 // gun's left, metres (AssetConvert.h).
@@ -53,9 +65,17 @@
 
 namespace {
 
+// One texture set.
+struct Textures {
+  std::string albedo, normal, packed, roughness, metal;
+  bool flipGreen = false;
+  PackedOrder packedOrder = PackedOrder::AoRoughnessMetal;
+};
+
 struct Options {
   std::string model, out, name;
   float length = 0.0f;
+  std::string lengthOf; // the part measured, or every part
   glm::vec3 forward{0, 0, 1}, up{0, 1, 0};
   std::string origin;
   std::map<std::string, std::string> partOf; // bone or node -> part
@@ -66,10 +86,10 @@ struct Options {
   std::map<std::string, glm::vec3> moved;
   std::vector<std::pair<std::string, std::string>> sockets; // socket, node
   std::vector<std::pair<std::string, glm::vec3>> socketsAt;  // socket, point
-  std::string albedo, normal, packed;
-  bool flipGreen = false;
-  PackedOrder packedOrder = PackedOrder::AoRoughnessMetal;
+  std::vector<std::pair<std::string, glm::vec3>> socketsInGun; // socket, gun-space point
   int maxTexture = 0;
+  // Texture sets: "" for every part without its own, else a part's.
+  std::map<std::string, Textures> textures;
 };
 
 std::vector<std::string> split(const std::string &text, char by) {
@@ -95,6 +115,7 @@ Options parse(int argc, char **argv) {
   o.model = argv[1];
   o.out = argv[2];
   o.name = argv[3];
+  std::string forPart; // the texture set the texture options go to
   for (int i = 4; i < argc; ++i) {
     const std::string flag = argv[i];
     auto value = [&]() -> std::string {
@@ -110,6 +131,8 @@ Options parse(int argc, char **argv) {
     };
     if (flag == "--length") {
       o.length = std::stof(value());
+    } else if (flag == "--length-of") {
+      o.lengthOf = value();
     } else if (flag == "--forward" || flag == "--up") {
       const std::string text = value();
       const std::optional<glm::vec3> axis = parseAxis(text);
@@ -138,20 +161,29 @@ Options parse(int argc, char **argv) {
     } else if (flag == "--socket-at") {
       const auto [socket, at] = pair(value());
       o.socketsAt.push_back({socket, vec3Of(at)});
+    } else if (flag == "--socket-gun") {
+      const auto [socket, at] = pair(value());
+      o.socketsInGun.push_back({socket, vec3Of(at)});
+    } else if (flag == "--for") {
+      forPart = value();
     } else if (flag == "--albedo") {
-      o.albedo = value();
+      o.textures[forPart].albedo = value();
     } else if (flag == "--normal") {
-      o.normal = value();
+      o.textures[forPart].normal = value();
     } else if (flag == "--flip-green") {
-      o.flipGreen = true;
+      o.textures[forPart].flipGreen = true;
     } else if (flag == "--packed") {
-      o.packed = value();
+      o.textures[forPart].packed = value();
+    } else if (flag == "--roughness") {
+      o.textures[forPart].roughness = value();
+    } else if (flag == "--metal") {
+      o.textures[forPart].metal = value();
     } else if (flag == "--packed-order") {
       const std::string order = value();
       if (order == "rma")
-        o.packedOrder = PackedOrder::RoughnessMetalAo;
+        o.textures[forPart].packedOrder = PackedOrder::RoughnessMetalAo;
       else if (order == "orm")
-        o.packedOrder = PackedOrder::AoRoughnessMetal;
+        o.textures[forPart].packedOrder = PackedOrder::AoRoughnessMetal;
       else
         throw std::runtime_error("--packed-order is rma or orm");
     } else if (flag == "--max-texture") {
@@ -213,6 +245,41 @@ void writePng(const std::filesystem::path &path, const Image &image) {
 
 std::string vec(glm::vec3 v) { return std::format("{:.5f} {:.5f} {:.5f}", v.x, v.y, v.z); }
 
+// weapon_convert <model> --list: what's in it, to choose the parts from.
+int list(const std::string &model) {
+  Assimp::Importer importer;
+  const aiScene *scene = importer.ReadFile(model, aiProcess_Triangulate | aiProcess_LimitBoneWeights);
+  if (!scene || !scene->mRootNode)
+    throw std::runtime_error("can't read " + model + ": " + importer.GetErrorString());
+  std::map<std::string, glm::mat4> world;
+  std::vector<std::pair<const aiNode *, glm::mat4>> meshNodes;
+  collectNodes(scene->mRootNode, glm::mat4(1.0f), world, meshNodes);
+  for (const auto &[node, transform] : meshNodes)
+    for (unsigned m = 0; m < node->mNumMeshes; ++m) {
+      const aiMesh *mesh = scene->mMeshes[node->mMeshes[m]];
+      const aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
+      std::cout << std::format("mesh {} on node {}: material {}, {} vertices\n", mesh->mName.C_Str(),
+                               node->mName.C_Str(), material->GetName().C_Str(), mesh->mNumVertices);
+      // Each vertex counted for the bone with the most weight on it.
+      std::vector<float> best(mesh->mNumVertices, 0.0f);
+      std::vector<int> owner(mesh->mNumVertices, -1);
+      for (unsigned b = 0; b < mesh->mNumBones; ++b)
+        for (unsigned w = 0; w < mesh->mBones[b]->mNumWeights; ++w) {
+          const aiVertexWeight &vw = mesh->mBones[b]->mWeights[w];
+          if (vw.mWeight > best[vw.mVertexId]) {
+            best[vw.mVertexId] = vw.mWeight;
+            owner[vw.mVertexId] = static_cast<int>(b);
+          }
+        }
+      std::map<std::string, int> counts;
+      for (int b : owner)
+        ++counts[b < 0 ? "(no bone)" : mesh->mBones[b]->mName.C_Str()];
+      for (const auto &[bone, n] : counts)
+        std::cout << std::format("  {}: {} vertices\n", bone, n);
+    }
+  return 0;
+}
+
 int run(const Options &o) {
   Assimp::Importer importer;
   const aiScene *scene = importer.ReadFile(
@@ -222,6 +289,17 @@ int run(const Options &o) {
   std::map<std::string, glm::mat4> world;
   std::vector<std::pair<const aiNode *, glm::mat4>> meshNodes;
   collectNodes(scene->mRootNode, glm::mat4(1.0f), world, meshNodes);
+  // A bone where the skinned mesh was bound to it, not where the file's
+  // pose has it (a first-person model's bones hold the gun up at the
+  // camera while its mesh rests elsewhere): its mesh's node times the
+  // inverse of its offset matrix.
+  for (const auto &[node, transform] : meshNodes)
+    for (unsigned m = 0; m < node->mNumMeshes; ++m) {
+      const aiMesh *mesh = scene->mMeshes[node->mMeshes[m]];
+      for (unsigned b = 0; b < mesh->mNumBones; ++b)
+        world[mesh->mBones[b]->mName.C_Str()] =
+            transform * glm::inverse(toGlm(mesh->mBones[b]->mOffsetMatrix));
+    }
 
   // Every vertex in the model's space, with the bone (or node) it belongs to.
   std::vector<Vertex> vertices;
@@ -283,7 +361,7 @@ int run(const Options &o) {
   const glm::vec3 origin = o.origin.empty() ? glm::vec3(0.0f) : glm::vec3(world.at(o.origin)[3]);
   float lo = 1e30f, hi = -1e30f;
   for (const Vertex &v : vertices)
-    if (!partOf(v.key).empty()) {
+    if (!partOf(v.key).empty() && (o.lengthOf.empty() || partOf(v.key) == o.lengthOf)) {
       const float along = glm::dot(v.position, glm::normalize(o.forward));
       lo = std::min(lo, along);
       hi = std::max(hi, along);
@@ -318,25 +396,46 @@ int run(const Options &o) {
 
   std::filesystem::create_directories(o.out);
   const std::filesystem::path out(o.out);
-  // The textures, repaired for glTF and shared by every part.
-  GltfMaterial material;
-  if (!o.albedo.empty())
-    if (std::optional<Image> image = loadImage(o.albedo)) {
-      material.albedo = o.name + "_albedo.png";
-      writePng(out / material.albedo, fitted(*image, o.maxTexture));
+  // The textures, repaired for glTF: each set written once, named for the
+  // gun (every part's) or the part with its own.
+  std::map<std::string, GltfMaterial> materials;
+  for (const auto &[set, t] : o.textures) {
+    GltfMaterial &material = materials[set];
+    const std::string stem = set.empty() ? o.name : o.name + "_" + set;
+    if (!t.albedo.empty())
+      if (std::optional<Image> image = loadImage(t.albedo)) {
+        material.albedo = stem + "_albedo.png";
+        writePng(out / material.albedo, fitted(*image, o.maxTexture));
+      }
+    if (!t.normal.empty())
+      if (std::optional<Image> image = loadImage(t.normal)) {
+        if (t.flipGreen)
+          flipGreen(*image);
+        material.normal = stem + "_normal.png";
+        writePng(out / material.normal, fitted(*image, o.maxTexture));
+      }
+    if (!t.packed.empty()) {
+      if (std::optional<Image> image = loadImage(t.packed)) {
+        material.orm = stem + "_orm.png";
+        writePng(out / material.orm, fitted(packOrm(*image, t.packedOrder), o.maxTexture));
+      }
+    } else if (!t.roughness.empty() && !t.metal.empty()) {
+      const std::optional<Image> rough = loadImage(t.roughness), metal = loadImage(t.metal);
+      if (rough && metal) {
+        const Image orm = ormFromMaps(*rough, *metal);
+        if (orm.pixels.empty())
+          throw std::runtime_error("the roughness and metal maps aren't the same size");
+        material.orm = stem + "_orm.png";
+        writePng(out / material.orm, fitted(orm, o.maxTexture));
+      }
     }
-  if (!o.normal.empty())
-    if (std::optional<Image> image = loadImage(o.normal)) {
-      if (o.flipGreen)
-        flipGreen(*image);
-      material.normal = o.name + "_normal.png";
-      writePng(out / material.normal, fitted(*image, o.maxTexture));
-    }
-  if (!o.packed.empty())
-    if (std::optional<Image> image = loadImage(o.packed)) {
-      material.orm = o.name + "_orm.png";
-      writePng(out / material.orm, fitted(packOrm(*image, o.packedOrder), o.maxTexture));
-    }
+  }
+  auto materialOf = [&](const std::string &part) {
+    if (const auto it = materials.find(part); it != materials.end())
+      return it->second;
+    const auto shared = materials.find("");
+    return shared != materials.end() ? shared->second : GltfMaterial{};
+  };
 
   // The parts, each about its pivot: the first bone or node named for it.
   std::ostringstream parts;
@@ -379,7 +478,7 @@ int run(const Options &o) {
       }
       mesh.indices.push_back(it->second);
     }
-    const GltfFiles files = writeGltf(mesh, material, name + ".bin");
+    const GltfFiles files = writeGltf(mesh, materialOf(name), name + ".bin");
     std::ofstream(out / (name + ".gltf")) << files.json;
     std::ofstream(out / (name + ".bin"), std::ios::binary)
         .write(reinterpret_cast<const char *>(files.bin.data()), files.bin.size());
@@ -409,6 +508,10 @@ int run(const Options &o) {
                          vec(at));
     std::cout << std::format("  socket {} at {}\n", socket, vec(at));
   }
+  for (const auto &[socket, at] : o.socketsInGun) {
+    parts << std::format("\n[socket {}]\nposition = {}\nx = 1 0 0\ny = 0 1 0\nz = 0 0 1\n", socket, vec(at));
+    std::cout << std::format("  socket {} at {}\n", socket, vec(at));
+  }
   std::ofstream(out / (o.name + ".parts")) << parts.str();
   return 0;
 }
@@ -417,6 +520,8 @@ int run(const Options &o) {
 
 int main(int argc, char **argv) {
   try {
+    if (argc == 3 && std::string(argv[2]) == "--list")
+      return list(argv[1]);
     return run(parse(argc, argv));
   } catch (const std::exception &e) {
     std::cerr << "weapon_convert: " << e.what() << "\n";

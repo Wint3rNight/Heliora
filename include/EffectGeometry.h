@@ -24,6 +24,17 @@ void addFacingStrip(std::vector<EffectVertex> &out, const std::vector<glm::vec3>
                     glm::vec3 eye, float width0, float width1, glm::vec4 core0, glm::vec4 core1,
                     glm::vec4 edge);
 
+// One strand of the light from the hand to what it holds, segments + 1
+// points: bowed out, each strand its own way round the line, swaying with
+// time, pinned at both ends.
+std::vector<glm::vec3> ribbonStrand(glm::vec3 from, glm::vec3 to, int strand, float time,
+                                    int segments);
+
+// A flat ring on the ground round centre, radius to its middle and width
+// across, at centre's height.
+void addGroundRing(std::vector<EffectVertex> &out, glm::vec3 centre, float radius, float width,
+                   glm::vec4 core, glm::vec4 edge, int segments);
+
 // The side of a cone from apex along axis (unit), halfAngle (radians) from
 // the axis to its side, its rim length from the apex along the side; uv.y
 // runs 0 at the apex to 1 at the rim.

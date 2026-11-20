@@ -51,6 +51,11 @@ struct AnimationLibrary {
 };
 
 // What the controller is doing this frame.
+// What the powers' layer plays on the upper body: the lift running into the
+// hold while something is held out (lifted, torn at or strained against), a
+// throw, a burst.
+enum class PowerAnim : uint8_t { None, Hold, Throw, Burst };
+
 struct AnimatorInput {
   float speed = 0.0f; // m/s along the ground
   // Where it moves in its own frame (x to its right, y ahead); only the
@@ -91,6 +96,12 @@ struct AnimatorInput {
   // 0 to 1 through a throw (its clip on the upper body), below 0 for none.
   float throwing = -1.0f;
   ClipSlot deathClip = ClipSlot::DeathFront;
+  // The powers (the player's character only).
+  PowerAnim power = PowerAnim::None;
+  // The right arm reaches toward reachTarget while something is held out
+  // (power is Hold) and a power's light goes to it; a throw lets it go.
+  bool reaching = false;
+  glm::vec3 reachTarget{0.0f}; // in the skeleton's space
 };
 
 enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge, Dead };
@@ -141,6 +152,9 @@ struct AnimatorTuning {
   float playbackRate = 1.0f;
   // The aim's lean fades in and out over this, seconds.
   float aimFade = 0.12f;
+  // The powers' upper-body layer and the arm's reach fade in and out over
+  // this, seconds.
+  float powerFade = 0.12f;
   // Taking out or putting away a gun eases into its stance's clips over
   // this, seconds (est.).
   float stanceFade = 0.3f;
@@ -224,4 +238,21 @@ private:
   std::vector<float> upperBody; // a reload's mask: the first spine bone and up
   std::vector<float> arms;      // both shoulders and down: a gun held over other moves
   std::vector<float> rightArm;  // the right shoulder and down: a gun carried in that hand
+
+  // The powers' layer (layerPowers): its clip, the one fading out, and the
+  // right arm reaching toward what's held.
+  void layerPowers(const AnimatorInput &input, float dt);
+  void startPower(ClipSlot slot);
+  int arm = -1, foreArm = -1, hand = -1; // the right arm, for the reach
+  PowerAnim powerWas = PowerAnim::None;
+  ClipSlot powerSlot = ClipSlot::Count;     // the layer's clip, Count for none yet
+  ClipSlot powerFromSlot = ClipSlot::Count; // the one before, fading out
+  float powerTime = 0.0f;   // seconds into the layer's clip
+  float powerSwitch = 0.0f; // seconds since the layer's clip changed
+  float powerWeight = 0.0f; // the layer's share of the upper body
+  bool powerMissing = false; // the power asked for has no clip: the layer fades out
+  Pose powerPose;           // the layer's pose last frame
+  Pose powerFrom;           // and when its clip changed
+  float reachWeight = 0.0f;
+  glm::vec3 reachTarget{0.0f}; // held while the arm lets go
 };

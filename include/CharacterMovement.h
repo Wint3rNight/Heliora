@@ -2,6 +2,7 @@
 
 #include "AnimationClip.h"
 #include "PhysicsWorld.h"
+#include "Powers.h"
 
 #include <array>
 
@@ -66,6 +67,8 @@ struct CharacterTuning {
   float stepUp = 0.3f;        // m, see PhysicsCharacterMove::stepUp
   float stickDown = 0.5f;     // m
   float pushStrength = 100.0f; // N
+  // What its powers can do (step 1.4a), saved with the rest of its tuning.
+  PowerTuning powers;
   bool operator==(const CharacterTuning &) const = default;
 };
 
@@ -107,6 +110,9 @@ public:
   // One physics step: works out the velocity and moves the character. Call
   // it right before PhysicsWorld::step(), with the same dt.
   void update(const CharacterInput &input, float dt);
+  // What the physics said about it at the start of the last update: where
+  // it was, what it stood on and how fast that moved (for the recorder).
+  const PhysicsCharacterState &physicsState() const { return lastState; }
   // Puts it there standing still, drawn there at once (spawning, Stop).
   void place(glm::vec3 feet, float yaw);
   // The body keeps the radius, heights and mass it was made with: the
@@ -149,6 +155,7 @@ private:
   // included); after each step no more than what really moved.
   glm::vec3 horizontal{0.0f};
   bool onGround = false;
+  PhysicsCharacterState lastState;
   bool aimed = false;
   bool jumpedSinceGround = false;
   float airTime = 0.0f;   // s since it last stood on walkable ground

@@ -757,7 +757,7 @@ std::string lowered(std::string text) {
   return text;
 }
 
-enum class Section { Global, Camera, Sun, Fog, Player, Kit, Model, Grid, Ring, Character };
+enum class Section { Global, Camera, Sun, Fog, Player, Model, Grid, Ring, Character };
 
 // What the parser carries from line to line.
 struct SceneParser {
@@ -800,11 +800,6 @@ void openSection(SceneParser &p, const std::string &line, int lineNumber) {
       parseError(lineNumber, "only one [player] per scene");
     p.section = Section::Player;
     scene.player.emplace().info.comment = p.takeComment();
-  } else if (name == "kit") {
-    if (scene.kit)
-      parseError(lineNumber, "only one [kit] per scene");
-    p.section = Section::Kit;
-    scene.kit.emplace().info.comment = p.takeComment();
   } else if (name == "model") {
     p.section = Section::Model;
     scene.models.emplace_back().info = {p.nextOrder++, p.takeComment()};
@@ -883,40 +878,6 @@ void fogKey(SceneFog &fog, const std::string &key, const std::string &value,
     fog.max = parseFloat(value, lineNumber);
   else
     parseError(lineNumber, "unknown fog key '" + key + "'");
-}
-
-void kitKey(SceneKit &kit, const std::string &key, const std::string &value, int lineNumber) {
-  auto count = [&]() {
-    const float n = parseFloat(value, lineNumber);
-    if (n < 0.0f || n > 99.0f || n != std::floor(n))
-      parseError(lineNumber, "'" + key + "' is a whole number from 0 to 99");
-    return static_cast<int>(n);
-  };
-  if (key == "pistol") {
-    if (value != "true" && value != "false")
-      parseError(lineNumber, "'pistol' is true or false");
-    kit.pistol = value == "true";
-  } else if (key == "long" || key == "launcher") {
-    // A gun's name, like "akm": letters, digits, - and _.
-    if (value.empty() || value.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-_") !=
-                             std::string::npos)
-      parseError(lineNumber, "'" + key + "' is a gun's name, like akm or rpg7");
-    (key == "long" ? kit.longGun : kit.launcher) = value == "none" ? "" : value;
-  } else if (key == "grenades") {
-    kit.grenades = count();
-  } else if (key == "charges") {
-    kit.charges = count();
-  } else if (key == "crate") {
-    // A place: three numbers, nothing else.
-    std::istringstream in(value);
-    float x = 0.0f, y = 0.0f, z = 0.0f;
-    std::string rest;
-    if (!(in >> x >> y >> z) || (in >> rest))
-      parseError(lineNumber, "'crate' is a place: three numbers, x y z");
-    kit.crates.push_back(glm::vec3(x, y, z));
-  } else {
-    parseError(lineNumber, "unknown kit key '" + key + "'");
-  }
 }
 
 void playerKey(ScenePlayerStart &player, const std::string &key,
@@ -1026,9 +987,6 @@ void applyKey(SceneParser &p, const std::string &key, const std::string &value,
     break;
   case Section::Player:
     playerKey(*scene.player, key, value, lineNumber);
-    break;
-  case Section::Kit:
-    kitKey(*scene.kit, key, value, lineNumber);
     break;
   case Section::Model:
     if (!parseModelKey(scene.models.back(), key, value, lineNumber))
@@ -1246,21 +1204,7 @@ std::string write(const SceneDescription &scene) {
     if (!scene.player->variant.empty())
       writeKey(out, "variant", scene.player->variant);
   }
-  if (scene.kit) {
-    writeHeader(out, scene.kit->info, "kit");
-    if (scene.kit->pistol)
-      writeKey(out, "pistol", "true");
-    if (!scene.kit->longGun.empty())
-      writeKey(out, "long", scene.kit->longGun);
-    if (!scene.kit->launcher.empty())
-      writeKey(out, "launcher", scene.kit->launcher);
-    if (scene.kit->grenades != 0)
-      writeKey(out, "grenades", std::to_string(scene.kit->grenades));
-    if (scene.kit->charges != 0)
-      writeKey(out, "charges", std::to_string(scene.kit->charges));
-    for (const glm::vec3 &crate : scene.kit->crates)
-      writeKey(out, "crate", formatVec3(crate));
-  }
+
 
   // Models, grids and rings live in separate lists; info.order puts them
   // back in the order the file had.

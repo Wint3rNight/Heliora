@@ -20,7 +20,9 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "dodge_back",     "dodge_left",    "dodge_right",
                   "aim_idle",       "reload",        "hit",
                   "death_front",    "death_back",    "death_right",
-                  "death_head",     "death_crouched", "throw"};
+                  "death_head",     "death_crouched", "throw",
+                  "power_lift",     "power_hold",    "power_throw",
+                  "power_burst"};
 
 constexpr std::array<const char *, static_cast<size_t>(Stance::Count)> kStanceNames = {
     "unarmed", "pistol", "rifle", "pistol_carry", "rifle_carry"};
@@ -246,6 +248,9 @@ bool defaultLoop(ClipSlot slot) {
   case ClipSlot::DeathHead:
   case ClipSlot::DeathCrouched:
   case ClipSlot::Throw:
+  case ClipSlot::PowerLift:
+  case ClipSlot::PowerThrow:
+  case ClipSlot::PowerBurst:
   case ClipSlot::Jump:
   case ClipSlot::Land:
   case ClipSlot::LandHard:

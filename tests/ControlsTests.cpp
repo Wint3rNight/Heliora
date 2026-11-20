@@ -38,7 +38,7 @@ TEST(fire_is_on_the_left_mouse) {
   const ControlBindings c;
   CHECK(bindingName(c[Action::Fire]) == "Left mouse");
   CHECK(std::string(actionName(Action::Fire)) == "fire");
-  CHECK(std::string(actionLabel(Action::Fire)) == "Fire");
+  CHECK(std::string(actionLabel(Action::Fire)).starts_with("Fire"));
 }
 
 TEST(every_action_has_its_own_name) {
@@ -81,7 +81,7 @@ TEST(binding_a_taken_key_swaps_the_two) {
 }
 
 TEST(the_editors_own_keys_are_kept_for_it) {
-  for (const char *name : {"Escape", "Tab", "F1", "F2", "F5", "F"})
+  for (const char *name : {"Escape", "Tab", "F1", "F2", "F5", "F9", "F"})
     CHECK(reservedForEditor(named(name)));
   CHECK(!reservedForEditor(named("E")));
   CHECK(!reservedForEditor(named("Right mouse")));
@@ -118,31 +118,9 @@ TEST(a_press_is_new_however_often_its_frame_asks) {
   CHECK(edges.justPressed(2, true));  // each code on its own
 }
 
-TEST(the_gun_keys_are_one_two_h_r_b_and_e) {
+TEST(the_powers_are_q_and_e) {
   const ControlBindings c;
-  CHECK(bindingName(c[Action::Pistol]) == "1");
-  CHECK(bindingName(c[Action::LongGun]) == "2");
-  CHECK(bindingName(c[Action::Holster]) == "H");
-  CHECK(bindingName(c[Action::Reload]) == "R");
-  CHECK(bindingName(c[Action::FireMode]) == "B");
-  CHECK(bindingName(c[Action::Use]) == "E");
-  CHECK(std::string(actionName(Action::Holster)) == "holster");
-}
-
-TEST(a_grenade_is_g_held_the_pin_out_until_its_let_go) {
-  const ControlBindings c;
-  CHECK(bindingName(c[Action::Grenade]) == "G");
-  CHECK(std::string(actionName(Action::Grenade)) == "grenade");
-}
-
-TEST(a_charge_is_placed_with_four_and_fired_with_five) {
-  const ControlBindings c;
-  CHECK(bindingName(c[Action::Charge]) == "4");
-  CHECK(bindingName(c[Action::Detonate]) == "5");
-}
-
-TEST(the_launcher_is_on_three) {
-  const ControlBindings c;
-  CHECK(bindingName(c[Action::Launcher]) == "3");
-  CHECK(std::string(actionName(Action::Launcher)) == "launcher");
+  CHECK(bindingName(c[Action::Reveal]) == "Q");
+  CHECK(bindingName(c[Action::Burst]) == "E");
+  CHECK(std::string(actionName(Action::Burst)) == "burst");
 }

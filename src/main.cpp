@@ -219,6 +219,10 @@ void handleEditorKeys(const FlyState &fly, bool typing, bool asking) {
   if (inputManager.wasKeyJustPressed(GLFW_KEY_F1) && !asking)
     vulkanRenderer.toggleUiVisibility();
   // F2 shows the physics shapes as wireframes.
+  // F9: the movement recorder's last 10 s saved to recordings/ (to send
+  // when something odd happens, like being thrown into the air).
+  if (inputManager.wasKeyJustPressed(GLFW_KEY_F9) && !asking)
+    vulkanRenderer.saveMovementRecording();
   if (inputManager.wasKeyJustPressed(GLFW_KEY_F2) && !asking)
     vulkanRenderer.togglePhysicsDebug();
   // F throws a ball where the camera looks, in camera mode only so a
@@ -261,11 +265,8 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   // as new after Tab.
   const bool jump = pressed(Action::Jump);
   const bool dodge = pressed(Action::Dodge);
-  const bool pistol = pressed(Action::Pistol), longGun = pressed(Action::LongGun),
-             launcher = pressed(Action::Launcher),
-             holster = pressed(Action::Holster), reload = pressed(Action::Reload),
-             fireMode = pressed(Action::FireMode), use = pressed(Action::Use),
-             charge = pressed(Action::Charge), detonate = pressed(Action::Detonate);
+  const bool cast = pressed(Action::Fire), reveal = pressed(Action::Reveal),
+             burst = pressed(Action::Burst);
   PlayerControls controls;
   if (!fly.cameraMode || typing || asking)
     return controls;
@@ -279,16 +280,9 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.jump = jump;
   controls.dodge = dodge;
   controls.fire = held(Action::Fire);
-  controls.grenade = held(Action::Grenade);
-  controls.pistol = pistol;
-  controls.longGun = longGun;
-  controls.launcher = launcher;
-  controls.holster = holster;
-  controls.reload = reload;
-  controls.fireMode = fireMode;
-  controls.use = use;
-  controls.charge = charge;
-  controls.detonate = detonate;
+  controls.cast = cast;
+  controls.reveal = reveal;
+  controls.burst = burst;
   // InputManager's y counts up; the controls' counts down, like the screen.
   const glm::vec2 mouse = inputManager.getMouseDelta();
   controls.mouse = glm::vec2(mouse.x, -mouse.y);

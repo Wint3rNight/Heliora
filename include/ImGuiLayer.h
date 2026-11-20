@@ -95,6 +95,8 @@ struct CharacterPanel {
   // its body. Not saved: a debug view (HELIORA_SHOW_SKELETON=1 starts with it).
   bool showSkeleton = false;
   bool characterLoaded = false; // whether there's a skeleton to show
+  const char *powerState = nullptr; // the powers' state while playing
+  bool powerLines = false; // the powers' debug lines over their look
 };
 
 // A question that has to be answered before something can happen: unsaved
@@ -240,16 +242,7 @@ struct DebugUiContext {
   SceneViewport sceneArea;
   // Playing and aiming: the crosshair in the scene area's middle.
   bool crosshair = false;
-  // A gun in his hands: the rounds in it (the chamber's and the
-  // magazine's), the rounds in his pouch, its mode, a reload under way.
-  bool ammo = false;
-  int ammoInGun = 0;
-  int ammoPouch = 0;
-  const char *fireMode = ""; // "AUTO", "SEMI", or "" for a gun with one
-  int grenades = -1;         // hand grenades left, or below 0 to leave out
-  int charges = -1;          // demolition blocks left, the same
-  bool reloading = false;
-  // A prompt at the bottom middle (in reach of a weapons crate), or empty.
+  // A prompt at the bottom middle, or empty.
   const char *playPrompt = "";
 
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
@@ -395,7 +388,6 @@ private:
                            bool moved, bool changed);
   void drawGizmo(DebugUiContext &ui);
   void drawCrosshair(const DebugUiContext &ui) const;
-  void drawAmmo(const DebugUiContext &ui) const;
   void drawPlayPrompt(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
   // The others moved, for placing them with the primary.

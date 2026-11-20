@@ -93,6 +93,7 @@ void CharacterMovement::setTuning(const CharacterTuning &tuning) {
 void CharacterMovement::update(const CharacterInput &input, float dt) {
   aimed = input.aim;
   const PhysicsCharacterState state = world.characterState(id);
+  lastState = state;
   const float gravity = std::max(0.0f, -world.gravity().y);
 
   // Standing on walkable ground. Jolt already counts the step after a jump

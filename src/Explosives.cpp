@@ -1,9 +1,9 @@
-// VulkanRenderer's explosives (step 1.7): the hand grenade thrown, its fuse
-// and its explosion. The blast (Blast.h) pushes bodies, hits breakable
-// pieces through the destruction's own impacts and hurts people close by;
-// the fragments fly as bullets for the world and are worked out for people
-// (every fragment of the fitted spread, as expected hits on each body part
-// with cover); a fireball, a light, dust and a boom.
+// VulkanRenderer's explosions (step 1.7; the grenades, charges and rockets
+// went with the shooter, tag shooter-final). The blast (Blast.h) pushes
+// bodies, hits breakable pieces through the destruction's own impacts and
+// hurts people close by; a cased charge's fragments are worked out for
+// people (every fragment of the fitted spread, as expected hits on each
+// body part with cover); a fireball, a light, dust, smoke and a boom.
 
 #include "VulkanRenderer.h"
 
@@ -19,15 +19,6 @@
 
 namespace {
 
-// A grenade leaves at most at 18.5 m/s (Fu Jen 2008).
-constexpr float kFastestThrow = 18.5f; // m/s
-// A charge goes on what's within reach (the design's 1.5 m).
-constexpr float kChargeReach = 1.5f; // m
-// The M67: a 64 mm steel sphere, 397 g (FM 3-23.30).
-constexpr float kGrenadeRadius = 0.032f, kGrenadeMass = 0.397f;
-// The fragments that really fly, as bullets, for the dust and the damage
-// to what they hit (people get the whole spread worked out).
-constexpr int kFlyingFragments = 200;
 // A blast's push: the drag coefficient of a body (est., between a front
 // face's 1.0 and a beam's 1.5); behind something solid, a quarter (est.:
 // blast bends round corners but loses most of its push).
@@ -50,76 +41,15 @@ float dice(uint32_t &state) {
 
 } // namespace
 
-void VulkanRenderer::throwGrenade(int index, glm::vec3 hand) {
-  LiveCharacter &c = characters[index];
-  if (!physics || grenadeModel < 0)
-    return;
-  // Toward what the camera looks at, the low arc at whatever speed reaches
-  // it, no faster than a strong throw.
-  const glm::vec3 target = aimPoint(c);
-  const float reach = glm::length(glm::vec2(target.x - hand.x, target.z - hand.z));
-  const float speed = std::min(kFastestThrow, std::sqrt(9.81f * std::max(reach, 1.0f)) * 1.15f);
-  const glm::vec3 velocity = throwVelocity(hand, target, speed, glm::vec3(0.0f, -9.81f, 0.0f));
-  SceneModelEntry grenade;
-  grenade.shape = PrimitiveShape::Sphere;
-  grenade.radius = kGrenadeRadius;
-  grenade.body = PhysicsMotion::Dynamic;
-  grenade.mass = kGrenadeMass;
-  grenade.restitution = 0.3f; // steel on the ground (est.)
-  grenade.transform.position = hand;
-  PhysicsBodyDesc body = bodyDescFor(grenade, nullptr, 0.5f);
-  body.linearVelocity = velocity;
-  body.angularVelocity = glm::vec3(0.0f, 0.0f, -12.0f); // the wrist's spin (est.)
-  int link = static_cast<int>(physicsLinks.size());
-  if (!freeCasingLinks.empty()) { // slots given back by casings and grenades
-    link = freeCasingLinks.back();
-    freeCasingLinks.pop_back();
-  } else {
-    physicsLinks.emplace_back();
-  }
-  body.userData = static_cast<uint64_t>(link);
-  const PhysicsBodyId id = physics->addBody(body);
-  if (!id.isValid()) {
-    freeCasingLinks.push_back(link);
-    return;
-  }
-  auto node = std::make_unique<SceneNode>();
-  node->setModelId(grenadeModel);
-  node->setPose(hand, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-  node->setPhysicsLink(link);
-  physicsLinks[link] = {node.get(), id, SoundSurface::Metal};
-  // The spoon flies off as it leaves the hand: the fuse burns from now.
-  liveGrenades.push_back({node.get(), id, link, fuseTime(dice(fireDice)), index});
-  rootNode.addChild(std::move(node));
-  --c.grenades;
-  spdlog::info("Grenade thrown at {:.1f} m/s, {} left", glm::length(velocity), c.grenades);
-}
-
-void VulkanRenderer::updateGrenades(float seconds) {
+void VulkanRenderer::updateBlasts(float seconds) {
   if (blastLight > 0.0f)
     blastLight -= seconds;
-  std::vector<std::pair<glm::vec3, int>> going;
-  for (LiveGrenade &g : liveGrenades) {
-    g.fuse -= seconds;
-    if (g.fuse <= 0.0f && physics)
-      going.push_back({physics->pose(g.body).position, g.owner});
+  // A blast lights its surroundings for a few frames (no shadow).
+  sceneUbo.flashColour = glm::vec4(0.0f);
+  if (blastLight > 0.0f) {
+    sceneUbo.flashPosition = glm::vec4(blastLightAt, 1.0f);
+    sceneUbo.flashColour = glm::vec4(1.0f, 0.7f, 0.4f, blastLightPower);
   }
-  if (going.empty())
-    return;
-  // Off the ground first: the grenades go, then they explode.
-  std::unordered_set<const SceneNode *> nodes;
-  std::erase_if(liveGrenades, [&](const LiveGrenade &g) {
-    if (g.fuse > 0.0f)
-      return false;
-    physics->removeBody(g.body);
-    physicsLinks[g.link] = {};
-    freeCasingLinks.push_back(g.link);
-    nodes.insert(g.node);
-    return true;
-  });
-  rootNode.removeChildren([&](const SceneNode &n) { return nodes.contains(&n); });
-  for (const auto &[at, owner] : going)
-    explode(at, kM67, owner);
 }
 
 void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner) {
@@ -265,36 +195,6 @@ void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner)
     }
   }
 
-  // A couple of hundred fragments really fly: dust where they land, damage
-  // on what they hit. Their round: the spread's mass, drag from their size
-  // (a tumbling chip's drag coefficient 1 against G1's about 0.5 at these
-  // speeds, est.), and what holds them back in each material the AK
-  // round's (fitted to its documented depths) scaled by their area.
-  if (cased && fragmentRound.mass != spread.mass) {
-    const WeaponAsset *akm = weaponAsset("akm");
-    const Round rifle = akm ? akm->round : roundOf(WeaponSpec{});
-    const float area = 1.5f * std::pow(spread.mass / 7850.0f, 2.0f / 3.0f);
-    const float rifleArea = 3.14159f * 0.25f * 0.00762f * 0.00762f;
-    fragmentRound = rifle;
-    fragmentRound.mass = spread.mass;
-    fragmentRound.projectile.model = DragModel::G1;
-    fragmentRound.projectile.coefficient = (spread.mass / area) * 0.5f / kBallisticCoefficientUnit;
-    for (Resistance &r : fragmentRound.resistance) {
-      r.a *= area / rifleArea;
-      r.b *= area / rifleArea;
-    }
-  }
-  for (int k = 0; k < (cased ? kFlyingFragments : 0); ++k) {
-    const float u = 2.0f * dice(fireDice) - 1.0f, phi = 6.2831853f * dice(fireDice);
-    const float s = std::sqrt(std::max(0.0f, 1.0f - u * u));
-    Bullet b;
-    b.round = &fragmentRound;
-    b.owner = kFragmentOwner;
-    b.flight.position = at;
-    b.flight.velocity = glm::vec3(s * std::cos(phi), u, s * std::sin(phi)) * spread.speed;
-    bullets.push_back(b);
-  }
-
   // What you see and hear: the fireball for a frame or two, its light,
   // dust thrown along the ground, grit, a cloud of the explosive's smoke
   // (TNT's near black, C-4's grey) spreading and rising; the boom; the
@@ -373,84 +273,7 @@ void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner)
   }
 }
 
-void VulkanRenderer::clearGrenades() {
-  if (!liveGrenades.empty()) {
-    std::unordered_set<const SceneNode *> nodes;
-    for (const LiveGrenade &g : liveGrenades) {
-      if (physics && g.body.isValid())
-        physics->removeBody(g.body);
-      if (g.link >= 0 && g.link < static_cast<int>(physicsLinks.size()))
-        physicsLinks[g.link] = {};
-      nodes.insert(g.node);
-    }
-    rootNode.removeChildren([&](const SceneNode &n) { return nodes.contains(&n); });
-  }
-  liveGrenades.clear();
-  if (!charges.empty()) {
-    std::unordered_set<const SceneNode *> nodes;
-    for (const PlacedCharge &placed : charges)
-      nodes.insert(placed.node);
-    rootNode.removeChildren([&](const SceneNode &n) { return nodes.contains(&n); });
-  }
-  charges.clear();
+void VulkanRenderer::clearBlasts() {
   blastImpacts.clear();
   blastLight = 0.0f;
-}
-
-void VulkanRenderer::placeCharge(int index) {
-  LiveCharacter &c = characters[index];
-  if (c.charges <= 0 || !physics || !playerController || c.body < 0 || !roster)
-    return;
-  // On what the camera looks at, if he can reach it (1.5 m from him).
-  const ThirdPersonCamera &view = playerController->camera();
-  const glm::vec3 from = view.position(), dir = glm::normalize(view.forward());
-  const glm::vec3 body = roster->body(c.body).position() + glm::vec3(0.0f, 1.0f, 0.0f);
-  const float start = std::max(0.0f, glm::dot(body - from, dir) - 0.5f);
-  const std::optional<PhysicsRayHit> hit = physics->castRay(from + dir * start, dir, 4.0f);
-  if (!hit)
-    return;
-  const glm::vec3 at = from + dir * (start + hit->distance);
-  if (glm::distance(at, body) > kChargeReach) {
-    spdlog::info("Nothing in reach to put a charge on");
-    return;
-  }
-  --c.charges;
-  // A block on the same spot makes that charge bigger.
-  for (PlacedCharge &placed : charges)
-    if (glm::distance(placed.at, at) < 0.25f) {
-      ++placed.blocks;
-      spdlog::info("Charge: {} blocks, {} left", placed.blocks, c.charges);
-      return;
-    }
-  auto node = std::make_unique<SceneNode>();
-  node->setModelId(chargeModel);
-  // Flat on the surface, its long side across.
-  const glm::vec3 n = glm::normalize(hit->normal);
-  const glm::vec3 side = glm::normalize(std::abs(n.y) < 0.9f ? glm::cross(glm::vec3(0, 1, 0), n) : glm::cross(glm::vec3(1, 0, 0), n));
-  const glm::quat turn = glm::quat_cast(glm::mat3(side, glm::cross(n, side), n));
-  node->setPose(at + n * 0.0127f, turn);
-  charges.push_back({node.get(), at, 1, index});
-  rootNode.addChild(std::move(node));
-  spdlog::info("Charge placed, {} left", c.charges);
-}
-
-void VulkanRenderer::fireCharges(int index) {
-  std::vector<PlacedCharge> going;
-  std::erase_if(charges, [&](const PlacedCharge &placed) {
-    if (placed.owner != index)
-      return false;
-    going.push_back(placed);
-    return true;
-  });
-  if (going.empty())
-    return;
-  std::unordered_set<const SceneNode *> nodes;
-  for (const PlacedCharge &placed : going)
-    nodes.insert(placed.node);
-  rootNode.removeChildren([&](const SceneNode &n) { return nodes.contains(&n); });
-  for (const PlacedCharge &placed : going) {
-    CasedCharge charge = kM112;
-    charge.charge *= static_cast<float>(placed.blocks);
-    explode(placed.at, charge, index);
-  }
 }

@@ -122,21 +122,17 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     else if (key == "d") controls.right = true;
     else if (key == "shift") controls.run = true;
     else if (key == "sprint") controls.sprint = true;
-    else if (key == "1") controls.pistol = true;
-    else if (key == "2") controls.longGun = true;
-    else if (key == "3") controls.launcher = true;
-    else if (key == "h") controls.holster = true;
-    else if (key == "r") controls.reload = true;
-    else if (key == "b") controls.fireMode = true;
-    else if (key == "e") controls.use = true;
-    else if (key == "g") controls.grenade = true;
-    else if (key == "4") controls.charge = true;
-    else if (key == "5") controls.detonate = true;
     else if (key == "ctrl") controls.crouch = true;
     else if (key == "rmb") controls.aim = true;
     else if (key == "space") controls.jump = true;
     else if (key == "alt") controls.dodge = true;
-    else if (key == "lmb") controls.fire = true;
+    else if (key == "lmb") {
+      controls.fire = true;
+      // Pressed on the first frame it covers.
+      controls.cast = controls.cast || !coversFrame(at == std::string_view::npos ? "" : token.substr(at + 1), frame - 1);
+    }
+    else if (key == "q") controls.reveal = true;
+    else if (key == "e") controls.burst = true;
     else if (key == "mu") controls.mouse.y -= kScriptedMouse;
     else if (key == "md") controls.mouse.y += kScriptedMouse;
     else if (key == "ml") controls.mouse.x -= kScriptedMouse;

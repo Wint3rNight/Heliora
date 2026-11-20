@@ -27,17 +27,9 @@ constexpr std::array<ActionInfo, static_cast<size_t>(Action::Count)> kActions = 
     {"aim", "Aim"},
     {"jump", "Jump"},
     {"dodge", "Dodge"},
-    {"fire", "Fire"},
-    {"pistol", "Pistol"},
-    {"long_gun", "Long gun"},
-    {"holster", "Put the gun away"},
-    {"reload", "Reload"},
-    {"fire_mode", "Fire mode"},
-    {"use", "Use"},
-    {"grenade", "Throw a grenade (hold, let go to throw)"},
-    {"charge", "Place a charge"},
-    {"detonate", "Fire the charges"},
-    {"launcher", "Rocket launcher"},
+    {"fire", "Fire (press: throw what's held)"},
+    {"reveal", "Reveal"},
+    {"burst", "Burst"},
 }};
 
 // Keys with names of their own; letters, digits, F keys and keypad digits
@@ -151,7 +143,7 @@ bool reservedForEditor(InputBinding binding) {
   if (binding.device != InputBinding::Device::Key)
     return false;
   for (const int code : {GLFW_KEY_ESCAPE, GLFW_KEY_TAB, GLFW_KEY_F1, GLFW_KEY_F2,
-                         GLFW_KEY_F5, GLFW_KEY_F})
+                         GLFW_KEY_F5, GLFW_KEY_F9, GLFW_KEY_F})
     if (binding.code == code)
       return true;
   return false;
@@ -163,16 +155,8 @@ ControlBindings::ControlBindings() {
   (*this)[Action::Left] = key(GLFW_KEY_A);
   (*this)[Action::Right] = key(GLFW_KEY_D);
   (*this)[Action::Run] = key(GLFW_KEY_LEFT_SHIFT);
-  (*this)[Action::Pistol] = key(GLFW_KEY_1);
-  (*this)[Action::LongGun] = key(GLFW_KEY_2);
-  (*this)[Action::Holster] = key(GLFW_KEY_H);
-  (*this)[Action::Reload] = key(GLFW_KEY_R);
-  (*this)[Action::FireMode] = key(GLFW_KEY_B);
-  (*this)[Action::Use] = key(GLFW_KEY_E);
-  (*this)[Action::Grenade] = key(GLFW_KEY_G);
-  (*this)[Action::Charge] = key(GLFW_KEY_4);
-  (*this)[Action::Detonate] = key(GLFW_KEY_5);
-  (*this)[Action::Launcher] = key(GLFW_KEY_3);
+  (*this)[Action::Reveal] = key(GLFW_KEY_Q);
+  (*this)[Action::Burst] = key(GLFW_KEY_E);
   (*this)[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
   (*this)[Action::Aim] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_RIGHT};
   (*this)[Action::Jump] = key(GLFW_KEY_SPACE);

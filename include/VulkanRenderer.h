@@ -12,19 +12,14 @@
 #include <optional>
 #include <string>
 #include <map>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "AudioDevice.h"
-#include "AimIk.h"
 #include "EditorSelection.h"
 #include "HitZones.h"
-#include "Loadout.h"
-#include "Weapon.h"
-#include "WeaponFile.h"
-#include "WeaponHold.h"
-#include "WeaponParts.h"
 #include "AutoExposurePass.h"
 #include "BloomPass.h"
 #include "CompositePass.h"
@@ -47,6 +42,9 @@
 #include "Blast.h"
 #include "Bullets.h"
 #include "PieceDamage.h"
+#include "Powers.h"
+#include "GlowPass.h"
+#include "SpringKick.h"
 #include "Rubble.h"
 #include "Stress.h"
 #include "CharacterRoster.h"
@@ -168,6 +166,8 @@ public:
   }
   // While playing, the player possesses a character and the view comes from
   // its camera.
+  // Saves the movement recorder's last 10 s now (F9); the path, or empty.
+  std::string saveMovementRecording(const char *why = "asked for");
   bool hasPlayer() const { return playerController && playerController->body(); }
   // The player's keys, rebound in the Controls tab.
   const ControlBindings &controls() const { return controlBindings; }
@@ -257,7 +257,7 @@ private:
   glm::vec3 flyCameraPosition{0.0f};
   float flyCameraYaw = -90.0f; // degrees, Camera's convention
   static SceneModelEntry playerCapsuleEntry(float radius, float height);
-  // The player's look and moves, from Resources/Characters/remy.character,
+  // The player's look and moves, from Resources/Characters/ganfaul.character,
   // read once at startup. Without its files there's none, and the capsule
   // stays.
   std::optional<CharacterAsset> characterAsset;
@@ -319,101 +319,6 @@ private:
   // A character drawn in the scene: a [character], or with none ticked the
   // player at the player start. Edit mode: standing in its idle pose. Play
   // mode: a body in the roster, animated.
-  // A gun as the game has it (src/Guns.cpp): its .weapon file, its parts'
-  // .parts file and a model for each part.
-  struct WeaponAsset {
-    std::string name; // "akm": Resources/Weapons/akm.weapon
-    WeaponSpec spec;
-    WeaponParts parts;
-    std::vector<int> partModels; // one per part; -1 if it couldn't load
-    // Its round as its bullets fly (roundOf), and the barrel's tilt up so
-    // they cross the sight line at its zeroing range.
-    Round round;
-    float zero = 0.0f;
-    // A launcher's rocket: the thrust and drag fitted to its documented
-    // flight (Rocket.h).
-    RocketFit rocketFit;
-  };
-  std::map<std::string, std::unique_ptr<WeaponAsset>> weaponAssets;
-  // The gun's asset, read the first time it's asked for; null if it can't be.
-  const WeaponAsset *weaponAsset(const std::string &name);
-  // A gun a character carries: its parts as nodes, how its hand holds it
-  // (from its stance's aiming pose), and where it rides when put away (a
-  // holster on the hip, across the back), in that bone's frame.
-  struct CarriedGun {
-    const WeaponAsset *asset = nullptr;
-    Stance stance = Stance::Rifle;
-    std::vector<SceneNode *> parts; // owned by rootNode
-    WeaponHold hold;
-    int stowBone = -1;
-    glm::mat4 stowInBone{1.0f};
-    // Carried relaxed, not aiming: at low ready (the rifle always, the
-    // pistol crouched), in a level frame at the right shoulder facing his
-    // way. The pistol standing
-    // hangs at his side in the right hand, the hand turned this way to its
-    // forearm so the muzzle points down.
-    glm::mat4 lowReady{1.0f};
-    bool atSide = false;
-    glm::quat sideHand{1.0f, 0.0f, 0.0f, 0.0f};
-    // Aiming: a rifle's butt (gun space) goes into the shoulder pocket; a
-    // pistol is held out along the line from the eye, its trigger this far.
-    glm::vec3 butt{0.0f};
-    float eyeReach = 0.5f;
-    // Where the eye lines up on it (gun space; only x and y count, along
-    // the barrel it's the line), and where its butt goes against his
-    // shoulder (the right arm's joint, in his chest's frame: x left, y up,
-    // z ahead). A rifle's sight line over the bore and the shoulder's
-    // pocket; a launcher's sights on top of the tube, its tube on top of
-    // the shoulder.
-    glm::vec3 sight{0.0f};
-    glm::vec3 pocket{0.0f};
-    // A rocket launcher: fired only raised, no carry clips (the tube is
-    // held on the shoulder by IK), the left hand on its rear grip as the
-    // right holds the front one (mirrored, in leftInGun), loaded by hand.
-    bool launcher = false;
-    int rocketPart = -1; // the loaded rocket, shown while there's one in the tube
-    glm::mat4 loadingHold{1.0f}; // being loaded, in the level frame at the right shoulder (as lowReady)
-    // The left hand on the gun, as the aiming clip holds it: on a rifle the
-    // grip's off-hand place with this turn, on a pistol this whole frame.
-    glm::quat offHandTurn{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::mat4 leftInGun{1.0f};
-    // Points of the hands holding it (gun space), kept
-    // clear of the body when it's carried relaxed.
-    std::vector<glm::vec3> clearPoints;
-    // The fingers wrapped round it, as the aiming clip has them: each finger
-    // bone's own turn, for the right hand and the left.
-    std::vector<std::pair<int, glm::quat>> rightGrip, leftGrip;
-    // What the gun is doing: its magazines, chamber and reload (Weapon.h).
-    std::shared_ptr<Weapon> weapon;
-    // Where it is this frame (rigid, the world's frame), and the shots its
-    // trigger let off this frame: they leave from its muzzle once the pose
-    // has put it there.
-    glm::mat4 at{1.0f};
-    glm::mat4 aimedFrom{1.0f}; // where it is before the shot's visible kick: bullets leave from here
-    std::vector<Shot> shots;
-    // The kick each shot gives the gun you see (back, up, aside), springing
-    // back.
-    GunKick kick;
-    // Its bolt or slide (a part, or -1) runs back and forward each shot:
-    // seconds since the last one.
-    int boltPart = -1;
-    float sinceShot = 1.0f;
-    int magazinePart = -1; // the part that comes out in a reload, or -1
-  };
-  // The bones the guns move: the arms (for the reach, the aim and the off
-  // hand) and the trigger finger.
-  struct GunBones {
-    int rightArm = -1, rightForeArm = -1, rightHand = -1, rightIndex = -1;
-    int leftArm = -1, leftForeArm = -1, leftHand = -1, leftKnuckle = -1;
-    int hips = -1, spine2 = -1, neck = -1, head = -1, rightEye = -1;
-    int leftLeg = -1, rightLeg = -1; // the thighs, to square the hips
-    glm::vec3 headFace{0.0f, 0.0f, 1.0f}; // the way the face looks, in the head's frame
-    bool valid() const {
-      return rightArm >= 0 && rightForeArm >= 0 && rightHand >= 0 && leftArm >= 0 &&
-             leftForeArm >= 0 && leftHand >= 0 && hips >= 0 && spine2 >= 0;
-    }
-  };
-
   struct LiveCharacter {
     SceneEntryRef entry; // Kind::None for the player start's
     CharacterFileData *file = nullptr;
@@ -432,47 +337,21 @@ private:
     // This frame's skinning matrices, worked out while posing and uploaded
     // in draw() once the frame slot's fence says it's free.
     std::vector<glm::mat4> skinning;
-    // Guns (step 1.6, src/Guns.cpp): what it carries and has in its hands,
-    // each carried gun (the pistol, the long gun, the launcher), how it
-    // aims and the arm bones the IK moves.
-    Loadout loadout;
-    std::array<std::optional<CarriedGun>, 3> guns; // by gunSlot
-    AimRig aimRig;
-    GunBones gunBones;
-    float aimWeight = 0.0f; // the aim IK's share, eased in
-    std::vector<HitCapsuleDef> hitCapsules; // his body parts, for bullets and a carried gun's hands
+    std::vector<HitCapsuleDef> hitCapsules; // his body parts, for blows and blasts
     std::vector<HitCapsule> capsules;       // where they are this frame
     Health health;
-    // This frame's hit (a flinch), the death clip a killing shot chose, and
-    // which way he faces (the model's +z in the world) for choosing it.
+    // This frame's hit (a flinch), the death clip a killing blow chose, and
+    // which way he faces (the model's +z in the world) for choosing it; how
+    // long he's been dead (the player comes back after 4 s); the camera's
+    // shake from a blast, and how far it has the view turned (radians, yaw
+    // to the left and pitch up).
     bool hitThisFrame = false;
-    bool atCrate = false; // the played character, in reach of a weapons crate
-    // Grenades (step 1.7): how many he has; a throw under way (s into its
-    // clip, below 0 for none), the pin out while G is held, the grenade let
-    // go this frame; how long he's been dead (the player comes back after
-    // 4 s); the camera's shake from a blast.
-    int grenades = 0;
-    int charges = 0; // demolition blocks left to place
-    float throwTime = -1.0f;
-    bool pinOut = false;
-    bool letGo = false;
     float deadFor = 0.0f;
-    GunKick shake;
+    SpringKick shake;
+    glm::vec2 viewKick{0.0f};
     ClipSlot deathClip = ClipSlot::DeathFront;
     glm::vec3 facing{0.0f, 0.0f, 1.0f};
     bool crouched = false;
-    // Radians (yaw to the left, pitch up) his gun's recoil has the camera
-    // kicked by: shown, but not where the gun aims.
-    glm::vec2 viewKick{0.0f};
-    // A gun carried relaxed follows his chest's turn part of the way, a
-    // little behind: where it's got to (in the level frame at his
-    // shoulder), and his chest's turn there at rest.
-    glm::quat carryTurn{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::quat restChest{1.0f, 0.0f, 0.0f, 0.0f};
-    // Crouched with a gun ready (the gun's crouch clips play, the gun held
-    // relaxed), and that eased in.
-    bool gunCrouched = false;
-    float crouchWeight = 0.0f;
   };
   std::vector<LiveCharacter> characters;
   // What a surface sounds like when stepped on or hit (step 1.5c), from its
@@ -522,16 +401,31 @@ private:
   // Edit mode: a character's node at its entry's place, after an edit.
   void placeCharacter(int index);
   void poseCharacters(float alpha, float frameSeconds);
+  // Where the crosshair lands: the first thing along the camera's view past
+  // the character, or far out along it.
+  glm::vec3 aimPoint(const LiveCharacter &c) const;
+  // The camera's shake (a blast's) springing back, shown on the played
+  // character's view.
+  void shakeView(int index, float seconds);
+  // The movement recorder (src/PlayerView.cpp): the played character's last
+  // 10 s, a row a frame, saved to recordings/ when he shoots up without a
+  // jump, or on F9 (saveMovementRecording), to find what throws him.
+  struct MoveRecord {
+    double time = 0.0;
+    float seconds = 0.0f; // the frame's
+    glm::vec3 position{0.0f}, velocity{0.0f};
+    int ground = 0; // PhysicsGround
+    uint64_t groundUserData = 0;
+    uint32_t groundBody = 0;
+    glm::vec3 groundVelocity{0.0f}, groundNormal{0.0f, 1.0f, 0.0f};
+    bool jump = false;
+  };
+  std::deque<MoveRecord> moveRecording;
+  double sinceThrownSave = 1e9;
+  double lastJumpAt = -1e9;
+  void recordMovement(float seconds);
   // Puts a character's feet on the ground under them: two rays, then the
   // foot IK on its pose (step 1.5b).
-  // Guns (src/Guns.cpp): the scene's kit to the played character at Play,
-  // the keys and stance before its clips, and after them (and the feet) the
-  // reach for a gun being drawn, the aim, the off hand and the parts placed.
-  void armCharacter(LiveCharacter &c);
-  void gunsBeforeClips(int index, AnimatorInput &input, float seconds);
-  void gunsAfterClips(int index, const glm::mat4 &placement, float seconds, Pose &pose,
-                      std::vector<glm::mat4> &model);
-  glm::vec3 aimPoint(const LiveCharacter &c) const;
   void placeFeet(int index, const FootPlacement &placement, bool on, float seconds, Pose &pose,
                  std::vector<glm::mat4> &model);
   std::pair<CharacterTuning, AnimatorTuning> tuningFor(const CharacterFileData &data,
@@ -804,103 +698,124 @@ private:
     bool broken = false;
   };
   std::vector<GroundLink> groundLinks;
-  // Firing (step 1.6, part 7; src/Firing.cpp). Bullets in flight; this
-  // frame's muzzle flashes; a hit body's id to its userData, this frame;
-  // characters hit carry this flag, their index and the capsule.
-  std::vector<Bullet> bullets;
-  // Spent casings: brass bodies thrown out of the ejection port, the
-  // oldest gone past 64. Their meshes (rifle, pistol) are made with the
-  // scene, like the thrown ball's.
-  struct Casing {
-    SceneNode *node = nullptr;
+  // The powers (step 1.4a, Powers.h; src/PowerPlay.cpp): with the aim held
+  // the player grabs what the crosshair is on, holds it out along the aim,
+  // throws it, tears pieces out of what they're part of, and bursts.
+  // Something the power can take: a whole moving body (a scene object's or
+  // a breakable chunk's), or one piece of a breakable, torn out first.
+  struct PowerTarget {
+    int id = -1; // the controller's: index * 4, plus 0 a piece, 1 a chunk's body, 2 a scene body
+    GrabKind kind = GrabKind::Lift;
     PhysicsBodyId body;
-    int link = -1; // into physicsLinks
+    int piece = -1; // the piece; for a chunk's body, one it carries
+    glm::vec3 centre{0.0f};
+    float radius = 0.0f;
   };
-  std::vector<Casing> casings;
-  // Live grenades: bodies, their fuses burning. Blasts' fireballs, drawn
-  // over a few frames, and the blast's light.
-  struct LiveGrenade {
-    SceneNode *node = nullptr;
+  PowerController powerController;
+  std::vector<PowerTarget> powerCandidates; // near the player, this frame
+  std::optional<PowerTarget> powerTarget;    // under the crosshair and in sight
+  PowerTarget powerGrabbed;                  // what was grabbed, while it's held
+  // The moving body held out (lifting, holding, a throw not yet gone), a
+  // piece it carries so it's found again when a regroup replaces it, where
+  // its lift began and how long ago, its tumble, the wheel's distance, and
+  // how long it's been stuck away from the hold point.
+  PhysicsBodyId heldBody;
+  int heldPiece = -1;
+  std::vector<int> heldPieces; // the held chunk's, for another to follow if heldPiece is cut
+  glm::vec3 heldFrom{0.0f};
+  float heldSeconds = 0.0f;
+  glm::vec3 heldAxis{0.0f, 1.0f, 0.0f};
+  float heldDistance = 0.0f;
+  float heldAway = 0.0f;
+  glm::vec3 holdTarget{0.0f}; // this frame's hold point
+  // A tear under way: the piece's links and ground links, when each gives
+  // way, and how far along it is.
+  struct PowerTear {
+    std::vector<int> links, grounds;
+    std::vector<float> linkTimes, groundTimes;
+    float seconds = 0.0f;
+    float total = 0.0f;
+    bool done = false; // every link it had is broken, and it's still not free to lift
+  } powerTear;
+
+  // The last throw's path, for its trail.
+  struct PowerTrail {
     PhysicsBodyId body;
-    int link = -1;
-    float fuse = 4.5f; // s left
-    int owner = -1;
-  };
-  std::vector<LiveGrenade> liveGrenades;
-  int grenadeModel = -1;
-  // Placed charges: where (on the surface it was put on) and how many
-  // blocks; fired together by the detonator.
-  struct PlacedCharge {
+    std::vector<glm::vec3> points;
+    float seconds = 0.0f;
+  } powerTrail;
+  float revealSince = -1.0f; // s since Q, or -1
+  glm::vec3 revealFrom{0.0f};
+  float burstSince = -1.0f; // s since the blast, or -1
+  glm::vec3 burstFrom{0.0f}, burstAim{0.0f, 0.0f, -1.0f};
+  std::vector<PhysicsImpact> powerImpacts; // the burst's hits, for handleImpacts
+  // Nodes shaken last frame (a tear, a strain): put back where their
+  // bodies are before this frame's shake.
+  std::vector<int> shakenPieces;
+  int shakenLink = -1; // into physicsLinks
+  glm::vec3 handPosition{0.0f}; // the player's right hand this frame
+  int handBone = -2;            // into the skeleton; -1 none, -2 not looked for
+  std::vector<PhysicsDebugVertex> powerLines; // the debug lines, with Debug lines ticked
+  // The powers' look (step 4): what glows this frame, drawn by glowPass;
+  // the light's strips go in with the other effects (effectStrips). The nodes are gathered at the end of
+  // each play frame's physics, after everything that can remove a node
+  // while playing, and cleared with clearPowers: anything that removes nodes
+  // during play elsewhere must clear them too, or recordPowerEffects reads a
+  // freed node.
+  struct PowerGlow {
     SceneNode *node = nullptr;
-    glm::vec3 at{0.0f};
-    int blocks = 1;
-    int owner = -1;
+    glm::vec3 colour{1.0f}; // HDR
+    float strength = 1.0f;
+    float floor = 0.0f; // light over its faces too (GlowDraw::floor)
   };
-  std::vector<PlacedCharge> charges;
-  int chargeModel = -1;
-  void placeCharge(int index);
-  void fireCharges(int index);
-  Round fragmentRound;
+  std::vector<PowerGlow> powerGlows;
+  std::vector<GlowDraw> powerGlowDraws; // powerGlows turned into meshes, at record time
+  uint32_t powerDraws = 0; // for the tumble axes, varied each grab and throw
+  void clearPowers();
+  // Each frame in play, before the steps: what's near and under the
+  // crosshair, the controller, and what it says to do.
+  void updatePowers(float seconds);
+  // Each physics step: the held body pulled toward the hold point.
+  void holdPowers(float stepSeconds);
+  // After the poses: the piece being torn out, or what's strained against,
+  // shaken where it's drawn.
+  void shakePowers();
+  // After the characters are posed: the powers as lines, for now.
+  void drawPowerLines();
+  void buildPowerEffects();
+  void addPowerGlow(const PowerTarget &target, glm::vec3 colour, float strength, float floor = 0.0f);
+  void recordPowerGlows(VkCommandBuffer cmd, uint32_t currentImage, const VkViewport &viewport,
+                        const VkRect2D &scissor);
+  void gatherPowerCandidates(glm::vec3 around, float radius);
+  bool followHeld(); // false once the held body is gone for good
+  void startTear(int piece);
+  bool advanceTear(float seconds); // true once the piece is loose and light enough
+  void throwHeld();
+  void burstPower();
+  glm::vec3 bodyCentre(PhysicsBodyId body) const; // its bounding box's middle
+  glm::vec3 heldCentre() const;
+  // Where the power's light goes: what's held, or the piece torn at or
+  // strained against; nothing without a light out.
+  std::optional<glm::vec3> powerReach() const;
+  float pieceMass(int piece) const;
+  glm::vec3 pieceCentre(int piece) const;
+  glm::vec3 randomAxis();
+  // The played character's (its variant's), or the Character tab's.
+  const PowerTuning &powerTuning() const;
+  // Explosions (step 1.7, src/Explosives.cpp): the last blast's light, and
+  // the impacts blasts made, handed to the destruction with Jolt's own.
   float blastLight = 0.0f; // s of the last blast's light left
   glm::vec3 blastLightAt{0.0f};
   float blastLightPower = 0.0f;
-  // Impacts made by blasts, handed to the destruction with Jolt's own.
   std::vector<PhysicsImpact> blastImpacts;
-  void updateGrenades(float seconds);
-  void throwGrenade(int index, glm::vec3 hand);
+  void updateBlasts(float seconds);
   void explode(glm::vec3 at, const CasedCharge &charge, int owner);
-  void clearGrenades();
-  static constexpr int kFragmentOwner = -2; // fragments: the world only, characters are worked out
-  // The throw (Mixamo's "Throw", 2.2 s overhand): let go at 0.8 s (by
-  // clip_survey --trace: the hand highest at 0.66 s, coming forward after),
-  // played to 1.6 s.
-  static constexpr float kThrowRelease = 0.8f, kThrowEnd = 1.6f;
-  // Which of a character's guns a Holdable is: the pistol 0, the long gun
-  // 1, the launcher 2 (None: -1).
-  static int gunSlot(Holdable held) {
-    return held == Holdable::Pistol ? 0 : held == Holdable::Long ? 1 : held == Holdable::Launcher ? 2 : -1;
-  }
-  // Rockets in flight (step 1.7, src/Rockets.cpp): each its flight (Rocket.h),
-  // its model, who fired it, and the spacing of its smoke trail.
-  struct LiveRocket {
-    SceneNode *node = nullptr;
-    RocketFlight flight;
-    const WeaponAsset *asset = nullptr;
-    int owner = -1;
-    float trail = 0.0f; // m flown since the last puff
-    float flameCarry = 0.0f; // the part of a flame owed from the frames before
-    glm::vec3 tail{0.0f};    // where its motor's flame comes out
-  };
-  std::vector<LiveRocket> rockets;
-  void launchRocket(int index, CarriedGun &gun, const Shot &shot);
-  void updateRockets(float seconds);
-  // A warhead's hit: its jet along dir through what's in front, then its
-  // blast.
-  void rocketHit(glm::vec3 at, glm::vec3 dir, const WeaponAsset &asset, int owner);
-  void heatJet(glm::vec3 at, glm::vec3 dir, float steel, int owner);
-  void clearRockets();
-  std::vector<int> freeCasingLinks; // physicsLinks slots casings gave back
-  std::array<int, 2> casingModels{-1, -1};
-  void ejectCasing(const CarriedGun &gun);
-  void clearCasings();
-  struct MuzzleFlash {
-    glm::vec3 at{0.0f};
-    glm::vec3 along{0.0f, 0.0f, 1.0f};
-    float size = 0.1f; // m long
-    bool outer = false;
-  };
-  std::vector<MuzzleFlash> flashes;
-  std::unordered_map<uint64_t, uint64_t> bulletBodies;
-  static constexpr uint64_t kCharacterHitFlag = 1ull << 60;
+  void clearBlasts();
   uint32_t fireDice = 0x9e3779b9u;
-  // The shots a gun let off this frame, from its muzzle: bullets, a flash,
-  // the sound.
-  void fireShots(int index, CarriedGun &gun);
-  // Every bullet on through the frame, what it hits, the tracers and
-  // flashes drawn.
-  void stepShots(float seconds);
-  std::optional<BulletContact> bulletContact(glm::vec3 from, glm::vec3 to, int owner);
-  void bulletHits(const std::vector<BulletImpact> &impacts);
+  // Hits (src/Hits.cpp): what a hit throws off; a character hurt (true if
+  // it killed him), his death clip picked by where it came from.
+  void hitEffects(glm::vec3 point, glm::vec3 normal, Matter matter, float energy);
+  bool hurtCharacter(int index, HitZone zone, float points, glm::vec3 direction);
   std::vector<std::vector<int>> pieceGroundLinks; // by piece
   // The solve over the pieces that stay put, redone when the structure
   // changes and spread over frames; each piece's last shift and turn start
@@ -1011,7 +926,8 @@ private:
   float particleSeconds = 0.0f; // this frame's step for them; 0 while paused or editing
   void clearEffects(); // the strips and every particle gone (Play, Stop, a new scene)
   DebugLinePass debugLinePass;
-  EffectsPass effectsPass;   // light effects: tracers, muzzle flashes
+  EffectsPass effectsPass;   // light effects: the powers' strips, flames
+  GlowPass glowPass;         // the powers' glow on what they can take (PowerPlay.cpp)
   ParticlePass particlePass; // sparks, smoke, dust
   PhysicsPanel physicsPanel;
   // The character's and its camera's tuning (the Character tab). The player

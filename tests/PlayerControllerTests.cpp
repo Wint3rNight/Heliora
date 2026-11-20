@@ -279,12 +279,10 @@ TEST(firing_from_the_hip_turns_him_to_the_camera_while_armed_and_a_second_after)
   CHECK(!p.player.hipFiring());
 }
 
-TEST(capture_scripts_press_the_gun_keys) {
-  const PlayerControls c = scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 3);
-  CHECK(c.pistol && !c.longGun);
-  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 4).longGun);
-  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 5).holster);
-  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 6).reload);
-  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 7).fireMode);
-  CHECK(scriptedControls("1@3 2@4 h@5 r@6 b@7 e@8", 8).use);
+TEST(capture_scripts_press_the_powers) {
+  CHECK(scriptedControls("q@3 e@8", 3).reveal);
+  CHECK(scriptedControls("q@3 e@8", 8).burst);
+  // The left mouse is held over its frames and pressed on the first.
+  CHECK(scriptedControls("lmb@5-9", 5).cast && scriptedControls("lmb@5-9", 5).fire);
+  CHECK(!scriptedControls("lmb@5-9", 6).cast && scriptedControls("lmb@5-9", 6).fire);
 }

@@ -5,6 +5,12 @@
 
 namespace {
 
+float offLine(glm::vec3 p, glm::vec3 a, glm::vec3 b) {
+  const glm::vec3 u = glm::normalize(b - a);
+  const glm::vec3 d = p - a;
+  return glm::length(d - u * glm::dot(d, u));
+}
+
 const glm::vec4 kCore(1.0f, 0.9f, 0.6f, 1.0f);
 const glm::vec4 kEdge(0.4f, 0.7f, 1.0f, 1.0f);
 
@@ -69,5 +75,38 @@ TEST(a_cone_opens_from_its_apex_to_its_rim_no_further_than_its_reach) {
         CHECK_NEAR(across, 8.0 * std::sin(half), 1e-3);
       }
     }
+  }
+}
+
+TEST(a_ribbon_strand_runs_from_the_hand_to_what_is_held_and_bows) {
+  const glm::vec3 hand(0, 1.4f, 0), held(0, 2, -4);
+  const std::vector<glm::vec3> a = ribbonStrand(hand, held, 0, 0.0f, 24);
+  CHECK(a.size() == 25);
+  if (a.size() != 25)
+    return;
+  CHECK(glm::distance(a.front(), hand) < 1e-5f);
+  CHECK(glm::distance(a.back(), held) < 1e-5f);
+  const float length = glm::distance(hand, held);
+  CHECK(offLine(a[12], hand, held) > 0.05f * length); // bowed
+  const std::vector<glm::vec3> b = ribbonStrand(hand, held, 1, 0.0f, 24);
+  CHECK(b.size() == 25 && glm::distance(a[12], b[12]) > 0.05f); // each strand its own way
+  const std::vector<glm::vec3> later = ribbonStrand(hand, held, 0, 0.5f, 24);
+  CHECK(later.size() == 25 && glm::distance(a[12], later[12]) > 0.01f); // swaying
+  CHECK(later.size() == 25 && glm::distance(later.front(), hand) < 1e-5f);
+}
+
+TEST(a_ground_ring_lies_flat_round_its_centre) {
+  std::vector<EffectVertex> out;
+  const glm::vec3 centre(2, 0.05f, -3);
+  addGroundRing(out, centre, 5.0f, 0.4f, kCore, kEdge, 32);
+  CHECK(out.size() == 32 * 6);
+  for (const EffectVertex &v : out) {
+    CHECK(std::fabs(v.position.y - centre.y) < 1e-5f);
+    const float r = glm::length(glm::vec2(v.position.x - centre.x, v.position.z - centre.z));
+    CHECK(std::fabs(r - (v.uv.y < 0.5f ? 4.8f : 5.2f)) < 1e-3f); // inner side 0, outer 1
+    // No seam where it closes: at angle 0 the flow coordinate is the same
+    // from both sides.
+    if (std::fabs(v.position.z - centre.z) < 1e-4f && v.position.x > centre.x)
+      CHECK(std::fabs(v.uv.x) < 1e-3f);
   }
 }

@@ -75,7 +75,9 @@ struct AudioListener {
 
 struct AudioMixerTuning {
   float windowHeight = 60.0f;  // dB under the window's top that still play (est.)
-  float windowRelease = 10.0f; // dB a second the top falls back after a loud sound (est.)
+  // dB a second the top falls back after a loud sound (est.; 10 kept
+  // footsteps silent for about 5 s after a shot, the user said, 2026-11-20).
+  float windowRelease = 30.0f;
   float windowFloor = 50.0f;   // dB: the top never goes lower, so quiet scenes stay quiet (est.;
                                // at 65 the player's footsteps, about 53 dB at the camera, played
                                // near -26 dBFS and had to be turned up a lot; at 50 they set the

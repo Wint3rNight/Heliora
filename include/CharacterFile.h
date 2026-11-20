@@ -49,7 +49,12 @@ enum class ClipSlot : uint8_t {
   DeathRight,
   DeathHead,
   DeathCrouched,
-  Throw, // a grenade thrown, on the upper body
+  Throw, // something thrown overhand, on the upper body
+  // The powers, on the upper body: the lift runs into the hold.
+  PowerLift,
+  PowerHold,
+  PowerThrow,
+  PowerBurst,
   Count
 };
 

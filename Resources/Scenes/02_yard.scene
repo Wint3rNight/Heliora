@@ -16,16 +16,6 @@ speed = 10
 [player]
 position = 0 0 18
 
-# What the player starts with here (and gets again on coming back): the
-# pistol, the AKM and an RPG-7 on the back, two grenades and two charges.
-[kit]
-pistol = true
-long = akm
-launcher = rpg7
-grenades = 2
-charges = 2
-crate = 2.5 0 16.5
-
 # Ground, 160 x 160 m
 [model]
 shape = plane
@@ -338,12 +328,3 @@ file = Resources/Characters/remy.character
 position = -5 0 11
 yaw = 160
 
-# The weapons crate: E beside it refills the kit's ammunition (its place is
-# the [kit]'s crate). An ammunition box's olive drab, its size est.
-[model]
-shape = box
-size = 1 0.5 0.6
-position = 2.5 0.25 16.5
-color = 0.29 0.33 0.2
-body = static
-material = wood

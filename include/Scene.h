@@ -217,22 +217,6 @@ struct SceneCharacterEntry {
   bool operator==(const SceneCharacterEntry &) const = default;
 };
 
-// What the player starts with in this scene (step 1.6), and gets again on
-// coming back and at a weapons crate: the pistol, one long gun ("akm" or
-// "rpg"; empty for none), hand grenades and demolition charges. A scene
-// without a [kit] starts with nothing.
-struct SceneKit {
-  bool pistol = false;
-  std::string longGun;
-  std::string launcher; // a rocket launcher on the back too, or none
-  int grenades = 0;
-  int charges = 0;
-  // Weapons crates: within reach of one, E gives the kit's ammunition again.
-  std::vector<glm::vec3> crates;
-  SceneSectionInfo info; // only the comment is used
-  bool operator==(const SceneKit &) const = default;
-};
-
 struct SceneDescription {
   std::string name;           // display name (defaults to file stem)
   std::string filePath;       // where this description was parsed from
@@ -242,7 +226,6 @@ struct SceneDescription {
   SceneSun sun;
   SceneFog fog;
   std::optional<ScenePlayerStart> player;
-  std::optional<SceneKit> kit;
   std::vector<SceneModelEntry> models;
   std::vector<SceneGridEntry> grids;
   std::vector<SceneRingEntry> rings;

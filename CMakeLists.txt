@@ -152,24 +152,20 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Stress.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Ballistics.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Bullets.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Weapon.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponFile.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/HitZones.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/PieceDamage.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Outliner.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EditorSelection.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AssetConvert.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponParts.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/WeaponHold.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/AimIk.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Loadout.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/EffectGeometry.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Particles.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FootIk.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioMixer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Blast.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Rocket.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SpringKick.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Powers.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -292,19 +288,15 @@ add_executable(heliora_tests
         tests/StressTests.cpp
         tests/BallisticsTests.cpp
         tests/BulletsTests.cpp
-        tests/WeaponFileTests.cpp
-        tests/WeaponTests.cpp
         tests/BlastTests.cpp
-        tests/RocketTests.cpp
+        tests/SpringKickTests.cpp
+        tests/PowersTests.cpp
         tests/HitZonesTests.cpp
         tests/PieceDamageTests.cpp
         tests/OutlinerTests.cpp
         tests/EditorSelectionTests.cpp
         tests/AssetConvertTests.cpp
         tests/WeaponPartsTests.cpp
-        tests/WeaponHoldTests.cpp
-        tests/AimIkTests.cpp
-        tests/LoadoutTests.cpp
         tests/EffectGeometryTests.cpp
         tests/ParticlesTests.cpp
         tests/InertializeTests.cpp

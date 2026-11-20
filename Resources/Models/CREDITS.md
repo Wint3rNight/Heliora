@@ -6,6 +6,8 @@ pages. Everything here is free to use in a game. CC0 needs no credit; CC BY
 
 ## Weapons (`Weapons/`)
 
+Not used by the game since 2026-11-20 (the shooter went; git tag `shooter-final` has the guns that used them). The files are still on disk, gitignored, for a weapon later.
+
 | Folder | What | Source | Licence |
 | --- | --- | --- | --- |
 | `service_pistol` | Cold War service pistol, two variants, separate slide, hammer, trigger, mags, and a bullet; 4k | https://polyhaven.com/a/service_pistol | CC0 |

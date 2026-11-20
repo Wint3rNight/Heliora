@@ -117,6 +117,7 @@ int VulkanRenderer::breakableOf(uint64_t userData) const {
 }
 
 void VulkanRenderer::clearBreakables() {
+  clearPowers(); // what they hold or tear points into what goes here
   clearEffects(); // Play, Stop and a new scene all come through here
   if (physics) {
     for (const BreakBody &body : breakBodies)
@@ -492,6 +493,9 @@ void VulkanRenderer::handleImpacts() {
   // Blasts' pushes on breakable pieces go the same way as a hit.
   impacts.insert(impacts.end(), blastImpacts.begin(), blastImpacts.end());
   blastImpacts.clear();
+  // The burst's hits come the same way (PowerPlay.cpp).
+  impacts.insert(impacts.end(), powerImpacts.begin(), powerImpacts.end());
+  powerImpacts.clear();
   if (playing)
     soundImpacts(impacts);
   if (!breakGraphReady)
@@ -888,7 +892,8 @@ void VulkanRenderer::regroupBreakables(const std::vector<BreakHit> &hits) {
 void VulkanRenderer::settleRubble() {
   for (int b = 0; b < static_cast<int>(breakBodies.size()); ++b) {
     BreakBody &body = breakBodies[b];
-    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1)
+    if (!body.id.isValid() || body.fixed || body.pieces.size() != 1 ||
+        body.id.value == heldBody.value) // held still in the air isn't settled
       continue;
     const int index = body.pieces.front();
     BreakPiece &piece = breakPieces[index];
@@ -1397,7 +1402,8 @@ void VulkanRenderer::gatherLiveLoads() {
     int holding = 0;
     for (const PhysicsRest &rest : rests)
       holding += rest.normal.y >= kSupportFacing;
-    if (mass <= 0.0f || holding == 0)
+    // What the power holds weighs nothing on what it touches.
+    if (mass <= 0.0f || holding == 0 || id == heldBody.value)
       continue;
     for (const PhysicsRest &rest : rests)
       if (rest.normal.y >= kSupportFacing)

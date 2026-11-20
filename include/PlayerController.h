@@ -23,11 +23,9 @@ struct PlayerControls {
   bool jump = false;      // went down this frame
   bool dodge = false;     // went down this frame
   bool fire = false;      // held
-  bool grenade = false;   // held: thrown when let go
-  bool charge = false, detonate = false; // pressed
-  // The guns, each went down this frame: 1, 2, 3, H, R, B, E.
-  bool pistol = false, longGun = false, launcher = false, holster = false;
-  bool reload = false, fireMode = false, use = false;
+  bool cast = false;      // the fire button went down this frame: throw what's held
+  bool reveal = false;    // went down this frame (the powers)
+  bool burst = false;     // went down this frame (the powers)
   glm::vec2 mouse{0.0f};  // pixels, screen style: +x right, +y down
   float wheel = 0.0f;     // notches, positive away from you
 };

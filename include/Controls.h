@@ -21,24 +21,10 @@ enum class Action : uint8_t {
   Aim,
   Jump,
   Dodge,
-  Fire, // held, like the aim
-  // The guns (step 1.6), each pressed: the pistol, the long gun, put it
-  // away, reload, the fire mode, and use (a weapons crate).
-  Pistol,
-  LongGun,
-  Holster,
-  Reload,
-  FireMode,
-  Use,
-  // A hand grenade (step 1.7), held: the pin comes out on the press, it's
-  // thrown when let go.
-  Grenade,
-  // Demolition (step 1.7), each pressed: put a block of C-4 on what's in
-  // front, and fire the detonator.
-  Charge,
-  Detonate,
-  // The rocket launcher (step 1.7), pressed: drawn off the back.
-  Launcher,
+  Fire, // held, like the aim; its press throws what the powers hold
+  // The powers, each pressed: show what can be taken, a blast from the hand.
+  Reveal,
+  Burst,
   Count
 };
 
@@ -57,7 +43,7 @@ struct InputBinding {
 std::string bindingName(InputBinding binding);
 std::optional<InputBinding> bindingFromName(std::string_view name);
 
-// Keys the editor keeps for itself (Escape, Tab, F1, F2, F5, F), so an
+// Keys the editor keeps for itself (Escape, Tab, F1, F2, F5, F9, F), so an
 // action bound to one would fire both.
 bool reservedForEditor(InputBinding binding);
 

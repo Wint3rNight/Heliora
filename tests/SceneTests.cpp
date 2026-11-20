@@ -1044,43 +1044,6 @@ TEST(a_prefab_can_be_breakable) {
   CHECK(isModelDataKey("break_strength"));
 }
 
-TEST(a_scenes_kit_says_what_the_player_starts_with) {
-  const SceneDescription s = parseText("[kit]\npistol = true\nlong = akm\ngrenades = 2\ncharges = 2\n");
-  CHECK(s.kit.has_value());
-  if (!s.kit)
-    return;
-  CHECK(s.kit->pistol);
-  CHECK(s.kit->longGun == "akm");
-  CHECK(s.kit->grenades == 2);
-  CHECK(s.kit->charges == 2);
-  // Written and read back the same.
-  std::istringstream in(SceneIO::write(s));
-  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
-  // No [kit]: nothing.
-  CHECK(!parseText("name = x\n").kit);
-}
-
-TEST(a_kit_names_its_weapons_crates) {
-  // Where the player refills with E: one crate = line each, kept in order.
-  const SceneDescription s = parseText("[kit]\npistol = true\ncrate = 2 0 16\ncrate = -1 0.5 3\n");
-  CHECK(s.kit && s.kit->crates.size() == 2);
-  if (!s.kit || s.kit->crates.size() != 2)
-    return;
-  CHECK(s.kit->crates[0] == glm::vec3(2.0f, 0.0f, 16.0f));
-  CHECK(s.kit->crates[1] == glm::vec3(-1.0f, 0.5f, 3.0f));
-  std::istringstream in(SceneIO::write(s));
-  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
-  CHECK(!errorOf("[kit]\ncrate = 1 2\n").empty());
-}
-
-TEST(a_kit_can_carry_a_launcher) {
-  const SceneDescription s = parseText("[kit]\nlong = akm\nlauncher = rpg7\n");
-  CHECK(s.kit && s.kit->launcher == "rpg7");
-  std::istringstream in(SceneIO::write(s));
-  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
-  CHECK(!errorOf("[kit]\nlauncher = an rpg\n").empty());
-}
-
 TEST(a_scene_has_a_wind) {
   // m/s, the way it blows; still air without one.
   const SceneDescription s = parseText("name = x\nwind = 3 0 -1\n");
@@ -1091,10 +1054,8 @@ TEST(a_scene_has_a_wind) {
   CHECK(!errorOf("wind = 3 0\n").empty());
 }
 
-TEST(a_kit_with_a_bad_value_names_its_line) {
-  CHECK(!errorOf("[kit]\npistol = maybe\n").empty());
-  CHECK(!errorOf("[kit]\ngrenades = -1\n").empty());
-  CHECK(!errorOf("[kit]\nlong = a gun\n").empty());
-  CHECK(!errorOf("[kit]\nknife = true\n").empty());
-  CHECK(!errorOf("[kit]\n[kit]\n").empty());
+TEST(the_shooters_kit_section_is_gone) {
+  // [kit] went with the guns (tag shooter-final): a scene that still has
+  // one says so instead of loading half of it.
+  CHECK(!errorOf("[kit]\npistol = true\n").empty());
 }

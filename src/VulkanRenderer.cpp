@@ -259,6 +259,8 @@ int VulkanRenderer::init(GLFWwindow *newWindow) {
                              pipelineCache.get());
     effectsPass.create(device, renderPassManager.getLitRenderPass(),
                        descriptorManager.getVPLayout(), pipelineCache.get());
+    glowPass.create(device, renderPassManager.getLitRenderPass(), descriptorManager.getVPLayout(),
+                    pipelineCache.get());
     particlePass.create(device, renderPassManager.getLitRenderPass(),
                         descriptorManager.getVPLayout(), pipelineCache.get());
 
@@ -359,7 +361,7 @@ namespace {
 
 // The character the Character tab edits, and the player plays when a scene
 // ticks none.
-constexpr const char *kDefaultCharacterFile = "Resources/Characters/remy.character";
+constexpr const char *kDefaultCharacterFile = "Resources/Characters/ganfaul.character";
 
 // The model cache's name for a generated shape: shape, size, colour and the
 // world grid. Entries with the same key share one model.
@@ -807,47 +809,6 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
   } catch (const std::exception &e) {
     ballModelId = -1;
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
-  }
-  // The M112 block: 2 by 1 by 11 in, olive drab.
-  {
-    SceneModelEntry block;
-    block.shape = PrimitiveShape::Box;
-    block.size = glm::vec3(0.2794f, 0.0508f, 0.0254f);
-    block.color = glm::vec3(0.3f, 0.32f, 0.22f);
-    try {
-      chargeModel = createPrimitiveModel(block);
-    } catch (const std::exception &e) {
-      chargeModel = -1;
-      spdlog::error("Couldn't make the charge's mesh: {}", e.what());
-    }
-  }
-  // The M67: a 64 mm sphere, olive drab.
-  {
-    SceneModelEntry grenade;
-    grenade.shape = PrimitiveShape::Sphere;
-    grenade.radius = 0.032f;
-    grenade.color = glm::vec3(0.29f, 0.33f, 0.2f);
-    try {
-      grenadeModel = createPrimitiveModel(grenade);
-    } catch (const std::exception &e) {
-      grenadeModel = -1;
-      spdlog::error("Couldn't make the grenade's mesh: {}", e.what());
-    }
-  }
-  // Spent casings at their real sizes: 7.62x39 11.35 by 38.7 mm, 9x19 9.9
-  // by 19.15 mm; brass.
-  for (int k = 0; k < 2; ++k) {
-    SceneModelEntry casing;
-    casing.shape = PrimitiveShape::Capsule;
-    casing.radius = k == 0 ? 0.0057f : 0.005f;
-    casing.height = k == 0 ? 0.0387f : 0.0192f;
-    casing.color = glm::vec3(0.78f, 0.6f, 0.25f);
-    try {
-      casingModels[k] = createPrimitiveModel(casing);
-    } catch (const std::exception &e) {
-      casingModels[k] = -1;
-      spdlog::error("Couldn't make a casing's mesh: {}", e.what());
-    }
   }
   // The characters, for the same reason: standing in edit mode, in play
   // with bodies.
@@ -1805,12 +1766,20 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   }
   const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
   particleSeconds = playing && !physicsPanel.paused ? frameSeconds : 0.0f;
-  if (playerController)
-    playerController->control(playerControls, frameSeconds);
+  // The powers decide first: what they hold takes the wheel from the camera.
+  if (playing && !physicsPanel.paused)
+    updatePowers(frameSeconds);
+  if (playerController) {
+    PlayerControls forCamera = playerControls;
+    if (powerController.holding())
+      forCamera.wheel = 0.0f;
+    playerController->control(forCamera, frameSeconds);
+  }
   for (int i = 0; i < steps; ++i) {
     // The characters move first, then the bodies, like Jolt's samples.
     if (roster)
       roster->step(stepSeconds);
+    holdPowers(stepSeconds);
     physics->step(stepSeconds);
   }
   if (steps > 0) {
@@ -1829,20 +1798,23 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       node->setPose(moved.pose.position, moved.pose.rotation);
     }
   }
+  if (playing)
+    shakePowers();
   const auto beforePose = std::chrono::steady_clock::now();
   if (roster)
     poseCharacters(alpha, frameSeconds);
+  if (playing)
+    drawPowerLines();
   const auto posed = std::chrono::steady_clock::now();
   // Posing the character is its own phase, so physics doesn't include it.
   const double animationMs =
       std::chrono::duration<double, std::milli>(posed - beforePose).count();
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Animation, animationMs);
   if (playing) {
-    updateGrenades(physicsPanel.paused ? 0.0f : frameSeconds);
-    updateRockets(physicsPanel.paused ? 0.0f : frameSeconds);
+    updateBlasts(physicsPanel.paused ? 0.0f : frameSeconds);
+    if (!physicsPanel.paused)
+      recordMovement(frameSeconds);
   }
-  if (playing)
-    stepShots(physicsPanel.paused ? 0.0f : frameSeconds);
   if (playing)
     updateSound(physicsPanel.paused ? 0.0f : frameSeconds);
 
@@ -2033,25 +2005,18 @@ std::string VulkanRenderer::playedVariant() const {
 }
 
 void VulkanRenderer::clearCharacters() {
-  bullets.clear();
-  flashes.clear();
-  clearGrenades();
-  clearRockets();
+  clearBlasts();
   sceneUbo.flashColour = glm::vec4(0.0f);
-  clearCasings();
   roster.reset(); // the bodies leave the world, the controller lets go
   playerController.reset();
   std::unordered_set<const SceneNode *> nodes;
-  for (const LiveCharacter &character : characters) {
+  for (const LiveCharacter &character : characters)
     nodes.insert(character.node);
-    for (const std::optional<CarriedGun> &gun : character.guns)
-      if (gun)
-        nodes.insert(gun->parts.begin(), gun->parts.end());
-  }
   if (!nodes.empty())
     rootNode.removeChildren([&](const SceneNode &node) { return nodes.contains(&node); });
   characters.clear();
   playedCharacter = -1;
+  handBone = -2; // the asset may change before the next one
   characterPanel.animState = nullptr;
   characterPanel.playing.clear();
   skeletonLines.clear();
@@ -2152,7 +2117,6 @@ void VulkanRenderer::buildCharacters() {
         playerController = std::make_unique<PlayerController>(*physics, characterPanel.camera);
         roster->possess(*playerController, characters[i].body);
         playedCharacter = i;
-        armCharacter(characters[i]); // the scene's kit
         break;
       }
   }
@@ -2232,6 +2196,13 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
         c.node->setModelId(model);
       c.node->setPose(feet + glm::vec3(0.0f, 0.5f * height, 0.0f),
                       glm::angleAxis(body.drawnYaw(alpha), glm::vec3(0.0f, 1.0f, 0.0f)));
+      if (i == playedCharacter) {
+        // The capsule's "hand": in front of its right shoulder.
+        const float drawnYaw = body.drawnYaw(alpha);
+        handPosition = feet + glm::vec3(0.0f, 0.75f * height, 0.0f) +
+                       glm::vec3(std::cos(drawnYaw), 0.0f, -std::sin(drawnYaw)) * 0.3f +
+                       yawForward(drawnYaw) * 0.3f;
+      }
       continue;
     }
     // What the body is doing, in its own frame for the directional clips:
@@ -2268,10 +2239,25 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     const glm::mat4 placement = glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
                                 glm::scale(glm::mat4(1.0f), glm::vec3(c.scale));
     c.facing = facing * glm::vec3(0.0f, 0.0f, 1.0f);
-    // The player's spine leans with the camera while aiming.
-    if (i == playedCharacter && playerController)
-      input.aimPitch = playerController->camera().pitch();
-    gunsBeforeClips(i, input, frameSeconds);
+    if (i == playedCharacter) {
+      // The powers: their clip on the upper body, the spine leaning with the
+      // camera while aiming, the right arm reaching for what the light holds.
+      switch (powerController.state()) {
+      case PowerState::Lifting:
+      case PowerState::Holding:
+      case PowerState::Tearing:
+      case PowerState::Straining: input.power = PowerAnim::Hold; break;
+      case PowerState::Throwing: input.power = PowerAnim::Throw; break;
+      case PowerState::Bursting: input.power = PowerAnim::Burst; break;
+      case PowerState::Idle: break;
+      }
+      if (playerController)
+        input.aimPitch = playerController->camera().pitch();
+      if (const std::optional<glm::vec3> reach = powerReach()) {
+        input.reaching = true;
+        input.reachTarget = glm::vec3(glm::inverse(placement) * glm::vec4(*reach, 1.0f));
+      }
+    }
     c.animator->update(input, frameSeconds);
     if (i == playedCharacter) {
       // For the Character tab: the state and the clips in this pose.
@@ -2296,7 +2282,7 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     feetAt.stride = c.animator->strideScale();
     feetAt.strideAxis = c.animator->strideAxis();
     placeFeet(i, feetAt, feetDown, frameSeconds, pose, model);
-    gunsAfterClips(i, placement, frameSeconds, pose, model);
+    shakeView(i, frameSeconds);
     if (!c.hitCapsules.empty())
       c.capsules = placeHitCapsules(c.hitCapsules, model, placement);
     c.skinning = skinningMatrices(asset->skeleton, model);
@@ -2305,6 +2291,21 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     if (c.node->getModelId() != shown)
       c.node->setModelId(shown);
     c.node->setPose(feet, facing);
+    if (i == playedCharacter) {
+      // Where the powers' light leaves from: its right hand.
+      if (handBone == -2) {
+        handBone = -1;
+        for (int b = 0; b < static_cast<int>(asset->skeleton.bones.size()); ++b) {
+          const std::string &name = asset->skeleton.bones[b].name;
+          if (name.size() >= 9 && name.compare(name.size() - 9, 9, "RightHand") == 0) {
+            handBone = b;
+            break;
+          }
+        }
+      }
+      handPosition = handBone >= 0 ? glm::vec3(placement * model[handBone][3])
+                                   : feet + glm::vec3(0.0f, 0.75f * body.height(), 0.0f);
+    }
     if (showSkeleton)
       updateSkeletonLines(c, placement, model);
   }
@@ -2348,7 +2349,7 @@ void VulkanRenderer::placeFeet(int index, const FootPlacement &placement, bool o
 void VulkanRenderer::loadCharacter() {
   const std::string path = resolveCharacterPath(kDefaultCharacterFile);
   if (path.empty()) {
-    spdlog::info("No Resources/Characters/remy.character: the character is a capsule");
+    spdlog::info("No {}: the character is a capsule", kDefaultCharacterFile);
     return;
   }
   std::string error;
@@ -4595,6 +4596,7 @@ void VulkanRenderer::cleanup() {
   imguiLayer.cleanup(device.getLogicalDevice());
   debugLinePass.cleanup(device.getLogicalDevice());
   effectsPass.cleanup(device.getLogicalDevice());
+  glowPass.cleanup(device.getLogicalDevice());
   particlePass.cleanup(device.getLogicalDevice());
   skinningPass.cleanup();
   characterFiles.clear(); // their preview buffers
@@ -4933,6 +4935,7 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdNextSubpass(cmd, VK_SUBPASS_CONTENTS_INLINE);
     recordTransparentPass(cmd, currentImage, viewport, scissor);
+    recordPowerGlows(cmd, currentImage, viewport, scissor);
     static const std::vector<EffectVertex> kNoStrips;
     effectsPass.upload(device, currentImage, playing ? effectStrips : kNoStrips);
     effectsPass.record(cmd, currentImage, descriptorManager.getVPSet(currentImage), viewport,
@@ -5616,33 +5619,7 @@ void VulkanRenderer::buildUi() {
   ui.viewProj = taaBaseProjection * sceneUbo.view;
   ui.sceneArea = sceneArea;
   ui.crosshair = playing && hasPlayer() && playerControls.aim;
-  ui.ammo = false;
   ui.playPrompt = "";
-  if (playing && playedCharacter >= 0 && playedCharacter < static_cast<int>(characters.size())) {
-    const LiveCharacter &c = characters[playedCharacter];
-    if (c.atCrate)
-      ui.playPrompt = "E  Refill ammunition";
-    const Holdable held = c.loadout.inHand();
-    if (const int slot = gunSlot(held); slot >= 0 && c.guns[slot] && c.guns[slot]->weapon) {
-      const std::optional<CarriedGun> &g = c.guns[slot];
-      ui.ammo = true;
-      ui.ammoInGun = g->weapon->roundsInGun();
-      ui.ammoPouch = g->weapon->rounds() - g->weapon->roundsInGun();
-      ui.fireMode = !g->weapon->spec().automatic          ? ""
-                    : g->weapon->mode() == FireMode::Auto ? "AUTO"
-                                                          : "SEMI";
-      ui.reloading = g->weapon->reloading();
-    }
-    ui.grenades = c.grenades;
-    ui.charges = c.charges;
-    if (!ui.ammo && (c.grenades > 0 || c.charges > 0)) { // no gun out: the grenades still show
-      ui.ammo = true;
-      ui.ammoInGun = -1; // no rounds line
-      ui.ammoPouch = 0;
-      ui.fireMode = "";
-      ui.reloading = false;
-    }
-  }
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;
   ui.objectEntry = [this](const std::string &file) -> std::optional<SceneModelEntry> {
@@ -5762,6 +5739,8 @@ void VulkanRenderer::recordImGuiCommands(VkCommandBuffer cmd, uint32_t imageInde
     sources.push_back(&skeletonLines);
   if (playing && physicsPanel.showLoads && !loadLines.empty())
     sources.push_back(&loadLines);
+  if (playing && !powerLines.empty())
+    sources.push_back(&powerLines);
   const std::vector<PhysicsDebugVertex> *lines = nullptr;
   if (sources.size() == 1) {
     lines = sources.front();

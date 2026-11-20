@@ -96,3 +96,45 @@ void addCone(std::vector<EffectVertex> &out, glm::vec3 apex, glm::vec3 axis, flo
   for (int k = 0; k < segments; ++k)
     quad(out, at(k, false), at(k, true), at(k + 1, false), at(k + 1, true));
 }
+
+std::vector<glm::vec3> ribbonStrand(glm::vec3 from, glm::vec3 to, int strand, float time,
+                                    int segments) {
+  segments = std::max(segments, 1);
+  const glm::vec3 d = to - from;
+  const float length = glm::length(d);
+  std::vector<glm::vec3> points(segments + 1, from);
+  if (length < 1e-5f)
+    return points;
+  glm::vec3 side, up;
+  across(d / length, side, up);
+  // Each strand bows its own way round the line (about 120 degrees apart),
+  // swaying, and a ripple runs along it toward what it holds.
+  const float s = static_cast<float>(strand);
+  const float angle = 2.1f * s + 0.35f * std::sin(1.3f * time + 1.7f * s);
+  const glm::vec3 bowWay = std::cos(angle) * up + std::sin(angle) * side;
+  const glm::vec3 rippleWay = -std::sin(angle) * up + std::cos(angle) * side;
+  const float bow = length * (0.10f + 0.03f * std::sin(2.3f * time + s));
+  for (int i = 0; i <= segments; ++i) {
+    const float t = static_cast<float>(i) / segments;
+    const float pinned = std::sin(glm::pi<float>() * t); // 0 at both ends
+    const float ripple = 0.02f * length * pinned * std::sin(9.0f * t - 6.0f * time + 2.0f * s);
+    points[i] = from + d * t + bowWay * (bow * 4.0f * t * (1.0f - t)) + rippleWay * ripple;
+  }
+  points.back() = to;
+  return points;
+}
+
+void addGroundRing(std::vector<EffectVertex> &out, glm::vec3 centre, float radius, float width,
+                   glm::vec4 core, glm::vec4 edge, int segments) {
+  segments = std::max(segments, 3);
+  const float inner = std::max(0.0f, radius - 0.5f * width), outer = radius + 0.5f * width;
+  auto at = [&](int k, float r, float v) {
+    const float a = glm::two_pi<float>() * k / segments;
+    return vertex(centre + glm::vec3(std::cos(a), 0.0f, std::sin(a)) * r, core, edge,
+                  {round(a) * radius, v});
+  };
+  out.reserve(out.size() + segments * 6);
+  for (int k = 0; k < segments; ++k)
+    quad(out, at(k, inner, 0.0f), at(k, outer, 1.0f), at(k + 1, inner, 0.0f),
+         at(k + 1, outer, 1.0f));
+}

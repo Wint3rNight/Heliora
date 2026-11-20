@@ -5,6 +5,9 @@
 
 namespace {
 
+// A knock dies away with this time constant, s (est.).
+constexpr float kKnockFade = 0.15f;
+
 constexpr float kPi = 3.14159265358979f;
 // Timers count down by whole steps, and 0.25 - 15 steps can land a
 // rounding error above zero. Anything under this counts as run out.
@@ -88,6 +91,10 @@ void CharacterMovement::setTuning(const CharacterTuning &tuning) {
   tune.height = made.height;
   tune.crouchHeight = made.crouchHeight;
   tune.mass = made.mass;
+}
+
+void CharacterMovement::knock(glm::vec3 velocity) {
+  knockback += glm::vec3(velocity.x, 0.0f, velocity.z);
 }
 
 void CharacterMovement::update(const CharacterInput &input, float dt) {
@@ -270,7 +277,10 @@ void CharacterMovement::update(const CharacterInput &input, float dt) {
       current.yaw + std::clamp(turn, -maxTurn, maxTurn), 2.0f * kPi);
 
   PhysicsCharacterMove step;
-  step.velocity = stepHorizontal + glm::vec3(0.0f, vertical, 0.0f);
+  step.velocity = stepHorizontal + knockback + glm::vec3(0.0f, vertical, 0.0f);
+  knockback *= std::exp(-dt / kKnockFade);
+  if (glm::length(knockback) < kStill)
+    knockback = glm::vec3(0.0f);
   step.stepUp = tune.stepUp;
   step.stickDown = tune.stickDown;
   step.maxSlope = tune.maxSlope;

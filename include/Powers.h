@@ -54,7 +54,7 @@ struct PowerTuning {
   float burstImpulse = 5000.0f; // N s on what breaks, at the hand (a heavy ball is about 1,500)
   float burstDelay = 0.1f;   // s from the click to the blast
   float burstRecover = 0.5f; // s from the click until another power
-  float burstCooldown = 0.8f; // s between bursts
+  float burstCooldown = 3.0f; // s between bursts (est.; 0.8 before focus, step F2)
   // Picking.
   float pickAngle = 4.0f;    // degrees off the crosshair
   float pickReach = 30.0f;   // m
@@ -67,6 +67,22 @@ struct PowerTuning {
   float revealSpeed = 25.0f; // m/s, the pulse going out
   float revealReach = 30.0f; // m
   float revealSeconds = 6.0f; // the glow fading out after the pulse passes
+  float revealCooldown = 4.0f; // s between reveals (est.)
+  // Focus (step F2): what the powers run on. Melee hits and kills fill it
+  // (F3); each power costs some, holding and tearing drain it; under
+  // focusRegenUpTo it comes back by itself, so the powers never lock out
+  // for good. All est., to tune by playing.
+  float focusMax = 100.0f;
+  float focusRegen = 2.0f;        // a second, by itself...
+  float focusRegenUpTo = 40.0f;   // ...up to this
+  float focusLift = 8.0f;         // to take hold of something
+  float focusLiftPerTonne = 12.0f; // and this much more for each 1000 kg of it
+  float focusHold = 3.0f;         // a second while it's held out (lifted, held, strained at)
+  float focusTear = 8.0f;         // a second while tearing
+  float focusBurst = 35.0f;
+  float focusReveal = 10.0f;
+  float focusHit = 8.0f;          // a melee hit earns this (F3)
+  float focusKill = 25.0f;        // a kill this
   bool operator==(const PowerTuning &) const = default;
 };
 
@@ -140,6 +156,24 @@ std::vector<int> pickOrder(const std::vector<PickCandidate> &candidates, glm::ve
 // revealSeconds.
 float revealGlow(float distance, float sinceReveal, const PowerTuning &t);
 
+// The focus meter (step F2): spent all or nothing, drained while
+// something's held out or torn at, filled by melee, and coming back by
+// itself up to focusRegenUpTo. It starts full.
+class Focus {
+public:
+  explicit Focus(const PowerTuning &t = {}) : amount(t.focusMax) {}
+  float value() const { return amount; }
+  bool spend(float cost);           // false, and nothing spent, if there isn't enough
+  bool drain(float rate, float dt); // false once it's run dry
+  void gain(float earned, const PowerTuning &t);
+  void update(float dt, const PowerTuning &t); // what comes back by itself
+
+private:
+  float amount;
+};
+// The focus it takes to grab something of this mass (kg).
+float grabCost(float mass, const PowerTuning &t);
+
 enum class PowerState : uint8_t { Idle, Lifting, Holding, Tearing, Straining, Throwing, Bursting };
 const char *powerStateName(PowerState state); // "Idle", "Lifting" and so on
 
@@ -153,8 +187,10 @@ struct PowerInput {
   bool aim = false;  // right mouse held
   bool cast = false;  // left mouse went down this frame
   bool burst = false; // the burst's key (E) went down this frame
+  bool reveal = false; // the reveal's key (Q) went down this frame
   int target = -1;   // what's under the crosshair and in sight, or -1
   GrabKind targetKind = GrabKind::Lift;
+  float targetMass = 0.0f; // kg, what grabbing it costs goes by
   bool torn = false; // the tear is done: the piece is loose and light enough
   bool lost = false; // the held thing is gone, or stuck away from the hold point
 };
@@ -165,13 +201,17 @@ struct PowerEvents {
   bool dropped = false; // let go of it where it is
   bool thrown = false;  // let go of it flying
   bool burst = false;   // the blast goes off
+  bool revealed = false; // the reveal's pulse goes out
+  // A power was asked for and refused: not enough focus, or cooling down.
+  bool refused = false;
 };
 
 // The powers' state machine: right mouse grabs what's under the crosshair
 // (as it goes down, or for something loose once the crosshair rests on it;
 // a structure or something too heavy takes a press), lets it go when
 // released; left mouse throws what's held; the burst's key blasts, aiming
-// or not, letting go of whatever's held.
+// or not, letting go of whatever's held. Each costs focus, and what can't
+// be paid for (or is cooling down) is refused.
 class PowerController {
 public:
   PowerEvents update(const PowerInput &input, float dt, const PowerTuning &t);
@@ -181,6 +221,10 @@ public:
   // Something is held out: lifting, holding, tearing, straining, or a throw
   // that hasn't let go yet.
   bool holding() const { return held_ >= 0; }
+  Focus &focus() { return focus_; }
+  const Focus &focus() const { return focus_; }
+  float burstCooling() const { return cooldown; }   // s until the next burst
+  float revealCooling() const { return revealCool; } // s until the next reveal
 
 private:
   void enter(PowerState state);
@@ -192,6 +236,8 @@ private:
   int dwellTarget = -1;
   float dwell = 0.0f;
   float cooldown = 0.0f; // s until the next burst
+  float revealCool = 0.0f;
+  Focus focus_;
   bool fired = false;    // this throw or burst has gone off
   // s since the last throw let go or burst went off: what they sent flying
   // passes the crosshair and lands where it points.

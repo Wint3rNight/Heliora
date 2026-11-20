@@ -102,6 +102,8 @@ void VulkanRenderer::startSound() {
     breakSounds[at(S::Rubber)] = load({"impactSoft_heavy"});
     breakSounds[at(S::Ice)] = load({"impactGlass_heavy"});
     breakSounds[at(S::Rubble)] = load({"impactMining"});
+    punchSounds[0] = load({"impactPunch_medium"});
+    punchSounds[1] = load({"impactPunch_heavy"});
   }
   soundPanel.open = true;
   listenerPlaced = false;

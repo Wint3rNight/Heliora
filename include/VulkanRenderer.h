@@ -43,6 +43,7 @@
 #include "Bullets.h"
 #include "PieceDamage.h"
 #include "Powers.h"
+#include "Melee.h"
 #include "GlowPass.h"
 #include "SpringKick.h"
 #include "Rubble.h"
@@ -352,6 +353,15 @@ private:
     ClipSlot deathClip = ClipSlot::DeathFront;
     glm::vec3 facing{0.0f, 0.0f, 1.0f};
     bool crouched = false;
+    // Melee (step F3, src/MeleePlay.cpp): its blows, its hands' and feet's
+    // bones (Limb's order) and where they were last frame, who this blow has
+    // hit already, and whether it has hit a breakable.
+    MeleeController melee;
+    std::array<int, 4> limbBones{-1, -1, -1, -1};
+    std::array<glm::vec3, 4> limbAt{};
+    bool limbsPlaced = false;
+    std::vector<int> struck;
+    bool struckPiece = false;
   };
   std::vector<LiveCharacter> characters;
   // What a surface sounds like when stepped on or hit (step 1.5c), from its
@@ -381,6 +391,7 @@ private:
   std::array<SoundSet, kSurfaces> footstepSounds;
   std::array<SoundSet, kSurfaces> knockSounds; // light hits
   std::array<SoundSet, kSurfaces> breakSounds; // heavy hits and breaking
+  std::array<SoundSet, 2> punchSounds;         // a blow landing on someone: light, heavy
   uint32_t soundDice = 0x9e3779b9u;
   glm::vec3 lastListener{0.0f};
   bool listenerPlaced = false;
@@ -745,6 +756,7 @@ private:
     float seconds = 0.0f;
   } powerTrail;
   float revealSince = -1.0f; // s since Q, or -1
+  float powerRefused = 0.0f; // s of the HUD's flash for a refused power left
   glm::vec3 revealFrom{0.0f};
   float burstSince = -1.0f; // s since the blast, or -1
   glm::vec3 burstFrom{0.0f}, burstAim{0.0f, 0.0f, -1.0f};
@@ -812,6 +824,17 @@ private:
   void explode(glm::vec3 at, const CasedCharge &charge, int owner);
   void clearBlasts();
   uint32_t fireDice = 0x9e3779b9u;
+  // Melee (step F3, src/MeleePlay.cpp): the played character's blows from
+  // the keys, before the controller decides (a blow roots him and turns him
+  // to the camera); after the poses, the striking hand or foot swept
+  // against the others and the breakables. A blow that lands stops every
+  // animation for a moment (hit stop).
+  MeleeTuning meleeTuning;
+  float hitPause = 0.0f; // s left
+  void updateMelee(float seconds);
+  // The blows' timing from the played character's clips (their strike frames).
+  void timeBlows(const LiveCharacter &c);
+  void strikeWith(int index, const glm::mat4 &placement, const std::vector<glm::mat4> &model);
   // Hits (src/Hits.cpp): what a hit throws off; a character hurt (true if
   // it killed him), his death clip picked by where it came from.
   void hitEffects(glm::vec3 point, glm::vec3 normal, Matter matter, float energy);

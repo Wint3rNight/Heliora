@@ -242,6 +242,17 @@ struct DebugUiContext {
   SceneViewport sceneArea;
   // Playing and aiming: the crosshair in the scene area's middle.
   bool crosshair = false;
+  // Playing: the played character's health and focus (0 to 1), focus's
+  // floor (what comes back by itself), how far each power's cooldown has
+  // come back (1 ready) and whether there's the focus for it, and the flash
+  // for a power refused (s left).
+  bool vitals = false;
+  float health = 1.0f;
+  float focus = 1.0f;
+  float focusFloor = 0.0f;
+  float revealReady = 1.0f, burstReady = 1.0f;
+  bool revealAfford = true, burstAfford = true;
+  float refusedFlash = 0.0f;
   // A prompt at the bottom middle, or empty.
   const char *playPrompt = "";
 
@@ -389,6 +400,7 @@ private:
   void drawGizmo(DebugUiContext &ui);
   void drawCrosshair(const DebugUiContext &ui) const;
   void drawPlayPrompt(const DebugUiContext &ui) const;
+  void drawVitals(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
   // The others moved, for placing them with the primary.
   std::vector<SceneEntryRef> moveOthersWithGizmo(DebugUiContext &ui, const NodeTransform &was,

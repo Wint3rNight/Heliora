@@ -192,11 +192,48 @@ void PowerController::enter(PowerState state) {
   dwell = 0.0f;
 }
 
+bool Focus::spend(float cost) {
+  if (cost > amount + 1e-4f)
+    return false;
+  amount = std::max(0.0f, amount - std::max(cost, 0.0f));
+  return true;
+}
+
+bool Focus::drain(float rate, float dt) {
+  amount = std::max(0.0f, amount - std::max(rate, 0.0f) * std::max(dt, 0.0f));
+  return amount > 0.0f;
+}
+
+void Focus::gain(float earned, const PowerTuning &t) {
+  amount = std::clamp(amount + std::max(earned, 0.0f), 0.0f, t.focusMax);
+}
+
+void Focus::update(float dt, const PowerTuning &t) {
+  const float floor = std::min(t.focusRegenUpTo, t.focusMax);
+  if (amount < floor)
+    amount = std::min(floor, amount + std::max(t.focusRegen, 0.0f) * std::max(dt, 0.0f));
+}
+
+float grabCost(float mass, const PowerTuning &t) {
+  return t.focusLift + t.focusLiftPerTonne * std::max(mass, 0.0f) / 1000.0f;
+}
+
 PowerEvents PowerController::update(const PowerInput &in, float dt, const PowerTuning &t) {
   PowerEvents e;
   stateTime_ += dt;
   cooldown = std::max(0.0f, cooldown - dt);
+  revealCool = std::max(0.0f, revealCool - dt);
   sinceCast += dt;
+  focus_.update(dt, t);
+  // The reveal goes out alongside anything else.
+  if (in.reveal) {
+    if (revealCool <= 0.0f && focus_.spend(t.focusReveal)) {
+      revealCool = t.revealCooldown;
+      e.revealed = true;
+    } else {
+      e.refused = true;
+    }
+  }
   const bool pressed = in.aim && !wasAiming;
   wasAiming = in.aim;
   const auto drop = [&] {
@@ -206,15 +243,17 @@ PowerEvents PowerController::update(const PowerInput &in, float dt, const PowerT
   };
   // The burst's key goes off from anything but a throw or a burst under way,
   // aiming or not, letting go of whatever's held first.
-  if (in.burst && cooldown <= 0.0f && state_ != PowerState::Throwing &&
-      state_ != PowerState::Bursting) {
-    if (held_ >= 0) {
-      e.dropped = true;
-      held_ = -1;
+  if (in.burst && state_ != PowerState::Throwing && state_ != PowerState::Bursting) {
+    if (cooldown <= 0.0f && focus_.spend(t.focusBurst)) {
+      if (held_ >= 0) {
+        e.dropped = true;
+        held_ = -1;
+      }
+      cooldown = t.burstCooldown;
+      enter(PowerState::Bursting);
+      return e;
     }
-    cooldown = t.burstCooldown;
-    enter(PowerState::Bursting);
-    return e;
+    e.refused = true;
   }
   switch (state_) {
   case PowerState::Idle: {
@@ -233,6 +272,10 @@ PowerEvents PowerController::update(const PowerInput &in, float dt, const PowerT
     // straining at something too heavy takes a press.
     const bool rests = in.targetKind == GrabKind::Lift && sinceCast + kSlack >= t.regrabSeconds &&
                        dwell + kSlack >= t.pickDwell;
+    if ((pressed || rests) && !focus_.spend(grabCost(in.targetMass, t))) {
+      e.refused = pressed; // resting on it, it just waits
+      break;
+    }
     if (pressed || rests) {
       held_ = in.target;
       e.grabbed = in.target;
@@ -248,12 +291,16 @@ PowerEvents PowerController::update(const PowerInput &in, float dt, const PowerT
       drop();
     else if (in.cast)
       enter(PowerState::Throwing);
+    else if (!focus_.drain(t.focusHold, dt))
+      drop(); // run dry
     else if (state_ == PowerState::Lifting && stateTime_ + kSlack >= t.liftSeconds)
       enter(PowerState::Holding);
     break;
   case PowerState::Tearing:
   case PowerState::Straining:
     if (!in.aim || in.lost) {
+      drop();
+    } else if (!focus_.drain(state_ == PowerState::Tearing ? t.focusTear : t.focusHold, dt)) {
       drop();
     } else if (state_ == PowerState::Tearing && in.torn) {
       enter(PowerState::Lifting);

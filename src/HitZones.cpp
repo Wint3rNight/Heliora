@@ -157,6 +157,29 @@ std::optional<CharacterHit> firstHit(const std::vector<HitCapsule> &capsules, gl
   return best;
 }
 
+std::optional<CharacterHit> sweptHit(const std::vector<HitCapsule> &capsules, glm::vec3 from,
+                                     glm::vec3 to, float radius) {
+  std::vector<HitCapsule> wide = capsules;
+  for (HitCapsule &c : wide)
+    c.radius += std::max(radius, 0.0f);
+  if (glm::distance(from, to) > 1e-5f)
+    return firstHit(wide, from, to);
+  // Not moving: inside one, or nothing.
+  for (size_t i = 0; i < wide.size(); ++i) {
+    const glm::vec3 near = closestOnSegment(wide[i].a, wide[i].b, from);
+    if (glm::distance(near, from) <= wide[i].radius) {
+      CharacterHit hit;
+      hit.capsule = static_cast<int>(i);
+      hit.zone = wide[i].zone;
+      hit.point = from;
+      const glm::vec3 out = from - near;
+      hit.normal = glm::length(out) > 1e-6f ? glm::normalize(out) : glm::vec3(0.0f, 1.0f, 0.0f);
+      return hit;
+    }
+  }
+  return std::nullopt;
+}
+
 float woundPoints(HitZone zone, float energy) {
   float weight = 1.0f;
   switch (zone) {

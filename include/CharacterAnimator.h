@@ -21,6 +21,7 @@ struct CharacterClipData {
   float start = 0.0f;    // seconds into the clip to start at
   float end = 0.0f;      // and to stop at; 0 is the clip's end
   bool loop = true;
+  float hitFrom = -1.0f, hitTo = -1.0f; // a blow's strike, in the clip; below 0 none
   // Where it stops, in the clip: end, or the clip's length without one.
   float endTime() const {
     return end > start ? std::min(end, clip.duration) : clip.duration;
@@ -102,9 +103,15 @@ struct AnimatorInput {
   // (power is Hold) and a power's light goes to it; a throw lets it go.
   bool reaching = false;
   glm::vec3 reachTarget{0.0f}; // in the skeleton's space
+  // Melee (step F3): the blow under way (0 to 2 the combo's, 3 the heavy
+  // one; below 0 none) and how far into it (s, the controller's clock, so
+  // its strike lines up), and the block held.
+  int attack = -1;
+  float attackTime = 0.0f;
+  bool blocking = false;
 };
 
-enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge, Dead };
+enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge, Dead, Melee };
 
 // Strides a second (two steps each) people run at, by speed in m/s:
 // Mercer, Vance, Hreljac & Hamill 2002 (Eur J Appl Physiol 87, Table 1),
@@ -155,6 +162,9 @@ struct AnimatorTuning {
   // The powers' upper-body layer and the arm's reach fade in and out over
   // this, seconds.
   float powerFade = 0.12f;
+  // Into a blow, and from one blow to the next, seconds; the block fades in
+  // and out over it too.
+  float meleeFade = 0.08f;
   // Taking out or putting away a gun eases into its stance's clips over
   // this, seconds (est.).
   float stanceFade = 0.3f;
@@ -255,4 +265,6 @@ private:
   Pose powerFrom;           // and when its clip changed
   float reachWeight = 0.0f;
   glm::vec3 reachTarget{0.0f}; // held while the arm lets go
+  int attackShown = -1;      // the blow the Melee state plays
+  float blockWeight = 0.0f;  // the block's share of the upper body
 };

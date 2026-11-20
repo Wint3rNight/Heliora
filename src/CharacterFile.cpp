@@ -22,7 +22,8 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "death_front",    "death_back",    "death_right",
                   "death_head",     "death_crouched", "throw",
                   "power_lift",     "power_hold",    "power_throw",
-                  "power_burst"};
+                  "power_burst",    "attack_1",      "attack_2",
+                  "attack_3",       "attack_heavy",  "block"};
 
 constexpr std::array<const char *, static_cast<size_t>(Stance::Count)> kStanceNames = {
     "unarmed", "pistol", "rifle", "pistol_carry", "rifle_carry"};
@@ -180,6 +181,12 @@ private:
           !std::isfinite(stop) || stop < 0.0f)
         fail(lineNumber, "'end' must be seconds, 0 or more, got '" + value + "'");
       current.end = stop;
+    } else if (key == "hit_from" || key == "hit_to") {
+      float at = 0.0f;
+      const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), at);
+      if (error != std::errc() || end != value.data() + value.size() || !std::isfinite(at) || at < 0.0f)
+        fail(lineNumber, "'" + key + "' must be seconds, 0 or more, got '" + value + "'");
+      (key == "hit_from" ? current.hitFrom : current.hitTo) = at;
     } else if (key == "loop") {
       if (value != "true" && value != "false")
         fail(lineNumber, "'loop' must be true or false, got '" + value + "'");
@@ -251,6 +258,10 @@ bool defaultLoop(ClipSlot slot) {
   case ClipSlot::PowerLift:
   case ClipSlot::PowerThrow:
   case ClipSlot::PowerBurst:
+  case ClipSlot::Attack1:
+  case ClipSlot::Attack2:
+  case ClipSlot::Attack3:
+  case ClipSlot::AttackHeavy:
   case ClipSlot::Jump:
   case ClipSlot::Land:
   case ClipSlot::LandHard:
@@ -323,6 +334,10 @@ std::string write(const CharacterDescription &character) {
       out += std::format("start = {}\n", clip.start);
     if (clip.end != 0.0f)
       out += std::format("end = {}\n", clip.end);
+    if (clip.hitFrom >= 0.0f)
+      out += std::format("hit_from = {}\n", clip.hitFrom);
+    if (clip.hitTo >= 0.0f)
+      out += std::format("hit_to = {}\n", clip.hitTo);
     if (clip.loop != defaultLoop(clip.slot))
       out += std::format("loop = {}\n", clip.loop ? "true" : "false");
   }

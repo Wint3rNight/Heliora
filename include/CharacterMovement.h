@@ -110,6 +110,9 @@ public:
   // One physics step: works out the velocity and moves the character. Call
   // it right before PhysicsWorld::step(), with the same dt.
   void update(const CharacterInput &input, float dt);
+  // A blow's push (m/s, flat): added to how it moves and dying away over
+  // about 0.15 s (est.), so it's carried back a little without turning.
+  void knock(glm::vec3 velocity);
   // What the physics said about it at the start of the last update: where
   // it was, what it stood on and how fast that moved (for the recorder).
   const PhysicsCharacterState &physicsState() const { return lastState; }
@@ -156,6 +159,7 @@ private:
   glm::vec3 horizontal{0.0f};
   bool onGround = false;
   PhysicsCharacterState lastState;
+  glm::vec3 knockback{0.0f};
   bool aimed = false;
   bool jumpedSinceGround = false;
   float airTime = 0.0f;   // s since it last stood on walkable ground

@@ -801,3 +801,20 @@ TEST(walking_goes_at_a_walking_pace) {
   hold(world, character, input, 120);
   CHECK_NEAR(flatSpeed(character.velocity()), 1.4, 0.02);
 }
+
+TEST(a_knock_pushes_a_standing_character_back_a_little_and_dies_away) {
+  // A blow's push: 4 m/s that dies away in about 0.15 s carries it about
+  // 0.6 m, without turning it.
+  PhysicsWorld world;
+  addFloor(world);
+  CharacterMovement character(world, glm::vec3(0.0f), 0.0f);
+  hold(world, character, CharacterInput{}, 30);
+  const glm::vec3 before = character.position();
+  character.knock(glm::vec3(4.0f, 0.0f, 0.0f));
+  hold(world, character, CharacterInput{}, 90);
+  const glm::vec3 moved = character.position() - before;
+  CHECK(moved.x > 0.4f && moved.x < 0.8f);
+  CHECK(std::abs(moved.z) < 0.05f);
+  CHECK(flatSpeed(character.velocity()) < 0.05f);
+  CHECK_NEAR(character.yaw(), 0.0, 1e-4);
+}

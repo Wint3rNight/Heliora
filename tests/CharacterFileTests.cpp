@@ -243,3 +243,20 @@ TEST(death_and_hit_slots_read_as_one_shots) {
     CHECK(d.clips[1].slot == ClipSlot::Hit && !d.clips[1].loop);
   }
 }
+
+TEST(a_blows_clip_says_when_it_can_hit) {
+  const CharacterDescription c = parseText(
+      "model = a.fbx\n[clip]\nslot = attack_1\nfile = b.fbx\nstart = 0.25\nend = 0.85\n"
+      "hit_from = 0.52\nhit_to = 0.67\n");
+  CHECK(c.clips.size() == 1);
+  if (c.clips.size() != 1)
+    return;
+  CHECK_NEAR(c.clips[0].hitFrom, 0.52, 1e-6);
+  CHECK_NEAR(c.clips[0].hitTo, 0.67, 1e-6);
+  CHECK(!c.clips[0].loop); // a blow happens once
+  std::istringstream again(CharacterIO::write(c));
+  CHECK(CharacterIO::parse(again, "again.character").clips == c.clips);
+  // Without them: none (the game's own timing stands).
+  CHECK(parseText("model = a.fbx\n[clip]\nslot = idle\nfile = b.fbx\n").clips[0].hitFrom < 0.0f);
+  CHECK(contains(errorFor("model = a.fbx\n[clip]\nslot = attack_1\nfile = b.fbx\nhit_from = soon\n"), "hit_from"));
+}

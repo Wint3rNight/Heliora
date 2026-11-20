@@ -30,6 +30,7 @@ constexpr std::array<ActionInfo, static_cast<size_t>(Action::Count)> kActions = 
     {"fire", "Fire (press: throw what's held)"},
     {"reveal", "Reveal"},
     {"burst", "Burst"},
+    {"block", "Block (held)"},
 }};
 
 // Keys with names of their own; letters, digits, F keys and keypad digits
@@ -157,6 +158,7 @@ ControlBindings::ControlBindings() {
   (*this)[Action::Run] = key(GLFW_KEY_LEFT_SHIFT);
   (*this)[Action::Reveal] = key(GLFW_KEY_Q);
   (*this)[Action::Burst] = key(GLFW_KEY_E);
+  (*this)[Action::Block] = key(GLFW_KEY_R);
   (*this)[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
   (*this)[Action::Aim] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_RIGHT};
   (*this)[Action::Jump] = key(GLFW_KEY_SPACE);

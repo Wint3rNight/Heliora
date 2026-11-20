@@ -280,6 +280,7 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.jump = jump;
   controls.dodge = dodge;
   controls.fire = held(Action::Fire);
+  controls.block = held(Action::Block);
   controls.cast = cast;
   controls.reveal = reveal;
   controls.burst = burst;

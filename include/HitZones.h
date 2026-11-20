@@ -67,6 +67,12 @@ struct CharacterHit {
 std::optional<CharacterHit> firstHit(const std::vector<HitCapsule> &capsules, glm::vec3 from,
                                      glm::vec3 to);
 
+// The first body part a ball of this radius (a fist, a foot) touches on its
+// way from `from` to `to`; still, whether it's touching one where it is.
+// The point is on the capsule's surface, widened by the radius.
+std::optional<CharacterHit> sweptHit(const std::vector<HitCapsule> &capsules, glm::vec3 from,
+                                     glm::vec3 to, float radius);
+
 // How far to move a set of points (the hands on a gun) so each is at least
 // margin m outside every capsule: pushed out the way the deepest one
 // points, a few times over; or, given `along` (unit), only that way (a gun

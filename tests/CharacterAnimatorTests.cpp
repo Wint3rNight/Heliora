@@ -1057,3 +1057,47 @@ TEST(a_throw_plays_on_the_upper_body_by_its_progress) {
   a.update(in, kDt);
   CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
 }
+
+TEST(a_blow_plays_its_clip_on_the_whole_body_at_the_controllers_time) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  put(l, ClipSlot::Attack1, marker(40, 1.0f, 0.0f, false));
+  put(l, ClipSlot::Attack2, marker(-25, 1.0f, 0.0f, false));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = moving(0.0f);
+  runFor(a, in, 0.5f);
+  in.attack = 0;
+  in.attackTime = 0.2f;
+  runFor(a, in, 0.3f); // past its blend in
+  CHECK(a.state() == AnimState::Melee);
+  CHECK_NEAR(hipsDegrees(a), 40.0, 0.5);
+  // The next blow of the combo eases in from this one.
+  in.attack = 1;
+  a.update(in, kDt);
+  CHECK(hipsDegrees(a) > 10.0f); // not snapped
+  runFor(a, in, 0.3f);
+  CHECK_NEAR(hipsDegrees(a), 25.0, 0.5);
+  // No blow: back to standing.
+  in.attack = -1;
+  runFor(a, in, 0.5f);
+  CHECK(a.state() == AnimState::Locomotion);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5);
+}
+
+TEST(blocking_lays_the_block_on_the_upper_body_over_the_legs) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  CharacterClipData block = spineMarker(35, 2.0f);
+  block.loop = true;
+  put(l, ClipSlot::Block, block);
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = moving(0.0f);
+  runFor(a, in, 0.5f);
+  in.blocking = true;
+  runFor(a, in, 0.3f);
+  CHECK_NEAR(spineDegrees(a), 35.0, 0.5);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5);
+  in.blocking = false;
+  runFor(a, in, 0.3f);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+}

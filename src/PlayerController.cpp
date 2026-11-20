@@ -48,12 +48,12 @@ CharacterInput PlayerController::decide() {
                          right * (float(held.right) - float(held.left));
 
   CharacterInput input;
-  input.move = move;
+  input.move = rooted ? glm::vec3(0.0f) : move;
   input.gait = gait;
   input.crouch = held.crouch;
   input.aim = held.aim || (armed && hipFire > 0.0f) || throwing;
   input.aimYaw = yaw;
-  input.jump = jumpWaiting;
+  input.jump = jumpWaiting && !rooted;
   input.dodge = dodgeWaiting;
   jumpWaiting = dodgeWaiting = false; // this step took them
   return input;
@@ -133,6 +133,7 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     }
     else if (key == "q") controls.reveal = true;
     else if (key == "e") controls.burst = true;
+    else if (key == "r") controls.block = true;
     else if (key == "mu") controls.mouse.y -= kScriptedMouse;
     else if (key == "md") controls.mouse.y += kScriptedMouse;
     else if (key == "ml") controls.mouse.x -= kScriptedMouse;

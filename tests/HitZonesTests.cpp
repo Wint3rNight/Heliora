@@ -205,3 +205,15 @@ TEST(pushing_clear_along_a_direction_moves_only_that_way) {
   // Clear at 19 cm from the axis: z = sqrt(0.19^2 - 0.1^2).
   CHECK_NEAR(0.05f + push.z, std::sqrt(0.19f * 0.19f - 0.01f), 2e-3);
 }
+
+TEST(a_swept_fist_hits_a_body_part_it_passes_within_its_own_radius_of) {
+  // A capsule 0.15 m thick standing at the origin; a fist 5 cm across its
+  // radius swept past it.
+  const std::vector<HitCapsule> body = {{HitZone::Chest, {0.0f, 1.0f, 0.0f}, {0.0f, 1.5f, 0.0f}, 0.15f}};
+  // 18 cm from the axis: inside 0.15 + 0.05.
+  CHECK(sweptHit(body, {-0.5f, 1.2f, 0.18f}, {0.5f, 1.2f, 0.18f}, 0.05f).has_value());
+  // 22 cm: a miss.
+  CHECK(!sweptHit(body, {-0.5f, 1.2f, 0.22f}, {0.5f, 1.2f, 0.22f}, 0.05f).has_value());
+  // A fist that ends inside it, hardly moving, still lands.
+  CHECK(sweptHit(body, {0.0f, 1.2f, 0.19f}, {0.0f, 1.2f, 0.185f}, 0.05f).has_value());
+}

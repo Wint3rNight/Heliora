@@ -26,6 +26,7 @@ struct PlayerControls {
   bool cast = false;      // the fire button went down this frame: throw what's held
   bool reveal = false;    // went down this frame (the powers)
   bool burst = false;     // went down this frame (the powers)
+  bool block = false;     // held (melee)
   glm::vec2 mouse{0.0f};  // pixels, screen style: +x right, +y down
   float wheel = 0.0f;     // notches, positive away from you
 };
@@ -73,6 +74,8 @@ public:
   void setArmed(bool armed);
   // Throwing a grenade: he turns to face the camera, as aiming does.
   void setThrowing(bool on) { throwing = on; }
+  // Rooted (a blow being thrown): no walking or jumping; a dodge still goes.
+  void setRooted(bool on) { rooted = on; }
   // Facing the camera for hip fire, without the right mouse.
   bool hipFiring() const { return armed && hipFire > 0.0f && !held.aim; }
   // WASD in the camera's frame, and the presses since the last step.
@@ -97,6 +100,7 @@ private:
   Gait gait = Gait::Walk;    // from this frame's keys
   bool armed = false;
   bool throwing = false;
+  bool rooted = false;
   float hipFire = 0.0f;      // s it keeps facing the camera after firing
   bool jumpWaiting = false;  // pressed, no step has taken it yet
   bool dodgeWaiting = false;

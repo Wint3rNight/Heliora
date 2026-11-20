@@ -192,6 +192,8 @@ std::optional<CharacterClipData> importClip(const CharacterClip &entry,
   data.start = entry.start;
   data.end = entry.end;
   data.loop = entry.loop;
+  data.hitFrom = entry.hitFrom;
+  data.hitTo = entry.hitTo;
   // The clip file's own rig at rest: Mixamo bakes a clip for the character
   // it was downloaded with, whose rest pose can differ from this one's by
   // 30 degrees at the shoulders (Ganfaul's against Remy's), so keys are

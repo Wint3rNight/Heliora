@@ -491,6 +491,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   drawGizmo(ui);
   drawCrosshair(ui);
   drawPlayPrompt(ui);
+  drawVitals(ui);
   finishSceneEdit(ui);
   drawPrompt(ui);
 }
@@ -512,6 +513,51 @@ void ImGuiLayer::drawCrosshair(const DebugUiContext &ui) const {
 
 // A prompt at the scene's bottom middle, like the crosshair: light with a
 // dark shadow.
+// Health and focus at the scene's bottom left, the reveal's and burst's
+// keys beside them filling as they cool down: light with a dark backing,
+// like the crosshair. A refused power flashes the focus bar.
+void ImGuiLayer::drawVitals(const DebugUiContext &ui) const {
+  if (!ui.vitals || ui.sceneArea.size.x <= 0.0f)
+    return;
+  ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  const float scale = ImGui::GetFontSize() / 13.0f;
+  const float width = 220.0f * scale, height = 9.0f * scale, gap = 6.0f * scale;
+  const ImVec2 corner(ui.sceneArea.origin.x + 24.0f * scale,
+                      ui.sceneArea.origin.y + ui.sceneArea.size.y - 24.0f * scale);
+  const ImU32 backing = IM_COL32(0, 0, 0, 150);
+  auto bar = [&](float y, float share, ImU32 fill, ImU32 outline) {
+    const ImVec2 lo(corner.x, y), hi(corner.x + width, y + height);
+    draw->AddRectFilled(ImVec2(lo.x - 1.5f, lo.y - 1.5f), ImVec2(hi.x + 1.5f, hi.y + 1.5f), backing);
+    draw->AddRectFilled(lo, ImVec2(lo.x + width * std::clamp(share, 0.0f, 1.0f), hi.y), fill);
+    draw->AddRect(lo, hi, outline);
+  };
+  const float focusY = corner.y - height;
+  const float healthY = focusY - gap - height;
+  bar(healthY, ui.health, IM_COL32(200, 60, 60, 230), IM_COL32(235, 245, 255, 90));
+  const bool flash = ui.refusedFlash > 0.0f && std::fmod(ui.refusedFlash, 0.2f) > 0.1f;
+  bar(focusY, ui.focus, IM_COL32(90, 160, 255, 230),
+      flash ? IM_COL32(255, 90, 90, 255) : IM_COL32(235, 245, 255, 90));
+  // The floor focus comes back to by itself.
+  const float floorX = corner.x + width * std::clamp(ui.focusFloor, 0.0f, 1.0f);
+  draw->AddLine(ImVec2(floorX, focusY - 2.0f), ImVec2(floorX, focusY + height + 2.0f),
+                IM_COL32(235, 245, 255, 150), 1.5f);
+  // The powers' keys: a box each, filling from the bottom as it cools down,
+  // dim while there isn't the focus for it.
+  const float box = 2.0f * height + gap;
+  auto key = [&](float x, const char *label, float ready, bool afford) {
+    const ImVec2 lo(x, healthY), hi(x + box, healthY + box);
+    draw->AddRectFilled(ImVec2(lo.x - 1.5f, lo.y - 1.5f), ImVec2(hi.x + 1.5f, hi.y + 1.5f), backing);
+    const ImU32 fill = afford ? IM_COL32(90, 160, 255, 200) : IM_COL32(90, 110, 140, 140);
+    draw->AddRectFilled(ImVec2(lo.x, hi.y - box * std::clamp(ready, 0.0f, 1.0f)), hi, fill);
+    draw->AddRect(lo, hi, IM_COL32(235, 245, 255, ready >= 1.0f && afford ? 200 : 90));
+    const ImVec2 extent = ImGui::CalcTextSize(label);
+    draw->AddText(ImVec2(lo.x + 0.5f * (box - extent.x), lo.y + 0.5f * (box - extent.y)),
+                  IM_COL32(235, 245, 255, 230), label);
+  };
+  key(corner.x + width + 2.0f * gap, "Q", ui.revealReady, ui.revealAfford);
+  key(corner.x + width + 3.0f * gap + box, "E", ui.burstReady, ui.burstAfford);
+}
+
 void ImGuiLayer::drawPlayPrompt(const DebugUiContext &ui) const {
   if (!ui.playPrompt || !*ui.playPrompt || ui.sceneArea.size.x <= 0.0f)
     return;
@@ -2644,6 +2690,22 @@ void ImGuiLayer::drawCharacterTab(DebugUiContext &ui) {
     changed |= slider("Pulse speed", &pw.revealSpeed, 1.0f, 500.0f, "%.0f m/s");
     changed |= slider("Pulse reach", &pw.revealReach, 1.0f, 500.0f, "%.0f m");
     changed |= slider("Glow time", &pw.revealSeconds, 0.1f, 60.0f, "%.1f s");
+    changed |= slider("Reveal cooldown", &pw.revealCooldown, 0.0f, 60.0f, "%.1f s");
+    ImGui::SeparatorText("Focus");
+    ImGui::TextDisabled("What the powers run on: melee fills it, each power costs some");
+    changed |= slider("Focus", &pw.focusMax, 1.0f, 1000.0f, "%.0f");
+    changed |= slider("Comes back", &pw.focusRegen, 0.0f, 100.0f, "%.1f /s");
+    ImGui::SetItemTooltip("By itself, up to the floor below");
+    changed |= slider("Floor", &pw.focusRegenUpTo, 0.0f, 1000.0f, "%.0f");
+    changed |= slider("Grab", &pw.focusLift, 0.0f, 1000.0f, "%.1f");
+    changed |= slider("Grab per tonne", &pw.focusLiftPerTonne, 0.0f, 1000.0f, "%.1f");
+    changed |= slider("Hold", &pw.focusHold, 0.0f, 100.0f, "%.1f /s");
+    ImGui::SetItemTooltip("Drained while something is held out or strained at; empty, it's dropped");
+    changed |= slider("Tear", &pw.focusTear, 0.0f, 100.0f, "%.1f /s");
+    changed |= slider("Burst cost", &pw.focusBurst, 0.0f, 1000.0f, "%.1f");
+    changed |= slider("Reveal cost", &pw.focusReveal, 0.0f, 1000.0f, "%.1f");
+    changed |= slider("A hit earns", &pw.focusHit, 0.0f, 1000.0f, "%.1f");
+    changed |= slider("A kill earns", &pw.focusKill, 0.0f, 1000.0f, "%.1f");
   }
   changed |= ImGui::Checkbox("Stride warping", &an.footIk.strideWarp);
   ImGui::SetItemTooltip("Runs take steps as often as people do at that speed (measured), "

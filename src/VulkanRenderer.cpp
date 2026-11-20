@@ -1767,8 +1767,10 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
   const float stepSeconds = static_cast<float>(physicsClock.stepSeconds());
   particleSeconds = playing && !physicsPanel.paused ? frameSeconds : 0.0f;
   // The powers decide first: what they hold takes the wheel from the camera.
-  if (playing && !physicsPanel.paused)
+  if (playing && !physicsPanel.paused) {
     updatePowers(frameSeconds);
+    updateMelee(frameSeconds);
+  }
   if (playerController) {
     PlayerControls forCamera = playerControls;
     if (powerController.holding())
@@ -2017,6 +2019,7 @@ void VulkanRenderer::clearCharacters() {
   characters.clear();
   playedCharacter = -1;
   handBone = -2; // the asset may change before the next one
+  hitPause = 0.0f;
   characterPanel.animState = nullptr;
   characterPanel.playing.clear();
   skeletonLines.clear();
@@ -2117,6 +2120,7 @@ void VulkanRenderer::buildCharacters() {
         playerController = std::make_unique<PlayerController>(*physics, characterPanel.camera);
         roster->possess(*playerController, characters[i].body);
         playedCharacter = i;
+        timeBlows(characters[i]);
         break;
       }
   }
@@ -2258,7 +2262,14 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
         input.reachTarget = glm::vec3(glm::inverse(placement) * glm::vec4(*reach, 1.0f));
       }
     }
-    c.animator->update(input, frameSeconds);
+    // Its blows and block (Melee.h's clock, so the strike lines up).
+    if (c.melee.state() == MeleeState::Attacking) {
+      input.attack = c.melee.attack();
+      input.attackTime = c.melee.attackTime();
+    }
+    input.blocking = c.melee.state() == MeleeState::Blocking;
+    // Hit stop: a blow that lands freezes every animation for a moment.
+    c.animator->update(input, hitPause > 0.0f ? 0.0f : frameSeconds);
     if (i == playedCharacter) {
       // For the Character tab: the state and the clips in this pose.
       characterPanel.animState = animStateName(c.animator->state());
@@ -2277,12 +2288,14 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     const AnimState state = c.animator->state();
     const bool feetDown = input.grounded && !input.dodging && !input.dead &&
                           (state == AnimState::Locomotion || state == AnimState::Crouch ||
-                           state == AnimState::Land);
+                           state == AnimState::Land || state == AnimState::Melee);
     FootPlacement feetAt{feet, facing, c.scale};
     feetAt.stride = c.animator->strideScale();
     feetAt.strideAxis = c.animator->strideAxis();
     placeFeet(i, feetAt, feetDown, frameSeconds, pose, model);
     shakeView(i, frameSeconds);
+    if (playing)
+      strikeWith(i, placement, model);
     if (!c.hitCapsules.empty())
       c.capsules = placeHitCapsules(c.hitCapsules, model, placement);
     c.skinning = skinningMatrices(asset->skeleton, model);
@@ -5619,6 +5632,19 @@ void VulkanRenderer::buildUi() {
   ui.viewProj = taaBaseProjection * sceneUbo.view;
   ui.sceneArea = sceneArea;
   ui.crosshair = playing && hasPlayer() && playerControls.aim;
+  ui.vitals = playing && playedCharacter >= 0 && playedCharacter < static_cast<int>(characters.size());
+  if (ui.vitals) {
+    const PowerTuning &pt = powerTuning();
+    const Focus &focus = powerController.focus();
+    ui.health = std::clamp(characters[playedCharacter].health.points / 100.0f, 0.0f, 1.0f);
+    ui.focus = pt.focusMax > 0.0f ? focus.value() / pt.focusMax : 0.0f;
+    ui.focusFloor = pt.focusMax > 0.0f ? pt.focusRegenUpTo / pt.focusMax : 0.0f;
+    ui.revealReady = pt.revealCooldown > 0.0f ? 1.0f - powerController.revealCooling() / pt.revealCooldown : 1.0f;
+    ui.burstReady = pt.burstCooldown > 0.0f ? 1.0f - powerController.burstCooling() / pt.burstCooldown : 1.0f;
+    ui.revealAfford = focus.value() >= pt.focusReveal;
+    ui.burstAfford = focus.value() >= pt.focusBurst;
+    ui.refusedFlash = powerRefused;
+  }
   ui.playPrompt = "";
   ui.onEditFinished = [this] { recordEdit(); };
   ui.modelFiles = &modelFiles;

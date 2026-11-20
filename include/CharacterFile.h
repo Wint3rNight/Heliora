@@ -55,6 +55,13 @@ enum class ClipSlot : uint8_t {
   PowerHold,
   PowerThrow,
   PowerBurst,
+  // Melee (step F3): the combo's three blows and the heavy one over the
+  // whole body; the block on the upper body, over whatever the legs do.
+  Attack1,
+  Attack2,
+  Attack3,
+  AttackHeavy,
+  Block,
   Count
 };
 
@@ -83,6 +90,10 @@ struct CharacterClip {
   // jump stops before its feet come down, a landing begins at that moment.
   float end = 0.0f;
   bool loop = true;
+  // A blow's (melee, step F3): seconds into the file its fist or foot can
+  // hit, from and to; below 0 not given.
+  float hitFrom = -1.0f;
+  float hitTo = -1.0f;
   std::string comment; // the `#` lines above its [clip], each ending in \n
   bool operator==(const CharacterClip &) const = default;
 };

@@ -166,6 +166,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Blast.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/SpringKick.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Powers.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Melee.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -291,6 +292,7 @@ add_executable(heliora_tests
         tests/BlastTests.cpp
         tests/SpringKickTests.cpp
         tests/PowersTests.cpp
+        tests/MeleeTests.cpp
         tests/HitZonesTests.cpp
         tests/PieceDamageTests.cpp
         tests/OutlinerTests.cpp

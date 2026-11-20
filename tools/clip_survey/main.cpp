@@ -147,6 +147,49 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
+  // clip_survey <model> --limbs <clip>...: for timing blows, when each hand
+  // and foot is furthest ahead of the hips (model space, +z ahead) and how
+  // far, and how high the feet get; 60 samples a second.
+  if (std::string(argv[2]) == "--limbs" && argc >= 4) {
+    const int rightFoot = boneNamed(skeleton, "RightFoot"), leftFoot = boneNamed(skeleton, "LeftFoot");
+    const int limbs[4] = {rightHand, leftHand, rightFoot, leftFoot};
+    const char *names[4] = {"right hand", "left hand", "right foot", "left foot"};
+    for (int a = 3; a < argc; ++a) {
+      CharacterClip entry;
+      entry.file = argv[a];
+      const std::optional<CharacterClipData> data = importCharacterClip(entry, *asset);
+      if (!data)
+        continue;
+      std::printf("%s (%.2f s)\n", argv[a], data->clip.duration);
+      for (int l = 0; l < 4; ++l) {
+        if (limbs[l] < 0)
+          continue;
+        float best = -1e9f, bestAt = 0.0f, highest = -1e9f, highestAt = 0.0f, rest = 0.0f;
+        const int samples = std::max(2, static_cast<int>(data->clip.duration * 60.0f));
+        for (int k = 0; k <= samples; ++k) {
+          const float t = data->clip.duration * k / samples;
+          Pose pose = bindPose(skeleton);
+          sampleClip(data->clip, skeleton, t, false, pose);
+          const std::vector<glm::mat4> m = modelSpace(skeleton, pose);
+          const glm::vec3 h(m[hips][3]), p(m[limbs[l]][3]);
+          const float ahead = (p.z - h.z) * toMetres, up = (p.y - h.y) * toMetres;
+          if (k == 0)
+            rest = ahead;
+          if (ahead > best) {
+            best = ahead;
+            bestAt = t;
+          }
+          if (up > highest) {
+            highest = up;
+            highestAt = t;
+          }
+        }
+        std::printf("  %-10s furthest ahead %.2f m at %.2f s (%.2f m at the start), highest %.2f m over the hips at %.2f s\n",
+                    names[l], best, bestAt, rest, highest, highestAt);
+      }
+    }
+    return 0;
+  }
   const std::string folder = argv[2];
   std::ofstream table(folder + "/survey.tsv");
   table << "n\tfile\tseconds\tspeed\theading\trhand_up\trhand_ahead\thands_apart\tlean\tchest\thips_turn\thips_low\n";

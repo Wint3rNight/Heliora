@@ -18,6 +18,9 @@
 
 namespace {
 
+// A refused power flashes the HUD's focus bar this long (est.).
+constexpr float kRefusedFlash = 0.4f;
+
 // 0xRRGGBB, as bright as `brightness`, in the lines' RGBA8 (red first).
 uint32_t lineColour(uint32_t rgb, float brightness = 1.0f) {
   const float k = std::clamp(brightness, 0.0f, 1.0f);
@@ -304,6 +307,7 @@ void VulkanRenderer::clearPowers() {
 
   revealSince = -1.0f;
   burstSince = -1.0f;
+  powerRefused = 0.0f;
   powerImpacts.clear();
   shakenPieces.clear();
   shakenLink = -1;
@@ -482,10 +486,7 @@ void VulkanRenderer::updatePowers(float seconds) {
   const CharacterMovement &me = roster->body(characters[playedCharacter].body);
   const glm::vec3 chest = me.position() + glm::vec3(0.0f, 0.75f * me.height(), 0.0f);
 
-  if (playerControls.reveal) {
-    revealSince = 0.0f;
-    revealFrom = me.position();
-  } else if (revealSince >= 0.0f) {
+  if (revealSince >= 0.0f) {
     revealSince += seconds;
     if (revealSince > t.revealReach / t.revealSpeed + t.revealSeconds)
       revealSince = -1.0f;
@@ -504,6 +505,7 @@ void VulkanRenderer::updatePowers(float seconds) {
   in.aim = playerControls.aim;
   in.cast = playerControls.cast;
   in.burst = playerControls.burst;
+  in.reveal = playerControls.reveal;
   if (heldBody.isValid() && (!followHeld() || heldAway >= t.lostSeconds))
     in.lost = true;
   const PowerState before = powerController.state();
@@ -567,9 +569,17 @@ void VulkanRenderer::updatePowers(float seconds) {
   if (powerTarget) {
     in.target = powerTarget->id;
     in.targetKind = powerTarget->kind;
+    in.targetMass = targetKind(powerTarget->id) == kPieceTarget ? pieceMass(powerTarget->piece)
+                                                                : physics->mass(powerTarget->body);
   }
 
   const PowerEvents e = powerController.update(in, seconds, t);
+  if (e.revealed) {
+    revealSince = 0.0f;
+    revealFrom = me.position();
+  }
+  // Asked for but not paid for (or cooling down): the HUD's focus flashes.
+  powerRefused = e.refused ? kRefusedFlash : std::max(0.0f, powerRefused - seconds);
   if (e.grabbed >= 0 && powerTarget && powerTarget->id == e.grabbed) {
     powerGrabbed = *powerTarget;
     spdlog::info("[power] grabbed {} ({:.0f} kg, {:.1f} m away): {}",

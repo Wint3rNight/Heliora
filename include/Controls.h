@@ -25,6 +25,7 @@ enum class Action : uint8_t {
   // The powers, each pressed: show what can be taken, a blast from the hand.
   Reveal,
   Burst,
+  Block, // held (melee)
   Count
 };
 

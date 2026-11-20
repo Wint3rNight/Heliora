@@ -520,3 +520,94 @@ TEST(right_after_a_burst_resting_on_flying_debris_grabs_nothing) {
   e = d.update(aiming(3), kDt, t);
   CHECK(e.grabbed == 3);
 }
+
+TEST(focus_starts_full_trickles_back_up_to_its_floor_and_gains_go_past_it) {
+  const PowerTuning t;
+  Focus f(t);
+  CHECK_NEAR(f.value(), t.focusMax, 1e-4);
+  CHECK(f.spend(t.focusMax - 5.0f));
+  CHECK_NEAR(f.value(), 5.0, 1e-4);
+  // By itself it comes back only to the floor.
+  for (int k = 0; k < 6000; ++k)
+    f.update(kDt, t);
+  CHECK_NEAR(f.value(), t.focusRegenUpTo, 1e-3);
+  // What melee earns goes on up to the top, and no further.
+  f.gain(t.focusRegenUpTo, t);
+  CHECK_NEAR(f.value(), std::min(2.0f * t.focusRegenUpTo, t.focusMax), 1e-3);
+  f.gain(1000.0f, t);
+  CHECK_NEAR(f.value(), t.focusMax, 1e-4);
+  // Spending is all or nothing.
+  Focus low(t);
+  low.spend(t.focusMax - 3.0f);
+  CHECK(!low.spend(10.0f));
+  CHECK_NEAR(low.value(), 3.0, 1e-4);
+}
+
+TEST(a_burst_costs_focus_and_waits_its_cooldown_and_without_enough_it_is_refused) {
+  const PowerTuning t;
+  PowerController c;
+  PowerInput blast;
+  blast.burst = true;
+  c.update(blast, kDt, t);
+  CHECK(c.state() == PowerState::Bursting);
+  CHECK_NEAR(c.focus().value(), t.focusMax - t.focusBurst, 0.1);
+  CHECK(c.burstCooling() > 0.0f);
+  runFor(c, aiming(-1), t.burstRecover + kDt);
+  // Cooling down: refused, nothing spent.
+  const float before = c.focus().value();
+  PowerEvents e = c.update(blast, kDt, t);
+  CHECK(e.refused && c.state() == PowerState::Idle);
+  CHECK(c.focus().value() <= before + 0.1f);
+  // Cooled down but with too little focus: refused too.
+  runFor(c, aiming(-1), t.burstCooldown);
+  c.focus().spend(c.focus().value() - (t.focusBurst - 1.0f));
+  e = c.update(blast, kDt, t);
+  CHECK(e.refused && c.state() == PowerState::Idle);
+}
+
+TEST(holding_drains_focus_and_running_out_drops_it) {
+  PowerTuning t;
+  t.focusRegen = 0.0f; // nothing coming back, to see the drain alone
+  PowerController c;
+  PowerInput grab = aiming(4);
+  grab.targetMass = 100.0f;
+  const PowerEvents e = c.update(grab, kDt, t);
+  CHECK(e.grabbed == 4);
+  const float afterGrab = c.focus().value();
+  CHECK(afterGrab < t.focusMax - t.focusLift + 0.1f);
+  runFor(c, aiming(-1), 2.0f);
+  CHECK_NEAR(c.focus().value(), afterGrab - 2.0f * t.focusHold, 0.3);
+  // Held until it runs dry, then dropped.
+  PowerEvents last;
+  for (int k = 0; k < 60 * 120 && c.holding(); ++k)
+    last = c.update(aiming(-1), kDt, t);
+  CHECK(!c.holding() && last.dropped && c.state() == PowerState::Idle);
+  CHECK(c.focus().value() < 0.5f);
+}
+
+TEST(heavier_things_cost_more_to_grab_and_none_is_grabbed_without_enough) {
+  const PowerTuning t;
+  CHECK(grabCost(1000.0f, t) > grabCost(10.0f, t));
+  CHECK_NEAR(grabCost(0.0f, t), t.focusLift, 1e-4);
+  PowerController c;
+  c.focus().spend(c.focus().value() - (grabCost(500.0f, t) - 1.0f));
+  PowerInput grab = aiming(2);
+  grab.targetMass = 500.0f;
+  const PowerEvents e = c.update(grab, kDt, t);
+  CHECK(e.grabbed < 0 && e.refused && !c.holding());
+}
+
+TEST(the_reveal_costs_focus_and_has_a_cooldown) {
+  const PowerTuning t;
+  PowerController c;
+  PowerInput reveal;
+  reveal.reveal = true;
+  PowerEvents e = c.update(reveal, kDt, t);
+  CHECK(e.revealed);
+  CHECK_NEAR(c.focus().value(), t.focusMax - t.focusReveal, 0.1);
+  e = c.update(reveal, kDt, t);
+  CHECK(!e.revealed && e.refused);
+  runFor(c, PowerInput{}, t.revealCooldown);
+  e = c.update(reveal, kDt, t);
+  CHECK(e.revealed);
+}

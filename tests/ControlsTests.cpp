@@ -124,3 +124,9 @@ TEST(the_powers_are_q_and_e) {
   CHECK(bindingName(c[Action::Burst]) == "E");
   CHECK(std::string(actionName(Action::Burst)) == "burst");
 }
+
+TEST(block_is_r_held) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Block]) == "R");
+  CHECK(std::string(actionName(Action::Block)) == "block");
+}

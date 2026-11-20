@@ -151,6 +151,7 @@ const char *animStateName(AnimState state) {
   case AnimState::Land: return "Land";
   case AnimState::Dodge: return "Dodge";
   case AnimState::Dead: return "Dead";
+  case AnimState::Melee: return "Melee";
   }
   return "";
 }
@@ -285,6 +286,8 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     }
   } else if (input.dodging && active != AnimState::Dodge) {
     next = AnimState::Dodge;
+  } else if (input.attack >= 0) {
+    next = AnimState::Melee;
   } else {
     switch (active) {
     case AnimState::Dodge:
@@ -323,6 +326,7 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     case AnimState::Land: fadeTime = tune.landFade; break;
     case AnimState::Dodge: fadeTime = tune.dodgeFade; break;
     case AnimState::Dead: fadeTime = tune.dodgeFade; break;
+    case AnimState::Melee: fadeTime = tune.meleeFade; break;
     }
     if (next == AnimState::Jump)
       oneShot = ClipSlot::Jump;
@@ -335,6 +339,16 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     active = next;
     stateTime = 0.0f;
   }
+  // The next blow of a combo eases in from the one before, like a new state.
+  if (active == AnimState::Melee && input.attack != attackShown) {
+    if (attackShown >= 0) {
+      blendPending = true;
+      fadeTime = tune.meleeFade;
+    }
+    attackShown = input.attack;
+  }
+  if (active != AnimState::Melee)
+    attackShown = -1;
   stateTime += dt;
   idleTime += dt;
 
@@ -466,6 +480,15 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     for (const Moving &m : moving)
       if (const auto [used, clip] = resolve(m.slot); clip)
         sample(m.slot, phase * clip->clip.duration, m.weight);
+  } else if (active == AnimState::Melee) {
+    const ClipSlot blow = input.attack == 3 ? ClipSlot::AttackHeavy
+                          : input.attack == 2 ? ClipSlot::Attack3
+                          : input.attack == 1 ? ClipSlot::Attack2
+                                              : ClipSlot::Attack1;
+    if (const auto [used, clip] = resolve(blow); clip)
+      sample(blow, std::min(clip->start + std::max(input.attackTime, 0.0f), clip->endTime()), 1.0f);
+    else
+      sample(ClipSlot::Idle, idleTime, 1.0f); // no clip for it: standing
   } else if (active == AnimState::Fall) {
     sample(ClipSlot::Fall, stateTime, 1.0f);
   } else if (active == AnimState::Jump) {
@@ -569,6 +592,22 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
         blendPosesMasked(base, thrown, weight, upperBody, base);
       }
     }
+  // The block on the upper body, over whatever the legs do, eased in and out.
+  {
+    const CharacterClipData *clip = library.clip(ClipSlot::Block);
+    const float step = tune.meleeFade > 0.0f ? dt / tune.meleeFade : 1.0f;
+    const bool on = input.blocking && clip && !upperBody.empty() && active != AnimState::Dead;
+    blockWeight = std::clamp(blockWeight + (on ? step : -step), 0.0f, 1.0f);
+    if (blockWeight > 0.0f && clip) {
+      Pose held = bindPose(skeleton);
+      const float span = std::max(clip->endTime() - clip->start, 1e-3f);
+      const float time = clip->loop ? clip->start + std::fmod(idleTime, span) : clip->endTime();
+      sampleClip(clip->clip, skeleton, time, false, held);
+      blendPosesMasked(base, held, blockWeight, upperBody, base);
+      weights[index(ClipSlot::Block)] = blockWeight;
+      times[index(ClipSlot::Block)] = time;
+    }
+  }
   // A reload on the upper body, over whatever the legs do, eased in and out.
   if (input.reload >= 0.0f && !upperBody.empty() && active != AnimState::Dead)
     if (const CharacterClipData *clip = library.clip(

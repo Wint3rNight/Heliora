@@ -214,6 +214,48 @@ slot = throw
 file = Resources/Characters/mixamo/clips/Throwing/Throw.fbx
 end = 1.6
 
+# Melee (step F3), bare-handed: the combo's left jab and right cross out of
+# Punch Combo, then Punching's left as its third; Kicking(1)'s right kick
+# as the heavy blow. hit_from and hit_to bracket when the fist or foot is
+# furthest out (tools/clip_survey --limbs: the left fist 0.60 m ahead at
+# 0.62 s and the right 0.52 m at 0.87 s in Punch Combo, the left 0.65 m at
+# 0.57 s in Punching, the right foot 0.88 m at 0.65 s in Kicking(1)).
+[clip]
+slot = attack_1
+file = Resources/Characters/mixamo/clips/Melee/Punch Combo.fbx
+start = 0.25
+end = 0.85
+hit_from = 0.52
+hit_to = 0.67
+
+[clip]
+slot = attack_2
+file = Resources/Characters/mixamo/clips/Melee/Punch Combo.fbx
+start = 0.7
+end = 1.45
+hit_from = 0.8
+hit_to = 0.93
+
+[clip]
+slot = attack_3
+file = Resources/Characters/mixamo/clips/Melee/Punching.fbx
+start = 0.2
+hit_from = 0.48
+hit_to = 0.62
+
+[clip]
+slot = attack_heavy
+file = Resources/Characters/mixamo/clips/Melee/Kicking(1).fbx
+start = 0.15
+end = 1.3
+hit_from = 0.55
+hit_to = 0.72
+
+# Held up on the upper body while R is held.
+[clip]
+slot = block
+file = Resources/Characters/mixamo/clips/Melee/Blocking.fbx
+
 # The powers, on the upper body: the lift running into the hold, the
 # throw and the burst (the Pro Magic Pack).
 [clip]

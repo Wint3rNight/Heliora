@@ -226,6 +226,8 @@ struct SceneKit {
   std::string longGun;
   int grenades = 0;
   int charges = 0;
+  // Weapons crates: within reach of one, E gives the kit's ammunition again.
+  std::vector<glm::vec3> crates;
   SceneSectionInfo info; // only the comment is used
   bool operator==(const SceneKit &) const = default;
 };

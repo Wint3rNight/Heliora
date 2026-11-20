@@ -491,6 +491,7 @@ void ImGuiLayer::buildUi(DebugUiContext &ui) {
   drawGizmo(ui);
   drawCrosshair(ui);
   drawAmmo(ui);
+  drawPlayPrompt(ui);
   finishSceneEdit(ui);
   drawPrompt(ui);
 }
@@ -519,7 +520,11 @@ void ImGuiLayer::drawAmmo(const DebugUiContext &ui) const {
   ImFont *font = ImGui::GetFont();
   const float big = ImGui::GetFontSize() * 2.0f, small = ImGui::GetFontSize();
   const std::string rounds = std::to_string(ui.ammoInGun) + "  |  " + std::to_string(ui.ammoPouch);
-  const std::string under = ui.reloading ? "RELOADING" : ui.fireMode;
+  std::string under = ui.reloading ? "RELOADING" : ui.fireMode;
+  if (ui.grenades >= 0)
+    under += (under.empty() ? "" : "    ") + std::string("GRENADES ") + std::to_string(ui.grenades);
+  if (ui.charges >= 0)
+    under += (under.empty() ? "" : "    ") + std::string("CHARGES ") + std::to_string(ui.charges);
   const ImVec2 corner(ui.sceneArea.origin.x + ui.sceneArea.size.x - 24.0f,
                       ui.sceneArea.origin.y + ui.sceneArea.size.y - 24.0f);
   auto text = [&](const std::string &s, float size, float lift) {
@@ -529,7 +534,23 @@ void ImGuiLayer::drawAmmo(const DebugUiContext &ui) const {
     draw->AddText(font, size, at, IM_COL32(235, 245, 255, 230), s.c_str());
   };
   text(under, small, 0.0f);
-  text(rounds, big, small + 4.0f);
+  if (ui.ammoInGun >= 0)
+    text(rounds, big, small + 4.0f);
+}
+
+// A prompt at the scene's bottom middle, like the crosshair: light with a
+// dark shadow.
+void ImGuiLayer::drawPlayPrompt(const DebugUiContext &ui) const {
+  if (!ui.playPrompt || !*ui.playPrompt || ui.sceneArea.size.x <= 0.0f)
+    return;
+  ImDrawList *draw = ImGui::GetBackgroundDrawList();
+  ImFont *font = ImGui::GetFont();
+  const float size = ImGui::GetFontSize() * 1.3f;
+  const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, ui.playPrompt);
+  const ImVec2 at(ui.sceneArea.origin.x + 0.5f * (ui.sceneArea.size.x - extent.x),
+                  ui.sceneArea.origin.y + ui.sceneArea.size.y - 70.0f);
+  draw->AddText(font, size, ImVec2(at.x + 1.5f, at.y + 1.5f), IM_COL32(0, 0, 0, 170), ui.playPrompt);
+  draw->AddText(font, size, at, IM_COL32(235, 245, 255, 230), ui.playPrompt);
 }
 
 // The renderer's question as a modal window in the middle of the screen,

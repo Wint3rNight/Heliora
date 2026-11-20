@@ -83,9 +83,17 @@ struct AnimatorInput {
   // jump, a fall, a landing or a dodge that arm keeps the idle's hang
   // instead of swinging the gun about.
   bool gunInRightHand = false;
+  // Hit this frame: a flinch on the upper body. Dead: the death clip
+  // (whichever deathClip names) plays once and holds, over everything,
+  // until dead goes false again.
+  bool hit = false;
+  bool dead = false;
+  // 0 to 1 through a throw (its clip on the upper body), below 0 for none.
+  float throwing = -1.0f;
+  ClipSlot deathClip = ClipSlot::DeathFront;
 };
 
-enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge };
+enum class AnimState { Locomotion, Crouch, Jump, Fall, Land, Dodge, Dead };
 
 // Strides a second (two steps each) people run at, by speed in m/s:
 // Mercer, Vance, Hreljac & Hamill 2002 (Eur J Appl Physiol 87, Table 1),
@@ -155,6 +163,8 @@ public:
 
   const Pose &pose() const { return current; }
   AnimState state() const { return active; }
+  // The stance its clips play in now (the input's, once eased to).
+  Stance activeStanceShown() const { return activeStance; }
   // A clip's share of the state's pose, 0 to 1. A new state's clips play in
   // full from its first frame; the blend eases the difference away on top.
   float clipWeight(ClipSlot slot) const;
@@ -209,6 +219,8 @@ private:
   std::vector<int> spine;  // the spine bones the aim leans
   float leanWeight = 0.0f; // the lean's share, faded in while aiming
   Stance activeStance = Stance::Unarmed;
+  float hitTime = -1.0f; // s into the flinch playing, or below 0 for none
+  ClipSlot deathPlaying = ClipSlot::DeathFront;
   std::vector<float> upperBody; // a reload's mask: the first spine bone and up
   std::vector<float> arms;      // both shoulders and down: a gun held over other moves
   std::vector<float> rightArm;  // the right shoulder and down: a gun carried in that hand

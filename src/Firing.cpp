@@ -8,11 +8,13 @@
 #include "VulkanRenderer.h"
 
 #include "EffectGeometry.h"
+#include "Particles.h"
 #include "ScenePhysics.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <unordered_set>
 #include <cmath>
 
 namespace {
@@ -31,19 +33,89 @@ constexpr float kTracerNarrowest = 0.003f; // radians
 // The flash: a cone from the muzzle, this long for a pistol and a rifle
 // (est.), and an outer flash half the time (Dye & Davis 2016).
 constexpr float kPistolFlash = 0.12f, kRifleFlash = 0.25f; // m
+// Its light's intensity (est., by eye in the night yard).
+constexpr float kRifleFlashLight = 40.0f, kPistolFlashLight = 25.0f;
 // Past this, a shot sounds as its far recording (est.).
 constexpr float kFarShot = 60.0f; // m
 // A bullet's hit, heard at 1 m (est.).
 constexpr float kBulletHitLoudness = 95.0f; // dB
 constexpr int kHitSoundsPerFrame = 4;
 
+// What a hit throws off, back out of the surface (est., by eye; the
+// particles only glow, so dust and splinters are dim and short): sparks
+// off metal and stone, grit off stone and dirt, splinters off wood.
+void hitDebris(std::vector<ParticleSpawn> &out, ParticleRandom &random, glm::vec3 point,
+               glm::vec3 normal, Matter matter, float energy) {
+  const float scale = std::clamp(energy / 1500.0f, 0.3f, 1.5f); // an AK round's 1.5 kJ is 1
+  ParticleSpawn kind;
+  kind.position = point + normal * 0.01f;
+  auto burst = [&](int count, float slow, float fast, float spread) {
+    emitInCone(out, kind.position, normal, spread, std::max(1, static_cast<int>(count * scale)), slow,
+               fast, kind, random);
+  };
+  if (matter == Matter::Metal || matter == Matter::Stone) {
+    kind.colour = matter == Matter::Metal ? glm::vec3(9.0f, 5.5f, 1.8f) : glm::vec3(5.0f, 3.0f, 1.0f);
+    kind.size = 0.012f;
+    kind.life = 0.25f;
+    kind.drag = 2.0f;
+    kind.gravity = 1.0f;
+    burst(matter == Matter::Metal ? 18 : 6, 3.0f, 9.0f, glm::radians(55.0f));
+  }
+  if (matter == Matter::Stone || matter == Matter::Dirt || matter == Matter::Ice) {
+    kind.colour = matter == Matter::Ice ? glm::vec3(0.7f, 0.75f, 0.8f) : glm::vec3(0.45f, 0.42f, 0.37f);
+    kind.opacity = 0.5f; // a puff laid over, not glowing (est.)
+    kind.size = 0.06f;
+    kind.life = 0.9f;
+    kind.drag = 4.0f;
+    kind.swirl = 0.6f;
+    kind.gravity = 0.15f;
+    burst(14, 0.8f, 3.0f, glm::radians(40.0f));
+    kind.size = 0.015f; // grit
+    kind.opacity = 0.9f;
+    kind.life = 0.6f;
+    kind.drag = 1.0f;
+    kind.swirl = 0.0f;
+    kind.gravity = 1.0f;
+    burst(10, 2.0f, 6.0f, glm::radians(35.0f));
+  }
+  if (matter == Matter::Wood) {
+    kind.colour = glm::vec3(0.45f, 0.32f, 0.18f);
+    kind.opacity = 0.9f; // splinters
+    kind.size = 0.025f;
+    kind.life = 0.8f;
+    kind.drag = 1.5f;
+    kind.gravity = 1.0f;
+    burst(14, 2.0f, 6.0f, glm::radians(45.0f));
+    kind.size = 0.05f; // a puff of wood dust
+    kind.opacity = 0.4f;
+    kind.colour = glm::vec3(0.5f, 0.42f, 0.3f);
+    kind.life = 0.6f;
+    kind.drag = 5.0f;
+    kind.swirl = 0.4f;
+    kind.gravity = 0.1f;
+    burst(6, 0.5f, 1.5f, glm::radians(40.0f));
+  }
+  if (matter == Matter::Flesh) {
+    kind.colour = glm::vec3(0.35f, 0.02f, 0.02f);
+    kind.opacity = 0.9f;
+    kind.size = 0.03f;
+    kind.life = 0.4f;
+    kind.drag = 3.0f;
+    kind.gravity = 1.0f;
+    burst(10, 1.0f, 3.0f, glm::radians(35.0f));
+  }
+}
+
 } // namespace
 
 void VulkanRenderer::fireShots(int index, CarriedGun &gun) {
   const WeaponAsset &asset = *gun.asset;
   const std::optional<WeaponSocket> muzzle = asset.parts.socket("muzzle");
-  const glm::vec3 from = glm::vec3(gun.at * glm::vec4(muzzle ? muzzle->position : glm::vec3(0.0f), 1.0f));
-  const glm::mat3 frame(gun.at);
+  // From the gun as it was aimed: its visible kick is the recoil you see,
+  // and the bullets' own recoil is already in their deviation.
+  const glm::vec3 from =
+      glm::vec3(gun.aimedFrom * glm::vec4(muzzle ? muzzle->position : glm::vec3(0.0f), 1.0f));
+  const glm::mat3 frame(gun.aimedFrom);
   const bool rifle = !gun.atSide;
   for (const Shot &shot : gun.shots) {
     Bullet bullet;
@@ -57,6 +129,15 @@ void VulkanRenderer::fireShots(int index, CarriedGun &gun) {
     fireDice ^= fireDice >> 17;
     fireDice ^= fireDice << 5;
     flashes.push_back({from, glm::vec3(frame[2]), rifle ? kRifleFlash : kPistolFlash, (fireDice & 1u) != 0});
+    ejectCasing(gun);
+    gun.sinceShot = 0.0f;
+    // The kick you see: back, up (a little more or less each shot) and
+    // aside either way.
+    const float roll = static_cast<float>(fireDice % 10000u) / 10000.0f; // 0 to 1
+    const WeaponSpec &spec = asset.spec;
+    gun.kick.kick({spec.kickBack, glm::radians(spec.kickUp) * (0.85f + 0.3f * roll),
+                   glm::radians(spec.kickAside) * (2.0f * std::fmod(roll * 7.0f, 1.0f) - 1.0f)},
+                  spec.kickPeak);
     // The shot, its near recording close by and its far one further off.
     if (audio) {
       const float away = glm::distance(glm::vec3(sceneUbo.cameraPosition), from);
@@ -116,7 +197,7 @@ std::optional<BulletContact> VulkanRenderer::bulletContact(glm::vec3 from, glm::
   // The characters (the physics rays don't see them), not the shooter.
   for (int i = 0; i < static_cast<int>(characters.size()); ++i) {
     const LiveCharacter &c = characters[i];
-    if (i == owner || c.capsules.empty() || c.health.dead())
+    if (i == owner || owner == kFragmentOwner || c.capsules.empty() || c.health.dead())
       continue;
     if (const std::optional<CharacterHit> hit = firstHit(c.capsules, from, to);
         hit && (!best || hit->distance < best->distance)) {
@@ -136,20 +217,42 @@ std::optional<BulletContact> VulkanRenderer::bulletContact(glm::vec3 from, glm::
 
 void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
   std::vector<BreakHit> broke;
+  std::unordered_set<int> brokenNow; // pieces this frame's bullets have already broken
   int sounded = 0;
+  static ParticleRandom debrisRandom(0x51ed2701u);
   for (const BulletImpact &impact : impacts) {
+    // What it throws off, where it went in (and where it came out).
+    hitDebris(particleSpawns, debrisRandom, impact.point, impact.normal, impact.matter, impact.energy());
+    if (!impact.stopped)
+      hitDebris(particleSpawns, debrisRandom, impact.point + impact.direction * impact.thickness,
+                impact.direction, impact.matter, 0.5f * impact.energy());
     if (impact.body & kCharacterHitFlag) {
       const size_t i = (impact.body >> 16) & 0xffffu;
       const size_t capsule = impact.body & 0xffffu;
       if (i >= characters.size() || capsule >= characters[i].capsules.size())
         continue;
       LiveCharacter &c = characters[i];
+      if (c.health.dead())
+        continue;
       const HitZone zone = c.capsules[capsule].zone;
       const float points = woundPoints(zone, impact.energy());
-      if (c.health.wound(points))
-        spdlog::info("Character {} killed ({:.0f} J)", i, impact.energy());
-      else
+      c.hitThisFrame = true;
+      if (c.health.wound(points)) {
+        // Which way he goes down: by where the shot came from against how
+        // he faces, a head shot from the front falling back, crouched
+        // crumpling where he is (the right's clip for either side).
+        const glm::vec3 left = glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), c.facing));
+        const float along = glm::dot(impact.direction, c.facing);
+        c.deathClip = c.crouched                         ? ClipSlot::DeathCrouched
+                      : along > 0.5f                     ? ClipSlot::DeathBack
+                      : zone == HitZone::Head            ? ClipSlot::DeathHead
+                      : along < -0.5f                    ? ClipSlot::DeathFront
+                      : glm::dot(impact.direction, left) > 0.0f ? ClipSlot::DeathRight
+                                                         : ClipSlot::DeathFront;
+        spdlog::info("Character {} killed ({:.0f} J, {})", i, impact.energy(), clipSlotName(c.deathClip));
+      } else {
         spdlog::info("Character {} hit: {:.0f} points, {:.0f} left", i, points, c.health.points);
+      }
       continue;
     }
     const auto known = bulletBodies.find(impact.body);
@@ -166,7 +269,8 @@ void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
     if (userData & kBreakBodyFlag) {
       const uint64_t b = userData & ~kBreakBodyFlag;
       if (b < breakBodies.size() && breakBodies[b].id.value == id.value) {
-        if (const int p = pieceAt(breakBodies[b], impact.point); p >= 0 && breakPieces[p].alive) {
+        if (const int p = pieceAt(breakBodies[b], impact.point);
+            p >= 0 && breakPieces[p].alive && !brokenNow.contains(p)) {
           BreakPiece &piece = breakPieces[p];
           if (!(piece.damage.toughness > 0.0f)) {
             const SceneModelEntry &entry = currentScene.models[breakables[piece.object].entry.index];
@@ -185,6 +289,7 @@ void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
               for (int link : pieceGroundLinks[p])
                 groundLinks[link].broken = true;
               piece.anchor = false; // shot loose: nothing holds it in place now
+              brokenNow.insert(p);
               queueBulletSplit(p, impact.point, impact.direction);
               broke.push_back({impact.point, impact.direction, impact.impulse(), PhysicsBodyId{},
                                glm::vec3(0.0f)});
@@ -205,6 +310,18 @@ void VulkanRenderer::bulletHits(const std::vector<BulletImpact> &impacts) {
 
 void VulkanRenderer::stepShots(float seconds) {
   const glm::vec3 eye(sceneUbo.cameraPosition);
+  // The flash lights its surroundings for the frame of the shot; a blast's
+  // for a few.
+  sceneUbo.flashColour = glm::vec4(0.0f);
+  if (blastLight > 0.0f) {
+    sceneUbo.flashPosition = glm::vec4(blastLightAt, 1.0f);
+    sceneUbo.flashColour = glm::vec4(1.0f, 0.7f, 0.4f, blastLightPower);
+  } else if (!flashes.empty()) {
+    const MuzzleFlash &flash = flashes.front();
+    sceneUbo.flashPosition = glm::vec4(flash.at + flash.along * (0.5f * flash.size), 1.0f);
+    sceneUbo.flashColour = glm::vec4(1.0f, 0.62f, 0.3f, flash.size >= kRifleFlash ? kRifleFlashLight
+                                                                                  : kPistolFlashLight);
+  }
   // The muzzle flashes of this frame's shots: one frame each (the real one
   // is over in 3 ms).
   for (const MuzzleFlash &flash : flashes) {
@@ -267,4 +384,82 @@ void VulkanRenderer::stepShots(float seconds) {
                    eye, headWidth, headWidth, glm::vec4(40.0f, 4.0f, 1.5f, 1.0f),
                    glm::vec4(40.0f, 4.0f, 1.5f, 1.0f), glm::vec4(8.0f, 0.3f, 0.1f, 0.0f));
   }
+}
+
+void VulkanRenderer::ejectCasing(const CarriedGun &gun) {
+  constexpr size_t kMostCasings = 64;
+  const bool rifle = !gun.atSide;
+  const int model = casingModels[rifle ? 0 : 1];
+  if (!physics || model < 0)
+    return;
+  // Out of the ejection port: the AK's to the right and a little forward;
+  // the P38's to the left and up (its port is on the left). Gun space: +x
+  // its left, +y up, +z ahead.
+  const std::optional<WeaponSocket> port = gun.asset->parts.socket("ejection");
+  const glm::vec3 inGun = port ? port->position : glm::vec3(0.01f, 0.03f, 0.03f);
+  const glm::vec3 throwInGun = rifle ? glm::vec3(-1.0f, 0.35f, 0.3f) : glm::vec3(0.8f, 0.8f, -0.1f);
+  fireDice ^= fireDice << 13;
+  fireDice ^= fireDice >> 17;
+  fireDice ^= fireDice << 5;
+  const float jitter = static_cast<float>(fireDice % 1000u) / 1000.0f;
+  const glm::mat3 frame(gun.at);
+  SceneModelEntry casing;
+  casing.shape = PrimitiveShape::Capsule;
+  casing.radius = rifle ? 0.0057f : 0.005f;
+  casing.height = rifle ? 0.0387f : 0.0192f;
+  casing.body = PhysicsMotion::Dynamic;
+  casing.mass = rifle ? 0.0065f : 0.0038f; // kg (est.: a steel 7.62x39 case, a brass 9 mm)
+  casing.restitution = 0.4f;
+  casing.transform.position = glm::vec3(gun.at * glm::vec4(inGun, 1.0f));
+  PhysicsBodyDesc body = bodyDescFor(casing, nullptr, 0.4f);
+  // Lying across the gun, its length (the capsule's y) along the gun's x.
+  body.rotation = glm::normalize(glm::quat_cast(frame)) *
+                  glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
+  body.linearVelocity = frame * glm::normalize(throwInGun) * (3.5f + 2.0f * jitter); // m/s (est.)
+  body.angularVelocity = frame * glm::vec3(0.0f, 25.0f + 20.0f * jitter, 0.0f);
+  // The oldest goes first, so its link slot can be used again.
+  if (casings.size() >= kMostCasings) {
+    const Casing old = casings.front();
+    casings.erase(casings.begin());
+    physics->removeBody(old.body);
+    physicsLinks[old.link] = {};
+    freeCasingLinks.push_back(old.link);
+    rootNode.removeChildren([&](const SceneNode &n) { return &n == old.node; });
+  }
+  int link = static_cast<int>(physicsLinks.size());
+  if (!freeCasingLinks.empty()) {
+    link = freeCasingLinks.back();
+    freeCasingLinks.pop_back();
+  } else {
+    physicsLinks.emplace_back();
+  }
+  body.userData = static_cast<uint64_t>(link);
+  const PhysicsBodyId id = physics->addBody(body);
+  if (!id.isValid()) {
+    freeCasingLinks.push_back(link);
+    return;
+  }
+  auto node = std::make_unique<SceneNode>();
+  node->setModelId(model);
+  node->setPose(body.position, body.rotation);
+  node->setPhysicsLink(link);
+  casings.push_back({node.get(), id, link});
+  physicsLinks[link] = {node.get(), id, SoundSurface::Metal};
+  rootNode.addChild(std::move(node));
+}
+
+void VulkanRenderer::clearCasings() {
+  if (casings.empty())
+    return;
+  std::unordered_set<const SceneNode *> nodes;
+  for (const Casing &c : casings) {
+    if (physics && c.body.isValid())
+      physics->removeBody(c.body);
+    if (c.link >= 0 && c.link < static_cast<int>(physicsLinks.size()))
+      physicsLinks[c.link] = {};
+    nodes.insert(c.node);
+  }
+  rootNode.removeChildren([&](const SceneNode &n) { return nodes.contains(&n); });
+  casings.clear();
+  freeCasingLinks.clear();
 }

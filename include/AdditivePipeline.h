@@ -9,7 +9,10 @@
 VkShaderModule loadShaderModule(VkDevice device, const char *path);
 // Triangles added on top (ONE, ONE), depth tested (reversed Z) but not
 // written, both faces, viewport and scissor dynamic, into the lit pass's
-// subpass 1, before bloom.
+// subpass 1, before bloom. premultiplied blends ONE, ONE_MINUS_SRC_ALPHA
+// instead: what writes alpha 0 is still added on top, what writes alpha
+// covers what's behind that much (smoke).
 VkPipeline makeAdditivePipeline(VkDevice device, VkPipelineCache cache, VkRenderPass litPass,
                                 VkPipelineLayout layout, const char *vertPath, const char *fragPath,
-                                const VkPipelineVertexInputStateCreateInfo &vertexInput);
+                                const VkPipelineVertexInputStateCreateInfo &vertexInput,
+                                bool premultiplied = false);

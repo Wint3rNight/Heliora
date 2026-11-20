@@ -132,4 +132,7 @@ TEST(the_shipped_weapons_read_as_their_sources_say) {
   CHECK_NEAR(p38.muzzleSpeed, 340.0, 1e-3);
   for (const Resistance &r : roundOf(p38).resistance)
     CHECK(r.a > 0.0f);
+  // The kick you see: a pistol flips higher than a shouldered rifle.
+  CHECK(akm.kickBack > 0.0f && akm.kickUp > 0.0f && akm.kickPeak > 0.0f);
+  CHECK(p38.kickUp > akm.kickUp);
 }

@@ -41,13 +41,24 @@ enum class ClipSlot : uint8_t {
   DodgeRight,
   AimIdle, // standing still while aiming, in a gun stance ("idle aiming")
   Reload,  // on the upper body, over whatever the legs are doing
+  // Hit: a flinch on the upper body. Deaths, by where the shot came from
+  // (front, back, the right; a head shot; crouched), played once and held.
+  Hit,
+  DeathFront,
+  DeathBack,
+  DeathRight,
+  DeathHead,
+  DeathCrouched,
+  Throw, // a grenade thrown, on the upper body
   Count
 };
 
 // Which clips a character moves with: its own, or holding a pistol or a
 // rifle (step 1.6). A gun stance plays its own clip for a move, else the
 // unarmed one.
-enum class Stance : uint8_t { Unarmed, Pistol, Rifle, Count };
+// A gun's stance is for aiming; its carry stance for when it's held
+// relaxed (moves it has no clip for are the unarmed ones).
+enum class Stance : uint8_t { Unarmed, Pistol, Rifle, PistolCarry, RifleCarry, Count };
 const char *stanceName(Stance stance);
 std::optional<Stance> stanceFromName(std::string_view name);
 

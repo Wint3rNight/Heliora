@@ -51,7 +51,7 @@ CharacterInput PlayerController::decide() {
   input.move = move;
   input.gait = gait;
   input.crouch = held.crouch;
-  input.aim = held.aim || (armed && hipFire > 0.0f);
+  input.aim = held.aim || (armed && hipFire > 0.0f) || throwing;
   input.aimYaw = yaw;
   input.jump = jumpWaiting;
   input.dodge = dodgeWaiting;
@@ -128,6 +128,9 @@ PlayerControls scriptedControls(std::string_view script, int frame) {
     else if (key == "r") controls.reload = true;
     else if (key == "b") controls.fireMode = true;
     else if (key == "e") controls.use = true;
+    else if (key == "g") controls.grenade = true;
+    else if (key == "4") controls.charge = true;
+    else if (key == "5") controls.detonate = true;
     else if (key == "ctrl") controls.crouch = true;
     else if (key == "rmb") controls.aim = true;
     else if (key == "space") controls.jump = true;

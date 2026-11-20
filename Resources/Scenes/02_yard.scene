@@ -23,6 +23,7 @@ pistol = true
 long = akm
 grenades = 2
 charges = 2
+crate = 2.5 0 16.5
 
 # Ground, 160 x 160 m
 [model]
@@ -323,3 +324,25 @@ body = static
 material = stone
 break = 10
 break_seed = 37
+
+# Two men standing in the open to shoot at (step 1.6), facing the player
+# start: they flinch when hit and go down by where the shot came from.
+[character]
+file = Resources/Characters/remy.character
+position = 4 0 13
+yaw = 180
+
+[character]
+file = Resources/Characters/remy.character
+position = -5 0 11
+yaw = 160
+
+# The weapons crate: E beside it refills the kit's ammunition (its place is
+# the [kit]'s crate). An ammunition box's olive drab, its size est.
+[model]
+shape = box
+size = 1 0.5 0.6
+position = 2.5 0.25 16.5
+color = 0.29 0.33 0.2
+body = static
+material = wood

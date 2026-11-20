@@ -267,6 +267,11 @@ struct SceneUniformBuffer {
   // x = post edge-AA strength, y = alpha-test dither strength,
   // z = CSM/point shadow softness multiplier, w = contact grounding strength.
   alignas(16) glm::vec4 visualToggles = glm::vec4(0.35f, 0.45f, 1.25f, 0.45f);
+  // A muzzle flash's light (step 1.6), for the frame of a shot: where, and
+  // its colour times intensity (w; 0 is off). No shadow. Only lit.frag and
+  // transparent.frag declare it; it's last so the others' blocks still match.
+  alignas(16) glm::vec4 flashPosition = glm::vec4(0.0f);
+  alignas(16) glm::vec4 flashColour = glm::vec4(0.0f);
 };
 
 struct MaterialProbePushConstants {

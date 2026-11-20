@@ -332,6 +332,152 @@ slot = run_back
 stance = pistol
 file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol run backward.fbx
 
+# Carrying the rifle relaxed (not aiming), picked from every clip on disk
+# by tools/clip_survey (2026-11-20): Mixamo's "Rifle Idle" (stands square,
+# the rifle low in both hands, with idle variety), the Pro Rifle pack's walk
+# and run forward and its sprint (the rifle in one hand, the other arm
+# pumping), its kneeling crouch and crouch walk, and its jump. The rifle
+# stays in the clip's hands; where a clip holds it at the ready (level),
+# the game turns both arms down to the low ready.
+[clip]
+slot = idle
+stance = rifle_carry
+file = Resources/Characters/mixamo/clips/Rifle/Rifle Idle.fbx
+
+[clip]
+slot = walk_forward
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk forward.fbx
+
+[clip]
+slot = run_forward
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/run forward.fbx
+
+[clip]
+slot = sprint
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/sprint forward.fbx
+
+[clip]
+slot = crouch_idle
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/idle crouching.fbx
+
+[clip]
+slot = crouch_forward
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching forward.fbx
+
+[clip]
+slot = jump
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump up.fbx
+loop = false
+
+[clip]
+slot = fall
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump loop.fbx
+
+[clip]
+slot = land
+stance = rifle_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump down.fbx
+loop = false
+
+# The same jump while aiming the rifle.
+[clip]
+slot = jump
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump up.fbx
+loop = false
+
+[clip]
+slot = fall
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump loop.fbx
+
+[clip]
+slot = land
+stance = rifle
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/jump down.fbx
+loop = false
+
+# Carrying the pistol relaxed: no clip walks with it lowered, so standing
+# it's the end of Mixamo's "Pistol Aim" (the gun comes down from 3.6 s and
+# hangs still at his side from 5.6 s, by clip_survey --trace), looped
+# there; moving, his own walk and run with it in the hand;
+# crouched, the pack's kneel (the gun lowered by IK) and the rifle pack's
+# crouch walks for the legs.
+[clip]
+slot = idle
+stance = pistol_carry
+file = Resources/Characters/mixamo/clips/Pistol/Pistol Aim.fbx
+start = 5.6
+
+[clip]
+slot = crouch_idle
+stance = pistol_carry
+file = Resources/Characters/mixamo/packs/Pistol_Handgun Locomotion Pack/pistol kneeling idle.fbx
+
+[clip]
+slot = crouch_forward
+stance = pistol_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching forward.fbx
+
+[clip]
+slot = crouch_back
+stance = pistol_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching backward.fbx
+
+[clip]
+slot = crouch_left
+stance = pistol_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching left.fbx
+
+[clip]
+slot = crouch_right
+stance = pistol_carry
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/walk crouching right.fbx
+
+# Shot (step 1.6): a flinch on the upper body, Mixamo's "Hit Reaction(1)"
+# (0.43 s on the spot, the smallest of the reactions by clip_survey); and
+# going down by where the shot came from, the Pro Rifle pack's deaths:
+# from the front (he crumples forward), from behind (falls forward), from
+# the right, a head shot from the front (falls back), crouched.
+[clip]
+slot = hit
+file = Resources/Characters/mixamo/clips/Reactions/Hit Reaction(1).fbx
+
+[clip]
+slot = death_front
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/death from the front.fbx
+
+[clip]
+slot = death_back
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/death from the back.fbx
+
+[clip]
+slot = death_right
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/death from right.fbx
+
+[clip]
+slot = death_head
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/death from front headshot.fbx
+
+[clip]
+slot = death_crouched
+file = Resources/Characters/mixamo/packs/Pro Rifle Pack/death crouching headshot front.fbx
+
+# Throwing a grenade (step 1.7): Mixamo's "Throw", overhand, on the upper
+# body; let go at 0.8 s (clip_survey --trace: the hand highest at 0.66 s),
+# played to 1.6 s.
+[clip]
+slot = throw
+file = Resources/Characters/mixamo/clips/Throwing/Throw.fbx
+end = 1.6
+
 # For the climb (01_climb.scene asks for it), the way 3D rage climbers
 # play: he starts, stops and turns on a coin so feet land exactly where
 # they're aimed; the air steers him all the way to running speed, even from

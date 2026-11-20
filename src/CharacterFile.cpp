@@ -18,10 +18,12 @@ constexpr std::array<const char *, static_cast<size_t>(ClipSlot::Count)>
                   "crouch_forward", "crouch_back",   "crouch_left",
                   "crouch_right",   "roll",          "dodge_forward",
                   "dodge_back",     "dodge_left",    "dodge_right",
-                  "aim_idle",       "reload"};
+                  "aim_idle",       "reload",        "hit",
+                  "death_front",    "death_back",    "death_right",
+                  "death_head",     "death_crouched", "throw"};
 
 constexpr std::array<const char *, static_cast<size_t>(Stance::Count)> kStanceNames = {
-    "unarmed", "pistol", "rifle"};
+    "unarmed", "pistol", "rifle", "pistol_carry", "rifle_carry"};
 
 std::string trim(std::string_view s) {
   const size_t first = s.find_first_not_of(" \t\r");
@@ -155,7 +157,8 @@ private:
     } else if (key == "stance") {
       const std::optional<Stance> stance = stanceFromName(value);
       if (!stance)
-        fail(lineNumber, "unknown stance '" + value + "' (unarmed, pistol or rifle)");
+        fail(lineNumber, "unknown stance '" + value +
+                                  "' (unarmed, pistol, rifle, pistol_carry or rifle_carry)");
       current.stance = *stance;
     } else if (key == "file") {
       current.file = value;
@@ -236,6 +239,13 @@ std::optional<Stance> stanceFromName(std::string_view name) {
 bool defaultLoop(ClipSlot slot) {
   switch (slot) {
   case ClipSlot::Reload:
+  case ClipSlot::Hit:
+  case ClipSlot::DeathFront:
+  case ClipSlot::DeathBack:
+  case ClipSlot::DeathRight:
+  case ClipSlot::DeathHead:
+  case ClipSlot::DeathCrouched:
+  case ClipSlot::Throw:
   case ClipSlot::Jump:
   case ClipSlot::Land:
   case ClipSlot::LandHard:

@@ -30,6 +30,13 @@ enum class Action : uint8_t {
   Reload,
   FireMode,
   Use,
+  // A hand grenade (step 1.7), held: the pin comes out on the press, it's
+  // thrown when let go.
+  Grenade,
+  // Demolition (step 1.7), each pressed: put a block of C-4 on what's in
+  // front, and fire the detonator.
+  Charge,
+  Detonate,
   Count
 };
 

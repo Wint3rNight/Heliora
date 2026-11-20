@@ -34,6 +34,9 @@ constexpr std::array<ActionInfo, static_cast<size_t>(Action::Count)> kActions = 
     {"reload", "Reload"},
     {"fire_mode", "Fire mode"},
     {"use", "Use"},
+    {"grenade", "Throw a grenade (hold, let go to throw)"},
+    {"charge", "Place a charge"},
+    {"detonate", "Fire the charges"},
 }};
 
 // Keys with names of their own; letters, digits, F keys and keypad digits
@@ -165,6 +168,9 @@ ControlBindings::ControlBindings() {
   (*this)[Action::Reload] = key(GLFW_KEY_R);
   (*this)[Action::FireMode] = key(GLFW_KEY_B);
   (*this)[Action::Use] = key(GLFW_KEY_E);
+  (*this)[Action::Grenade] = key(GLFW_KEY_G);
+  (*this)[Action::Charge] = key(GLFW_KEY_4);
+  (*this)[Action::Detonate] = key(GLFW_KEY_5);
   (*this)[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
   (*this)[Action::Aim] = {InputBinding::Device::Mouse, GLFW_MOUSE_BUTTON_RIGHT};
   (*this)[Action::Jump] = key(GLFW_KEY_SPACE);

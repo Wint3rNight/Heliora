@@ -55,6 +55,12 @@ hip = 15               # estimate: no data; FM 3-06.11 says don't fire from the 
 [recoil]
 impulse = 7.65         # N s, the SAAMI method: 0.0079 x 715 + 0.0016 x 1.75 x 715
 return = 0.15          # estimate: s for the aim to come back to 1/e
+# The kick you see each shot, shouldered and standing: no measured figures
+# at hand, so all estimates against firing footage.
+kick_back = 0.03       # estimate: m into the shoulder
+kick_up = 6.0          # estimate: degrees of muzzle rise
+kick_aside = 1.0       # estimate: degrees aside, either way at random
+kick_peak = 0.035      # estimate: s to the top of the kick
 
 [reload]
 partial = 2.5          # estimate

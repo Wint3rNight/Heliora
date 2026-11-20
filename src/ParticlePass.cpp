@@ -105,8 +105,10 @@ void ParticlePass::create(const VulkanDevice &newDevice, VkRenderPass litPass,
     throw std::runtime_error("Failed to create the particle draw layout");
   VkPipelineVertexInputStateCreateInfo noVertices{};
   noVertices.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  // Premultiplied: glowing particles write no alpha (added on top), smoke
+  // and dust write their opacity (laid over), in one draw.
   drawPipeline = makeAdditivePipeline(dev, cache, litPass, drawLayout, "../Shaders/particles.vert.spv",
-                                      "../Shaders/particles.frag.spv", noVertices);
+                                      "../Shaders/particles.frag.spv", noVertices, true);
 }
 
 void ParticlePass::ensureImage(uint32_t imageIndex) {

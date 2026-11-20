@@ -1060,6 +1060,19 @@ TEST(a_scenes_kit_says_what_the_player_starts_with) {
   CHECK(!parseText("name = x\n").kit);
 }
 
+TEST(a_kit_names_its_weapons_crates) {
+  // Where the player refills with E: one crate = line each, kept in order.
+  const SceneDescription s = parseText("[kit]\npistol = true\ncrate = 2 0 16\ncrate = -1 0.5 3\n");
+  CHECK(s.kit && s.kit->crates.size() == 2);
+  if (!s.kit || s.kit->crates.size() != 2)
+    return;
+  CHECK(s.kit->crates[0] == glm::vec3(2.0f, 0.0f, 16.0f));
+  CHECK(s.kit->crates[1] == glm::vec3(-1.0f, 0.5f, 3.0f));
+  std::istringstream in(SceneIO::write(s));
+  CHECK(SceneIO::parse(in, "again.scene").kit == s.kit);
+  CHECK(!errorOf("[kit]\ncrate = 1 2\n").empty());
+}
+
 TEST(a_kit_with_a_bad_value_names_its_line) {
   CHECK(!errorOf("[kit]\npistol = maybe\n").empty());
   CHECK(!errorOf("[kit]\ngrenades = -1\n").empty());

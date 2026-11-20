@@ -23,6 +23,8 @@ struct PlayerControls {
   bool jump = false;      // went down this frame
   bool dodge = false;     // went down this frame
   bool fire = false;      // held
+  bool grenade = false;   // held: thrown when let go
+  bool charge = false, detonate = false; // pressed
   // The guns, each went down this frame: 1, 2, H, R, B, E.
   bool pistol = false, longGun = false, holster = false;
   bool reload = false, fireMode = false, use = false;
@@ -71,6 +73,8 @@ public:
   // Holding a gun ready: firing from the hip then turns it to face the
   // camera, until kHipFireHold after the trigger is let go.
   void setArmed(bool armed);
+  // Throwing a grenade: he turns to face the camera, as aiming does.
+  void setThrowing(bool on) { throwing = on; }
   // Facing the camera for hip fire, without the right mouse.
   bool hipFiring() const { return armed && hipFire > 0.0f && !held.aim; }
   // WASD in the camera's frame, and the presses since the last step.
@@ -94,6 +98,7 @@ private:
   GaitKeys shift;
   Gait gait = Gait::Walk;    // from this frame's keys
   bool armed = false;
+  bool throwing = false;
   float hipFire = 0.0f;      // s it keeps facing the camera after firing
   bool jumpWaiting = false;  // pressed, no step has taken it yet
   bool dodgeWaiting = false;

@@ -50,6 +50,12 @@ hip = 15               # estimate
 [recoil]
 impulse = 2.9          # estimate: the bullet's 2.7 N s and a guess at the powder's
 return = 0.15          # estimate
+# The kick you see: a light gun high over the hand flips more than a
+# shouldered rifle. All estimates against firing footage.
+kick_back = 0.012      # estimate: m back into the hand
+kick_up = 10.0         # estimate: degrees of muzzle flip
+kick_aside = 1.5       # estimate: degrees aside, either way at random
+kick_peak = 0.04       # estimate: s to the top of the kick
 
 [reload]
 partial = 2.0          # estimate

@@ -46,6 +46,13 @@ struct WeaponSpec {
   // Recoil.
   float recoilImpulse = 7.65f; // N s
   float recoilReturn = 0.15f;  // s for the aim to come back to 1/e
+  // The kick you see each shot (GunKick): back into the shoulder or hand
+  // (m), the muzzle up and aside (degrees, aside at random either way),
+  // highest this long after the shot (s).
+  float kickBack = 0.02f;
+  float kickUp = 3.5f;
+  float kickAside = 1.0f;
+  float kickPeak = 0.035f;
   // Reloads, s: with a round still chambered, and empty.
   float reload = 2.5f;
   float emptyReload = 3.2f;

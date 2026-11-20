@@ -44,6 +44,7 @@
 #include "PerformanceMetrics.h"
 #include "PhysicsWorld.h"
 #include "BreakGraph.h"
+#include "Blast.h"
 #include "Bullets.h"
 #include "PieceDamage.h"
 #include "Rubble.h"
@@ -369,10 +370,17 @@ private:
     std::shared_ptr<Weapon> weapon;
     // Where it is this frame (rigid, the world's frame), and the shots its
     // trigger let off this frame: they leave from its muzzle once the pose
-    // has put it there. Its recoil last frame (mrad), for the view's kick.
+    // has put it there.
     glm::mat4 at{1.0f};
+    glm::mat4 aimedFrom{1.0f}; // where it is before the shot's visible kick: bullets leave from here
     std::vector<Shot> shots;
-    glm::vec2 lastRecoil{0.0f};
+    // The kick each shot gives the gun you see (back, up, aside), springing
+    // back.
+    GunKick kick;
+    // Its bolt or slide (a part, or -1) runs back and forward each shot:
+    // seconds since the last one.
+    int boltPart = -1;
+    float sinceShot = 1.0f;
     int magazinePart = -1; // the part that comes out in a reload, or -1
   };
   // The bones the guns move: the arms (for the reach, the aim and the off
@@ -418,9 +426,32 @@ private:
     std::vector<HitCapsuleDef> hitCapsules; // his body parts, for bullets and a carried gun's hands
     std::vector<HitCapsule> capsules;       // where they are this frame
     Health health;
+    // This frame's hit (a flinch), the death clip a killing shot chose, and
+    // which way he faces (the model's +z in the world) for choosing it.
+    bool hitThisFrame = false;
+    bool atCrate = false; // the played character, in reach of a weapons crate
+    // Grenades (step 1.7): how many he has; a throw under way (s into its
+    // clip, below 0 for none), the pin out while G is held, the grenade let
+    // go this frame; how long he's been dead (the player comes back after
+    // 4 s); the camera's shake from a blast.
+    int grenades = 0;
+    int charges = 0; // demolition blocks left to place
+    float throwTime = -1.0f;
+    bool pinOut = false;
+    bool letGo = false;
+    float deadFor = 0.0f;
+    GunKick shake;
+    ClipSlot deathClip = ClipSlot::DeathFront;
+    glm::vec3 facing{0.0f, 0.0f, 1.0f};
+    bool crouched = false;
     // Radians (yaw to the left, pitch up) his gun's recoil has the camera
     // kicked by: shown, but not where the gun aims.
     glm::vec2 viewKick{0.0f};
+    // A gun carried relaxed follows his chest's turn part of the way, a
+    // little behind: where it's got to (in the level frame at his
+    // shoulder), and his chest's turn there at rest.
+    glm::quat carryTurn{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::quat restChest{1.0f, 0.0f, 0.0f, 0.0f};
     // Crouched with a gun ready (the gun's crouch clips play, the gun held
     // relaxed), and that eased in.
     bool gunCrouched = false;
@@ -760,6 +791,57 @@ private:
   // frame's muzzle flashes; a hit body's id to its userData, this frame;
   // characters hit carry this flag, their index and the capsule.
   std::vector<Bullet> bullets;
+  // Spent casings: brass bodies thrown out of the ejection port, the
+  // oldest gone past 64. Their meshes (rifle, pistol) are made with the
+  // scene, like the thrown ball's.
+  struct Casing {
+    SceneNode *node = nullptr;
+    PhysicsBodyId body;
+    int link = -1; // into physicsLinks
+  };
+  std::vector<Casing> casings;
+  // Live grenades: bodies, their fuses burning. Blasts' fireballs, drawn
+  // over a few frames, and the blast's light.
+  struct LiveGrenade {
+    SceneNode *node = nullptr;
+    PhysicsBodyId body;
+    int link = -1;
+    float fuse = 4.5f; // s left
+    int owner = -1;
+  };
+  std::vector<LiveGrenade> liveGrenades;
+  int grenadeModel = -1;
+  // Placed charges: where (on the surface it was put on) and how many
+  // blocks; fired together by the detonator.
+  struct PlacedCharge {
+    SceneNode *node = nullptr;
+    glm::vec3 at{0.0f};
+    int blocks = 1;
+    int owner = -1;
+  };
+  std::vector<PlacedCharge> charges;
+  int chargeModel = -1;
+  void placeCharge(int index);
+  void fireCharges(int index);
+  Round fragmentRound;
+  float blastLight = 0.0f; // s of the last blast's light left
+  glm::vec3 blastLightAt{0.0f};
+  float blastLightPower = 0.0f;
+  // Impacts made by blasts, handed to the destruction with Jolt's own.
+  std::vector<PhysicsImpact> blastImpacts;
+  void updateGrenades(float seconds);
+  void throwGrenade(int index, glm::vec3 hand);
+  void explode(glm::vec3 at, const CasedCharge &charge, int owner);
+  void clearGrenades();
+  static constexpr int kFragmentOwner = -2; // fragments: the world only, characters are worked out
+  // The throw (Mixamo's "Throw", 2.2 s overhand): let go at 0.8 s (by
+  // clip_survey --trace: the hand highest at 0.66 s, coming forward after),
+  // played to 1.6 s.
+  static constexpr float kThrowRelease = 0.8f, kThrowEnd = 1.6f;
+  std::vector<int> freeCasingLinks; // physicsLinks slots casings gave back
+  std::array<int, 2> casingModels{-1, -1};
+  void ejectCasing(const CarriedGun &gun);
+  void clearCasings();
   struct MuzzleFlash {
     glm::vec3 at{0.0f};
     glm::vec3 along{0.0f, 0.0f, 1.0f};

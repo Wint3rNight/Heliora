@@ -954,3 +954,106 @@ TEST(carrying_a_pistol_relaxed_a_jump_keeps_the_gun_arm_hanging) {
   runFor(b, inTheAir(3.0f), 0.5f);
   CHECK_NEAR(shoulderDegrees(b), 80.0, 0.5);
 }
+
+TEST(a_stance_with_only_an_idle_walks_and_runs_with_the_unarmed_moves) {
+  // A pistol carried at the side: its own idle standing, but walking it
+  // takes the unarmed walk (its idle would slide the feet), and a carry
+  // with its own walk plays that.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  putIn(l, Stance::PistolCarry, ClipSlot::Idle, armMarker(5, 25));
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, inStance(Stance::PistolCarry), 1.0f);
+  CHECK_NEAR(shoulderDegrees(a), 25.0, 0.5);
+  runFor(a, inStance(Stance::PistolCarry, 1.5f), 1.0f);
+  CHECK(a.clipWeight(ClipSlot::WalkForward) > 0.5f);
+  CHECK_NEAR(shoulderDegrees(a), 0.0, 0.5); // the unarmed walk's arm, not the idle's
+  putIn(l, Stance::RifleCarry, ClipSlot::Idle, armMarker(5, 25));
+  CharacterClipData walk = armMarker(10, 40);
+  walk.rootMotion = marker(0, 2.0f, 1.5f, true).rootMotion; // walking at 1.5 m/s
+  putIn(l, Stance::RifleCarry, ClipSlot::WalkForward, walk);
+  CharacterAnimator b(s, l, 1.0f);
+  runFor(b, inStance(Stance::RifleCarry, 1.5f), 1.0f);
+  CHECK_NEAR(shoulderDegrees(b), 40.0, 1.0);
+}
+
+TEST(a_looping_clip_trimmed_to_a_stretch_loops_inside_it) {
+  // The pistol's relaxed idle is the end of a longer clip: aiming for its
+  // first second, lowered for its second. Trimmed to the second, it never
+  // shows the first, however long it loops.
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  CharacterClipData idle;
+  idle.loop = true;
+  idle.clip.duration = 2.0f;
+  idle.clip.tracks.resize(4);
+  const glm::quat up = glm::angleAxis(glm::radians(80.0f), glm::vec3(1, 0, 0));
+  const glm::quat down = glm::angleAxis(glm::radians(10.0f), glm::vec3(1, 0, 0));
+  idle.clip.tracks[3].rotations = {{0.0f, up}, {0.99f, up}, {1.0f, down}, {2.0f, down}};
+  idle.start = 1.0f;
+  idle.end = 2.0f;
+  putIn(l, Stance::PistolCarry, ClipSlot::Idle, idle);
+  CharacterAnimator a(s, l, 1.0f);
+  const AnimatorInput in = inStance(Stance::PistolCarry);
+  runFor(a, in, 0.5f);
+  for (int i = 0; i < 300; ++i) { // 2.5 s of looping, every frame checked
+    a.update(in, kDt);
+    CHECK(shoulderDegrees(a) < 12.0f);
+  }
+}
+
+TEST(dying_plays_the_death_clip_once_and_stays_down) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  CharacterClipData death;
+  death.loop = false;
+  death.clip.duration = 1.0f;
+  death.clip.tracks.resize(2);
+  const glm::quat lying = glm::angleAxis(glm::radians(80.0f), glm::vec3(1, 0, 0));
+  death.clip.tracks[1].rotations = {{0.0f, glm::quat(1, 0, 0, 0)}, {1.0f, lying}};
+  put(l, ClipSlot::DeathFront, death);
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, moving(0.0f), 0.5f);
+  AnimatorInput dead = moving(2.0f); // whatever the body does, he's down
+  dead.dead = true;
+  dead.deathClip = ClipSlot::DeathFront;
+  runFor(a, dead, 3.0f);
+  CHECK(a.state() == AnimState::Dead);
+  CHECK_NEAR(hipsDegrees(a), 80.0, 0.5); // the clip's end, held
+  // Brought back (a respawn): standing again.
+  runFor(a, moving(0.0f), 1.0f);
+  CHECK(a.state() == AnimState::Locomotion);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5);
+}
+
+TEST(a_hit_flinches_the_upper_body_and_fades) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  put(l, ClipSlot::Hit, spineMarker(30, 0.5f));
+  CharacterAnimator a(s, l, 1.0f);
+  runFor(a, moving(0.0f), 0.5f);
+  AnimatorInput hit = moving(0.0f);
+  hit.hit = true;
+  a.update(hit, kDt);
+  runFor(a, moving(0.0f), 0.2f); // mid-flinch
+  CHECK(spineDegrees(a) > 10.0f);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5); // the legs keep the idle
+  runFor(a, moving(0.0f), 1.0f);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+}
+
+TEST(a_throw_plays_on_the_upper_body_by_its_progress) {
+  const Skeleton s = rigWithSpine();
+  AnimationLibrary l = fullLibrary();
+  put(l, ClipSlot::Throw, spineMarker(50, 2.0f));
+  CharacterAnimator a(s, l, 1.0f);
+  AnimatorInput in = moving(0.0f);
+  runFor(a, in, 0.5f);
+  in.throwing = 0.5f;
+  a.update(in, kDt);
+  CHECK_NEAR(spineDegrees(a), 50.0, 0.5);
+  CHECK_NEAR(hipsDegrees(a), 0.0, 0.5); // the legs keep the idle
+  in.throwing = -1.0f;
+  a.update(in, kDt);
+  CHECK_NEAR(spineDegrees(a), 0.0, 0.5);
+}

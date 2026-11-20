@@ -489,6 +489,9 @@ void VulkanRenderer::prepareBreakGraph() {
 
 void VulkanRenderer::handleImpacts() {
   std::vector<PhysicsImpact> impacts = physics->takeImpacts();
+  // Blasts' pushes on breakable pieces go the same way as a hit.
+  impacts.insert(impacts.end(), blastImpacts.begin(), blastImpacts.end());
+  blastImpacts.clear();
   if (playing)
     soundImpacts(impacts);
   if (!breakGraphReady)
@@ -1483,7 +1486,7 @@ void VulkanRenderer::queueBulletSplit(int p, glm::vec3 point, glm::vec3 push) {
     if (queued.piece == p)
       return;
   // splitPiece cuts 4 sqrt(impulse / what it holds) pieces: about six.
-  const float holds = std::max(kMinSplitImpulse, splitImpulse(piece.shape->volume, object.strength));
+  const float holds = splitImpulse(piece.shape->volume, object.strength);
   const PhysicsPose world = pieceWorld(piece);
   const glm::quat toLocal = glm::conjugate(world.rotation);
   pendingSplits.push_back({p, toLocal * (point - world.position), toLocal * push, 2.25f * holds});

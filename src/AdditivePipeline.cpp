@@ -21,7 +21,8 @@ VkShaderModule loadShaderModule(VkDevice device, const char *path) {
 
 VkPipeline makeAdditivePipeline(VkDevice device, VkPipelineCache cache, VkRenderPass litPass,
                                 VkPipelineLayout layout, const char *vertPath, const char *fragPath,
-                                const VkPipelineVertexInputStateCreateInfo &vertexInput) {
+                                const VkPipelineVertexInputStateCreateInfo &vertexInput,
+                                bool premultiplied) {
   VkShaderModule vert = loadShaderModule(device, vertPath);
   VkShaderModule frag = loadShaderModule(device, fragPath);
   std::array<VkPipelineShaderStageCreateInfo, 2> stages = {};
@@ -63,7 +64,7 @@ VkPipeline makeAdditivePipeline(VkDevice device, VkPipelineCache cache, VkRender
   VkPipelineColorBlendAttachmentState add = {};
   add.blendEnable = VK_TRUE;
   add.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-  add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+  add.dstColorBlendFactor = premultiplied ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
   add.colorBlendOp = VK_BLEND_OP_ADD;
   add.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
   add.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;

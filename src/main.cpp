@@ -263,7 +263,8 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   const bool dodge = pressed(Action::Dodge);
   const bool pistol = pressed(Action::Pistol), longGun = pressed(Action::LongGun),
              holster = pressed(Action::Holster), reload = pressed(Action::Reload),
-             fireMode = pressed(Action::FireMode), use = pressed(Action::Use);
+             fireMode = pressed(Action::FireMode), use = pressed(Action::Use),
+             charge = pressed(Action::Charge), detonate = pressed(Action::Detonate);
   PlayerControls controls;
   if (!fly.cameraMode || typing || asking)
     return controls;
@@ -277,12 +278,15 @@ PlayerControls readPlayerControls(const FlyState &fly, bool typing,
   controls.jump = jump;
   controls.dodge = dodge;
   controls.fire = held(Action::Fire);
+  controls.grenade = held(Action::Grenade);
   controls.pistol = pistol;
   controls.longGun = longGun;
   controls.holster = holster;
   controls.reload = reload;
   controls.fireMode = fireMode;
   controls.use = use;
+  controls.charge = charge;
+  controls.detonate = detonate;
   // InputManager's y counts up; the controls' counts down, like the screen.
   const glm::vec2 mouse = inputManager.getMouseDelta();
   controls.mouse = glm::vec2(mouse.x, -mouse.y);

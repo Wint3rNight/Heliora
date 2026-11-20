@@ -40,6 +40,19 @@ glm::vec2 recoilKick(const WeaponSpec &spec);
 // and off by the shot's deviation (mrad, x to the right, y up). Unit.
 glm::vec3 shotDirection(const glm::mat3 &gun, float zero, glm::vec2 deviation);
 
+// How a shot moves the gun you see (not where its bullets go, that's
+// Shot::deviation): back into the shoulder or hand, its muzzle up and a
+// little aside, then back. A critically damped spring per part, so it comes
+// back without bouncing: from rest a kick goes x(t) = v t e^(-t / peak),
+// highest at `peak` s. Stepped exactly, the same at any frame rate.
+struct GunKick {
+  glm::vec3 offset{0.0f};   // back (m), up (radians), aside to the left (radians)
+  glm::vec3 velocity{0.0f}; // per second
+  // A shot: the same parts, as high as they'd go from rest.
+  void kick(glm::vec3 amount, float peak);
+  void update(float dt, float peak);
+};
+
 class Weapon {
 public:
   explicit Weapon(const WeaponSpec &spec, uint32_t seed = 1);

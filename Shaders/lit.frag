@@ -44,6 +44,8 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 taaParams;
     vec4 viewportSize;
     vec4 visualToggles;
+    vec4 flashPosition; // a muzzle flash's light, for a frame: no shadow
+    vec4 flashColour;   // rgb times a (0 off)
 } scene;
 
 layout(set = 0, binding = 1) uniform sampler2DArrayShadow shadowMap;
@@ -785,6 +787,17 @@ void main() {
                        clothFactor,
                        scene.spotLights[i].colorIntensity.rgb,
                        scene.spotLights[i].colorIntensity.a * att * cone);
+    }
+
+    // A muzzle flash, for the frame of a shot: falling off as the square of
+    // the distance, no shadow.
+    if (scene.flashColour.a > 0.0) {
+        vec3  toLight = scene.flashPosition.xyz - worldPos;
+        float dist    = length(toLight);
+        vec3  L       = toLight / max(dist, 0.0001);
+        float att     = 1.0 / max(dist * dist, 0.25);
+        directLight += cookTorrance(albedo, worldN, V, L, F0, metallic, roughness,
+                       clothFactor, scene.flashColour.rgb, scene.flashColour.a * att);
     }
 
     // Phase-2 diagnostic debug views: short-circuit before bloom/FXAA/fog so

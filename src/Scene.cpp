@@ -894,6 +894,14 @@ void kitKey(SceneKit &kit, const std::string &key, const std::string &value, int
     kit.grenades = count();
   } else if (key == "charges") {
     kit.charges = count();
+  } else if (key == "crate") {
+    // A place: three numbers, nothing else.
+    std::istringstream in(value);
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    std::string rest;
+    if (!(in >> x >> y >> z) || (in >> rest))
+      parseError(lineNumber, "'crate' is a place: three numbers, x y z");
+    kit.crates.push_back(glm::vec3(x, y, z));
   } else {
     parseError(lineNumber, "unknown kit key '" + key + "'");
   }
@@ -1234,6 +1242,8 @@ std::string write(const SceneDescription &scene) {
       writeKey(out, "grenades", std::to_string(scene.kit->grenades));
     if (scene.kit->charges != 0)
       writeKey(out, "charges", std::to_string(scene.kit->charges));
+    for (const glm::vec3 &crate : scene.kit->crates)
+      writeKey(out, "crate", formatVec3(crate));
   }
 
   // Models, grids and rings live in separate lists; info.order puts them

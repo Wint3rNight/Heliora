@@ -128,3 +128,15 @@ TEST(the_gun_keys_are_one_two_h_r_b_and_e) {
   CHECK(bindingName(c[Action::Use]) == "E");
   CHECK(std::string(actionName(Action::Holster)) == "holster");
 }
+
+TEST(a_grenade_is_g_held_the_pin_out_until_its_let_go) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Grenade]) == "G");
+  CHECK(std::string(actionName(Action::Grenade)) == "grenade");
+}
+
+TEST(a_charge_is_placed_with_four_and_fired_with_five) {
+  const ControlBindings c;
+  CHECK(bindingName(c[Action::Charge]) == "4");
+  CHECK(bindingName(c[Action::Detonate]) == "5");
+}

@@ -213,6 +213,10 @@ TEST(a_slot_twice_in_one_stance_or_an_unknown_stance_is_an_error) {
                  "stance"));
   CHECK(std::string(stanceName(Stance::Pistol)) == "pistol");
   CHECK(stanceFromName("rifle") == Stance::Rifle);
+  // Carried relaxed, not aiming: their own clips.
+  CHECK(stanceFromName("rifle_carry") == Stance::RifleCarry);
+  CHECK(stanceFromName("pistol_carry") == Stance::PistolCarry);
+  CHECK(std::string(stanceName(Stance::RifleCarry)) == "rifle_carry");
   CHECK(!stanceFromName("bow"));
 }
 
@@ -228,4 +232,14 @@ TEST(setting_a_stances_clip_leaves_the_unarmed_one_alone) {
   c.removeClip(ClipSlot::Idle, Stance::Pistol);
   CHECK(c.clips.size() == 1);
   CHECK(c.clip(ClipSlot::Idle) != nullptr);
+}
+
+TEST(death_and_hit_slots_read_as_one_shots) {
+  const CharacterDescription d = parseText(
+      "model = m.fbx\n[clip]\nslot = death_front\nfile = a.fbx\n[clip]\nslot = hit\nfile = b.fbx\n");
+  CHECK(d.clips.size() == 2);
+  if (d.clips.size() == 2) {
+    CHECK(d.clips[0].slot == ClipSlot::DeathFront && !d.clips[0].loop);
+    CHECK(d.clips[1].slot == ClipSlot::Hit && !d.clips[1].loop);
+  }
 }

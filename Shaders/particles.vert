@@ -54,13 +54,15 @@ struct Particle {
   vec4 positionAge; // xyz position, w seconds lived
   vec4 velocityLife; // xyz m/s, w seconds it lasts
   vec4 colourSize;  // rgb HDR, w m across
-  vec4 motion;      // x drag, y swirl, z its share of gravity
+  vec4 motion;      // x drag, y swirl, z its share of gravity, w opacity (0: it glows)
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer Ring { Particle ring[]; };
 
 layout(location = 0) out vec2 corner;
 layout(location = 1) out vec3 colour;
+layout(location = 2) out float opacity; // 0 glows; above 0 smoke, faded in and out
+layout(location = 3) out float fadeOut;
 
 const vec2 kCorners[6] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -1), vec2(1, 1),
                                 vec2(-1, 1));
@@ -72,6 +74,8 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // outside the view
     corner = vec2(0.0);
     colour = vec3(0.0);
+    opacity = 0.0;
+    fadeOut = 0.0;
     return;
   }
   float t = age / life;
@@ -84,4 +88,6 @@ void main() {
   gl_Position = scene.projection * scene.view * vec4(world, 1.0);
   corner = c;
   colour = p.colourSize.rgb * fade;
+  opacity = p.motion.w;
+  fadeOut = fade;
 }

@@ -34,6 +34,8 @@ layout(set = 0, binding = 0) uniform SceneUniformBuffer {
     vec4 taaParams;
     vec4 viewportSize;
     vec4 visualToggles;
+    vec4 flashPosition; // a muzzle flash's light, for a frame: no shadow
+    vec4 flashColour;   // rgb times a (0 off)
 } scene;
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
@@ -168,6 +170,16 @@ void main() {
         float attenuation = spot / (1.0 + 0.1 * dist * dist);
         vec3 radiance = scene.spotLights[i].colorIntensity.rgb *
                         scene.spotLights[i].colorIntensity.a * attenuation;
+        color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
+                              roughness, clothFactor);
+    }
+
+    // A muzzle flash, for the frame of a shot (as in lit.frag).
+    if (scene.flashColour.a > 0.0) {
+        vec3 toLight = scene.flashPosition.xyz - fragWorldPos;
+        float dist = length(toLight);
+        vec3 L = toLight / max(dist, 0.001);
+        vec3 radiance = scene.flashColour.rgb * scene.flashColour.a / max(dist * dist, 0.25);
         color += cookTorrance(albedo, N, V, L, radiance, F0, metallic,
                               roughness, clothFactor);
     }

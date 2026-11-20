@@ -89,7 +89,32 @@ constexpr float kHeadTurn = glm::radians(30.0f);
 // Firing: faster than this he fires on the move (est.); the view shows the
 // recoil this many times what the bullets get (est.).
 constexpr float kMovingFire = 0.5f; // m/s
-constexpr float kViewKick = 3.0f;
+// The player comes back this long after dying (the design's 4 s).
+constexpr float kComeBack = 4.0f; // s
+// A weapons crate is in reach this close to its middle, across the ground
+// (est.: half a crate, a step and an arm).
+constexpr float kCrateReach = 2.0f; // m
+// The kick each shot gives what you see (est.): the camera a third of the
+// gun's muzzle rise, the chest rocking back a quarter of it; a pistol turns
+// about the web of the hand (gun space, under and behind the trigger), a
+// rifle about its butt.
+constexpr float kCameraKick = 0.5f;
+constexpr float kChestKick = 0.4f;
+constexpr glm::vec3 kPistolPivot(0.0f, -0.04f, -0.03f);
+// Carried relaxed, the gun follows this share of the chest's turn, this far
+// behind (s), and breathes (15 breaths a minute, est.; half a degree).
+constexpr float kCarryFollow = 0.5f;
+// How far the AK's bolt carrier and the P38's slide run back (est.).
+constexpr float kBoltTravel = 0.12f, kSlideTravel = 0.06f; // m
+// A carry clip holding the rifle at the ready (level, as the Pro Rifle
+// pack's walk and run do) has both arms turned down until it's no higher
+// than this (est., the low ready's 45 degrees, FM 3-22.9; Mixamo's "Rifle
+// Idle" holds it 31 to 39 down), at most this far.
+constexpr float kCarryPitch = glm::radians(-40.0f);
+constexpr float kMostLowered = glm::radians(60.0f);
+constexpr float kCarryLag = 0.08f;
+constexpr float kBreathsPerSecond = 0.25f;
+constexpr float kBreathTurn = glm::radians(0.5f);
 
 // Between two rigid frames: the place along a line, the turn the short way.
 glm::mat4 between(const glm::mat4 &a, const glm::mat4 &b, float t) {
@@ -197,6 +222,29 @@ void wrapFingers(Pose &pose, const std::vector<std::pair<int, glm::quat>> &grip,
     glm::quat &now = pose.local[bone].rotation;
     now = glm::slerp(now, glm::dot(now, turn) < 0.0f ? -turn : turn, std::min(weight, 1.0f));
   }
+}
+
+// The stance a gun is carried relaxed in.
+Stance carryStance(Stance aiming) {
+  return aiming == Stance::Pistol ? Stance::PistolCarry : Stance::RifleCarry;
+}
+
+// Whether the animator's move is one the gun's carry stance has a clip for
+// (so the clip's hands hold the gun), rather than his own.
+bool clipCarries(const CharacterAnimator &animator, const AnimationLibrary &library, Stance gun) {
+  const Stance carry = carryStance(gun);
+  if (animator.activeStanceShown() != carry)
+    return false;
+  switch (animator.state()) {
+  case AnimState::Locomotion: return library.clip(ClipSlot::Idle, carry);
+  case AnimState::Crouch: return library.clip(ClipSlot::CrouchIdle, carry);
+  case AnimState::Jump: return library.clip(ClipSlot::Jump, carry);
+  case AnimState::Fall: return library.clip(ClipSlot::Fall, carry);
+  case AnimState::Land: return library.clip(ClipSlot::Land, carry);
+  case AnimState::Dodge:
+  case AnimState::Dead: return false;
+  }
+  return false;
 }
 
 } // namespace
@@ -355,6 +403,7 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
     // the shoulders.
     gun.butt = glm::vec3(0.0f, 0.0f, (muzzle ? muzzle->position.z : 0.5f) - weapon->parts.length);
     const glm::mat4 restLevel = frame(restChest[0], up, restAhead, restAt(b.rightArm));
+    c.restChest = glm::inverse(rotationOf(restLevel)) * rotationOf(rigidFrame(toMetres * hanging[b.spine2]));
     if (gun.hold.twoHanded) {
       const glm::vec3 pocket = restAt(b.rightArm) + restChest * kPocket;
       const glm::mat4 lowered =
@@ -412,9 +461,12 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
       gun.parts.push_back(node.get());
       rootNode.addChild(std::move(node));
     }
-    for (size_t k = 0; k < weapon->parts.parts.size(); ++k)
+    for (size_t k = 0; k < weapon->parts.parts.size(); ++k) {
       if (weapon->parts.parts[k].name == "magazine")
         gun.magazinePart = static_cast<int>(k);
+      if (weapon->parts.parts[k].name == "bolt" || weapon->parts.parts[k].name == "slide")
+        gun.boltPart = static_cast<int>(k);
+    }
     // Loaded as the kit says: the one in the gun and its spares.
     gun.weapon = std::make_shared<Weapon>(weapon->spec);
     gun.weapon->load(weapon->spec.spareMagazines + 1);
@@ -422,6 +474,8 @@ void VulkanRenderer::armCharacter(LiveCharacter &c) {
   }
   c.loadout = Loadout();
   c.loadout.give(c.guns[0].has_value(), c.guns[1].has_value());
+  c.grenades = kit.grenades;
+  c.charges = kit.charges;
 }
 
 // Before the clips: the gun keys (the played character's), the draw moving
@@ -439,6 +493,88 @@ void VulkanRenderer::gunsBeforeClips(int index, AnimatorInput &input, float seco
     if (playerControls.holster)
       c.loadout.select(Holdable::None);
   }
+  // At a weapons crate: E gives every gun the kit's magazines again.
+  if (index == playedCharacter && c.body >= 0 && roster) {
+    c.atCrate = false;
+    const glm::vec3 feet = roster->body(c.body).position();
+    if (currentScene.kit)
+      for (const glm::vec3 &crate : currentScene.kit->crates)
+        if (glm::length(glm::vec2(crate.x - feet.x, crate.z - feet.z)) <= kCrateReach &&
+            std::abs(crate.y - feet.y) < 2.0f)
+          c.atCrate = true;
+    if (c.atCrate && playerControls.use && !c.health.dead() && currentScene.kit) {
+      c.grenades = currentScene.kit->grenades;
+      c.charges = currentScene.kit->charges;
+    }
+    if (c.atCrate && playerControls.use && !c.health.dead())
+      for (std::optional<CarriedGun> &g : c.guns)
+        if (g && g->weapon) {
+          g->weapon->cancelReload();
+          g->weapon->load(g->asset->spec.spareMagazines + 1);
+          spdlog::info("Refilled the {} at the crate", g->asset->spec.name);
+        }
+  }
+  // The player, dead 4 s, comes back at the start with the kit again.
+  if (index == playedCharacter && c.health.dead() && c.body >= 0 && roster) {
+    c.deadFor += seconds;
+    if (c.deadFor >= kComeBack && currentScene.player) {
+      c.health = Health{};
+      c.deadFor = 0.0f;
+      c.throwTime = -1.0f;
+      c.pinOut = false;
+      roster->body(c.body).place(currentScene.player->position, glm::radians(currentScene.player->yaw));
+      if (currentScene.kit) {
+        c.grenades = currentScene.kit->grenades;
+        c.charges = currentScene.kit->charges;
+      }
+      for (std::optional<CarriedGun> &g : c.guns)
+        if (g && g->weapon) {
+          g->weapon->cancelReload();
+          g->weapon->load(g->asset->spec.spareMagazines + 1);
+        }
+      c.loadout.select(Holdable::None);
+      spdlog::info("The player comes back at the start");
+    }
+  }
+  // Dead, whatever he was throwing is dropped (no live grenade).
+  if (c.health.dead()) {
+    c.throwTime = -1.0f;
+    c.pinOut = false;
+    c.letGo = false;
+  }
+  // A grenade: G pulls the pin (a pistol goes back in its holster, the
+  // throwing hand needs to be free; a rifle hangs at the low ready);
+  // letting go throws it, let go of at the clip's release moment.
+  if (index == playedCharacter && !c.health.dead()) {
+    if (playerControls.grenade && !c.pinOut && c.throwTime < 0.0f && c.grenades > 0) {
+      c.pinOut = true;
+      if (c.loadout.inHand() == Holdable::Pistol)
+        c.loadout.select(Holdable::None);
+    }
+    if (c.pinOut && !playerControls.grenade) {
+      c.pinOut = false;
+      // Let go before the pistol was away (it was drawn again): the pin
+      // goes back in, nothing thrown.
+      if (c.loadout.inHand() != Holdable::Pistol)
+        c.throwTime = 0.0f;
+    }
+  }
+  // A charge on what's in front, and the detonator.
+  if (index == playedCharacter && !c.health.dead()) {
+    if (playerControls.charge)
+      placeCharge(index);
+    if (playerControls.detonate)
+      fireCharges(index);
+  }
+  if (c.throwTime >= 0.0f) {
+    const float before = c.throwTime;
+    c.throwTime += seconds;
+    if (before < kThrowRelease && c.throwTime >= kThrowRelease)
+      c.letGo = true;
+    if (c.throwTime >= kThrowEnd)
+      c.throwTime = -1.0f;
+  }
+  input.throwing = c.throwTime >= 0.0f ? c.throwTime / kThrowEnd : -1.0f;
   c.loadout.update(seconds);
   const Holdable held = c.loadout.inHand();
   std::optional<CarriedGun> &slot = c.guns[held == Holdable::Long ? 1 : 0];
@@ -449,16 +585,23 @@ void VulkanRenderer::gunsBeforeClips(int index, AnimatorInput &input, float seco
   // stoop that would bury a rifle, the gun's is a kneel (the gun still
   // relaxed unless he aims).
   const bool raised = gun && c.loadout.ready() && c.body >= 0 && roster &&
-                      roster->body(c.body).aiming();
+                      roster->body(c.body).aiming() && c.throwTime < 0.0f && !c.pinOut;
   c.gunCrouched = gun && c.loadout.ready() && input.crouched;
-  input.stance = raised || c.gunCrouched ? gun->stance : Stance::Unarmed;
+  // Not aiming, the gun's carry stance if the character has one: captured
+  // clips of it held relaxed (the moves it has no clip for are his own).
+  const CharacterAsset *asset = c.copy >= 0 ? c.file->asset : nullptr;
+  const bool carried = gun && asset && asset->library.clip(ClipSlot::Idle, carryStance(gun->stance));
+  input.stance = raised          ? gun->stance
+                 : carried       ? carryStance(gun->stance)
+                 : c.gunCrouched ? gun->stance
+                                 : Stance::Unarmed;
   input.gunInRightHand = gun && gun->atSide && c.loadout.drawn() >= 0.5f;
   // Reloading: R with a gun ready; putting it away or swapping stops it.
   for (std::optional<CarriedGun> &g : c.guns)
     if (g && g->weapon && (&*g != gun || held != before || !c.loadout.ready()))
       g->weapon->cancelReload();
-  if (gun && gun->weapon && c.loadout.ready()) {
-    const bool player = index == playedCharacter;
+  if (gun && gun->weapon && c.loadout.ready() && !c.health.dead()) {
+    const bool player = index == playedCharacter && c.throwTime < 0.0f && !c.pinOut;
     if (player && playerControls.reload)
       gun->weapon->reload();
     if (player && playerControls.fireMode)
@@ -477,18 +620,28 @@ void VulkanRenderer::gunsBeforeClips(int index, AnimatorInput &input, float seco
     // The recoil on the view: the gun's kick, shown bigger than the
     // bullets feel it (the gun only moves once they've left), and coming
     // back with it. The aim point leaves it out.
-    const glm::vec2 recoil = gun->weapon->recoil();
-    if (player && playerController) {
-      const glm::vec2 change = (recoil - gun->lastRecoil) * (1e-3f * kViewKick);
-      playerController->kickView(-change.x, change.y);
-      c.viewKick += glm::vec2(-change.x, change.y);
-    }
-    gun->lastRecoil = recoil;
+
     input.reload = reloadProgress(*gun->weapon);
     input.reloadStance = gun->stance;
   }
-  if (index == playedCharacter && playerController)
+  // Every gun's kick springs back. The camera takes part of the one in his
+  // hands (the bullets' own recoil is in their deviation) and comes back
+  // with it; the aim point leaves it out.
+  for (std::optional<CarriedGun> &g : c.guns)
+    if (g) {
+      g->kick.update(seconds, g->asset->spec.kickPeak);
+      g->sinceShot += seconds;
+    }
+  c.shake.update(seconds, 0.05f);
+  if (index == playedCharacter && playerController) {
+    const glm::vec2 view =
+        (gun ? glm::vec2(gun->kick.offset.z, gun->kick.offset.y) * kCameraKick : glm::vec2(0.0f)) +
+        glm::vec2(c.shake.offset.z, c.shake.offset.y);
+    playerController->kickView(view.x - c.viewKick.x, view.y - c.viewKick.y);
+    c.viewKick = view;
     playerController->setArmed(c.loadout.ready());
+    playerController->setThrowing(c.pinOut || c.throwTime >= 0.0f);
+  }
 }
 
 // Where the played character aims: what the camera looks at, from about
@@ -540,7 +693,7 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   // Aiming, or firing from the hip, with a gun ready: eased in. Crouched
   // with one, the same.
   const bool aiming = gun && c.loadout.ready() && index == playedCharacter && c.body >= 0 &&
-                      roster && roster->body(c.body).aiming();
+                      roster && roster->body(c.body).aiming() && c.throwTime < 0.0f && !c.pinOut;
   const float step = seconds / kAimIn;
   c.aimWeight = std::clamp(c.aimWeight + (aiming ? step : -step), 0.0f, 1.0f);
   const float raise = smooth(c.aimWeight);
@@ -578,7 +731,8 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
                 gun->atSide ? 0.0f : kRifleBlade, raise, kMaxSquare);
     const float pitch = std::asin(std::clamp(glm::dot(toTarget, up), -1.0f, 1.0f));
     bendChest(skeleton, c.aimRig, pose, b.leftArm, b.rightArm,
-              raise * std::clamp(kBendShare * pitch, -kMaxBend, kMaxBend));
+              raise * std::clamp(kBendShare * pitch, -kMaxBend, kMaxBend) +
+                  kChestKick * gun->kick.offset.y);
     model = modelSpace(skeleton, pose);
     if (gun->atSide) {
       if (b.head >= 0) {
@@ -642,16 +796,33 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   // Carried relaxed: the pistol standing in the hanging hand, the hand
   // turned so its muzzle points down; otherwise at low ready on the chest,
   // kept clear of the body.
-  const float sideWeight = gun && gun->atSide ? 1.0f - std::max(raise, crouch) : 0.0f;
+  // (A pistol carry clip, standing, already has the hand down at the side.)
+  const bool pistolClip = gun && gun->atSide && c.animator->activeStanceShown() == Stance::PistolCarry &&
+                          c.animator->state() == AnimState::Locomotion && c.animator->clipWeight(ClipSlot::Idle) > 0.5f;
+  const float sideWeight = gun && gun->atSide && !pistolClip ? 1.0f - std::max(raise, crouch) : 0.0f;
   if (gun && gun->atSide && drawn >= 0.5f && sideWeight > 0.0f)
     turnTo(skeleton, pose, model, b.rightHand,
            rotationOf(rigidFrame(model[b.rightForeArm])) * gun->sideHand, sideWeight);
   // The trunk only (chest and belly): pushed off the thighs, a gun held low
   // while kneeling would be shoved up to the chin.
   std::vector<HitCapsule> trunk;
+  // Following his chest part of the way, a little behind, breathing.
+  {
+    const glm::vec3 ahead = glm::normalize(glm::vec3(placement[2]) - glm::dot(glm::vec3(placement[2]), up) * up);
+    const glm::quat level = rotationOf(frame(glm::cross(up, ahead), up, ahead, glm::vec3(0.0f)));
+    const glm::quat chestTurn = glm::inverse(level) * rotationOf(rigidFrame(world(b.spine2))) *
+                                glm::inverse(c.restChest);
+    const glm::quat wanted = glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), chestTurn, kCarryFollow);
+    c.carryTurn = glm::slerp(c.carryTurn, glm::dot(c.carryTurn, wanted) < 0.0f ? -wanted : wanted,
+                             1.0f - std::exp(-seconds / kCarryLag));
+  }
+  const glm::quat breath = glm::angleAxis(
+      kBreathTurn * std::sin(2.0f * glm::pi<float>() * kBreathsPerSecond * static_cast<float>(playSeconds)),
+      glm::vec3(1.0f, 0.0f, 0.0f));
   auto lowReadyAt = [&](const CarriedGun &g) {
     const glm::vec3 ahead = glm::normalize(glm::vec3(placement[2]) - glm::dot(glm::vec3(placement[2]), up) * up);
-    glm::mat4 low = frame(glm::cross(up, ahead), up, ahead, at(b.rightArm)) * g.lowReady;
+    glm::mat4 low = frame(glm::cross(up, ahead), up, ahead, at(b.rightArm)) *
+                    glm::mat4_cast(c.carryTurn * breath) * g.lowReady;
     if (trunk.empty())
       for (const HitCapsule &part : placeHitCapsules(c.hitCapsules, model, placement))
         if (part.zone == HitZone::Chest || part.zone == HitZone::Belly)
@@ -669,11 +840,45 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   // second half on its way from where it was put away, over the first half
   // still there while the right hand goes to take it.
   glm::mat4 heldAt(1.0f);
+  // Throwing a grenade: the hands leave the gun for the throw's clip (eased
+  // like it, over its first and last tenth), the rifle hanging at the low
+  // ready as on a sling.
+  const float throwing = c.throwTime >= 0.0f ? c.throwTime / kThrowEnd : -1.0f;
+  const float handsOff =
+      throwing < 0.0f ? 0.0f : smooth(std::clamp(std::min(throwing, 1.0f - throwing) / 0.1f, 0.0f, 1.0f));
+  const float handsOn = 1.0f - handsOff;
   if (gun) {
-    glm::mat4 relaxed = gun->atSide ? inHand(*gun) : lowReadyAt(*gun);
+    // The rifle in the carry clip's hands when its stance has a clip for
+    // this move; at the low ready by IK when it doesn't (a dodge, a throw).
+    const bool clipHolds = !gun->atSide && handsOff <= 0.0f &&
+                           clipCarries(*c.animator, asset->library, gun->stance);
+    // Held at the ready by the clip: both arms turned down together about
+    // the line through the shoulders, so the gun stays in both hands and
+    // tips to the low ready, the clip's own arm motion kept.
+    if (clipHolds && raise < 1.0f) {
+      const float pitch = std::asin(std::clamp(glm::normalize(glm::vec3(inHand(*gun)[2])).y, -1.0f, 1.0f));
+      const float lower = std::clamp(pitch - kCarryPitch, 0.0f, kMostLowered) * (1.0f - raise);
+      if (lower > 1e-3f) {
+        const glm::vec3 line = glm::normalize(glm::mat3(toModel) * (at(b.leftArm) - at(b.rightArm)));
+        const glm::quat down = glm::angleAxis(lower, line);
+        for (const int arm : {b.rightArm, b.leftArm})
+          turnTo(skeleton, pose, model, arm, down * rotationOf(rigidFrame(model[arm])), 1.0f);
+      }
+    }
+    glm::mat4 relaxed = gun->atSide || clipHolds ? inHand(*gun) : lowReadyAt(*gun);
     if (gun->atSide && crouch > 0.0f)
       relaxed = between(relaxed, lowReadyAt(*gun), crouch);
     heldAt = raise > 0.0f ? between(relaxed, aimedAt, raise) : relaxed;
+    gun->aimedFrom = heldAt;
+    // The shot's kick: back along the barrel, the muzzle up and aside,
+    // turning about the butt or the hand; the hands follow it by IK.
+    if (glm::length(gun->kick.offset) > 1e-6f) {
+      const glm::vec3 pivot = gun->atSide ? kPistolPivot : gun->butt;
+      heldAt = heldAt * glm::translate(glm::mat4(1.0f), pivot) *
+               glm::rotate(glm::mat4(1.0f), gun->kick.offset.z, glm::vec3(0.0f, 1.0f, 0.0f)) *
+               glm::rotate(glm::mat4(1.0f), -gun->kick.offset.y, glm::vec3(1.0f, 0.0f, 0.0f)) *
+               glm::translate(glm::mat4(1.0f), -pivot - glm::vec3(0.0f, 0.0f, gun->kick.offset.x));
+    }
     if (reloadWeight > 0.0f)
       heldAt = between(heldAt, inHand(*gun), reloadWeight);
     if (drawn < 0.5f) {
@@ -686,7 +891,7 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
       // The right hand holds it there (at the side, the hand already is).
       if (sideWeight < 1.0f || drawn < 1.0f || reloadWeight > 0.0f)
         holdWith(b.rightArm, b.rightForeArm, b.rightHand,
-                 heldAt * glm::inverse(gun->hold.gripInHand), 1.0f);
+                 heldAt * glm::inverse(gun->hold.gripInHand), handsOn);
     }
   }
 
@@ -696,13 +901,13 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   float leftWeight = 0.0f;
   if (gun && drawn >= 0.5f) {
     if (gun->hold.twoHanded) {
-      leftWeight = drawnIn * (1.0f - reloadWeight);
+      leftWeight = drawnIn * (1.0f - reloadWeight) * handsOn;
       const glm::vec3 grip = glm::vec3(heldAt * glm::vec4(gun->hold.offHand, 1.0f));
       reach(skeleton, pose, model, b.leftArm, b.leftForeArm, b.leftHand, inModel(grip), leftWeight);
       turnTo(skeleton, pose, model, b.leftHand, toModelTurn * rotationOf(heldAt) * gun->offHandTurn,
              leftWeight);
     } else {
-      leftWeight = drawnIn * std::max(raise, crouch);
+      leftWeight = drawnIn * std::max(raise, crouch) * handsOn;
       holdWith(b.leftArm, b.leftForeArm, b.leftHand, heldAt * gun->leftInGun, leftWeight);
     }
   }
@@ -710,7 +915,8 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
   // The fingers round the gun as the aiming clip has them (the right hand's
   // from the grab on), except where a reload's clip moves them.
   if (gun) {
-    wrapFingers(pose, gun->rightGrip, (drawn < 0.5f ? smooth(drawn / 0.5f) : 1.0f) * (1.0f - reloadWeight));
+    wrapFingers(pose, gun->rightGrip,
+                (drawn < 0.5f ? smooth(drawn / 0.5f) : 1.0f) * (1.0f - reloadWeight) * handsOn);
     wrapFingers(pose, gun->leftGrip, leftWeight);
     model = modelSpace(skeleton, pose);
   }
@@ -726,13 +932,32 @@ void VulkanRenderer::gunsAfterClips(int index, const glm::mat4 &placement, float
     // The magazine is out (in the pouch) for the middle of a reload.
     const float progress = reloadShown(*g);
     const bool magazineOut = progress >= kMagazineOut && progress < kMagazineIn;
+    // The bolt or slide: back and forward over the cycle after a shot,
+    // held back once the last round's gone on a gun that locks open.
+    float boltBack = 0.0f;
+    if (g->boltPart >= 0) {
+      const float cycle = 60.0f / std::max(g->asset->spec.rate, 60.0f);
+      const float travel = g->atSide ? kSlideTravel : kBoltTravel;
+      if (g->weapon && g->weapon->slideLocked())
+        boltBack = travel;
+      else if (g->sinceShot < cycle)
+        boltBack = travel * std::sin(glm::pi<float>() * g->sinceShot / cycle);
+    }
     for (size_t k = 0; k < g->parts.size() && k < g->asset->parts.parts.size(); ++k) {
       const bool hidden = static_cast<int>(k) == g->magazinePart && magazineOut;
       const int model = hidden ? -1 : g->asset->partModels[k];
       if (g->parts[k]->getModelId() != model)
         g->parts[k]->setModelId(model);
-      g->parts[k]->setPose(glm::vec3(at * glm::vec4(g->asset->parts.parts[k].pivot, 1.0f)), turn);
+      glm::vec3 pivot = g->asset->parts.parts[k].pivot;
+      if (static_cast<int>(k) == g->boltPart)
+        pivot.z -= boltBack;
+      g->parts[k]->setPose(glm::vec3(at * glm::vec4(pivot, 1.0f)), turn);
     }
+  }
+  // A grenade let go this frame leaves the right hand.
+  if (c.letGo) {
+    c.letGo = false;
+    throwGrenade(index, at(b.rightHand));
   }
   // The shots this frame's trigger let off leave the muzzle where the gun
   // is now.

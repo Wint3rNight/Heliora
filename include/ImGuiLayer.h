@@ -246,7 +246,11 @@ struct DebugUiContext {
   int ammoInGun = 0;
   int ammoPouch = 0;
   const char *fireMode = ""; // "AUTO", "SEMI", or "" for a gun with one
+  int grenades = -1;         // hand grenades left, or below 0 to leave out
+  int charges = -1;          // demolition blocks left, the same
   bool reloading = false;
+  // A prompt at the bottom middle (in reach of a weapons crate), or empty.
+  const char *playPrompt = "";
 
   // An edit to the scene (a drag, a typed value, the sun or fog) is done:
   // nothing is held any more, so it's one undo step.
@@ -392,6 +396,7 @@ private:
   void drawGizmo(DebugUiContext &ui);
   void drawCrosshair(const DebugUiContext &ui) const;
   void drawAmmo(const DebugUiContext &ui) const;
+  void drawPlayPrompt(const DebugUiContext &ui) const;
   void endGizmoDrag(DebugUiContext &ui);
   // The others moved, for placing them with the primary.
   std::vector<SceneEntryRef> moveOthersWithGizmo(DebugUiContext &ui, const NodeTransform &was,

@@ -20,7 +20,9 @@ struct ParticleSpawn {
   float drag = 1.0f;      // 1/s: how fast its speed dies away
   float swirl = 0.0f;     // m/s^2 of the curl field pushing it round
   float gravity = 0.0f;   // its share of gravity: grit falls, smoke floats
-  float pad = 0.0f;
+  // 0: it glows, added on top (sparks, fire). Above 0: smoke or dust, this
+  // opaque at its middle, laid over what's behind (premultiplied alpha).
+  float opacity = 0.0f;
 };
 static_assert(sizeof(ParticleSpawn) == 64, "matches Shaders/particles.comp");
 

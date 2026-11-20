@@ -808,6 +808,47 @@ void VulkanRenderer::loadScene(const SceneDescription &desc, bool moveCamera) {
     ballModelId = -1;
     spdlog::error("Couldn't make the thrown ball's mesh: {}", e.what());
   }
+  // The M112 block: 2 by 1 by 11 in, olive drab.
+  {
+    SceneModelEntry block;
+    block.shape = PrimitiveShape::Box;
+    block.size = glm::vec3(0.2794f, 0.0508f, 0.0254f);
+    block.color = glm::vec3(0.3f, 0.32f, 0.22f);
+    try {
+      chargeModel = createPrimitiveModel(block);
+    } catch (const std::exception &e) {
+      chargeModel = -1;
+      spdlog::error("Couldn't make the charge's mesh: {}", e.what());
+    }
+  }
+  // The M67: a 64 mm sphere, olive drab.
+  {
+    SceneModelEntry grenade;
+    grenade.shape = PrimitiveShape::Sphere;
+    grenade.radius = 0.032f;
+    grenade.color = glm::vec3(0.29f, 0.33f, 0.2f);
+    try {
+      grenadeModel = createPrimitiveModel(grenade);
+    } catch (const std::exception &e) {
+      grenadeModel = -1;
+      spdlog::error("Couldn't make the grenade's mesh: {}", e.what());
+    }
+  }
+  // Spent casings at their real sizes: 7.62x39 11.35 by 38.7 mm, 9x19 9.9
+  // by 19.15 mm; brass.
+  for (int k = 0; k < 2; ++k) {
+    SceneModelEntry casing;
+    casing.shape = PrimitiveShape::Capsule;
+    casing.radius = k == 0 ? 0.0057f : 0.005f;
+    casing.height = k == 0 ? 0.0387f : 0.0192f;
+    casing.color = glm::vec3(0.78f, 0.6f, 0.25f);
+    try {
+      casingModels[k] = createPrimitiveModel(casing);
+    } catch (const std::exception &e) {
+      casingModels[k] = -1;
+      spdlog::error("Couldn't make a casing's mesh: {}", e.what());
+    }
+  }
   // The characters, for the same reason: standing in edit mode, in play
   // with bodies.
   buildCharacters();
@@ -1797,6 +1838,8 @@ void VulkanRenderer::stepPhysics(float frameSeconds) {
       std::chrono::duration<double, std::milli>(posed - beforePose).count();
   metrics.recordCpuPhase(PerformanceMetrics::CpuPhase::Animation, animationMs);
   if (playing)
+    updateGrenades(physicsPanel.paused ? 0.0f : frameSeconds);
+  if (playing)
     stepShots(physicsPanel.paused ? 0.0f : frameSeconds);
   if (playing)
     updateSound(physicsPanel.paused ? 0.0f : frameSeconds);
@@ -1990,6 +2033,9 @@ std::string VulkanRenderer::playedVariant() const {
 void VulkanRenderer::clearCharacters() {
   bullets.clear();
   flashes.clear();
+  clearGrenades();
+  sceneUbo.flashColour = glm::vec4(0.0f);
+  clearCasings();
   roster.reset(); // the bodies leave the world, the controller lets go
   playerController.reset();
   std::unordered_set<const SceneNode *> nodes;
@@ -2206,12 +2252,19 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     input.sprintSpeed = body.tuning().sprintSpeed;
     input.walkSpeed = body.tuning().walkSpeed;
     input.crouchSpeed = body.tuning().crouchSpeed;
+    // Shot: a flinch this frame; killed: down for good.
+    input.hit = c.hitThisFrame;
+    c.hitThisFrame = false;
+    input.dead = c.health.dead();
+    input.deathClip = c.deathClip;
+    c.crouched = input.crouched;
     // Feet on the body's feet, turned to its facing: Mixamo models face +z,
     // the character's yaw 0 faces -z.
     const glm::quat facing = glm::angleAxis(body.drawnYaw(alpha) + glm::pi<float>(),
                                             glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::mat4 placement = glm::translate(glm::mat4(1.0f), feet) * glm::mat4_cast(facing) *
                                 glm::scale(glm::mat4(1.0f), glm::vec3(c.scale));
+    c.facing = facing * glm::vec3(0.0f, 0.0f, 1.0f);
     // The player's spine leans with the camera while aiming.
     if (i == playedCharacter && playerController)
       input.aimPitch = playerController->camera().pitch();
@@ -2233,7 +2286,7 @@ void VulkanRenderer::poseCharacters(float alpha, float frameSeconds) {
     // The feet follow the ground while it walks, stands, crouches or lands;
     // in the air and in dodges they let go.
     const AnimState state = c.animator->state();
-    const bool feetDown = input.grounded && !input.dodging &&
+    const bool feetDown = input.grounded && !input.dodging && !input.dead &&
                           (state == AnimState::Locomotion || state == AnimState::Crouch ||
                            state == AnimState::Land);
     FootPlacement feetAt{feet, facing, c.scale};
@@ -5557,8 +5610,11 @@ void VulkanRenderer::buildUi() {
   ui.sceneArea = sceneArea;
   ui.crosshair = playing && hasPlayer() && playerControls.aim;
   ui.ammo = false;
+  ui.playPrompt = "";
   if (playing && playedCharacter >= 0 && playedCharacter < static_cast<int>(characters.size())) {
     const LiveCharacter &c = characters[playedCharacter];
+    if (c.atCrate)
+      ui.playPrompt = "E  Refill ammunition";
     const Holdable held = c.loadout.inHand();
     const std::optional<CarriedGun> &g = c.guns[held == Holdable::Long ? 1 : 0];
     if (held != Holdable::None && g && g->weapon) {
@@ -5569,6 +5625,15 @@ void VulkanRenderer::buildUi() {
                     : g->weapon->mode() == FireMode::Auto ? "AUTO"
                                                           : "SEMI";
       ui.reloading = g->weapon->reloading();
+    }
+    ui.grenades = c.grenades;
+    ui.charges = c.charges;
+    if (!ui.ammo && (c.grenades > 0 || c.charges > 0)) { // no gun out: the grenades still show
+      ui.ammo = true;
+      ui.ammoInGun = -1; // no rounds line
+      ui.ammoPouch = 0;
+      ui.fireMode = "";
+      ui.reloading = false;
     }
   }
   ui.onEditFinished = [this] { recordEdit(); };

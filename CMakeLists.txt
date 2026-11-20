@@ -159,6 +159,7 @@ set(HELIORA_CORE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Inertialize.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FootIk.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioMixer.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Blast.cpp
 )
 list(REMOVE_ITEM ALL_SOURCES ${HELIORA_CORE_SOURCES})
 add_library(heliora_core STATIC ${HELIORA_CORE_SOURCES})
@@ -227,6 +228,19 @@ else()
 endif()
 set_source_files_properties(tools/weapon_convert/main.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
 
+# tools/clip_survey (step 1.6): every animation clip measured and drawn, to
+# pick one for each move; run by hand: cmake --build build --target clip_survey
+add_executable(clip_survey EXCLUDE_FROM_ALL tools/clip_survey/main.cpp src/CharacterImport.cpp)
+target_include_directories(clip_survey PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(clip_survey PRIVATE heliora_core)
+if(TARGET assimp::assimp)
+        target_link_libraries(clip_survey PRIVATE assimp::assimp)
+else()
+        target_include_directories(clip_survey PRIVATE ${ASSIMP_INCLUDE_DIRS})
+        target_link_libraries(clip_survey PRIVATE ${ASSIMP_LIBRARIES})
+endif()
+
 # Tests: no GPU needed. Run with `ctest --test-dir build --output-on-failure`.
 enable_testing()
 add_executable(heliora_tests
@@ -270,6 +284,7 @@ add_executable(heliora_tests
         tests/BulletsTests.cpp
         tests/WeaponFileTests.cpp
         tests/WeaponTests.cpp
+        tests/BlastTests.cpp
         tests/HitZonesTests.cpp
         tests/PieceDamageTests.cpp
         tests/OutlinerTests.cpp

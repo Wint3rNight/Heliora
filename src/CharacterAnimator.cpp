@@ -146,6 +146,7 @@ const char *animStateName(AnimState state) {
   case AnimState::Fall: return "Fall";
   case AnimState::Land: return "Land";
   case AnimState::Dodge: return "Dodge";
+  case AnimState::Dead: return "Dead";
   }
   return "";
 }
@@ -202,6 +203,10 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
         if (!isLocomotion(slot) || own == ClipSlot::Idle)
           break;
         const ClipSlot next = own == ClipSlot::AimIdle ? ClipSlot::Idle : fallback(own);
+        // Moving, never its standing idle (the feet would slide): the
+        // unarmed move it is.
+        if (next == ClipSlot::Idle && slot != ClipSlot::Idle && slot != ClipSlot::AimIdle)
+          break;
         // Crouched, only its own crouch moves: standing ones would stand
         // the legs up, so the unarmed crouch it is.
         if (isCrouch(slot) && !isCrouch(next))
@@ -250,7 +255,11 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
                                ? ClipSlot::LandHard
                                : ClipSlot::Land;
   AnimState next = active;
-  if (!input.grounded) {
+  if (input.dead) {
+    next = AnimState::Dead;
+  } else if (active == AnimState::Dead) {
+    next = groundState;
+  } else if (!input.grounded) {
     switch (active) {
     case AnimState::Jump:
       if (fallingFast)
@@ -304,6 +313,7 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     case AnimState::Fall: fadeTime = tune.fallFade; break;
     case AnimState::Land: fadeTime = tune.landFade; break;
     case AnimState::Dodge: fadeTime = tune.dodgeFade; break;
+    case AnimState::Dead: fadeTime = tune.dodgeFade; break;
     }
     if (next == AnimState::Jump)
       oneShot = ClipSlot::Jump;
@@ -311,6 +321,8 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
       oneShot = landing;
     else if (next == AnimState::Dodge)
       oneShot = input.dodgeClip; // the controller picked it
+    else if (next == AnimState::Dead)
+      oneShot = library.clip(input.deathClip) ? input.deathClip : ClipSlot::DeathFront;
     active = next;
     stateTime = 0.0f;
   }
@@ -332,6 +344,12 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     const auto [used, clip] = resolve(slot);
     if (!clip)
       return;
+    // A loop trimmed to a stretch of its file loops inside the stretch.
+    if (clip->loop && (clip->start > 0.0f || clip->end > 0.0f)) {
+      const float span = clip->endTime() - clip->start;
+      if (span > 1e-4f)
+        time = clip->start + std::fmod(std::max(time, 0.0f), span);
+    }
     Pose pose = bindPose(skeleton);
     sampleClip(clip->clip, skeleton, time, clip->loop, pose);
     mix.add(pose, weight);
@@ -472,6 +490,7 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
     case AnimState::Fall: fellBack = !library.clip(ClipSlot::Fall, activeStance); break;
     case AnimState::Land:
     case AnimState::Dodge: fellBack = !library.clip(oneShot, activeStance); break;
+    case AnimState::Dead: break;
     case AnimState::Locomotion: break;
     }
   }
@@ -510,8 +529,39 @@ void CharacterAnimator::update(const AnimatorInput &input, float dt) {
   blendTime += dt;
   base = statePose;
   blend.apply(blendTime, base);
+  // A flinch on the upper body when hit, eased in fast and out over its
+  // last half (est.).
+  if (input.hit && active != AnimState::Dead)
+    hitTime = 0.0f;
+  if (hitTime >= 0.0f) {
+    const CharacterClipData *clip = library.clip(ClipSlot::Hit);
+    const float span = clip ? std::max(clip->endTime() - clip->start, 1e-3f) : 0.0f;
+    if (!clip || hitTime > span || upperBody.empty()) {
+      hitTime = -1.0f;
+    } else {
+      const float t = hitTime / span;
+      const float weight = std::clamp(std::min(t / 0.1f, (1.0f - t) / 0.5f), 0.0f, 1.0f);
+      Pose flinch = bindPose(skeleton);
+      sampleClip(clip->clip, skeleton, clip->start + hitTime, false, flinch);
+      blendPosesMasked(base, flinch, weight, upperBody, base);
+      hitTime += dt;
+    }
+  }
+  // A throw on the upper body by its progress, eased in and out like a
+  // reload.
+  if (input.throwing >= 0.0f && !upperBody.empty() && active != AnimState::Dead)
+    if (const CharacterClipData *clip = library.clip(ClipSlot::Throw)) {
+      const float progress = std::clamp(input.throwing, 0.0f, 1.0f);
+      const float weight = std::clamp(std::min(progress, 1.0f - progress) / kReloadEase, 0.0f, 1.0f);
+      if (weight > 0.0f) {
+        Pose thrown = bindPose(skeleton);
+        const float span = std::max(clip->endTime() - clip->start, 0.0f);
+        sampleClip(clip->clip, skeleton, clip->start + span * progress, false, thrown);
+        blendPosesMasked(base, thrown, weight, upperBody, base);
+      }
+    }
   // A reload on the upper body, over whatever the legs do, eased in and out.
-  if (input.reload >= 0.0f && !upperBody.empty())
+  if (input.reload >= 0.0f && !upperBody.empty() && active != AnimState::Dead)
     if (const CharacterClipData *clip = library.clip(
             ClipSlot::Reload,
             input.reloadStance != Stance::Unarmed ? input.reloadStance : activeStance)) {

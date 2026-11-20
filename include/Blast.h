@@ -13,6 +13,11 @@ enum class Explosive { Tnt, CompB, C4 };
 // 1.38 MPa and 1.37 above, 1.19 for impulse (UFC 3-340-02, via Bogosian
 // 2016). pressure is the peak overpressure it's asked for, Pa.
 float tntEquivalent(Explosive explosive, float pressure, bool impulse);
+// How light its smoke is, 0 black to 1 white. TNT's oxygen balance is about
+// -74%, RDX's about -22%: the shorter of oxygen, the more of the carbon
+// comes out as soot. So TNT's smoke is near black, C-4's (mostly RDX) grey,
+// Comp B's (RDX and TNT) between (the shades est.).
+float smokeShade(Explosive explosive);
 
 // Hopkinson-Cranz scaled distance, m/kg^(1/3): range over the cube root of
 // the TNT mass.

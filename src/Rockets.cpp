@@ -1,12 +1,13 @@
 // VulkanRenderer's rockets (step 1.7): a launcher's shot leaves its muzzle
 // as a rocket that flies on every frame (Rocket.h: the booster's kick, the
 // motor from 10 m to 500 m, drag, the wind, gravity), seen as its model
-// with a flame and a smoke trail while the motor burns. What it hits takes
+// with a flame, its light and a smoke trail while the motor burns. What it hits takes
 // its warhead: the shaped charge's jet through what's in line, then the
 // blast. If it hits nothing it blows itself up when its fuze runs out.
 
 #include "VulkanRenderer.h"
 
+#include "EffectGeometry.h"
 #include "Particles.h"
 
 #include <spdlog/spdlog.h>
@@ -19,10 +20,24 @@ namespace {
 
 // A jet breaks up in the air: it goes at most this far past the hit (est.).
 constexpr float kJetReach = 2.0f; // m
-// The smoke trail: a puff every so far while the motor burns (est.).
-constexpr float kTrailEvery = 0.5f; // m
-// Its flame: so many short-lived glows a second (est.).
+// The smoke trail while the motor burns: a puff every so far, starting this
+// wide and spreading to kTrailSpread times that, lasting kTrailLife (all
+// est., against footage: a thin white line that widens and hangs for
+// seconds). Puffs under a third of their width apart make a solid line;
+// half their width apart they read as beads.
+constexpr float kTrailEvery = 0.1f;   // m
+constexpr float kTrailWidth = 0.35f;  // m
+constexpr float kTrailSpread = 3.5f;
+constexpr float kTrailLife = 6.0f;    // s
+// Its flame: a cone this long out of the back (est.), and so many
+// short-lived glows a second behind it.
+constexpr float kFlameLength = 0.7f;  // m
 constexpr float kFlamesPerSecond = 150.0f;
+// The back blast's smoke and the dust it raises off the ground behind, if
+// the ground is that close under the blast (est.).
+constexpr int kBackSmoke = 90;
+constexpr int kBackDust = 50;
+constexpr float kBackDustReach = 3.0f; // m
 const glm::vec3 kGravity(0.0f, -9.81f, 0.0f);
 
 // A frame along dir, its up as near the world's as it gets.
@@ -76,34 +91,65 @@ void VulkanRenderer::launchRocket(int index, CarriedGun &gun, const Shot &shot) 
   gun.sinceShot = 0.0f;
   spdlog::info("Rocket away at {:.0f} m/s", glm::length(rocket.flight.velocity));
 
-  // The booster's flash out of both ends, the back blast's cloud thrown out
-  // behind (the recoilless launcher's push goes there), a smaller puff at
-  // the muzzle.
+  // The booster's flash out of both ends; the back blast (the recoilless
+  // launcher's push goes out behind): a jet of flame, a cloud of the
+  // propellant's grey-white smoke, and dust off the ground if it's near; a
+  // smaller puff at the muzzle.
   flashes.push_back({muzzle, tube, 0.45f, true});
   flashes.push_back({venturi, -tube, 1.4f, true});
   static ParticleRandom random(0x2c9e6b31u);
   ParticleSpawn fire;
   fire.colour = glm::vec3(24.0f, 11.0f, 3.0f);
-  fire.size = 0.35f;
-  fire.life = 0.08f;
-  fire.drag = 10.0f;
-  emitInCone(particleSpawns, venturi, -tube, glm::radians(20.0f), 30, 8.0f, 30.0f, fire, random);
+  fire.size = 0.14f;
+  fire.life = 0.02f; // the booster's burnt out in the tube: a flash
+  fire.drag = 12.0f;
+  emitInCone(particleSpawns, venturi, -tube, glm::radians(15.0f), 220, 10.0f, 45.0f, fire, random);
   ParticleSpawn smoke;
-  smoke.colour = glm::vec3(0.62f, 0.6f, 0.57f);
-  smoke.opacity = 0.4f; // laid over (est.)
-  smoke.size = 0.7f;
-  smoke.life = 2.5f;
-  smoke.drag = 2.5f;
-  smoke.swirl = 0.8f;
+  smoke.colour = glm::vec3(0.72f, 0.71f, 0.68f);
+  smoke.opacity = 0.55f; // laid over (est.)
+  smoke.size = 0.5f;
+  smoke.spread = 5.0f;
+  smoke.life = 5.0f;
+  smoke.drag = 3.0f;
+  smoke.swirl = 0.6f;
   smoke.gravity = -0.03f; // warm, it rises a little
-  emitInCone(particleSpawns, venturi, -tube, glm::radians(25.0f), 40, 4.0f, 22.0f, smoke, random);
-  smoke.size = 0.4f;
-  smoke.life = 1.5f;
-  emitInCone(particleSpawns, muzzle, tube, glm::radians(30.0f), 12, 1.0f, 5.0f, smoke, random);
+  emitInCone(particleSpawns, venturi, -tube, glm::radians(25.0f), kBackSmoke, 3.0f, 25.0f, smoke, random);
+  if (physics) {
+    // Where the blast meets the ground behind: down from a metre back.
+    const glm::vec3 behind = venturi - tube * 1.0f;
+    if (const std::optional<PhysicsRayHit> ground =
+            physics->castRay(behind, glm::vec3(0.0f, -1.0f, 0.0f), kBackDustReach);
+        ground && ground->normal.y > 0.5f) {
+      const glm::vec3 at = behind - glm::vec3(0.0f, ground->distance - 0.15f, 0.0f);
+      glm::vec3 back(-tube.x, 0.0f, -tube.z);
+      back = glm::length(back) > 1e-3f ? glm::normalize(back) : glm::vec3(0.0f, 0.0f, -1.0f);
+      ParticleSpawn dust;
+      dust.colour = glm::vec3(0.45f, 0.41f, 0.35f);
+      dust.opacity = 0.6f;
+      dust.size = 0.4f;
+      dust.spread = 6.0f;
+      dust.life = 4.0f;
+      dust.drag = 2.5f;
+      dust.swirl = 0.8f;
+      dust.gravity = -0.01f;
+      // Thrown out along the ground, mostly away from the launcher.
+      const glm::vec3 side = glm::cross(back, glm::vec3(0.0f, 1.0f, 0.0f));
+      for (int k = 0; k < kBackDust; ++k) {
+        const float a = glm::radians(80.0f) * (2.0f * random.next() - 1.0f);
+        dust.position = at + (random.onSphere() * 0.2f);
+        dust.velocity = (back * std::cos(a) + side * std::sin(a) + glm::vec3(0.0f, 0.15f, 0.0f)) *
+                        (3.0f + 9.0f * random.next());
+        particleSpawns.push_back(dust);
+      }
+    }
+  }
+  smoke.size = 0.3f;
+  smoke.spread = 4.0f;
+  smoke.life = 2.0f;
+  emitInCone(particleSpawns, muzzle, tube, glm::radians(30.0f), 16, 1.0f, 5.0f, smoke, random);
 }
 
 void VulkanRenderer::updateRockets(float seconds) {
-  static ParticleRandom random(0x51a7e9d3u);
   for (size_t i = 0; i < rockets.size();) {
     LiveRocket &r = rockets[i];
     const RocketSpec &spec = *r.asset->spec.rocket;
@@ -139,9 +185,13 @@ void VulkanRenderer::updateRockets(float seconds) {
           noseInPart = nose->position - part.pivot;
     if (r.node)
       r.node->setPose(r.flight.position - turn * noseInPart, turn);
-    // The motor: a flame at its tail and a trail of smoke behind.
+    // The motor: a flame out of its tail, its light (stepShots), and a
+    // trail of smoke behind.
+    r.tail = r.flight.position - r.flight.axis * (noseInPart.z + 0.25f);
     if (r.flight.motorOn) {
-      const glm::vec3 tail = r.flight.position - r.flight.axis * (noseInPart.z + 0.25f);
+      const glm::vec3 tail = r.tail;
+      addCone(effectStrips, tail, -r.flight.axis, kFlameLength, glm::radians(9.0f),
+              glm::vec4(20.0f, 12.0f, 5.0f, 1.0f), glm::vec4(4.0f, 1.5f, 0.3f, 0.0f), 10);
       ParticleSpawn flame;
       flame.velocity = -r.flight.axis * 20.0f + r.flight.velocity * 0.6f;
       flame.colour = glm::vec3(30.0f, 15.0f, 5.0f);
@@ -156,21 +206,19 @@ void VulkanRenderer::updateRockets(float seconds) {
         particleSpawns.push_back(flame);
       }
       ParticleSpawn smoke;
-      smoke.colour = glm::vec3(0.7f, 0.68f, 0.65f);
-      smoke.opacity = 0.4f;
-      smoke.size = 0.35f;
-      smoke.life = 2.5f;
-      smoke.drag = 3.0f;
-      smoke.swirl = 0.5f;
-      smoke.gravity = -0.02f;
-      r.trail += glm::length(moved);
-      // Puffs spread back along this frame's path.
-      for (; r.trail >= kTrailEvery; r.trail -= kTrailEvery) {
-        smoke.position = tail - moved * (r.trail / std::max(glm::length(moved), 1e-4f)) +
-                         (random.onSphere() * 0.05f);
-        smoke.velocity = random.onSphere() * 0.3f;
-        particleSpawns.push_back(smoke);
-      }
+      smoke.colour = glm::vec3(0.8f, 0.79f, 0.76f);
+      smoke.opacity = 0.9f; // dense at first: it hangs on as it spreads (smokeCover)
+      smoke.size = kTrailWidth;
+      smoke.spread = kTrailSpread;
+      smoke.life = kTrailLife;
+      smoke.drag = 2.0f;
+      smoke.swirl = 0.3f;
+      smoke.gravity = -0.01f;
+      // A puff every so far along the tail's path this frame, left still:
+      // the swirl and the wind break the line up as it ages (a random kick
+      // each, even 0.2 m/s, scatters puffs past their few-centimetre bright
+      // middles and the young line reads as beads).
+      emitTrail(particleSpawns, tail - moved, tail, kTrailEvery, r.trail, smoke);
     }
     ++i;
   }

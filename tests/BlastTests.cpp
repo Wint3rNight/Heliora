@@ -114,3 +114,12 @@ TEST(a_block_of_c4_is_more_than_a_grenades_blast) {
   const float grenade = kM67.charge * tntEquivalent(Explosive::CompB, 1e5f, false);
   CHECK(peakOverpressure(scaledDistance(2.0f, block)) > peakOverpressure(scaledDistance(2.0f, grenade)));
 }
+
+TEST(tnt_smokes_darkest_c4_lightest) {
+  // TNT is short of oxygen (about -74%), so much of its carbon comes out
+  // as soot: black smoke. RDX is far less short, so C-4's is grey, and Comp
+  // B (RDX and TNT) is between.
+  CHECK(smokeShade(Explosive::Tnt) < smokeShade(Explosive::CompB));
+  CHECK(smokeShade(Explosive::CompB) < smokeShade(Explosive::C4));
+  CHECK(smokeShade(Explosive::Tnt) > 0.0f && smokeShade(Explosive::C4) < 1.0f);
+}

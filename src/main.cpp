@@ -346,11 +346,16 @@ int main(int argc, char **argv) {
   const char *captureSelect = std::getenv("HELIORA_CAPTURE_SELECT");
   const char *viewYawText = std::getenv("HELIORA_CAPTURE_VIEW_YAW");
   const float captureViewYaw = capturePath && viewYawText ? std::strtof(viewYawText, nullptr) : 0.0f;
-  // HELIORA_CAPTURE_VIEW_ZOOM brings the drawn view this much of the way in
-  // (0.5 halves the distance to the character), for a close look.
+  // HELIORA_CAPTURE_VIEW_ZOOM scales the drawn view's distance to the
+  // character: 0.5 halves it for a close look, 4 pulls back to see far.
   const char *viewZoomText = std::getenv("HELIORA_CAPTURE_VIEW_ZOOM");
   const float captureViewZoom =
-      capturePath && viewZoomText ? std::clamp(std::strtof(viewZoomText, nullptr), 0.05f, 1.0f) : 1.0f;
+      capturePath && viewZoomText ? std::clamp(std::strtof(viewZoomText, nullptr), 0.05f, 8.0f) : 1.0f;
+  // HELIORA_CAPTURE_DT gives every frame this many seconds instead of the
+  // clock's, so a capture is the same each run and fast things can be seen
+  // in slow motion (0.002: 500 frames a game second).
+  const char *captureDtText = std::getenv("HELIORA_CAPTURE_DT");
+  const float captureDt = capturePath && captureDtText ? std::strtof(captureDtText, nullptr) : 0.0f;
   // HELIORA_CAPTURE_SERIES="8 20" saves 8 pictures 20 frames apart from
   // HELIORA_CAPTURE_FRAMES on (out_0.png, out_1.png, ...), to see a move
   // over time.
@@ -391,6 +396,8 @@ int main(int argc, char **argv) {
     double currentFrame = glfwGetTime();
     deltaTime = static_cast<float>(currentFrame - lastFrame);
     lastFrame = currentFrame;
+    if (captureDt > 0.0f)
+      deltaTime = captureDt;
 
     inputManager.pollEvents();
     // Model files dropped on the window are imported into Resources/Models.

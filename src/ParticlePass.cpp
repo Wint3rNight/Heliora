@@ -19,6 +19,7 @@ struct SimPush {
   glm::vec4 gravity;
   uint32_t capacity;
   uint32_t pad[3];
+  glm::vec4 wind;
 };
 
 constexpr uint32_t kGroupSize = 256; // particles.comp's local_size_x
@@ -149,11 +150,15 @@ void ParticlePass::ensureImage(uint32_t imageIndex) {
 
 void ParticlePass::simulate(VkCommandBuffer cmd, uint32_t imageIndex,
                             const std::vector<ParticleSpawn> &spawns, float dt, float time,
-                            glm::vec3 gravity) {
+                            glm::vec3 gravity, glm::vec3 wind) {
   const uint32_t count = std::min(static_cast<uint32_t>(spawns.size()), kMostSpawns);
   aliveFor = std::max(0.0f, aliveFor - dt);
+  float longest = 0.0f;
   for (uint32_t i = 0; i < count; ++i)
-    aliveFor = std::max(aliveFor, spawns[i].life);
+    longest = std::max(longest, spawns[i].life);
+  aliveFor = std::max(aliveFor, longest);
+  const uint32_t head = ring.head(); // where this frame's first new one goes
+  ring.step(dt, count, longest);
   if (aliveFor <= 0.0f && count == 0)
     return; // nothing alive, nothing new
   ensureImage(imageIndex);
@@ -181,19 +186,19 @@ void ParticlePass::simulate(VkCommandBuffer cmd, uint32_t imageIndex,
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, simPipeline);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, simLayout, 0, 1, &sets[imageIndex], 0,
                           nullptr);
-  const SimPush push = {dt, time, count, head, glm::vec4(gravity, 0.0f), kCapacity, {0, 0, 0}};
+  const SimPush push = {dt, time, count, head, glm::vec4(gravity, 0.0f), kCapacity, {0, 0, 0},
+                       glm::vec4(wind, 0.0f)};
   vkCmdPushConstants(cmd, simLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
   vkCmdDispatch(cmd, (kCapacity + kGroupSize - 1) / kGroupSize, 1, 1);
   // This frame's sprites read what it wrote.
   barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
   vkdbgEndLabel(cmd);
-  head = (head + count) % kCapacity;
 }
 
 void ParticlePass::reset() {
   aliveFor = 0.0f;
-  head = 0;
+  ring.clear();
   cleared = false;
 }
 
@@ -207,8 +212,15 @@ void ParticlePass::draw(VkCommandBuffer cmd, uint32_t imageIndex, VkDescriptorSe
   const std::array<VkDescriptorSet, 2> bound = {sceneSet, sets[imageIndex]};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawLayout, 0,
                           static_cast<uint32_t>(bound.size()), bound.data(), 0, nullptr);
-  // Six corners a sprite, one sprite a slot; dead ones fall outside the view.
-  vkCmdDraw(cmd, 6, kCapacity, 0, 0);
+  // Six corners a sprite, one sprite a slot, over the slots that can still
+  // be alive (two draws where they wrap round the ring's end); dead ones
+  // fall outside the view.
+  const uint32_t first = ring.first(), live = ring.live();
+  const uint32_t toEnd = std::min(live, kCapacity - first);
+  if (toEnd > 0)
+    vkCmdDraw(cmd, 6, toEnd, 0, first);
+  if (live > toEnd)
+    vkCmdDraw(cmd, 6, live - toEnd, 0, 0);
 }
 
 void ParticlePass::cleanup(VkDevice dev) {

@@ -14,7 +14,8 @@ class VulkanDevice;
 // slots and moves the rest: drag, their share of gravity, and a curl field
 // that swirls them without bunching them up. They're drawn in the lit pass's
 // transparent subpass as soft camera-facing sprites, added on top (no
-// sorting), before bloom. When none are alive nothing is dispatched or drawn.
+// sorting), before bloom: only the slots that can still be alive (LiveRing).
+// When none are alive nothing is dispatched or drawn.
 class ParticlePass {
 public:
   static constexpr uint32_t kCapacity = 65536;
@@ -25,9 +26,10 @@ public:
   void cleanup(VkDevice device);
 
   // Outside a render pass, before the lit pass: this frame's new particles
-  // in, everything moved on by dt (0 holds them still).
+  // in, everything moved on by dt (0 holds them still), drag pulling each
+  // toward the wind.
   void simulate(VkCommandBuffer cmd, uint32_t imageIndex, const std::vector<ParticleSpawn> &spawns,
-                float dt, float time, glm::vec3 gravity);
+                float dt, float time, glm::vec3 gravity, glm::vec3 wind);
   // Every particle gone (Stop, a new scene): the ring is cleared again before
   // the next simulate reads it.
   void reset();
@@ -48,7 +50,7 @@ private:
   VkPipeline simPipeline = VK_NULL_HANDLE;
   VkPipelineLayout drawLayout = VK_NULL_HANDLE;
   VkPipeline drawPipeline = VK_NULL_HANDLE;
-  uint32_t head = 0;      // the ring's next slot
+  LiveRing ring{kCapacity}; // its head, and which slots can still be alive (drawn)
   bool cleared = false;   // the ring zeroed (every slot dead) on the GPU
   float aliveFor = 0.0f;  // s until the longest-lived particle dies
 };

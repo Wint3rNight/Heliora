@@ -3964,9 +3964,12 @@ bool VulkanRenderer::finishCapture() {
                               captureExtent.width * 4, bgra);
     vmaUnmapMemory(allocator, captureBuffer.getAllocation());
   }
+  // With the GPU's time for the frames just before it, so a capture also
+  // measures (the particles are drawn in the lit pass).
   if (written)
-    spdlog::info("Captured {}x{} to {}", captureExtent.width,
-                 captureExtent.height, capturePath);
+    spdlog::info("Captured {}x{} to {} (GPU {:.2f} ms, lit pass {:.2f} ms)", captureExtent.width,
+                 captureExtent.height, capturePath, metrics.getLastGpuTimeMs(),
+                 metrics.getPassGpuTimeMs(PerformanceMetrics::GpuPass::Lit));
   else
     spdlog::error("Couldn't write the capture to {}", capturePath);
   captureBuffer.reset();
@@ -4896,7 +4899,8 @@ void VulkanRenderer::recordPostCommands(VkCommandBuffer cmd,
   if (playing)
     particlePass.simulate(cmd, currentImage, particleSpawns, particleSeconds,
                           static_cast<float>(playSeconds),
-                          physics ? physics->gravity() : glm::vec3(0.0f, -9.81f, 0.0f));
+                          physics ? physics->gravity() : glm::vec3(0.0f, -9.81f, 0.0f),
+                          currentScene.wind);
   particleSpawns.clear();
 
   // --- Lit pass (PBR + IBL + async SSAO + FXAA + fog -> litBuffer) ---

@@ -338,6 +338,9 @@ void DescriptorManager::createDescriptorSetLayout(VkDevice device) {
     bindings[i].stageFlags =
         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
   }
+  // The irradiance map also in the vertex stage: the particles light their
+  // smoke once a sprite corner, not once a pixel.
+  bindings[3].stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
 
   VkDescriptorSetLayoutCreateInfo ci = {};
   ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

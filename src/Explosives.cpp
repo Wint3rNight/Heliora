@@ -38,6 +38,8 @@ constexpr float kFragmentHitPoints = 20.0f, kLungDamagePoints = 60.0f;
 // The fireball: at most 3.6 W^(1/3) m across, reached after about
 // 7 W^(1/3) ms (one Southampton measurement, scaled); its light (est.).
 constexpr float kFireballWidth = 3.6f, kBlastLightSeconds = 0.06f, kBlastLightPower = 3000.0f;
+// The smoke cloud's puffs (est.).
+constexpr int kCloudPuffs = 60;
 
 float dice(uint32_t &state) {
   state ^= state << 13;
@@ -294,7 +296,8 @@ void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner)
   }
 
   // What you see and hear: the fireball for a frame or two, its light,
-  // dust thrown along the ground, grit, a rising cloud; the boom; the
+  // dust thrown along the ground, grit, a cloud of the explosive's smoke
+  // (TNT's near black, C-4's grey) spreading and rising; the boom; the
   // camera shaken by the pressure where it is.
   static ParticleRandom random(0x7a3d1e55u);
   ParticleSpawn fire;
@@ -303,12 +306,13 @@ void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner)
   fire.size = 0.35f * kFireballWidth * cube;
   fire.life = 0.09f;
   fire.drag = 12.0f;
-  emitInCone(particleSpawns, at, glm::vec3(0.0f, 1.0f, 0.0f), 3.14159f, 90, 4.0f, 18.0f, fire, random);
+  emitInCone(particleSpawns, at, glm::vec3(0.0f, 1.0f, 0.0f), 3.14159f, 160, 4.0f, 18.0f, fire, random);
   ParticleSpawn dust;
   dust.colour = glm::vec3(0.4f, 0.37f, 0.32f);
   dust.opacity = 0.7f; // laid over, not glowing (est.)
   dust.size = 0.9f;
-  dust.life = 2.5f;
+  dust.spread = 4.0f;
+  dust.life = 3.5f;
   dust.drag = 2.5f;
   dust.swirl = 1.0f;
   dust.gravity = -0.02f; // it rises a little
@@ -326,15 +330,28 @@ void VulkanRenderer::explode(glm::vec3 at, const CasedCharge &charge, int owner)
   grit.drag = 0.5f;
   grit.gravity = 1.0f;
   emitInCone(particleSpawns, at, glm::vec3(0.0f, 1.0f, 0.0f), glm::radians(70.0f), 120, 4.0f, 14.0f, grit, random);
+  // The cloud billows out of where the fireball was: puffs through its
+  // volume, thrown out and up, some lighter (the sky on top) and some darker,
+  // a third of it dust off what it hit (est.).
+  const float fireball = 0.5f * kFireballWidth * cube; // m, its radius
+  const glm::vec3 dusty(0.4f, 0.37f, 0.32f);
   ParticleSpawn cloud;
-  cloud.colour = glm::vec3(0.3f, 0.28f, 0.26f);
-  cloud.opacity = 0.75f;
-  cloud.size = 2.2f;
-  cloud.life = 7.0f;
+  cloud.opacity = 0.5f;
+  cloud.spread = 2.5f;
+  cloud.life = 8.0f;
   cloud.drag = 1.5f;
   cloud.swirl = 0.8f;
   cloud.gravity = -0.05f;
-  emitInCone(particleSpawns, at, glm::vec3(0.0f, 1.0f, 0.0f), glm::radians(60.0f), 70, 0.5f, 2.5f, cloud, random);
+  for (int k = 0; k < kCloudPuffs; ++k) {
+    const glm::vec3 out = random.onSphere();
+    const glm::vec3 up(out.x, std::abs(out.y) * 0.8f + 0.2f, out.z);
+    cloud.position = at + out * (fireball * 0.4f * random.next());
+    cloud.velocity = glm::normalize(up) * (1.0f + 3.0f * random.next());
+    cloud.size = fireball * (0.6f + 0.5f * random.next());
+    const float shade = 0.75f + 0.5f * random.next() + 0.25f * up.y;
+    cloud.colour = glm::mix(glm::vec3(smokeShade(charge.explosive)), dusty, 0.3f) * shade;
+    particleSpawns.push_back(cloud);
+  }
   blastLight = kBlastLightSeconds;
   blastLightAt = at + glm::vec3(0.0f, 0.5f, 0.0f);
   blastLightPower = kBlastLightPower * cube;

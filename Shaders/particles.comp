@@ -1,18 +1,19 @@
 #version 450
 
 // The particles (step 1.4a): one thread a slot of the ring. A slot the frame's
-// new particles land in takes one; any other living one moves on: drag, its
-// share of gravity, and a curl field that swirls it without bunching
+// new particles land in takes one; any other living one moves on: drag
+// toward the wind, its share of gravity, and a curl field that swirls it without bunching
 // particles up (the curl of anything spreads nothing out or in).
 
 layout(local_size_x = 256) in;
 
-// One particle, as ParticleSpawn lays it out (64 bytes).
+// One particle, as ParticleSpawn lays it out (80 bytes).
 struct Particle {
   vec4 positionAge; // xyz position, w seconds lived
   vec4 velocityLife; // xyz m/s, w seconds it lasts
   vec4 colourSize;  // rgb HDR, w m across
-  vec4 motion;      // x drag, y swirl, z its share of gravity
+  vec4 motion;      // x drag, y swirl, z its share of gravity, w opacity
+  vec4 shape;       // x spread (its size at the end over at the start)
 };
 
 layout(std430, set = 0, binding = 0) buffer Ring { Particle ring[]; };
@@ -25,6 +26,7 @@ layout(push_constant) uniform Sim {
   uint head;      // the ring's slot the first new one goes in
   vec4 gravity;
   uint capacity;
+  vec4 wind; // the air's m/s: drag pulls toward it
 } pc;
 
 // The curl of a field of sine waves: (b cos(b z + t), c cos(c x + t), a cos(a y + t))
@@ -55,7 +57,7 @@ void main() {
   vec3 v = p.velocityLife.xyz;
   v += curl(p.positionAge.xyz, pc.time) * p.motion.y * pc.dt;
   v += pc.gravity.xyz * p.motion.z * pc.dt;
-  v *= exp(-p.motion.x * pc.dt);
+  v = pc.wind.xyz + (v - pc.wind.xyz) * exp(-p.motion.x * pc.dt); // airDrag in Particles.cpp
   p.positionAge.xyz += v * pc.dt;
   p.positionAge.w += pc.dt;
   p.velocityLife.xyz = v;

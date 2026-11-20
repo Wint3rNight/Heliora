@@ -38,6 +38,35 @@ int spawnCount(float rate, float dt, float &carry) {
   return count;
 }
 
+float particleSizeAt(const ParticleSpawn &p, float t) {
+  const float u = 1.0f - std::clamp(t, 0.0f, 1.0f);
+  return p.size * (1.0f + (p.spread - 1.0f) * (1.0f - u * u));
+}
+
+float smokeCover(float opacity, float spread) {
+  const float s = std::max(spread, 1.0f);
+  return 1.0f - std::pow(1.0f - std::clamp(opacity, 0.0f, 0.999f), 1.0f / (s * s));
+}
+
+glm::vec3 airDrag(glm::vec3 velocity, glm::vec3 wind, float drag, float dt) {
+  return wind + (velocity - wind) * std::exp(-std::max(drag, 0.0f) * dt);
+}
+
+void emitTrail(std::vector<ParticleSpawn> &out, glm::vec3 from, glm::vec3 to, float every, float &carry,
+               const ParticleSpawn &kind) {
+  const float length = glm::distance(from, to);
+  if (!(every > 0.0f) || length <= 0.0f)
+    return;
+  const glm::vec3 dir = (to - from) / length;
+  float at = every - carry; // along this frame's path to the next one
+  for (; at <= length; at += every) {
+    ParticleSpawn p = kind;
+    p.position = from + dir * at;
+    out.push_back(p);
+  }
+  carry = length - (at - every);
+}
+
 void emitAlongPath(std::vector<ParticleSpawn> &out, const std::vector<glm::vec3> &path, int count,
                    float speed, const ParticleSpawn &kind, ParticleRandom &random) {
   if (path.size() < 2 || count <= 0)
@@ -90,4 +119,28 @@ void emitInCone(std::vector<ParticleSpawn> &out, glm::vec3 apex, glm::vec3 axis,
     p.velocity = random.inCone(axis, halfAngle) * glm::mix(slowest, fastest, random.next());
     out.push_back(p);
   }
+}
+
+void LiveRing::step(float dt, uint32_t count, float longest) {
+  clock += std::max(dt, 0.0f);
+  while (!batches.empty() && batches.front().until <= clock) {
+    counted -= batches.front().count;
+    batches.pop_front();
+  }
+  if (count == 0 || capacity == 0)
+    return;
+  batches.push_back({count, clock + longest});
+  counted += count;
+  next = static_cast<uint32_t>((next + count) % capacity);
+}
+
+void LiveRing::clear() {
+  batches.clear();
+  counted = 0;
+  next = 0;
+  clock = 0.0f;
+}
+
+uint32_t LiveRing::live() const {
+  return static_cast<uint32_t>(std::min<uint64_t>(counted, capacity));
 }

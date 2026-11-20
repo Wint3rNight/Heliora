@@ -33,8 +33,9 @@ constexpr float kTracerNarrowest = 0.003f; // radians
 // The flash: a cone from the muzzle, this long for a pistol and a rifle
 // (est.), and an outer flash half the time (Dye & Davis 2016).
 constexpr float kPistolFlash = 0.12f, kRifleFlash = 0.25f; // m
-// Its light's intensity (est., by eye in the night yard).
-constexpr float kRifleFlashLight = 40.0f, kPistolFlashLight = 25.0f;
+// Its light's intensity (est., by eye in the night yard); a rocket motor's
+// burning flame the same way.
+constexpr float kRifleFlashLight = 40.0f, kPistolFlashLight = 25.0f, kMotorLight = 30.0f;
 // Past this, a shot sounds as its far recording (est.).
 constexpr float kFarShot = 60.0f; // m
 // A bullet's hit, heard at 1 m (est.).
@@ -319,7 +320,7 @@ bool VulkanRenderer::damagePiece(int p, float energy, glm::vec3 point, glm::vec3
 void VulkanRenderer::stepShots(float seconds) {
   const glm::vec3 eye(sceneUbo.cameraPosition);
   // The flash lights its surroundings for the frame of the shot; a blast's
-  // for a few.
+  // for a few; a burning rocket motor's while no shot or blast needs it.
   sceneUbo.flashColour = glm::vec4(0.0f);
   if (blastLight > 0.0f) {
     sceneUbo.flashPosition = glm::vec4(blastLightAt, 1.0f);
@@ -329,6 +330,14 @@ void VulkanRenderer::stepShots(float seconds) {
     sceneUbo.flashPosition = glm::vec4(flash.at + flash.along * (0.5f * flash.size), 1.0f);
     sceneUbo.flashColour = glm::vec4(1.0f, 0.62f, 0.3f, flash.size >= kRifleFlash ? kRifleFlashLight
                                                                                   : kPistolFlashLight);
+  } else {
+    // Else a rocket's motor, while it burns (the first: one light to go round).
+    for (const LiveRocket &r : rockets)
+      if (r.flight.motorOn) {
+        sceneUbo.flashPosition = glm::vec4(r.tail, 1.0f);
+        sceneUbo.flashColour = glm::vec4(1.0f, 0.62f, 0.3f, kMotorLight);
+        break;
+      }
   }
   // The muzzle flashes of this frame's shots: one frame each (the real one
   // is over in 3 ms).

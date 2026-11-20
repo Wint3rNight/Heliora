@@ -869,6 +869,7 @@ private:
     int owner = -1;
     float trail = 0.0f; // m flown since the last puff
     float flameCarry = 0.0f; // the part of a flame owed from the frames before
+    glm::vec3 tail{0.0f};    // where its motor's flame comes out
   };
   std::vector<LiveRocket> rockets;
   void launchRocket(int index, CarriedGun &gun, const Shot &shot);

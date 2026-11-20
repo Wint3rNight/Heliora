@@ -23,6 +23,15 @@ float tntEquivalent(Explosive explosive, float pressure, bool impulse) {
   return 1.0f;
 }
 
+float smokeShade(Explosive explosive) {
+  switch (explosive) {
+  case Explosive::Tnt: return 0.08f;
+  case Explosive::CompB: return 0.16f;
+  case Explosive::C4: return 0.4f;
+  }
+  return 0.3f;
+}
+
 float scaledDistance(float range, float tntKg) {
   return range / std::cbrt(std::max(tntKg, 1e-9f));
 }
